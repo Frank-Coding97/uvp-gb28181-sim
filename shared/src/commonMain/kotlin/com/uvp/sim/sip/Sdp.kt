@@ -1,0 +1,143 @@
+package com.uvp.sim.sip
+
+/**
+ * SDP (RFC 4566) parsing and building, scoped to GB/T 28181 video streams.
+ *
+ * GB28181 § 8 specifies a constrained SDP profile:
+ *   v=0
+ *   o=<deviceId> 0 0 IN IP4 <ip>
+ *   s=Play | Playback | Download
+ *   c=IN IP4 <ip>
+ *   t=0 0
+ *   m=video <port> RTP/AVP 96
+ *   a=rtpmap:96 PS/90000
+ *   a=sendrecv | recvonly | sendonly
+ *   y=<ssrc>           ← GB28181 extension (10-digit decimal SSRC)
+ *
+ * The simulator only deals with the "Play" subset for M1 (real-time playback).
+ * Recordings (Playback / Download) are M2.
+ */
+data class SdpOffer(
+    /** Remote IP where RTP must be sent (from c= line). */
+    val remoteIp: String,
+    /** Remote RTP port (from m=video <port>). */
+    val remotePort: Int,
+    /** GB28181 SSRC string from y= line, may be null on 2016 minimal offers. */
+    val ssrc: String?,
+    /** Media direction the offerer wants. We answer with the inverse. */
+    val direction: SdpDirection,
+    /** Whatever lines we don't understand — preserved for round-trip diagnostics. */
+    val rawBody: String
+)
+
+enum class SdpDirection { SENDRECV, SENDONLY, RECVONLY, INACTIVE }
+
+object SdpParser {
+
+    fun parseOffer(body: ByteArray): SdpOffer = parseOffer(body.decodeToString())
+
+    fun parseOffer(text: String): SdpOffer {
+        var ip: String? = null
+        var port: Int? = null
+        var ssrc: String? = null
+        var direction = SdpDirection.SENDRECV
+
+        for (line in text.lineSequence()) {
+            val l = line.trim().trimEnd('\r')
+            if (l.isEmpty()) continue
+            when {
+                l.startsWith("c=IN IP4 ") -> {
+                    ip = l.removePrefix("c=IN IP4 ").trim()
+                }
+                l.startsWith("m=video ") -> {
+                    // m=video <port> RTP/AVP 96
+                    val parts = l.split(" ")
+                    if (parts.size >= 4) {
+                        port = parts[1].toIntOrNull()
+                    }
+                }
+                l == "a=sendrecv" -> direction = SdpDirection.SENDRECV
+                l == "a=sendonly" -> direction = SdpDirection.SENDONLY
+                l == "a=recvonly" -> direction = SdpDirection.RECVONLY
+                l == "a=inactive" -> direction = SdpDirection.INACTIVE
+                l.startsWith("y=") -> ssrc = l.removePrefix("y=").trim()
+            }
+        }
+
+        require(ip != null) { "SDP offer missing c=IN IP4 ..." }
+        require(port != null) { "SDP offer missing m=video <port>" }
+        return SdpOffer(
+            remoteIp = ip,
+            remotePort = port,
+            ssrc = ssrc,
+            direction = direction,
+            rawBody = text
+        )
+    }
+}
+
+object SdpAnswer {
+
+    /**
+     * Build a GB28181-compliant SDP answer for a "Play" INVITE.
+     *
+     * The answer is `sendonly` (we send, the platform receives), preserves the
+     * offerer's `y=` SSRC verbatim (per GB28181 spec), and binds to our local
+     * RTP port. The stream uses payload type 96 = PS/90000 per platform convention.
+     *
+     * @param ssrc 10-digit decimal SSRC string. Pass through from offer if present;
+     *             if offer omitted y= (2016 minimal), pass a generated value.
+     */
+    fun buildPlayAnswer(
+        deviceId: String,
+        localIp: String,
+        localRtpPort: Int,
+        ssrc: String,
+        sessionName: String = "Play"
+    ): String {
+        require(ssrc.length == 10) { "GB28181 SSRC must be 10 decimal digits, got '$ssrc'" }
+        require(ssrc.all { it.isDigit() }) { "SSRC must be all digits: '$ssrc'" }
+        return buildString {
+            append("v=0\r\n")
+            append("o=").append(deviceId).append(" 0 0 IN IP4 ").append(localIp).append("\r\n")
+            append("s=").append(sessionName).append("\r\n")
+            append("c=IN IP4 ").append(localIp).append("\r\n")
+            append("t=0 0\r\n")
+            append("m=video ").append(localRtpPort).append(" RTP/AVP 96\r\n")
+            append("a=sendonly\r\n")
+            append("a=rtpmap:96 PS/90000\r\n")
+            append("y=").append(ssrc).append("\r\n")
+        }
+    }
+}
+
+/** Helpers for converting between the GB28181 10-digit SSRC string and RTP's 32-bit int. */
+object SsrcUtils {
+    /**
+     * Convert a 10-digit decimal SSRC string from a `y=` line to the 32-bit
+     * unsigned int used in the RTP header.
+     *
+     * The string fits in a 32-bit unsigned (max 4294967295), so we use Long
+     * intermediate to avoid signed overflow then narrow to Int.
+     */
+    fun toRtpInt(ssrc: String): Int {
+        require(ssrc.length == 10) { "GB28181 SSRC must be 10 decimal digits" }
+        return ssrc.toLong().toInt()
+    }
+
+    /**
+     * Generate a 10-digit GB28181 SSRC string for cases where the offer didn't
+     * include a `y=` line (2016 minimal). Format per GB28181 § C.2.4:
+     *   first 1 digit:  0 = realtime, 1 = playback
+     *   middle 5 digits: domain code (typically last 5 digits of SIP domain)
+     *   last 4 digits:   sequence (we randomize)
+     */
+    fun generate(realtime: Boolean = true, domainCode: String, sequence: Int): String {
+        require(domainCode.length == 5 && domainCode.all { it.isDigit() }) {
+            "domainCode must be 5 digits"
+        }
+        val prefix = if (realtime) "0" else "1"
+        val seqStr = (sequence and 0x0FFF).toString().padStart(4, '0').takeLast(4)
+        return prefix + domainCode + seqStr
+    }
+}

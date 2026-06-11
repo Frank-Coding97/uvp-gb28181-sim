@@ -15,6 +15,23 @@ sealed class SimEvent {
     data class HeartbeatAcknowledged(val sequence: Int) : SimEvent()
     data class IncomingInvite(val callId: String) : SimEvent()
     data class CallEnded(val callId: String, val reason: String) : SimEvent()
+    /**
+     * Sent right after we 200-OK an INVITE, before any RTP goes out.
+     * Carries the negotiated remote endpoint + SSRC for diagnostics.
+     */
+    data class StreamStarted(
+        val callId: String,
+        val remoteHost: String,
+        val remotePort: Int,
+        val ssrc: String
+    ) : SimEvent()
+    /** Sent on local stop, BYE, or transport error during streaming. */
+    data class StreamStopped(
+        val callId: String,
+        val frameCount: Int,
+        val packetCount: Int,
+        val reason: String
+    ) : SimEvent()
     /** Raw SIP envelope for the log view. */
     data class MessageSent(val message: SipMessage) : SimEvent()
     data class MessageReceived(val message: SipMessage) : SimEvent()

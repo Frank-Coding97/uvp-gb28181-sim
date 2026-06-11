@@ -44,7 +44,9 @@ class SimulatorEngine(
     private val transport: SipTransport,
     private val scope: CoroutineScope,
     private val localIp: String = "0.0.0.0",
-    private val localPortProvider: () -> Int = { 5060 }
+    private val localPortProvider: () -> Int = { 5060 },
+    private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
+    private val rtpSenderFactory: ((host: String, port: Int) -> com.uvp.sim.network.RtpSender)? = null
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -63,6 +65,18 @@ class SimulatorEngine(
     private var fromTag: String? = null
     private var pendingRegister: SipRequest? = null
     private var keepaliveSn: Int = 0
+
+    // Active streaming session state (M1: at most one)
+    private var activeStream: ActiveStream? = null
+
+    private data class ActiveStream(
+        val callId: String,
+        val ssrc: String,
+        val rtpSender: com.uvp.sim.network.RtpSender,
+        val streamJob: Job,
+        var frameCount: Int = 0,
+        var packetCount: Int = 0
+    )
 
     /** Initiate registration. Returns immediately; observe [state] for completion. */
     suspend fun register() {
@@ -218,16 +232,186 @@ class SimulatorEngine(
 
     private suspend fun handleRequest(req: SipRequest) {
         when (req.method) {
-            SipMethod.INVITE -> {
-                _state.value = SipStateMachine.transition(_state.value, SipEvent.InviteReceived)
-                _events.emit(SimEvent.IncomingInvite(req.callId() ?: ""))
-            }
-            SipMethod.BYE -> {
-                _state.value = SipStateMachine.transition(_state.value, SipEvent.ByeReceived)
-                _events.emit(SimEvent.CallEnded(req.callId() ?: "", "remote BYE"))
-            }
+            SipMethod.INVITE -> handleInvite(req)
+            SipMethod.BYE -> handleBye(req)
+            SipMethod.MESSAGE -> handleMessage(req)
             else -> Unit
         }
+    }
+
+    private suspend fun handleMessage(message: SipRequest) {
+        // Always 200-OK first so the SIP transaction completes promptly.
+        try {
+            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(
+                message, toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+            )
+            transport.send(ok)
+            _events.emit(SimEvent.MessageSent(ok))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send MESSAGE 200: ${e.message}"))
+        }
+
+        // Inspect body — only Catalog query needs a follow-up Notify response.
+        val xml = message.body.decodeToString()
+        val cmd = com.uvp.sim.gb28181.ManscdpParser.cmdType(xml)
+        if (cmd == "Catalog") {
+            val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+            sendCatalogResponse(sn)
+        }
+        // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to M2.
+    }
+
+    private suspend fun sendCatalogResponse(sn: String) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.build(config, sn)
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog response: ${e.message}"))
+        }
+    }
+
+    private suspend fun handleInvite(invite: SipRequest) {
+        _state.value = SipStateMachine.transition(_state.value, SipEvent.InviteReceived)
+        val cid = invite.callId() ?: ""
+        _events.emit(SimEvent.IncomingInvite(cid))
+
+        val sender = rtpSenderFactory
+        val cam = cameraCapture
+        if (sender == null || cam == null) {
+            // M1 unit-test path: engine constructed without media plumbing —
+            // we simply transitioned to InCall and emitted the event so tests
+            // can observe; nothing more to do.
+            return
+        }
+
+        val offer = try {
+            com.uvp.sim.sip.SdpParser.parseOffer(invite.body)
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("SDP parse: ${e.message}"))
+            return
+        }
+
+        val ssrc = offer.ssrc ?: com.uvp.sim.sip.SsrcUtils.generate(
+            realtime = true,
+            domainCode = config.server.domain.takeLast(5).padStart(5, '0'),
+            sequence = (cseq + 1) and 0x0FFF
+        )
+
+        val rtp = sender(offer.remoteIp, offer.remotePort)
+        val localRtpPort = try {
+            rtp.bindLocalPort()
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("RTP bind: ${e.message}"))
+            return
+        }
+
+        val sdpAnswer = com.uvp.sim.sip.SdpAnswer.buildPlayAnswer(
+            deviceId = config.device.deviceId,
+            localIp = localIp,
+            localRtpPort = localRtpPort,
+            ssrc = ssrc,
+            sessionName = "Play"
+        )
+        val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
+        val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
+            invite = invite,
+            deviceContact = deviceContact,
+            toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+            sdpBody = sdpAnswer
+        )
+        try {
+            transport.send(response)
+            _events.emit(SimEvent.MessageSent(response))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send 200 OK: ${e.message}"))
+            try { rtp.close() } catch (_: Throwable) { }
+            return
+        }
+
+        _events.emit(SimEvent.StreamStarted(cid, offer.remoteIp, offer.remotePort, ssrc))
+
+        val packer = com.uvp.sim.media.RtpPacker(
+            payloadType = 96,
+            ssrc = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
+        )
+        val muxer = com.uvp.sim.media.PsMuxer()
+
+        val streamJob = scope.launch {
+            val active = activeStream
+            try {
+                cam.start().collect { frame ->
+                    val ps = muxer.muxFrame(frame)
+                    val timestamp90k = frame.timestampUs * 9 / 100
+                    val packets = packer.packFrame(ps, timestamp90k)
+                    for (p in packets) {
+                        try {
+                            rtp.send(p)
+                            active?.let { it.packetCount += 1 }
+                        } catch (e: Throwable) {
+                            _events.emit(SimEvent.TransportError("RTP send: ${e.message}"))
+                            return@collect
+                        }
+                    }
+                    active?.let { it.frameCount += 1 }
+                }
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("camera flow: ${e.message}"))
+            }
+        }
+
+        activeStream = ActiveStream(
+            callId = cid,
+            ssrc = ssrc,
+            rtpSender = rtp,
+            streamJob = streamJob
+        )
+    }
+
+    private suspend fun handleBye(bye: SipRequest) {
+        // Send 200 OK back so platform marks call terminated cleanly.
+        try {
+            val ack = com.uvp.sim.sip.SipBuilders.buildSimple200(bye)
+            transport.send(ack)
+            _events.emit(SimEvent.MessageSent(ack))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send BYE 200: ${e.message}"))
+        }
+
+        val cid = bye.callId() ?: ""
+        stopActiveStream(cid, "remote BYE")
+        _state.value = SipStateMachine.transition(_state.value, SipEvent.ByeReceived)
+        _events.emit(SimEvent.CallEnded(cid, "remote BYE"))
+    }
+
+    private suspend fun stopActiveStream(callId: String, reason: String) {
+        val active = activeStream ?: return
+        activeStream = null
+        active.streamJob.cancel()
+        try { active.rtpSender.close() } catch (_: Throwable) { }
+        try { cameraCapture?.stop() } catch (_: Throwable) { }
+        _events.emit(
+            SimEvent.StreamStopped(
+                callId = callId,
+                frameCount = active.frameCount,
+                packetCount = active.packetCount,
+                reason = reason
+            )
+        )
     }
 
     private fun startHeartbeat() {

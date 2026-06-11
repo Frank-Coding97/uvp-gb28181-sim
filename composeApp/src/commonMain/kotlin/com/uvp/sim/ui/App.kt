@@ -181,6 +181,8 @@ private fun renderEvent(e: SimEvent): Pair<String, String> = when (e) {
     is SimEvent.HeartbeatSent -> "♥ Keepalive #${e.sequence}" to ""
     is SimEvent.HeartbeatAcknowledged -> "♥ ack #${e.sequence}" to ""
     is SimEvent.IncomingInvite -> "INVITE ←" to e.callId
+    is SimEvent.StreamStarted -> "▶ Streaming" to "${e.remoteHost}:${e.remotePort} ssrc=${e.ssrc}"
+    is SimEvent.StreamStopped -> "■ Stopped" to "${e.frameCount}f / ${e.packetCount}p · ${e.reason}"
     is SimEvent.CallEnded -> "Call ended" to "${e.callId} (${e.reason})"
     is SimEvent.MessageSent -> "TX ${describeMsg(e.message)}" to ""
     is SimEvent.MessageReceived -> "RX ${describeMsg(e.message)}" to ""

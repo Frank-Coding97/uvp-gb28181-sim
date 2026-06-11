@@ -3,6 +3,8 @@ package com.uvp.sim
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.uvp.sim.camera.CameraCapture
+import com.uvp.sim.camera.CaptureConfig
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
@@ -11,31 +13,23 @@ import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
 import com.uvp.sim.network.AndroidNetwork
 import com.uvp.sim.network.RemoteEndpoint
+import com.uvp.sim.network.RtpSender
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.network.UdpSipTransport
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.runningFold
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
  * Glues the cross-platform [SimulatorEngine] to Android lifecycle.
  *
- * **M1 hard-codes the WVP target** in [Companion]; T11 will replace these
- * constants with a settings screen + persisted store.
- *
- * Lifecycle:
- *   - [connect] is idempotent. Creates transport on first call, reuses on retry.
- *   - [disconnect] sends Unregister, closes transport, but keeps the VM alive
- *     so the user can press Connect again.
- *   - [onCleared] tears everything down (Activity destroyed).
+ * The Activity owns the [CameraCapture] instance (because CameraX needs a
+ * LifecycleOwner) and hands it to us via [bindCamera]. We pass it through to
+ * the engine on [connect].
  */
 class SipViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -43,6 +37,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private var transport: UdpSipTransport? = null
     private var engine: SimulatorEngine? = null
+    private var camera: CameraCapture? = null
 
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -52,6 +47,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     val serverLabel: String = "${WVP_IP}:${WVP_PORT}  (${WVP_SERVER_ID})"
     val deviceLabel: String = DEVICE_ID
+
+    /** Activity calls this after creating CameraCapture + AndroidCameraStreamer. */
+    fun bindCamera(cam: CameraCapture) {
+        this.camera = cam
+    }
 
     fun connect() {
         if (engine != null) return  // already wired up
@@ -84,12 +84,17 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         )
         transport = tx
 
+        val rtpFactory: (String, Int) -> RtpSender = { host, port ->
+            RtpSender(host, port, engineScope)
+        }
         val eng = SimulatorEngine(
             config = config,
             transport = tx,
             scope = engineScope,
             localIp = localIp,
-            localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 }
+            localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
+            cameraCapture = camera,
+            rtpSenderFactory = rtpFactory
         )
         engine = eng
 
@@ -137,14 +142,16 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        // Best-effort teardown; viewModelScope handles its own cancellation.
         try {
             kotlinx.coroutines.runBlocking {
                 engine?.shutdown()
                 transport?.close()
+                camera?.stop()
             }
         } catch (_: Throwable) { /* ignore */ }
     }
+
+    fun newCaptureConfig(): CaptureConfig = CaptureConfig()
 
     companion object {
         // ===== WVP target (M1 hard-coded; T11 will move to settings) =====
