@@ -232,7 +232,7 @@ private fun SipSummaryCardInline(state: AppUiState, actions: AppActions) {
                 InlineField("端口", port) { port = it.filter { c -> c.isDigit() } }
                 InlineField("设备 ID", deviceId) { deviceId = it.filter { c -> c.isDigit() } }
                 InlineSegmented("传输方式", transport) { transport = it }
-                InlineSegmented("对讲传输", talkTransport) { talkTransport = it }
+                InlineSegmented("对讲传输 (M2)", talkTransport, enabled = false) { talkTransport = it }
                 InlineField("服务器 ID", serverId) { serverId = it.filter { c -> c.isDigit() } }
                 InlineField("服务器域", domain) { domain = it.filter { c -> c.isDigit() } }
                 Spacer(Modifier.height(4.dp))
@@ -304,9 +304,9 @@ private fun InlineField(label: String, value: String, onChange: (String) -> Unit
 }
 
 @Composable
-private fun InlineSegmented(label: String, active: String, onChange: (String) -> Unit) {
-    Column {
-        Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
+private fun InlineSegmented(label: String, active: String, enabled: Boolean = true, onChange: (String) -> Unit) {
+    Column(modifier = Modifier.run { if (!enabled) this.then(Modifier) else this }) {
+        Text(label, fontSize = 11.sp, color = if (enabled) UvpColor.TextHint else UvpColor.TextHint.copy(alpha = 0.5f))
         Spacer(Modifier.height(2.dp))
         Row(
             modifier = Modifier
@@ -324,7 +324,7 @@ private fun InlineSegmented(label: String, active: String, onChange: (String) ->
                             if (sel) UvpColor.Surface else Color.Transparent,
                             RoundedCornerShape(4.dp)
                         )
-                        .clickable { onChange(t) }
+                        .clickable(enabled = enabled) { onChange(t) }
                         .padding(vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -332,7 +332,9 @@ private fun InlineSegmented(label: String, active: String, onChange: (String) ->
                         t,
                         fontSize = 12.sp,
                         fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
-                        color = if (sel) UvpColor.Primary else UvpColor.TextSecondary
+                        color = if (!enabled) UvpColor.TextHint
+                               else if (sel) UvpColor.Primary
+                               else UvpColor.TextSecondary
                     )
                 }
             }

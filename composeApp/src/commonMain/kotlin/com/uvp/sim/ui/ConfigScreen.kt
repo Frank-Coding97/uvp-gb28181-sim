@@ -189,32 +189,23 @@ private fun BasicConfigContent(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Spacer(Modifier.height(8.dp))
-        FormItem("国标版本", " ") {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(UvpColor.Surface, RoundedCornerShape(6.dp))
-                    .border(1.dp, UvpColor.Border, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            ) {
-                Text(
-                    "GB/T 28181-2022 ▾",
-                    fontSize = 13.sp, color = UvpColor.Text
-                )
-            }
-        }
+        SectionTitle("连接")
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FormItem("SIP 服务器", "*", modifier = Modifier.weight(1f)) {
+            FormItem("SIP 服务器", "*", modifier = Modifier.weight(2f)) {
                 CompactInput(ip, onIp)
             }
             FormItem("端口", "*", modifier = Modifier.weight(1f)) {
                 CompactInput(port, onPort, keyboard = KeyboardType.Number)
             }
         }
-        FormItem("服务器ID", "*") { CompactInput(serverId, onServerId) }
-        FormItem("SIP 域") { CompactInput(domain, onDomain) }
-
         FormItem("设备编码", "*") { CompactInput(deviceId, onDeviceId) }
+        FormItem("传输协议") { Segmented(transport, onTransport) }
+
+        SectionTitle("平台")
+        FormItem("服务器 ID", "*") { CompactInput(serverId, onServerId) }
+        FormItem("服务器域") { CompactInput(domain, onDomain) }
+
+        SectionTitle("通道")
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FormItem("视频通道 ID", " ", modifier = Modifier.weight(1f)) {
                 CompactInput(videoChannelId, onVideoChannelId)
@@ -224,6 +215,7 @@ private fun BasicConfigContent(
             }
         }
 
+        SectionTitle("认证")
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FormItem("用户名", " ", modifier = Modifier.weight(1f)) {
                 CompactInput(username, onUsername)
