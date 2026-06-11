@@ -81,8 +81,16 @@ class SimulatorEngine(
             pendingRegister = req
             _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterRequested)
             _events.emit(SimEvent.RegistrationStarted("${config.server.ip}:${config.server.port}"))
-            transport.send(req)
-            _events.emit(SimEvent.MessageSent(req))
+            try {
+                transport.send(req)
+                _events.emit(SimEvent.MessageSent(req))
+            } catch (e: Throwable) {
+                _state.value = SipStateMachine.transition(
+                    _state.value, SipEvent.RegisterFailed("transport.send: ${e.message}")
+                )
+                _events.emit(SimEvent.TransportError("send REGISTER: ${e::class.simpleName}: ${e.message}"))
+                _events.emit(SimEvent.RegistrationFailed("transport: ${e.message}"))
+            }
         }
     }
 
@@ -122,9 +130,17 @@ class SimulatorEngine(
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {
-            transport.incoming.collect { msg ->
-                _events.emit(SimEvent.MessageReceived(msg))
-                handleIncoming(msg)
+            try {
+                transport.incoming.collect { msg ->
+                    _events.emit(SimEvent.MessageReceived(msg))
+                    try {
+                        handleIncoming(msg)
+                    } catch (e: Throwable) {
+                        _events.emit(SimEvent.TransportError("handleIncoming: ${e::class.simpleName}: ${e.message}"))
+                    }
+                }
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("inbound: ${e::class.simpleName}: ${e.message}"))
             }
         }
     }
@@ -233,9 +249,13 @@ class SimulatorEngine(
                 localIp = localIp,
                 localPort = localPortProvider()
             )
-            transport.send(msg)
-            _events.emit(SimEvent.HeartbeatSent(keepaliveSn))
-            _events.emit(SimEvent.MessageSent(msg))
+            try {
+                transport.send(msg)
+                _events.emit(SimEvent.HeartbeatSent(keepaliveSn))
+                _events.emit(SimEvent.MessageSent(msg))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("send Keepalive: ${e::class.simpleName}: ${e.message}"))
+            }
         }
         heartbeat?.start()
     }

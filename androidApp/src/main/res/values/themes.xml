@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.UvpSim" parent="android:Theme.Material.NoActionBar.Translucent">
+    <!--
+        Compose 自己渲染整个 UI,我们只需要一个不带 ActionBar 的素 theme。
+        Android 系统的 Material 主题就够了,不必依赖 com.google.android.material:material。
+    -->
+    <style name="Theme.UvpSim" parent="android:Theme.Material.Light.NoActionBar">
     </style>
 </resources>

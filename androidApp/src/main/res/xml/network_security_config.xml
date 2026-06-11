@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        SIP/RTP 是明文 UDP 协议,Android 9+ 默认禁明文 socket,要在这里放开。
+        生产环境也只在 LAN 内连国标平台,不存在公网泄露的问题。
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
