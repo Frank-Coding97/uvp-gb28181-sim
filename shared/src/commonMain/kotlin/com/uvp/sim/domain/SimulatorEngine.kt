@@ -141,6 +141,52 @@ class SimulatorEngine(
         }
     }
 
+    /**
+     * T15 — Snapshot upload (主动业务: 抓拍上报).
+     *
+     * GB28181 § 9.5 device-side snapshot is implemented as an Alarm Notify with
+     * a Catalog-like Item naming the snapshot. M1 sends just the SIP MESSAGE
+     * Notify; the actual JPEG upload (HTTP PUT to a media gateway URL the
+     * platform sends back in the snapshot command) is M2.
+     *
+     * In the typical "device-initiated" snapshot flow used here, we send the
+     * Notify and let the platform follow up with a HTTP request to fetch the
+     * image; if the platform doesn't ask within a few seconds, we just ignore.
+     */
+    suspend fun reportSnapshot() {
+        mutex.withLock {
+            if (_state.value != SipState.Registered && _state.value != SipState.InCall) {
+                _events.emit(SimEvent.TransportError("snapshot: not registered"))
+                return
+            }
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val xml = com.uvp.sim.gb28181.AlarmNotify.buildSnapshotAlarm(
+                config = config,
+                sn = cseq.toString()
+            )
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xml
+            )
+            try {
+                transport.send(msg)
+                _events.emit(SimEvent.MessageSent(msg))
+                _events.emit(SimEvent.SnapshotReported(cseq.toString()))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("snapshot send: ${e.message}"))
+            }
+        }
+    }
+
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {

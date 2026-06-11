@@ -27,9 +27,9 @@ import kotlinx.coroutines.launch
 /**
  * Glues the cross-platform [SimulatorEngine] to Android lifecycle.
  *
- * The Activity owns the [CameraCapture] instance (because CameraX needs a
- * LifecycleOwner) and hands it to us via [bindCamera]. We pass it through to
- * the engine on [connect].
+ * Holds the live SimConfig so the Config screen can save updates. On config
+ * change while connected, [updateConfig] tears down + reconnects with the new
+ * settings; while disconnected, it just stores the new config for next connect.
  */
 class SipViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -45,8 +45,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _events = MutableStateFlow<List<SimEvent>>(emptyList())
     val events: StateFlow<List<SimEvent>> = _events.asStateFlow()
 
-    val serverLabel: String = "${WVP_IP}:${WVP_PORT}  (${WVP_SERVER_ID})"
-    val deviceLabel: String = DEVICE_ID
+    private val _config = MutableStateFlow(defaultConfig())
+    val config: StateFlow<SimConfig> = _config.asStateFlow()
 
     /** Activity calls this after creating CameraCapture + AndroidCameraStreamer. */
     fun bindCamera(cam: CameraCapture) {
@@ -55,31 +55,12 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connect() {
         if (engine != null) return  // already wired up
-
+        val cfg = _config.value
         val ctx = getApplication<Application>()
         val localIp = AndroidNetwork.activeIpv4(ctx) ?: "0.0.0.0"
 
-        val config = SimConfig(
-            gbVersion = GbVersion.V2022,
-            server = ServerConfig(
-                ip = WVP_IP,
-                port = WVP_PORT,
-                serverId = WVP_SERVER_ID,
-                domain = WVP_DOMAIN
-            ),
-            device = DeviceConfig(
-                deviceId = DEVICE_ID,
-                videoChannelId = VIDEO_CHANNEL_ID,
-                alarmChannelId = ALARM_CHANNEL_ID,
-                username = DEVICE_ID,
-                password = WVP_PASSWORD
-            ),
-            transport = TransportType.UDP,
-            keepaliveIntervalSeconds = 60
-        )
-
         val tx = UdpSipTransport(
-            remote = RemoteEndpoint(WVP_IP, WVP_PORT, TransportType.UDP),
+            remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.UDP),
             parentScope = engineScope
         )
         transport = tx
@@ -88,7 +69,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             RtpSender(host, port, engineScope)
         }
         val eng = SimulatorEngine(
-            config = config,
+            config = cfg,
             transport = tx,
             scope = engineScope,
             localIp = localIp,
@@ -98,10 +79,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         )
         engine = eng
 
-        // pipe state + events into UI flows
-        engineScope.launch {
-            eng.state.collect { _state.value = it }
-        }
+        engineScope.launch { eng.state.collect { _state.value = it } }
         engineScope.launch {
             eng.events.collect { ev ->
                 _events.update { current ->
@@ -126,17 +104,42 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         val eng = engine ?: return
         engineScope.launch {
-            try {
-                eng.unregister()
-            } catch (_: Throwable) { /* ignore */ }
-            try {
-                eng.shutdown()
-            } catch (_: Throwable) { /* ignore */ }
-            try {
-                transport?.close()
-            } catch (_: Throwable) { /* ignore */ }
+            try { eng.unregister() } catch (_: Throwable) { }
+            try { eng.shutdown() } catch (_: Throwable) { }
+            try { transport?.close() } catch (_: Throwable) { }
             engine = null
             transport = null
+        }
+    }
+
+    /**
+     * Save / replace SimConfig. If currently connected, reconnect with new settings;
+     * if disconnected, just store for next connect.
+     */
+    fun updateConfig(newCfg: SimConfig) {
+        _config.value = newCfg
+        if (engine != null) {
+            engineScope.launch {
+                try { engine?.unregister() } catch (_: Throwable) { }
+                try { engine?.shutdown() } catch (_: Throwable) { }
+                try { transport?.close() } catch (_: Throwable) { }
+                engine = null
+                transport = null
+                connect()
+            }
+        }
+    }
+
+    /** Trigger a snapshot upload (T15). Engine handles the rest. */
+    fun reportSnapshot() {
+        val eng = engine ?: return
+        engineScope.launch {
+            try { eng.reportSnapshot() } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("snapshot: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
+            }
         }
     }
 
@@ -154,7 +157,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     fun newCaptureConfig(): CaptureConfig = CaptureConfig()
 
     companion object {
-        // ===== WVP target (M1 hard-coded; T11 will move to settings) =====
+        // ===== WVP target initial defaults; overridable via Config screen =====
         const val WVP_IP = "192.168.10.222"
         const val WVP_PORT = 8160
         const val WVP_SERVER_ID = "35020000002000000001"
@@ -166,10 +169,26 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         const val ALARM_CHANNEL_ID = "35020000001340000001"
 
         const val MAX_EVENT_LOG = 100
+
+        fun defaultConfig() = SimConfig(
+            gbVersion = GbVersion.V2022,
+            server = ServerConfig(
+                ip = WVP_IP, port = WVP_PORT,
+                serverId = WVP_SERVER_ID, domain = WVP_DOMAIN
+            ),
+            device = DeviceConfig(
+                deviceId = DEVICE_ID,
+                videoChannelId = VIDEO_CHANNEL_ID,
+                alarmChannelId = ALARM_CHANNEL_ID,
+                username = DEVICE_ID,
+                password = WVP_PASSWORD
+            ),
+            transport = TransportType.UDP,
+            keepaliveIntervalSeconds = 60
+        )
     }
 }
 
-/** Convenience extension for atomic updates on MutableStateFlow<List>. */
 private inline fun <T> MutableStateFlow<T>.update(transform: (T) -> T) {
     while (true) {
         val prev = value

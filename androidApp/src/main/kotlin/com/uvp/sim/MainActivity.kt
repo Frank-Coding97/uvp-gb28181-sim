@@ -13,23 +13,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.uvp.sim.camera.AndroidCameraStreamer
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.ui.App
+import com.uvp.sim.ui.AppActions
+import com.uvp.sim.ui.AppUiState
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: SipViewModel by viewModels()
 
-    /**
-     * Single CameraCapture instance — shared with the ViewModel/engine.
-     * We attach an AndroidCameraStreamer to it once camera permission is
-     * granted. Until then start() returns an empty Flow.
-     */
     private lateinit var cameraCapture: CameraCapture
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) attachStreamer()
-            // Otherwise the camera stays mute; the engine will still reply 200
-            // OK to INVITE but no RTP frames will go out.
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,16 +42,18 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            val state by viewModel.state.collectAsStateWithLifecycle()
+            val sipState by viewModel.state.collectAsStateWithLifecycle()
             val events by viewModel.events.collectAsStateWithLifecycle()
-            App(
-                state = state,
-                serverLabel = viewModel.serverLabel,
-                deviceLabel = viewModel.deviceLabel,
-                events = events,
-                onConnect = viewModel::connect,
-                onDisconnect = viewModel::disconnect
-            )
+            val config by viewModel.config.collectAsStateWithLifecycle()
+            val uiState = AppUiState(sip = sipState, config = config, events = events)
+            val actions = object : AppActions {
+                override fun onConnect() = viewModel.connect()
+                override fun onDisconnect() = viewModel.disconnect()
+                override fun onSnapshot() = viewModel.reportSnapshot()
+                override fun onConfigSave(updated: com.uvp.sim.config.SimConfig) =
+                    viewModel.updateConfig(updated)
+            }
+            App(state = uiState, actions = actions)
         }
     }
 

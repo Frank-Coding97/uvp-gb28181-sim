@@ -32,6 +32,8 @@ sealed class SimEvent {
         val packetCount: Int,
         val reason: String
     ) : SimEvent()
+    /** T15 — A snapshot Alarm Notify was emitted to the platform. */
+    data class SnapshotReported(val sn: String) : SimEvent()
     /** Raw SIP envelope for the log view. */
     data class MessageSent(val message: SipMessage) : SimEvent()
     data class MessageReceived(val message: SipMessage) : SimEvent()
