@@ -1,0 +1,62 @@
+# Gradle
+.gradle/
+build/
+**/build/
+gradle-app.setting
+.gradletasknamecache
+
+# Kotlin
+.kotlin/
+**/.kotlin/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+local.properties
+.cxx/
+
+# Xcode
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+
+# IDE
+.vscode/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# Generated
+generated/
+**/generated/
+
+# Test reports
+test-results/
+**/test-results/
+reports/
+**/reports/
+
+# Gradle wrapper exclusion
+!gradle/wrapper/gradle-wrapper.properties
+
+# Local secrets
+*.local.properties
+secrets.properties
