@@ -1,11 +1,9 @@
 package com.uvp.sim.ui
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
-import androidx.compose.material.icons.outlined.Construction
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Receipt
@@ -18,12 +16,15 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -33,17 +34,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * App shell — 1:1 还原 index-v1.html 底栏 5 tab + 顶栏。
+ * App shell — 3 tab(主页 / 通道 / 日志)+ Snackbar 全局 host。
  *
- * 底栏:主页 / 配置 / 通道 / 日志 / 工具
- * 顶栏:标题 "GB28181 Sim" + 右侧 🔔(通知,M2) + ⚙(跳转配置)
+ * 配置融入主屏(内联编辑 + 底部"高级设置"折叠区),不单独 tab。
+ * 工具(测试场景等)M2 上线再加。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App(state: AppUiState, actions: AppActions) {
     UvpTheme {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
+        val snackbarHost = remember { SnackbarHostState() }
         Scaffold(
+            snackbarHost = { SnackbarHost(snackbarHost) },
             topBar = {
                 CenterAlignedTopAppBar(
                     title = {
@@ -57,10 +60,6 @@ fun App(state: AppUiState, actions: AppActions) {
                     actions = {
                         IconButton(onClick = { /* notification: M2 */ }) {
                             Icon(Icons.Outlined.Notifications, "通知",
-                                tint = UvpColor.TextSecondary)
-                        }
-                        IconButton(onClick = { currentTab = AppTab.Config }) {
-                            Icon(Icons.Outlined.Settings, "设置",
                                 tint = UvpColor.TextSecondary)
                         }
                     },
@@ -102,11 +101,9 @@ fun App(state: AppUiState, actions: AppActions) {
                 color = UvpColor.Bg
             ) {
                 when (currentTab) {
-                    AppTab.Home -> HomeScreen(state, actions, onNavigate = { currentTab = it })
-                    AppTab.Config -> ConfigScreen(state, actions)
+                    AppTab.Home -> HomeScreen(state, actions, snackbarHost)
                     AppTab.Channel -> ChannelScreen(state)
                     AppTab.Log -> LogScreen(state)
-                    AppTab.Tool -> ToolScreen()
                 }
             }
         }
@@ -116,8 +113,6 @@ fun App(state: AppUiState, actions: AppActions) {
 @Composable
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
-    AppTab.Config -> Icons.Outlined.Settings
     AppTab.Channel -> Icons.Outlined.CameraAlt
     AppTab.Log -> Icons.Outlined.Receipt
-    AppTab.Tool -> Icons.Outlined.Construction
 }

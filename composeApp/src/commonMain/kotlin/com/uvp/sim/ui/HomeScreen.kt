@@ -18,9 +18,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -31,11 +34,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,33 +49,45 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.sip.SipState
+import kotlinx.coroutines.launch
 
 /**
- * 主屏 Home — 1:1 还原 index-v1.html § SCREEN 1.
+ * 主屏 Home — 产品经理视角重构。
  *
- * 结构 (从上到下):
- *   - 状态横条 banner (绿/红/橙底色 + 左点 + 文字 + 右辅助信息)
- *   - 摄像头预览大方框 (深灰 + 中央相机 icon + 右上 LIVE 徽章)
- *   - SIP 配置摘要卡片 (卡头 "SIP 配置摘要" + 右上"编辑"链接;3 行 K-V)
- *   - 4 主动业务色块按钮 (一行 4 等分,蓝色 icon + 灰色 label)
- *   - 底部"注 销"红描边大按钮 (Disconnect / Failed 时显示蓝色"注 册"实心)
+ * 核心原则:用户在这一屏完成所有操作,不跳转。
+ * - 状态 banner (失败时直接展示原因)
+ * - 视频预览
+ * - SIP 配置摘要 (内联编辑,7 字段)
+ * - 抓拍按钮 (仅 M1 可用的主动业务,不展示 disabled 的)
+ * - 注册/注销
+ * - 底部"高级设置"折叠(通道ID/用户名/密码/注册参数)
  */
 @Composable
-fun HomeScreen(state: AppUiState, actions: AppActions, onNavigate: (AppTab) -> Unit) {
+fun HomeScreen(state: AppUiState, actions: AppActions, snackbar: SnackbarHostState) {
     val scroll = rememberScrollState()
+    val scope = rememberCoroutineScope()
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         StatusBanner(state)
         CameraPreviewBox(state)
-        SipSummaryCardInline(state, actions)
-        QuickActionsGrid(state, actions)
-        Spacer(Modifier.height(2.dp))
-        ConnectButton(state, actions)
+        SipConfigCard(state, actions, onFeedback = { msg ->
+            scope.launch { snackbar.showSnackbar(msg) }
+        })
+        SnapshotButton(state, actions, onFeedback = { msg ->
+            scope.launch { snackbar.showSnackbar(msg) }
+        })
+        ConnectButton(state, actions, onFeedback = { msg ->
+            scope.launch { snackbar.showSnackbar(msg) }
+        })
+        AdvancedSection(state, actions)
     }
 }
 
@@ -78,45 +95,43 @@ fun HomeScreen(state: AppUiState, actions: AppActions, onNavigate: (AppTab) -> U
 
 @Composable
 private fun StatusBanner(state: AppUiState) {
-    val (bg, border, dotColor, text, textColor, extra) = when (state.sip) {
+    val spec = when (state.sip) {
         SipState.Registered, SipState.InCall -> BannerSpec(
             UvpColor.SuccessBg, UvpColor.SuccessBorder, UvpColor.Success,
-            "设备已注册",
-            UvpColor.SuccessText,
+            "设备已注册", UvpColor.SuccessText,
             "心跳 ${state.config.keepaliveIntervalSeconds}s"
         )
         SipState.Registering -> BannerSpec(
             UvpColor.WarningBg, UvpColor.WarningBorder, UvpColor.Warning,
-            "正在注册…",
-            UvpColor.Warning,
-            "等待平台响应"
+            "正在注册…", UvpColor.Warning, "等待平台响应"
         )
         SipState.Disconnected -> BannerSpec(
             UvpColor.BorderLight, UvpColor.Border, UvpColor.TextHint,
-            "未连接",
-            UvpColor.TextSecondary,
-            "请点下方 注 册"
+            "未连接", UvpColor.TextSecondary, "编辑配置 → 注册"
         )
-        SipState.Failed -> BannerSpec(
-            UvpColor.DangerBg, UvpColor.DangerBorder, UvpColor.Danger,
-            "注册失败",
-            UvpColor.DangerText,
-            "查看日志"
-        )
+        SipState.Failed -> {
+            val reason = state.events.filterIsInstance<com.uvp.sim.domain.SimEvent.RegistrationFailed>()
+                .firstOrNull()?.reason ?: "未知原因"
+            BannerSpec(
+                UvpColor.DangerBg, UvpColor.DangerBorder, UvpColor.Danger,
+                "注册失败", UvpColor.DangerText, reason
+            )
+        }
     }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(bg, RoundedCornerShape(8.dp))
-            .border(1.dp, border, RoundedCornerShape(8.dp))
+            .background(spec.bg, RoundedCornerShape(8.dp))
+            .border(1.dp, spec.border, RoundedCornerShape(8.dp))
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+        Box(Modifier.size(8.dp).clip(CircleShape).background(spec.dot))
         Spacer(Modifier.width(10.dp))
-        Text(text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = textColor)
+        Text(spec.text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = spec.textColor)
         Spacer(Modifier.weight(1f))
-        Text(extra, fontSize = 11.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace)
+        Text(spec.extra, fontSize = 11.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace,
+            maxLines = 1)
     }
 }
 
@@ -125,7 +140,7 @@ private data class BannerSpec(
     val text: String, val textColor: Color, val extra: String
 )
 
-// ============= Camera preview box =============
+// ============= Camera preview =============
 
 @Composable
 private fun CameraPreviewBox(state: AppUiState) {
@@ -142,7 +157,14 @@ private fun CameraPreviewBox(state: AppUiState) {
             modifier = Modifier.size(28.dp),
             tint = Color.White.copy(alpha = 0.3f)
         )
-        // top-right LIVE badge
+        if (!live) {
+            Text(
+                "等待平台点播",
+                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.3f),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+            )
+        }
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -152,9 +174,7 @@ private fun CameraPreviewBox(state: AppUiState) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (live) {
-                Box(
-                    Modifier.size(6.dp).clip(CircleShape).background(UvpColor.Danger)
-                )
+                Box(Modifier.size(6.dp).clip(CircleShape).background(UvpColor.Danger))
                 Spacer(Modifier.width(4.dp))
             }
             Text(
@@ -166,16 +186,15 @@ private fun CameraPreviewBox(state: AppUiState) {
     }
 }
 
-// ============= SIP summary card (with inline edit) =============
+// ============= SIP config card (inline edit) =============
 
 @Composable
-private fun SipSummaryCardInline(state: AppUiState, actions: AppActions) {
+private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     var editing by remember { mutableStateOf(false) }
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
     var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
     var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
     var transport by remember(state.config) { mutableStateOf(state.config.transport.name) }
-    var talkTransport by remember { mutableStateOf("UDP") }
     var serverId by remember(state.config) { mutableStateOf(state.config.server.serverId) }
     var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
 
@@ -189,56 +208,50 @@ private fun SipSummaryCardInline(state: AppUiState, actions: AppActions) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                "SIP 配置摘要",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = UvpColor.TextHint
-            )
+            Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
             Spacer(Modifier.weight(1f))
             Row(
                 modifier = Modifier.clickable { editing = !editing },
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Outlined.Edit, contentDescription = "编辑",
-                    modifier = Modifier.size(14.dp), tint = UvpColor.Primary
-                )
+                Icon(Icons.Outlined.Edit, contentDescription = null,
+                    modifier = Modifier.size(14.dp), tint = UvpColor.Primary)
                 Spacer(Modifier.width(4.dp))
-                Text(
-                    if (editing) "收起" else "编辑",
-                    fontSize = 12.sp, color = UvpColor.Primary
-                )
+                Text(if (editing) "收起" else "编辑", fontSize = 12.sp, color = UvpColor.Primary)
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
 
         if (!editing) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", divider = true)
-                KvRow("设备ID", state.config.device.deviceId, divider = true)
-                KvRow(
-                    "协议",
-                    "${state.config.transport.name} · GB/T 28181-${state.config.gbVersion.label.takeLast(4)}",
-                    divider = false
-                )
+                KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", true)
+                KvRow("设备 ID", state.config.device.deviceId, true)
+                KvRow("传输", state.config.transport.name, true)
+                KvRow("服务器 ID", state.config.server.serverId, true)
+                KvRow("域", state.config.server.domain, false)
             }
         } else {
             Column(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                InlineField("服务器", ip) { ip = it }
-                InlineField("端口", port) { port = it.filter { c -> c.isDigit() } }
-                InlineField("设备 ID", deviceId) { deviceId = it.filter { c -> c.isDigit() } }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    InlineField("服务器", ip, { ip = it }, Modifier.weight(2f))
+                    InlineField("端口", port, { port = it.filter { c -> c.isDigit() } }, Modifier.weight(1f),
+                        keyboard = KeyboardType.Number)
+                }
+                InlineField("设备 ID", deviceId, { deviceId = it.filter { c -> c.isDigit() } })
                 InlineSegmented("传输方式", transport) { transport = it }
-                InlineSegmented("对讲传输 (M2)", talkTransport, enabled = false) { talkTransport = it }
-                InlineField("服务器 ID", serverId) { serverId = it.filter { c -> c.isDigit() } }
-                InlineField("服务器域", domain) { domain = it.filter { c -> c.isDigit() } }
+                InlineField("服务器 ID", serverId, { serverId = it.filter { c -> c.isDigit() } })
+                InlineField("服务器域", domain, { domain = it.filter { c -> c.isDigit() } })
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = {
+                            if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
+                                onFeedback("服务器、设备ID、服务器ID 不能为空")
+                                return@Button
+                            }
                             actions.onConfigSave(
                                 state.config.copy(
                                     server = state.config.server.copy(
@@ -255,6 +268,7 @@ private fun SipSummaryCardInline(state: AppUiState, actions: AppActions) {
                                 )
                             )
                             editing = false
+                            onFeedback("配置已保存")
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
                         shape = RoundedCornerShape(6.dp),
@@ -279,9 +293,172 @@ private fun SipSummaryCardInline(state: AppUiState, actions: AppActions) {
     }
 }
 
+// ============= Snapshot button =============
+
 @Composable
-private fun InlineField(label: String, value: String, onChange: (String) -> Unit) {
+private fun SnapshotButton(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+    val canFire = state.sip == SipState.Registered || state.sip == SipState.InCall
+    if (!canFire) return
+    OutlinedButton(
+        onClick = {
+            actions.onSnapshot()
+            onFeedback("抓拍已上报")
+        },
+        modifier = Modifier.fillMaxWidth().height(40.dp),
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, UvpColor.Primary),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Primary)
+    ) {
+        Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("抓拍上报", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+// ============= Connect / Disconnect =============
+
+@Composable
+private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+    when (state.sip) {
+        SipState.Disconnected, SipState.Failed -> {
+            Button(
+                onClick = {
+                    actions.onConnect()
+                    onFeedback("正在注册…")
+                },
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
+            ) {
+                Text("注 册", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    color = Color.White, letterSpacing = 4.sp)
+            }
+        }
+        SipState.Registering -> {
+            Button(
+                onClick = {}, enabled = false,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    disabledContainerColor = UvpColor.Primary.copy(alpha = 0.5f),
+                    disabledContentColor = Color.White.copy(alpha = 0.7f)
+                )
+            ) { Text("注册中…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 2.sp) }
+        }
+        SipState.Registered, SipState.InCall -> {
+            OutlinedButton(
+                onClick = {
+                    actions.onDisconnect()
+                    onFeedback("已注销")
+                },
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(8.dp),
+                border = BorderStroke(1.dp, UvpColor.Danger),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Danger)
+            ) {
+                Text("注 销", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    color = UvpColor.Danger, letterSpacing = 4.sp)
+            }
+        }
+    }
+}
+
+// ============= Advanced settings (collapsed) =============
+
+@Composable
+private fun AdvancedSection(state: AppUiState, actions: AppActions) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(UvpColor.Surface, RoundedCornerShape(8.dp))
+            .border(1.dp, UvpColor.Border, RoundedCornerShape(8.dp))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("高级设置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
+            Spacer(Modifier.weight(1f))
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = UvpColor.TextHint
+            )
+        }
+        if (expanded) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
+            AdvancedContent(state, actions)
+        }
+    }
+}
+
+@Composable
+private fun AdvancedContent(state: AppUiState, actions: AppActions) {
+    var videoChannelId by remember(state.config) { mutableStateOf(state.config.device.videoChannelId) }
+    var alarmChannelId by remember(state.config) { mutableStateOf(state.config.device.alarmChannelId) }
+    var password by remember(state.config) { mutableStateOf(state.config.device.password) }
+    var keepalive by remember(state.config) { mutableStateOf(state.config.keepaliveIntervalSeconds.toString()) }
+
+    Column(
+        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        InlineField("视频通道 ID", videoChannelId, { videoChannelId = it.filter { c -> c.isDigit() } })
+        InlineField("报警通道 ID", alarmChannelId, { alarmChannelId = it.filter { c -> c.isDigit() } })
+        InlineField("密码", password, { password = it }, password = true)
+        InlineField("心跳间隔(秒)", keepalive, { keepalive = it.filter { c -> c.isDigit() } },
+            keyboard = KeyboardType.Number)
+        Spacer(Modifier.height(4.dp))
+        Button(
+            onClick = {
+                actions.onConfigSave(
+                    state.config.copy(
+                        device = state.config.device.copy(
+                            videoChannelId = videoChannelId,
+                            alarmChannelId = alarmChannelId,
+                            password = password
+                        ),
+                        keepaliveIntervalSeconds = keepalive.toIntOrNull() ?: 60
+                    )
+                )
+            },
+            modifier = Modifier.fillMaxWidth().height(36.dp),
+            shape = RoundedCornerShape(6.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
+        ) { Text("保存高级设置", fontSize = 12.sp, color = Color.White) }
+    }
+}
+
+// ============= Shared components =============
+
+@Composable
+private fun KvRow(key: String, value: String, divider: Boolean) {
     Column {
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
+            Text(key, fontSize = 11.5.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.weight(1f))
+            Text(value, fontSize = 11.5.sp, color = UvpColor.Text, fontWeight = FontWeight.Medium,
+                fontFamily = FontFamily.Monospace)
+        }
+        if (divider) Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
+    }
+}
+
+@Composable
+private fun InlineField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    keyboard: KeyboardType = KeyboardType.Text,
+    password: Boolean = false
+) {
+    Column(modifier = modifier) {
         Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
         Spacer(Modifier.height(2.dp))
         OutlinedTextField(
@@ -289,9 +466,9 @@ private fun InlineField(label: String, value: String, onChange: (String) -> Unit
             onValueChange = onChange,
             modifier = Modifier.fillMaxWidth().height(42.dp),
             singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(
-                fontSize = 13.sp, fontFamily = FontFamily.Monospace
-            ),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, fontFamily = FontFamily.Monospace),
+            keyboardOptions = KeyboardOptions(keyboardType = keyboard),
+            visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
             shape = RoundedCornerShape(6.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = UvpColor.Primary,
@@ -304,9 +481,9 @@ private fun InlineField(label: String, value: String, onChange: (String) -> Unit
 }
 
 @Composable
-private fun InlineSegmented(label: String, active: String, enabled: Boolean = true, onChange: (String) -> Unit) {
-    Column(modifier = Modifier.run { if (!enabled) this.then(Modifier) else this }) {
-        Text(label, fontSize = 11.sp, color = if (enabled) UvpColor.TextHint else UvpColor.TextHint.copy(alpha = 0.5f))
+private fun InlineSegmented(label: String, active: String, onChange: (String) -> Unit) {
+    Column {
+        Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
         Spacer(Modifier.height(2.dp))
         Row(
             modifier = Modifier
@@ -320,156 +497,15 @@ private fun InlineSegmented(label: String, active: String, enabled: Boolean = tr
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .background(
-                            if (sel) UvpColor.Surface else Color.Transparent,
-                            RoundedCornerShape(4.dp)
-                        )
-                        .clickable(enabled = enabled) { onChange(t) }
+                        .background(if (sel) UvpColor.Surface else Color.Transparent, RoundedCornerShape(4.dp))
+                        .clickable { onChange(t) }
                         .padding(vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        t,
-                        fontSize = 12.sp,
+                    Text(t, fontSize = 12.sp,
                         fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
-                        color = if (!enabled) UvpColor.TextHint
-                               else if (sel) UvpColor.Primary
-                               else UvpColor.TextSecondary
-                    )
+                        color = if (sel) UvpColor.Primary else UvpColor.TextSecondary)
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun KvRow(key: String, value: String, divider: Boolean) {
-    Column {
-        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
-            Text(key, fontSize = 11.5.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.weight(1f))
-            Text(value, fontSize = 11.5.sp, color = UvpColor.Text, fontWeight = FontWeight.Medium,
-                fontFamily = FontFamily.Monospace)
-        }
-        if (divider) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
-        }
-    }
-}
-
-// ============= 4 quick action buttons =============
-
-@Composable
-private fun QuickActionsGrid(state: AppUiState, actions: AppActions) {
-    val canFire = state.sip == SipState.Registered || state.sip == SipState.InCall
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        QaButton(Icons.Outlined.PhotoCamera, "抓拍",
-            enabled = canFire, modifier = Modifier.weight(1f),
-            onClick = actions::onSnapshot)
-        QaButton(Icons.Outlined.Warning, "报警",
-            enabled = false, modifier = Modifier.weight(1f),
-            onClick = {}, badge = "M2")
-        QaButton(Icons.Outlined.LocationOn, "位置",
-            enabled = false, modifier = Modifier.weight(1f),
-            onClick = {}, badge = "M2")
-        QaButton(Icons.Outlined.PlayArrow, "录像",
-            enabled = false, modifier = Modifier.weight(1f),
-            onClick = {}, badge = "M2")
-    }
-}
-
-@Composable
-private fun QaButton(
-    icon: ImageVector,
-    label: String,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-    badge: String = ""
-) {
-    val borderColor = if (enabled) UvpColor.Border else UvpColor.BorderLight
-    val iconTint = if (enabled) UvpColor.Primary else UvpColor.TextHint
-    val labelColor = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint
-    Box(
-        modifier = modifier
-            .height(80.dp)
-            .background(UvpColor.Surface, RoundedCornerShape(8.dp))
-            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(vertical = 12.dp, horizontal = 4.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(icon, contentDescription = label, modifier = Modifier.size(18.dp), tint = iconTint)
-            Spacer(Modifier.height(6.dp))
-            Text(label, fontSize = 10.sp, fontWeight = FontWeight.Medium, color = labelColor)
-            if (badge.isNotEmpty()) {
-                Spacer(Modifier.height(2.dp))
-                Text(badge, fontSize = 8.sp, color = UvpColor.TextHint,
-                    fontFamily = FontFamily.Monospace)
-            }
-        }
-    }
-}
-
-// ============= Connect / Disconnect button =============
-
-@Composable
-private fun ConnectButton(state: AppUiState, actions: AppActions) {
-    when (state.sip) {
-        SipState.Disconnected, SipState.Failed -> {
-            Button(
-                onClick = actions::onConnect,
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
-            ) {
-                Text(
-                    "注 册",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    letterSpacing = 4.sp
-                )
-            }
-        }
-        SipState.Registering -> {
-            Button(
-                onClick = {},
-                enabled = false,
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(
-                    disabledContainerColor = UvpColor.Primary.copy(alpha = 0.5f),
-                    disabledContentColor = Color.White.copy(alpha = 0.7f)
-                )
-            ) {
-                Text(
-                    "注册中…",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 2.sp
-                )
-            }
-        }
-        SipState.Registered, SipState.InCall -> {
-            OutlinedButton(
-                onClick = actions::onDisconnect,
-                modifier = Modifier.fillMaxWidth().height(44.dp),
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, UvpColor.Danger),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Danger)
-            ) {
-                Text(
-                    "注 销",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = UvpColor.Danger,
-                    letterSpacing = 4.sp
-                )
             }
         }
     }
