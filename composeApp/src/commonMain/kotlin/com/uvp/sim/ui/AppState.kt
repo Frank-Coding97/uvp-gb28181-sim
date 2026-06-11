@@ -32,5 +32,6 @@ enum class AppTab(val label: String) {
     Home("主页"),
     Config("配置"),
     Channel("通道"),
-    Log("日志");
+    Log("日志"),
+    Tool("工具");
 }

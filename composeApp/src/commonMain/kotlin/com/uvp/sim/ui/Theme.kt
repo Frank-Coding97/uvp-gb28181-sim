@@ -1,42 +1,60 @@
 package com.uvp.sim.ui
 
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 /**
- * Sim app theme — F. 配套 UVP 平台企业蓝 (#1890ff Ant Design).
- *
- * Light scheme is the default; dark variant kept minimal for now (M3 will
- * polish if老板 wants dark mode, see decisions/2026-06-10-visual-style.md).
+ * F 方案 — 配套 UVP 平台企业蓝。
+ * 颜色 token 来自 ~/code/uvp/apps/uvp-sim-prototype/index-v1.html :root,
+ * 1:1 同步以确保 sim app 跟 UVP Web 平台视觉一致。
  */
-private val UvpPrimary = Color(0xFF1890FF)
-private val UvpPrimaryDark = Color(0xFF096DD9)
-private val UvpPrimaryLight = Color(0xFFE6F7FF)
-private val UvpSurface = Color(0xFFFFFFFF)
-private val UvpSurfaceVariant = Color(0xFFF3F4F6)
-private val UvpOnSurface = Color(0xFF1F2937)
-private val UvpOnSurfaceMuted = Color(0xFF6B7280)
-private val UvpOutline = Color(0xFFE5E7EB)
-private val UvpDanger = Color(0xFFFF4D4F)
+
+object UvpColor {
+    val Primary       = Color(0xFF1890FF)
+    val PrimaryLight  = Color(0xFFE6F7FF)
+    val PrimaryDark   = Color(0xFF096DD9)
+    val Success       = Color(0xFF52C41A)
+    val SuccessBg     = Color(0xFFF6FFED)
+    val SuccessBorder = Color(0xFFB7EB8F)
+    val SuccessText   = Color(0xFF389E0D)
+    val Warning       = Color(0xFFFA8C16)
+    val WarningBg     = Color(0xFFFFF7E6)
+    val WarningBorder = Color(0xFFFFD591)
+    val Danger        = Color(0xFFFF4D4F)
+    val DangerBg      = Color(0xFFFFF1F0)
+    val DangerBorder  = Color(0xFFFFA39E)
+    val DangerText    = Color(0xFFCF1322)
+    val Info          = Color(0xFF722ED1)
+    val InfoBg        = Color(0xFFF9F0FF)
+    val Text          = Color(0xFF1F2937)
+    val TextSecondary = Color(0xFF6B7280)
+    val TextHint      = Color(0xFF9CA3AF)
+    val Border        = Color(0xFFE5E7EB)
+    val BorderLight   = Color(0xFFF3F4F6)
+    val Bg            = Color(0xFFF3F4F6)
+    val Surface       = Color(0xFFFFFFFF)
+    val CodeBg        = Color(0xFFFAFAFA)
+}
 
 private val UvpLightColors = lightColorScheme(
-    primary = UvpPrimary,
+    primary = UvpColor.Primary,
     onPrimary = Color.White,
-    primaryContainer = UvpPrimaryLight,
-    onPrimaryContainer = UvpPrimaryDark,
-    secondary = UvpPrimaryDark,
+    primaryContainer = UvpColor.PrimaryLight,
+    onPrimaryContainer = UvpColor.PrimaryDark,
+    secondary = UvpColor.PrimaryDark,
     onSecondary = Color.White,
-    surface = UvpSurface,
-    onSurface = UvpOnSurface,
-    surfaceVariant = UvpSurfaceVariant,
-    onSurfaceVariant = UvpOnSurfaceMuted,
-    background = UvpSurfaceVariant,
-    onBackground = UvpOnSurface,
-    outline = UvpOutline,
-    error = UvpDanger,
+    surface = UvpColor.Surface,
+    onSurface = UvpColor.Text,
+    surfaceVariant = UvpColor.BorderLight,
+    onSurfaceVariant = UvpColor.TextSecondary,
+    background = UvpColor.Bg,
+    onBackground = UvpColor.Text,
+    outline = UvpColor.Border,
+    outlineVariant = UvpColor.BorderLight,
+    error = UvpColor.Danger,
     onError = Color.White
 )
 
@@ -49,9 +67,9 @@ fun UvpTheme(content: @Composable () -> Unit) {
 }
 
 object UvpStatusColors {
-    val Disconnected = Color(0xFF9E9E9E)
-    val Registering = Color(0xFFFFA000)
-    val Registered = Color(0xFF2E7D32)
-    val InCall = Color(0xFF1565C0)
-    val Failed = Color(0xFFC62828)
+    val Disconnected = UvpColor.TextHint
+    val Registering = UvpColor.Warning
+    val Registered = UvpColor.SuccessText
+    val InCall = UvpColor.PrimaryDark
+    val Failed = UvpColor.DangerText
 }
