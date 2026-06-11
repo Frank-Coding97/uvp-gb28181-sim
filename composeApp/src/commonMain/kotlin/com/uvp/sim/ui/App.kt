@@ -4,10 +4,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Construction
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -116,7 +117,7 @@ fun App(state: AppUiState, actions: AppActions) {
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
     AppTab.Config -> Icons.Outlined.Settings
-    AppTab.Channel -> Icons.Outlined.Build
-    AppTab.Log -> Icons.Outlined.Info
-    AppTab.Tool -> Icons.Outlined.Build
+    AppTab.Channel -> Icons.Outlined.CameraAlt
+    AppTab.Log -> Icons.Outlined.Receipt
+    AppTab.Tool -> Icons.Outlined.Construction
 }

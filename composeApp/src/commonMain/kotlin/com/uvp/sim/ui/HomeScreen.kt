@@ -434,12 +434,31 @@ private fun ConnectButton(state: AppUiState, actions: AppActions) {
                 )
             }
         }
-        else -> {
+        SipState.Registering -> {
+            Button(
+                onClick = {},
+                enabled = false,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    disabledContainerColor = UvpColor.Primary.copy(alpha = 0.5f),
+                    disabledContentColor = Color.White.copy(alpha = 0.7f)
+                )
+            ) {
+                Text(
+                    "注册中…",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    letterSpacing = 2.sp
+                )
+            }
+        }
+        SipState.Registered, SipState.InCall -> {
             OutlinedButton(
                 onClick = actions::onDisconnect,
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 shape = RoundedCornerShape(8.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, UvpColor.Danger),
+                border = BorderStroke(1.dp, UvpColor.Danger),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Danger)
             ) {
                 Text(
