@@ -1,0 +1,154 @@
+package com.uvp.sim.network
+
+import com.uvp.sim.sip.SipMessage
+import com.uvp.sim.sip.SipMethod
+import com.uvp.sim.sip.SipParser
+import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.sip.SipResponse
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import kotlin.test.AfterTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/**
+ * JVM-only integration tests for [UdpSipTransport]. The real Ktor UDP socket is
+ * paired with a tiny java.net DatagramSocket "server" that echoes well-formed
+ * SIP responses back to the client.
+ *
+ * These tests would also pass on Android (where Ktor sockets are JVM-backed),
+ * but cannot run on Kotlin Native iOS — a separate iOS-only smoke test would
+ * use platform sockets if needed.
+ */
+class UdpSipTransportTest {
+
+    private val mockServer = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    @AfterTest
+    fun tearDown() {
+        mockServer.close()
+    }
+
+    @Test fun sendDeliversBytesToRemote() = runBlocking {
+        val transport = UdpSipTransport(
+            remote = RemoteEndpoint("127.0.0.1", mockServer.localPort, TransportType.UDP),
+            parentScope = scope
+        )
+        transport.connect()
+
+        val request = SipRequest(
+            method = SipMethod.REGISTER,
+            requestUri = "sip:test@example.com",
+            headers = listOf(
+                SipMessage.Header("Via", "SIP/2.0/UDP 127.0.0.1:0"),
+                SipMessage.Header("Call-ID", "udp-test"),
+                SipMessage.Header("CSeq", "1 REGISTER"),
+                SipMessage.Header("From", "<sip:u@e>;tag=t"),
+                SipMessage.Header("To", "<sip:u@e>")
+            )
+        )
+        transport.send(request)
+
+        // Receive on mock server
+        val buf = ByteArray(8192)
+        val pkt = DatagramPacket(buf, buf.size)
+        mockServer.soTimeout = 5000
+        mockServer.receive(pkt)
+        val received = SipParser.parse(buf.copyOf(pkt.length))
+        assertTrue(received is SipRequest)
+        assertEquals(SipMethod.REGISTER, received.method)
+        assertEquals("udp-test", received.callId())
+
+        transport.close()
+    }
+
+    @Test fun incomingFlowEmitsParsedResponse() = runBlocking {
+        val transport = UdpSipTransport(
+            remote = RemoteEndpoint("127.0.0.1", mockServer.localPort, TransportType.UDP),
+            parentScope = scope
+        )
+        transport.connect()
+
+        // Send a probe so the server learns our address
+        val probe = SipRequest(
+            method = SipMethod.OPTIONS,
+            requestUri = "sip:test@example.com",
+            headers = listOf(
+                SipMessage.Header("Via", "SIP/2.0/UDP 127.0.0.1:0"),
+                SipMessage.Header("Call-ID", "probe"),
+                SipMessage.Header("CSeq", "1 OPTIONS"),
+                SipMessage.Header("From", "<sip:u@e>;tag=t"),
+                SipMessage.Header("To", "<sip:u@e>")
+            )
+        )
+        transport.send(probe)
+
+        // Server receives, then sends a 200 OK back
+        val buf = ByteArray(8192)
+        val inbox = DatagramPacket(buf, buf.size)
+        mockServer.soTimeout = 5000
+        mockServer.receive(inbox)
+        val clientAddr = inbox.address
+        val clientPort = inbox.port
+
+        val resp = SipResponse(
+            statusCode = 200,
+            reasonPhrase = "OK",
+            headers = listOf(
+                SipMessage.Header("Via", "SIP/2.0/UDP 127.0.0.1:0"),
+                SipMessage.Header("Call-ID", "probe"),
+                SipMessage.Header("CSeq", "1 OPTIONS"),
+                SipMessage.Header("From", "<sip:u@e>;tag=t"),
+                SipMessage.Header("To", "<sip:u@e>;tag=server")
+            )
+        )
+        val respBytes = resp.toBytes()
+        mockServer.send(DatagramPacket(respBytes, respBytes.size, clientAddr, clientPort))
+
+        // Transport should emit it on the incoming flow
+        val incoming = withTimeout(5000) { transport.incoming.first() }
+        assertTrue(incoming is SipResponse)
+        assertEquals(200, incoming.statusCode)
+        assertEquals("probe", incoming.callId())
+
+        transport.close()
+    }
+
+    @Test fun closeReleasesSocket() = runBlocking {
+        val transport = UdpSipTransport(
+            remote = RemoteEndpoint("127.0.0.1", mockServer.localPort, TransportType.UDP),
+            parentScope = scope
+        )
+        transport.connect()
+        val firstPort = transport.localPort
+        assertTrue(firstPort > 0)
+        transport.close()
+        // After close, can connect again on a (possibly different) port
+        transport.connect()
+        assertTrue(transport.localPort > 0)
+        transport.close()
+    }
+
+    @Test fun connectIsIdempotent() = runBlocking {
+        val transport = UdpSipTransport(
+            remote = RemoteEndpoint("127.0.0.1", mockServer.localPort, TransportType.UDP),
+            parentScope = scope
+        )
+        transport.connect()
+        val port1 = transport.localPort
+        transport.connect()  // second call should be no-op
+        val port2 = transport.localPort
+        assertEquals(port1, port2)
+        transport.close()
+    }
+}
