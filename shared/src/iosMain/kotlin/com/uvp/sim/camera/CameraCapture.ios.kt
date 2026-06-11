@@ -2,22 +2,28 @@ package com.uvp.sim.camera
 
 import com.uvp.sim.media.H264Frame
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlin.concurrent.Volatile
 
 /**
  * iOS implementation of [CameraCapture].
  *
- * **M1 stub**: real AVCaptureSession + VideoToolbox integration is T12 in tasks/v1.md.
- * This file provides the actual stubs so the iOS framework compiles in M1.
+ * Mirrors the Android pattern: by default returns an empty flow; the
+ * platform shell can attach a [IosCameraStreamer] via [setStreamer] once it's
+ * actually implemented (T13).
  */
-actual class CameraCapture actual constructor(private val config: CaptureConfig) {
+actual class CameraCapture actual constructor(@Suppress("unused") private val config: CaptureConfig) {
 
-    actual fun start(): Flow<H264Frame> = flow {
-        // Will be implemented in T12 — for now we don't emit anything.
-        // The KMP Flow stays alive, no frames produced.
+    @Volatile
+    private var streamer: IosCameraStreamer? = null
+
+    fun setStreamer(streamer: IosCameraStreamer?) {
+        this.streamer = streamer
     }
 
+    actual fun start(): Flow<H264Frame> = streamer?.stream() ?: emptyFlow()
+
     actual suspend fun stop() {
-        // No-op stub
+        streamer?.stop()
     }
 }
