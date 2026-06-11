@@ -1,5 +1,6 @@
 package com.uvp.sim.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -14,25 +15,28 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.AddLocation
-import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.LocationOn
-import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -56,13 +60,14 @@ import com.uvp.sim.sip.SipState
  */
 @Composable
 fun HomeScreen(state: AppUiState, actions: AppActions, onNavigate: (AppTab) -> Unit) {
+    val scroll = rememberScrollState()
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         StatusBanner(state)
         CameraPreviewBox(state)
-        SipSummaryCard(state, onEditClick = { onNavigate(AppTab.Config) })
+        SipSummaryCardInline(state, actions)
         QuickActionsGrid(state, actions)
         Spacer(Modifier.height(2.dp))
         ConnectButton(state, actions)
@@ -128,7 +133,7 @@ private fun CameraPreviewBox(state: AppUiState) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(115.dp)
+            .height(180.dp)
             .background(Color(0xFF1F2937), RoundedCornerShape(8.dp)),
         contentAlignment = Alignment.Center
     ) {
@@ -161,10 +166,19 @@ private fun CameraPreviewBox(state: AppUiState) {
     }
 }
 
-// ============= SIP summary card =============
+// ============= SIP summary card (with inline edit) =============
 
 @Composable
-private fun SipSummaryCard(state: AppUiState, onEditClick: () -> Unit) {
+private fun SipSummaryCardInline(state: AppUiState, actions: AppActions) {
+    var editing by remember { mutableStateOf(false) }
+    var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
+    var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
+    var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
+    var transport by remember(state.config) { mutableStateOf(state.config.transport.name) }
+    var talkTransport by remember { mutableStateOf("UDP") }
+    var serverId by remember(state.config) { mutableStateOf(state.config.server.serverId) }
+    var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -183,7 +197,7 @@ private fun SipSummaryCard(state: AppUiState, onEditClick: () -> Unit) {
             )
             Spacer(Modifier.weight(1f))
             Row(
-                modifier = Modifier.clickable(onClick = onEditClick),
+                modifier = Modifier.clickable { editing = !editing },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -191,20 +205,137 @@ private fun SipSummaryCard(state: AppUiState, onEditClick: () -> Unit) {
                     modifier = Modifier.size(14.dp), tint = UvpColor.Primary
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("编辑", fontSize = 12.sp, color = UvpColor.Primary)
+                Text(
+                    if (editing) "收起" else "编辑",
+                    fontSize = 12.sp, color = UvpColor.Primary
+                )
             }
         }
-        Box(
-            Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight)
-        )
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", divider = true)
-            KvRow("设备ID", state.config.device.deviceId, divider = true)
-            KvRow(
-                "协议",
-                "${state.config.transport.name} · GB/T 28181-${state.config.gbVersion.label.takeLast(4)}",
-                divider = false
+        Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
+
+        if (!editing) {
+            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", divider = true)
+                KvRow("设备ID", state.config.device.deviceId, divider = true)
+                KvRow(
+                    "协议",
+                    "${state.config.transport.name} · GB/T 28181-${state.config.gbVersion.label.takeLast(4)}",
+                    divider = false
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                InlineField("服务器", ip) { ip = it }
+                InlineField("端口", port) { port = it.filter { c -> c.isDigit() } }
+                InlineField("设备 ID", deviceId) { deviceId = it.filter { c -> c.isDigit() } }
+                InlineSegmented("传输方式", transport) { transport = it }
+                InlineSegmented("对讲传输", talkTransport) { talkTransport = it }
+                InlineField("服务器 ID", serverId) { serverId = it.filter { c -> c.isDigit() } }
+                InlineField("服务器域", domain) { domain = it.filter { c -> c.isDigit() } }
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            actions.onConfigSave(
+                                state.config.copy(
+                                    server = state.config.server.copy(
+                                        ip = ip,
+                                        port = port.toIntOrNull() ?: 5060,
+                                        serverId = serverId,
+                                        domain = domain
+                                    ),
+                                    device = state.config.device.copy(
+                                        deviceId = deviceId,
+                                        username = deviceId
+                                    ),
+                                    transport = com.uvp.sim.network.TransportType.valueOf(transport)
+                                )
+                            )
+                            editing = false
+                        },
+                        modifier = Modifier.weight(1f).height(36.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
+                    ) { Text("保存", fontSize = 12.sp, color = Color.White) }
+                    OutlinedButton(
+                        onClick = {
+                            ip = state.config.server.ip
+                            port = state.config.server.port.toString()
+                            deviceId = state.config.device.deviceId
+                            transport = state.config.transport.name
+                            serverId = state.config.server.serverId
+                            domain = state.config.server.domain
+                            editing = false
+                        },
+                        modifier = Modifier.weight(1f).height(36.dp),
+                        shape = RoundedCornerShape(6.dp)
+                    ) { Text("取消", fontSize = 12.sp) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineField(label: String, value: String, onChange: (String) -> Unit) {
+    Column {
+        Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
+        Spacer(Modifier.height(2.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onChange,
+            modifier = Modifier.fillMaxWidth().height(42.dp),
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontSize = 13.sp, fontFamily = FontFamily.Monospace
+            ),
+            shape = RoundedCornerShape(6.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = UvpColor.Primary,
+                unfocusedBorderColor = UvpColor.Border,
+                focusedContainerColor = UvpColor.Surface,
+                unfocusedContainerColor = UvpColor.Surface
             )
+        )
+    }
+}
+
+@Composable
+private fun InlineSegmented(label: String, active: String, onChange: (String) -> Unit) {
+    Column {
+        Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
+        Spacer(Modifier.height(2.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UvpColor.CodeBg, RoundedCornerShape(6.dp))
+                .border(1.dp, UvpColor.Border, RoundedCornerShape(6.dp))
+                .padding(2.dp)
+        ) {
+            listOf("UDP", "TCP").forEach { t ->
+                val sel = t == active
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .background(
+                            if (sel) UvpColor.Surface else Color.Transparent,
+                            RoundedCornerShape(4.dp)
+                        )
+                        .clickable { onChange(t) }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        t,
+                        fontSize = 12.sp,
+                        fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
+                        color = if (sel) UvpColor.Primary else UvpColor.TextSecondary
+                    )
+                }
+            }
         }
     }
 }
@@ -262,6 +393,7 @@ private fun QaButton(
     val labelColor = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint
     Box(
         modifier = modifier
+            .height(80.dp)
             .background(UvpColor.Surface, RoundedCornerShape(8.dp))
             .border(1.dp, borderColor, RoundedCornerShape(8.dp))
             .clickable(enabled = enabled, onClick = onClick)
