@@ -57,7 +57,7 @@ kotlin {
 
 android {
     namespace = "com.uvp.sim.shared"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 26
