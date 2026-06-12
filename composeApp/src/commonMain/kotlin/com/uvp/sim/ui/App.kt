@@ -3,12 +3,10 @@ package com.uvp.sim.ui
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.MovieFilter
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Receipt
-import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -100,8 +98,7 @@ fun App(state: AppUiState, actions: AppActions) {
                 ) {
                     when (currentTab) {
                         AppTab.Home -> HomeScreen(state, actions)
-                        AppTab.Channel -> ChannelScreen(state)
-                        AppTab.Media -> MediaScreen(state, actions)
+                        AppTab.Settings -> SettingsScreen(state, actions)
                         AppTab.Log -> LogScreen(state)
                     }
                 }
@@ -113,7 +110,6 @@ fun App(state: AppUiState, actions: AppActions) {
 @Composable
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
-    AppTab.Channel -> Icons.Outlined.CameraAlt
-    AppTab.Media -> Icons.Outlined.MovieFilter
+    AppTab.Settings -> Icons.Outlined.Tune
     AppTab.Log -> Icons.Outlined.Receipt
 }

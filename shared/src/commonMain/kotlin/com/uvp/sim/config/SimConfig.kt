@@ -16,7 +16,7 @@ data class SimConfig(
     val device: DeviceConfig,
     val transport: com.uvp.sim.network.TransportType =
         com.uvp.sim.network.TransportType.UDP,
-    val audioTransport: AudioTransportType = AudioTransportType.UDP,
+    val audioTransport: AudioTransportType = AudioTransportType.TCP_ACTIVE,
     val video: VideoProfile = VideoProfile(),
     val expiresSeconds: Int = 3600,
     val keepaliveIntervalSeconds: Int = 60,

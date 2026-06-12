@@ -82,13 +82,12 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         SipConfigCard(state, actions, onFeedback = { msg ->
             toast.success(msg)
         })
-        SnapshotButton(state, actions, onFeedback = { msg ->
+        ActionButtons(state, actions, onFeedback = { msg ->
             toast.success(msg)
         })
         ConnectButton(state, actions, onFeedback = { msg ->
             toast.info(msg)
         })
-        AdvancedSection(state, actions)
     }
 }
 
@@ -256,6 +255,9 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     }
     var serverId by remember(state.config) { mutableStateOf(state.config.server.serverId) }
     var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
+    // 跟踪用户是否手改过域。一旦手改,服务器ID 不再自动同步前 10 位过来,
+    // 尊重用户的显式选择;保存或取消后重置,下次编辑又允许自动派生
+    var domainManuallyEdited by remember(state.config) { mutableStateOf(false) }
 
     val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
     // Force collapse when transitioning into a locked state mid-edit
@@ -298,11 +300,11 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         if (!editing) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                 KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", true)
+                KvRow("服务器 ID", state.config.server.serverId, true)
+                KvRow("服务器域", state.config.server.domain, true)
                 KvRow("设备 ID", state.config.device.deviceId, true)
                 KvRow("信令传输", state.config.transport.name, true)
-                KvRow("对讲传输", state.config.audioTransport.label, true)
-                KvRow("服务器 ID", state.config.server.serverId, true)
-                KvRow("域", state.config.server.domain, false)
+                KvRow("对讲传输", state.config.audioTransport.label, false)
             }
         } else {
             Column(
@@ -314,6 +316,19 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                     InlineField("端口", port, { port = it.filter { c -> c.isDigit() } }, Modifier.weight(1f),
                         keyboard = KeyboardType.Number)
                 }
+                InlineField("服务器 ID", serverId, { newId ->
+                    serverId = newId.filter { c -> c.isDigit() }
+                    // 自动派生域:取前 10 位。仅当用户没手改过域时同步,
+                    // 否则尊重用户的自定义值(domainManuallyEdited 在域字段被改时置 true)
+                    if (!domainManuallyEdited) {
+                        domain = serverId.take(10)
+                    }
+                })
+                InlineField("服务器域", domain, { newDomain ->
+                    domain = newDomain.filter { c -> c.isDigit() }
+                    // 用户主动改了域,从此不再自动派生
+                    domainManuallyEdited = true
+                })
                 InlineField("设备 ID", deviceId, { deviceId = it.filter { c -> c.isDigit() } })
                 InlineSegmented("信令传输方式", transport) { transport = it }
                 InlineSegmented(
@@ -323,8 +338,6 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                 ) { picked ->
                     audioTransport = AudioTransportType.entries.first { it.label == picked }
                 }
-                InlineField("服务器 ID", serverId, { serverId = it.filter { c -> c.isDigit() } })
-                InlineField("服务器域", domain, { domain = it.filter { c -> c.isDigit() } })
                 Spacer(Modifier.height(4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -350,6 +363,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                                 )
                             )
                             editing = false
+                            domainManuallyEdited = false
                             onFeedback("配置已保存")
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
@@ -366,6 +380,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                             serverId = state.config.server.serverId
                             domain = state.config.server.domain
                             editing = false
+                            domainManuallyEdited = false
                         },
                         modifier = Modifier.weight(1f).height(36.dp),
                         shape = RoundedCornerShape(6.dp)
@@ -376,25 +391,75 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     }
 }
 
-// ============= Snapshot button =============
+// ============= Active business buttons =============
 
 @Composable
-private fun SnapshotButton(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     val canFire = state.sip == SipState.Registered || state.sip == SipState.InCall
     if (!canFire) return
-    OutlinedButton(
-        onClick = {
-            actions.onSnapshot()
-            onFeedback("抓拍已上报")
-        },
-        modifier = Modifier.fillMaxWidth().height(40.dp),
-        shape = RoundedCornerShape(8.dp),
-        border = BorderStroke(1.dp, UvpColor.Primary),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Primary)
+    val toast = LocalToastHost.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("抓拍上报", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        ActionTile(
+            icon = Icons.Outlined.PhotoCamera,
+            label = "抓拍",
+            enabled = true,
+            modifier = Modifier.weight(1f),
+            onClick = {
+                actions.onSnapshot()
+                onFeedback("抓拍已上报")
+            }
+        )
+        ActionTile(
+            icon = Icons.Outlined.Warning,
+            label = "报警",
+            enabled = false,
+            modifier = Modifier.weight(1f),
+            onClick = { toast.info("报警 — M2 上线") }
+        )
+        ActionTile(
+            icon = Icons.Outlined.LocationOn,
+            label = "位置",
+            enabled = false,
+            modifier = Modifier.weight(1f),
+            onClick = { toast.info("位置 — M2 上线") }
+        )
+        ActionTile(
+            icon = Icons.Outlined.PlayArrow,
+            label = "录像",
+            enabled = false,
+            modifier = Modifier.weight(1f),
+            onClick = { toast.info("录像 — M2 上线") }
+        )
+    }
+}
+
+@Composable
+private fun ActionTile(
+    icon: ImageVector,
+    label: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val border = if (enabled) UvpColor.Primary else UvpColor.Border
+    val tint = if (enabled) UvpColor.Primary else UvpColor.TextHint
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.Surface)
+            .border(1.dp, border, RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(icon, contentDescription = null,
+            modifier = Modifier.size(20.dp), tint = tint)
+        Text(label, fontSize = 12.sp,
+            fontWeight = FontWeight.Medium, color = tint)
     }
 }
 
@@ -446,90 +511,6 @@ private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (S
                 Text("注 销", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                     color = UvpColor.Danger, letterSpacing = 4.sp)
             }
-        }
-    }
-}
-
-// ============= Advanced settings (collapsed) =============
-
-@Composable
-private fun AdvancedSection(state: AppUiState, actions: AppActions) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(UvpColor.Surface, RoundedCornerShape(8.dp))
-            .border(1.dp, UvpColor.Border, RoundedCornerShape(8.dp))
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("高级设置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
-            Spacer(Modifier.weight(1f))
-            Icon(
-                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp),
-                tint = UvpColor.TextHint
-            )
-        }
-        if (expanded) {
-            Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
-            AdvancedContent(state, actions)
-        }
-    }
-}
-
-@Composable
-private fun AdvancedContent(state: AppUiState, actions: AppActions) {
-    var videoChannelId by remember(state.config) { mutableStateOf(state.config.device.videoChannelId) }
-    var alarmChannelId by remember(state.config) { mutableStateOf(state.config.device.alarmChannelId) }
-    var password by remember(state.config) { mutableStateOf(state.config.device.password) }
-    var keepalive by remember(state.config) { mutableStateOf(state.config.keepaliveIntervalSeconds.toString()) }
-    val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
-
-    Column(
-        modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        InlineField("视频通道 ID", videoChannelId, { videoChannelId = it.filter { c -> c.isDigit() } },
-            enabled = !locked)
-        InlineField("报警通道 ID", alarmChannelId, { alarmChannelId = it.filter { c -> c.isDigit() } },
-            enabled = !locked)
-        InlineField("密码", password, { password = it }, password = true, enabled = !locked)
-        InlineField("心跳间隔(秒)", keepalive, { keepalive = it.filter { c -> c.isDigit() } },
-            keyboard = KeyboardType.Number, enabled = !locked)
-        Spacer(Modifier.height(4.dp))
-        Button(
-            enabled = !locked,
-            onClick = {
-                actions.onConfigSave(
-                    state.config.copy(
-                        device = state.config.device.copy(
-                            videoChannelId = videoChannelId,
-                            alarmChannelId = alarmChannelId,
-                            password = password
-                        ),
-                        keepaliveIntervalSeconds = keepalive.toIntOrNull() ?: 60
-                    )
-                )
-            },
-            modifier = Modifier.fillMaxWidth().height(36.dp),
-            shape = RoundedCornerShape(6.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = UvpColor.Primary,
-                disabledContainerColor = UvpColor.Border
-            )
-        ) {
-            Text(
-                if (locked) "注销后修改" else "保存高级设置",
-                fontSize = 12.sp,
-                color = if (locked) UvpColor.TextHint else Color.White
-            )
         }
     }
 }
