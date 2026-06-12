@@ -37,6 +37,7 @@ data class AudioFrame(
  * MPEG-2 stream_type 0x0F (ADTS AAC) which most players including ZLMediaKit
  * handle out of the box.
  */
+@kotlinx.serialization.Serializable
 enum class AudioCodec(
     val label: String,
     val psStreamType: Int,

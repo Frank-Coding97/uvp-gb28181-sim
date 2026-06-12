@@ -76,6 +76,7 @@ object H265NalType {
  * media module doesn't reach back into config. The bridge (Android shell)
  * maps one onto the other.
  */
+@kotlinx.serialization.Serializable
 enum class VideoCodec(val label: String, val psStreamType: Int) {
     /** ISO/IEC 13818-1 stream_type 0x1B for H.264/AVC video. */
     H264("H.264", 0x1B),

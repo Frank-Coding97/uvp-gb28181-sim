@@ -35,13 +35,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -59,7 +57,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.AudioTransportType
 import com.uvp.sim.sip.SipState
-import kotlinx.coroutines.launch
 
 /**
  * 主屏 Home — 产品经理视角重构。
@@ -73,9 +70,9 @@ import kotlinx.coroutines.launch
  * - 底部"高级设置"折叠(通道ID/用户名/密码/注册参数)
  */
 @Composable
-fun HomeScreen(state: AppUiState, actions: AppActions, snackbar: SnackbarHostState) {
+fun HomeScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
-    val scope = rememberCoroutineScope()
+    val toast = LocalToastHost.current
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -83,13 +80,13 @@ fun HomeScreen(state: AppUiState, actions: AppActions, snackbar: SnackbarHostSta
         StatusBanner(state)
         CameraPreviewBox(state)
         SipConfigCard(state, actions, onFeedback = { msg ->
-            scope.launch { snackbar.showSnackbar(msg) }
+            toast.success(msg)
         })
         SnapshotButton(state, actions, onFeedback = { msg ->
-            scope.launch { snackbar.showSnackbar(msg) }
+            toast.success(msg)
         })
         ConnectButton(state, actions, onFeedback = { msg ->
-            scope.launch { snackbar.showSnackbar(msg) }
+            toast.info(msg)
         })
         AdvancedSection(state, actions)
     }
@@ -248,6 +245,7 @@ private fun BrandCover() {
 
 @Composable
 private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+    val toast = LocalToastHost.current
     var editing by remember { mutableStateOf(false) }
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
     var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
@@ -332,7 +330,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                     Button(
                         onClick = {
                             if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
-                                onFeedback("服务器、设备ID、服务器ID 不能为空")
+                                toast.error("服务器、设备ID、服务器ID 不能为空")
                                 return@Button
                             }
                             actions.onConfigSave(

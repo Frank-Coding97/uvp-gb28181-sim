@@ -26,13 +26,11 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,7 +46,6 @@ import com.uvp.sim.config.VideoCodec
 import com.uvp.sim.config.VideoQualityPreset
 import com.uvp.sim.config.VideoResolution
 import com.uvp.sim.sip.SipState
-import kotlinx.coroutines.launch
 
 /**
  * 音视频设置页 — A 方案:预设卡 + 自定义折叠。
@@ -57,9 +54,9 @@ import kotlinx.coroutines.launch
  * 老司机:展开"自定义参数",细调分辨率/帧率/码率/I 帧间隔。
  */
 @Composable
-fun MediaScreen(state: AppUiState, actions: AppActions, snackbar: SnackbarHostState) {
+fun MediaScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
-    val scope = rememberCoroutineScope()
+    val toast = LocalToastHost.current
     val locked = state.sip == SipState.Registered ||
         state.sip == SipState.InCall ||
         state.sip == SipState.Registering
@@ -133,7 +130,7 @@ fun MediaScreen(state: AppUiState, actions: AppActions, snackbar: SnackbarHostSt
                         )
                     )
                 )
-                scope.launch { snackbar.showSnackbar("音视频参数已保存") }
+                toast.success("音视频参数已保存")
             },
             modifier = Modifier.fillMaxWidth().height(44.dp),
             shape = RoundedCornerShape(8.dp),

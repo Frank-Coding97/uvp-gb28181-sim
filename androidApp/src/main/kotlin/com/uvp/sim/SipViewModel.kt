@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val engineScope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob())
+    private val configStore = ConfigStore(application)
 
     private var transport: UdpSipTransport? = null
     private var engine: SimulatorEngine? = null
@@ -58,6 +59,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val _videoConfigVersion = MutableStateFlow(0)
     val videoConfigVersion: StateFlow<Int> = _videoConfigVersion.asStateFlow()
+
+    init {
+        // Load persisted config on cold start; bump videoConfigVersion so the
+        // Activity rebuilds streamers with the restored encoder params.
+        viewModelScope.launch {
+            val stored = configStore.loadOnce(defaultConfig())
+            if (stored != _config.value) {
+                _config.value = stored
+                _videoConfigVersion.value += 1
+            }
+        }
+    }
 
     /** Activity calls this after creating CameraCapture + AndroidCameraStreamer. */
     fun bindCamera(cam: CameraCapture) {
@@ -170,6 +183,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         if (prev.video != newCfg.video) {
             _videoConfigVersion.value += 1
         }
+        // Persist asynchronously; UI doesn't need to wait for disk.
+        viewModelScope.launch { runCatching { configStore.save(newCfg) } }
         if (engine != null) {
             engineScope.launch {
                 try { engine?.unregister() } catch (_: Throwable) { }

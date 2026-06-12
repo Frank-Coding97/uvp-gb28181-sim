@@ -29,4 +29,5 @@ data class RemoteEndpoint(
     val transport: TransportType
 )
 
+@kotlinx.serialization.Serializable
 enum class TransportType { UDP, TCP }
