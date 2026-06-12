@@ -1,99 +1,55 @@
 package com.uvp.sim.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * App shell — 4 tab(主页 / 通道 / 音视频 / 日志)+ 全局 UvpToast。
+ * App shell — 紧凑顶/底栏 + 3 tab + 全局 UvpToast。
  *
- * Material3 默认 Snackbar 视觉太"系统",所以替换为 UvpToastHost,
- * 通过 LocalToastHost 让任何 Composable 都能 toast.success(...) 调用。
+ * 自定义顶栏(36dp)和底栏(56dp)代替 Material3 默认的 64/80dp,
+ * 给主屏内容腾出关键的 30+ dp 高度,让"注册"按钮回到一眼可见的范围。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App(state: AppUiState, actions: AppActions) {
     UvpTheme {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
         UvpToastHost {
-            Scaffold(
-                topBar = {
-                    CenterAlignedTopAppBar(
-                        title = {
-                            Text(
-                                "GB28181 Sim",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = UvpColor.Text
-                            )
-                        },
-                        actions = {
-                            IconButton(onClick = { /* notification: M2 */ }) {
-                                Icon(Icons.Outlined.Notifications, "通知",
-                                    tint = UvpColor.TextSecondary)
-                            }
-                        },
-                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                            containerColor = UvpColor.Surface
-                        )
-                    )
-                },
-                bottomBar = {
-                    NavigationBar(
-                        containerColor = UvpColor.Surface,
-                        tonalElevation = 0.dp
-                    ) {
-                        AppTab.entries.forEach { tab ->
-                            NavigationBarItem(
-                                selected = tab == currentTab,
-                                onClick = { currentTab = tab },
-                                icon = {
-                                    Icon(
-                                        tab.icon(),
-                                        contentDescription = tab.label
-                                    )
-                                },
-                                label = { Text(tab.label, fontSize = 10.sp) },
-                                colors = NavigationBarItemDefaults.colors(
-                                    selectedIconColor = UvpColor.Primary,
-                                    selectedTextColor = UvpColor.Primary,
-                                    unselectedIconColor = UvpColor.TextHint,
-                                    unselectedTextColor = UvpColor.TextHint,
-                                    indicatorColor = UvpColor.PrimaryLight
-                                )
-                            )
-                        }
-                    }
-                }
-            ) { padding ->
+            Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
+                CompactTopBar()
                 Surface(
-                    modifier = Modifier.fillMaxSize().padding(padding),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                     color = UvpColor.Bg
                 ) {
                     when (currentTab) {
@@ -102,8 +58,98 @@ fun App(state: AppUiState, actions: AppActions) {
                         AppTab.Log -> LogScreen(state)
                     }
                 }
+                CompactBottomBar(currentTab) { currentTab = it }
             }
         }
+    }
+}
+
+@Composable
+private fun CompactTopBar() {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UvpColor.Surface)
+                .height(40.dp)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Spacer(Modifier.weight(1f))
+            Text(
+                "GB28181 Sim",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = UvpColor.Text
+            )
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { /* notification: M2 */ }
+                    .padding(4.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Notifications,
+                    contentDescription = "通知",
+                    tint = UvpColor.TextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
+    }
+}
+
+@Composable
+private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
+    Column {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(UvpColor.Surface)
+                .height(56.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AppTab.entries.forEach { tab ->
+                BottomTabItem(
+                    tab = tab,
+                    selected = tab == active,
+                    onClick = { onPick(tab) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomTabItem(
+    tab: AppTab,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val tint = if (selected) UvpColor.Primary else UvpColor.TextHint
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .clickable { onClick() }
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(tab.icon(), contentDescription = tab.label,
+            modifier = Modifier.size(20.dp), tint = tint)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            tab.label,
+            fontSize = 10.sp,
+            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+            color = tint
+        )
     }
 }
 

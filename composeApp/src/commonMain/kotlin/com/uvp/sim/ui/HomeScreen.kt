@@ -246,6 +246,7 @@ private fun BrandCover() {
 @Composable
 private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     val toast = LocalToastHost.current
+    var editing by remember { mutableStateOf(false) }
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
     var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
     var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
@@ -260,17 +261,47 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     var domainManuallyEdited by remember(state.config) { mutableStateOf(false) }
 
     val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
+    if (locked && editing) editing = false
 
-    // 当前输入是否跟已保存配置不同 — 决定保存按钮是否可点
-    val dirty = ip != state.config.server.ip ||
-        (port.toIntOrNull() ?: 5060) != state.config.server.port ||
-        deviceId != state.config.device.deviceId ||
-        deviceName != state.config.device.name ||
-        password != state.config.device.password ||
-        transport != state.config.transport.name ||
-        audioTransport != state.config.audioTransport ||
-        serverId != state.config.server.serverId ||
-        domain != state.config.server.domain
+    fun resetFromConfig() {
+        ip = state.config.server.ip
+        port = state.config.server.port.toString()
+        deviceId = state.config.device.deviceId
+        deviceName = state.config.device.name
+        password = state.config.device.password
+        transport = state.config.transport.name
+        audioTransport = state.config.audioTransport
+        serverId = state.config.server.serverId
+        domain = state.config.server.domain
+        domainManuallyEdited = false
+    }
+
+    fun save(): Boolean {
+        if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
+            toast.error("服务器、设备ID、服务器ID 不能为空")
+            return false
+        }
+        actions.onConfigSave(
+            state.config.copy(
+                server = state.config.server.copy(
+                    ip = ip,
+                    port = port.toIntOrNull() ?: 5060,
+                    serverId = serverId,
+                    domain = domain
+                ),
+                device = state.config.device.copy(
+                    deviceId = deviceId,
+                    name = deviceName,
+                    username = deviceId,
+                    password = password
+                ),
+                transport = com.uvp.sim.network.TransportType.valueOf(transport),
+                audioTransport = audioTransport
+            )
+        )
+        domainManuallyEdited = false
+        return true
+    }
 
     Column(
         modifier = Modifier
@@ -284,8 +315,37 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         ) {
             Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
             Spacer(Modifier.weight(1f))
-            if (locked) {
-                Text("注销后修改", fontSize = 11.sp, color = UvpColor.TextHint)
+            val tint = if (locked) UvpColor.TextHint else UvpColor.Primary
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable(enabled = !locked) {
+                        if (editing) {
+                            // 完成 → 保存
+                            if (save()) {
+                                editing = false
+                                onFeedback("已保存")
+                            }
+                        } else {
+                            editing = true
+                        }
+                    }
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Edit, contentDescription = null,
+                    modifier = Modifier.size(13.dp), tint = tint)
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    when {
+                        locked -> "注销后修改"
+                        editing -> "完成"
+                        else -> "编辑"
+                    },
+                    fontSize = 12.sp,
+                    fontWeight = if (editing && !locked) FontWeight.SemiBold else FontWeight.Normal,
+                    color = tint
+                )
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
@@ -293,94 +353,47 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         Column(
             modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
         ) {
-            // 服务器 + 端口同行
+            // 编辑态:可改;只读态:同样的行,但 enabled = false 就显灰且不响应点击
+            // 复用同一组组件,避免两种布局割裂
+            val canEdit = editing && !locked
             InlineEditableRow(
                 label = "服务器",
                 value = ip,
-                enabled = !locked,
+                enabled = canEdit,
                 trailing = {
                     InlineCompactPort(
                         port = port,
-                        enabled = !locked,
+                        enabled = canEdit,
                         onChange = { port = it.filter { c -> c.isDigit() } }
                     )
                 },
                 onChange = { ip = it }
             )
-            InlineEditableRow("服务器 ID", serverId, !locked, KeyboardType.Number) { newId ->
+            InlineEditableRow("服务器 ID", serverId, canEdit, KeyboardType.Number) { newId ->
                 serverId = newId.filter { c -> c.isDigit() }
                 if (!domainManuallyEdited) domain = serverId.take(10)
             }
-            InlineEditableRow("服务器域", domain, !locked, KeyboardType.Number) { newDomain ->
+            InlineEditableRow("服务器域", domain, canEdit, KeyboardType.Number) { newDomain ->
                 domain = newDomain.filter { c -> c.isDigit() }
                 domainManuallyEdited = true
             }
-            InlineEditableRow("设备 ID", deviceId, !locked, KeyboardType.Number) {
+            InlineEditableRow("设备 ID", deviceId, canEdit, KeyboardType.Number) {
                 deviceId = it.filter { c -> c.isDigit() }
             }
-            InlineEditableRow("设备名称", deviceName, !locked, KeyboardType.Text) {
+            InlineEditableRow("设备名称", deviceName, canEdit, KeyboardType.Text) {
                 deviceName = it
             }
-            InlineEditableRow("注册密码", password, !locked, KeyboardType.Password,
+            InlineEditableRow("注册密码", password, canEdit, KeyboardType.Password,
                 masked = true) { password = it }
-            InlineSegmentedRow("信令传输", transport, listOf("UDP", "TCP"), !locked) {
+            InlineSegmentedRow("信令传输", transport, listOf("UDP", "TCP"), canEdit) {
                 transport = it
             }
             InlineSegmentedRow(
                 "对讲传输", audioTransport.label,
-                AudioTransportType.entries.map { it.label }, !locked
+                AudioTransportType.entries.map { it.label }, canEdit
             ) { picked ->
                 audioTransport = AudioTransportType.entries.first { it.label == picked }
             }
-
-            Spacer(Modifier.height(8.dp))
-            Button(
-                enabled = !locked && dirty,
-                onClick = {
-                    if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
-                        toast.error("服务器、设备ID、服务器ID 不能为空")
-                        return@Button
-                    }
-                    actions.onConfigSave(
-                        state.config.copy(
-                            server = state.config.server.copy(
-                                ip = ip,
-                                port = port.toIntOrNull() ?: 5060,
-                                serverId = serverId,
-                                domain = domain
-                            ),
-                            device = state.config.device.copy(
-                                deviceId = deviceId,
-                                name = deviceName,
-                                username = deviceId,
-                                password = password
-                            ),
-                            transport = com.uvp.sim.network.TransportType.valueOf(transport),
-                            audioTransport = audioTransport
-                        )
-                    )
-                    domainManuallyEdited = false
-                    onFeedback("配置已保存")
-                },
-                modifier = Modifier.fillMaxWidth().height(38.dp),
-                shape = RoundedCornerShape(6.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = UvpColor.Primary,
-                    disabledContainerColor = UvpColor.Border
-                )
-            ) {
-                Text(
-                    when {
-                        locked -> "已注册 · 不可修改"
-                        !dirty -> "无更改"
-                        else -> "保 存"
-                    },
-                    fontSize = 13.sp, fontWeight = FontWeight.Medium,
-                    color = if (locked || !dirty) UvpColor.TextHint else Color.White,
-                    letterSpacing = if (!locked && dirty) 4.sp else 0.sp
-                )
-            }
-            Spacer(Modifier.height(4.dp))
         }
     }
 }
