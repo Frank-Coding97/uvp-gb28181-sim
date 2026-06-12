@@ -420,14 +420,14 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
         SubscriptionTile(
             icon = Icons.Outlined.LocationOn,
             label = "位置订阅",
-            kind = SubscriptionKind.MobilePosition,
+            status = state.subscriptions[SubscriptionKind.MobilePosition] ?: SubscriptionStatus(),
             modifier = Modifier.weight(1f),
             onClick = { detailFor = SubscriptionKind.MobilePosition }
         )
         SubscriptionTile(
             icon = Icons.Outlined.FolderOpen,
             label = "目录订阅",
-            kind = SubscriptionKind.Catalog,
+            status = state.subscriptions[SubscriptionKind.Catalog] ?: SubscriptionStatus(),
             modifier = Modifier.weight(1f),
             onClick = { detailFor = SubscriptionKind.Catalog }
         )
@@ -435,6 +435,7 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
     detailFor?.let { kind ->
         SubscriptionDetailSheet(
             kind = kind,
+            status = state.subscriptions[kind] ?: SubscriptionStatus(),
             onDismiss = { detailFor = null }
         )
     }
@@ -477,33 +478,20 @@ private fun ActionTile(
     }
 }
 
-private enum class SubscriptionKind(val title: String) {
-    MobilePosition("位置订阅"),
-    Catalog("目录订阅")
-}
-
-/** 占位:M2 接真订阅时改为读 SimulatorEngine.subscriptions[kind] */
-private data class SubscriptionStatus(
-    val active: Boolean = false,
-    val subscriber: String? = null,
-    val expiresSeconds: Int? = null,
-    val remainingSeconds: Int? = null,
-    val notifyCount: Int = 0
-)
-
-@Composable
-private fun rememberSubscriptionStatus(kind: SubscriptionKind): SubscriptionStatus =
-    remember(kind) { SubscriptionStatus(active = false) }
+private val SubscriptionKind.title: String
+    get() = when (this) {
+        SubscriptionKind.MobilePosition -> "位置订阅"
+        SubscriptionKind.Catalog -> "目录订阅"
+    }
 
 @Composable
 private fun SubscriptionTile(
     icon: ImageVector,
     label: String,
-    kind: SubscriptionKind,
+    status: SubscriptionStatus,
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val status = rememberSubscriptionStatus(kind)
     val tone = if (status.active) UvpColor.SuccessText else UvpColor.TextHint
     val border = if (status.active) UvpColor.SuccessBorder else UvpColor.Border
     val bg = if (status.active) UvpColor.SuccessBg else UvpColor.Surface
@@ -544,9 +532,9 @@ private fun SubscriptionTile(
 @Composable
 private fun SubscriptionDetailSheet(
     kind: SubscriptionKind,
+    status: SubscriptionStatus,
     onDismiss: () -> Unit
 ) {
-    val status = rememberSubscriptionStatus(kind)
     androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
         containerColor = UvpColor.Surface
@@ -571,17 +559,19 @@ private fun SubscriptionDetailSheet(
             DetailKv("Expires", status.expiresSeconds?.let { "${it}s" } ?: "—")
             DetailKv("剩余", status.remainingSeconds?.let { "${it}s" } ?: "—")
             DetailKv("Notify 计数", status.notifyCount.toString())
-            Spacer(Modifier.height(16.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(UvpColor.WarningBg, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 10.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    "M2 接通真实 SUBSCRIBE 应答后此处显示动态数据",
-                    fontSize = 11.sp, color = UvpColor.Warning
-                )
+            if (!status.active) {
+                Spacer(Modifier.height(16.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(UvpColor.WarningBg, RoundedCornerShape(6.dp))
+                        .padding(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        "M2 接通真实 SUBSCRIBE 应答后此处显示动态数据",
+                        fontSize = 11.sp, color = UvpColor.Warning
+                    )
+                }
             }
         }
     }

@@ -19,6 +19,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -55,6 +56,7 @@ fun App(state: AppUiState, actions: AppActions) {
                     when (currentTab) {
                         AppTab.Home -> HomeScreen(state, actions)
                         AppTab.Settings -> SettingsScreen(state, actions)
+                        AppTab.Recording -> RecordingScreen(state, actions)
                         AppTab.Log -> LogScreen(state)
                     }
                 }
@@ -157,5 +159,6 @@ private fun BottomTabItem(
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
     AppTab.Settings -> Icons.Outlined.Tune
+    AppTab.Recording -> Icons.Outlined.Videocam
     AppTab.Log -> Icons.Outlined.Receipt
 }
