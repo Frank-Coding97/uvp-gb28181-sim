@@ -206,6 +206,10 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     var serverId by remember(state.config) { mutableStateOf(state.config.server.serverId) }
     var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
 
+    val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
+    // Force collapse when transitioning into a locked state mid-edit
+    if (locked && editing) editing = false
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -218,14 +222,24 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         ) {
             Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
             Spacer(Modifier.weight(1f))
+            val tint = if (locked) UvpColor.TextHint else UvpColor.Primary
             Row(
-                modifier = Modifier.clickable { editing = !editing },
+                modifier = Modifier
+                    .clickable(enabled = !locked) { editing = !editing }
+                    .padding(horizontal = 2.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.Outlined.Edit, contentDescription = null,
-                    modifier = Modifier.size(14.dp), tint = UvpColor.Primary)
+                    modifier = Modifier.size(14.dp), tint = tint)
                 Spacer(Modifier.width(4.dp))
-                Text(if (editing) "收起" else "编辑", fontSize = 12.sp, color = UvpColor.Primary)
+                Text(
+                    when {
+                        locked -> "注销后修改"
+                        editing -> "收起"
+                        else -> "编辑"
+                    },
+                    fontSize = 12.sp, color = tint
+                )
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
@@ -415,18 +429,22 @@ private fun AdvancedContent(state: AppUiState, actions: AppActions) {
     var alarmChannelId by remember(state.config) { mutableStateOf(state.config.device.alarmChannelId) }
     var password by remember(state.config) { mutableStateOf(state.config.device.password) }
     var keepalive by remember(state.config) { mutableStateOf(state.config.keepaliveIntervalSeconds.toString()) }
+    val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
 
     Column(
         modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        InlineField("视频通道 ID", videoChannelId, { videoChannelId = it.filter { c -> c.isDigit() } })
-        InlineField("报警通道 ID", alarmChannelId, { alarmChannelId = it.filter { c -> c.isDigit() } })
-        InlineField("密码", password, { password = it }, password = true)
+        InlineField("视频通道 ID", videoChannelId, { videoChannelId = it.filter { c -> c.isDigit() } },
+            enabled = !locked)
+        InlineField("报警通道 ID", alarmChannelId, { alarmChannelId = it.filter { c -> c.isDigit() } },
+            enabled = !locked)
+        InlineField("密码", password, { password = it }, password = true, enabled = !locked)
         InlineField("心跳间隔(秒)", keepalive, { keepalive = it.filter { c -> c.isDigit() } },
-            keyboard = KeyboardType.Number)
+            keyboard = KeyboardType.Number, enabled = !locked)
         Spacer(Modifier.height(4.dp))
         Button(
+            enabled = !locked,
             onClick = {
                 actions.onConfigSave(
                     state.config.copy(
@@ -441,8 +459,17 @@ private fun AdvancedContent(state: AppUiState, actions: AppActions) {
             },
             modifier = Modifier.fillMaxWidth().height(36.dp),
             shape = RoundedCornerShape(6.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
-        ) { Text("保存高级设置", fontSize = 12.sp, color = Color.White) }
+            colors = ButtonDefaults.buttonColors(
+                containerColor = UvpColor.Primary,
+                disabledContainerColor = UvpColor.Border
+            )
+        ) {
+            Text(
+                if (locked) "注销后修改" else "保存高级设置",
+                fontSize = 12.sp,
+                color = if (locked) UvpColor.TextHint else Color.White
+            )
+        }
     }
 }
 
@@ -468,7 +495,8 @@ private fun InlineField(
     onChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     keyboard: KeyboardType = KeyboardType.Text,
-    password: Boolean = false
+    password: Boolean = false,
+    enabled: Boolean = true
 ) {
     Column(modifier = modifier) {
         Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
@@ -478,6 +506,7 @@ private fun InlineField(
             onValueChange = onChange,
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
+            enabled = enabled,
             textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontFamily = FontFamily.Monospace),
             keyboardOptions = KeyboardOptions(keyboardType = keyboard),
             visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
@@ -486,7 +515,10 @@ private fun InlineField(
                 focusedBorderColor = UvpColor.Primary,
                 unfocusedBorderColor = UvpColor.Border,
                 focusedContainerColor = UvpColor.Surface,
-                unfocusedContainerColor = UvpColor.Surface
+                unfocusedContainerColor = UvpColor.Surface,
+                disabledBorderColor = UvpColor.BorderLight,
+                disabledTextColor = UvpColor.TextSecondary,
+                disabledContainerColor = UvpColor.Surface
             )
         )
     }
