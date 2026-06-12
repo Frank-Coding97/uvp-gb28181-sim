@@ -35,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +69,9 @@ fun MediaScreen(state: AppUiState, actions: AppActions) {
     var gop by remember(state.config) { mutableStateOf(state.config.video.keyframeIntervalSeconds.toString()) }
     var videoCodec by remember(state.config) { mutableStateOf(state.config.video.videoCodec) }
     var audioCodec by remember(state.config) { mutableStateOf(state.config.video.audioCodec) }
+    var audioSampleRate by remember(state.config) {
+        mutableStateOf(state.config.video.audioSampleRateHz)
+    }
     var advancedOpen by remember { mutableStateOf(false) }
 
     // 当前选中的预设(如果数字组合恰好命中)
@@ -94,13 +99,25 @@ fun MediaScreen(state: AppUiState, actions: AppActions) {
             frameRate = frameRate.toIntOrNull() ?: 0,
             bitrateKbps = bitrate.toIntOrNull() ?: 0,
             videoCodec = videoCodec,
-            audioCodec = audioCodec
+            audioCodec = audioCodec,
+            audioSampleRate = audioSampleRate
         )
         if (locked) LockedHint()
         PresetCard(activePreset, locked, ::applyPreset)
-        CodecCard(videoCodec, audioCodec, locked,
+        CodecCard(
+            videoCodec = videoCodec,
+            audioCodec = audioCodec,
+            audioSampleRate = audioSampleRate,
+            locked = locked,
             onVideo = { videoCodec = it },
-            onAudio = { audioCodec = it })
+            onAudio = { picked ->
+                audioCodec = picked
+                // G.711 强制 8000;切到 AAC 时若先前是 8000 保留,否则恢复 16000
+                if (picked != AudioCodec.AAC) audioSampleRate = 8000
+                else if (audioSampleRate !in setOf(8000, 16000)) audioSampleRate = 16000
+            },
+            onSampleRate = { audioSampleRate = it }
+        )
         AdvancedCard(
             open = advancedOpen,
             onToggle = { advancedOpen = !advancedOpen },
@@ -126,7 +143,8 @@ fun MediaScreen(state: AppUiState, actions: AppActions) {
                             bitrateKbps = bitrate.toIntOrNull()?.coerceIn(100, 16000) ?: 2000,
                             keyframeIntervalSeconds = gop.toIntOrNull()?.coerceIn(1, 10) ?: 1,
                             videoCodec = videoCodec,
-                            audioCodec = audioCodec
+                            audioCodec = audioCodec,
+                            audioSampleRateHz = audioSampleRate
                         )
                     )
                 )
@@ -159,35 +177,59 @@ private fun SummaryCard(
     frameRate: Int,
     bitrateKbps: Int,
     videoCodec: VideoCodec,
-    audioCodec: AudioCodec
+    audioCodec: AudioCodec,
+    audioSampleRate: Int
 ) {
+    val gradient = Brush.linearGradient(
+        colors = listOf(
+            UvpColor.Primary.copy(alpha = 0.10f),
+            UvpColor.Primary.copy(alpha = 0.04f)
+        ),
+        start = Offset(0f, 0f),
+        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+    )
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(UvpColor.Surface, RoundedCornerShape(8.dp))
-            .border(1.dp, UvpColor.Border, RoundedCornerShape(8.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp)
+            .background(gradient, RoundedCornerShape(10.dp))
+            .border(
+                1.5.dp,
+                UvpColor.Primary.copy(alpha = 0.5f),
+                RoundedCornerShape(10.dp)
+            )
+            .padding(horizontal = 14.dp, vertical = 14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("当前画质", fontSize = 12.sp, color = UvpColor.TextHint,
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(UvpColor.Primary)
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    preset?.label ?: "自定义",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("当前画质", fontSize = 12.sp, color = UvpColor.TextSecondary,
                 fontWeight = FontWeight.Medium)
-            Spacer(Modifier.weight(1f))
-            Text(
-                preset?.label ?: "自定义",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = if (preset != null) UvpColor.Primary else UvpColor.TextSecondary
-            )
         }
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
         Text(
             "${resolution.label} · ${frameRate}fps · ${bitrateKbps}kbps",
-            fontSize = 14.sp, color = UvpColor.Text,
-            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium
+            fontSize = 15.sp, color = UvpColor.Text,
+            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold
         )
-        Spacer(Modifier.height(3.dp))
+        Spacer(Modifier.height(4.dp))
+        val audioRateLabel = when (audioCodec) {
+            AudioCodec.G711A, AudioCodec.G711U -> "8000Hz"
+            AudioCodec.AAC -> "${audioSampleRate}Hz"
+        }
         Text(
-            "视频 ${videoCodec.label} · 音频 ${audioCodec.label}",
+            "视频 ${videoCodec.label} · 音频 ${audioCodec.label} · $audioRateLabel",
             fontSize = 11.5.sp, color = UvpColor.TextSecondary
         )
     }
@@ -299,9 +341,11 @@ private fun PresetTile(
 private fun CodecCard(
     videoCodec: VideoCodec,
     audioCodec: AudioCodec,
+    audioSampleRate: Int,
     locked: Boolean,
     onVideo: (VideoCodec) -> Unit,
-    onAudio: (AudioCodec) -> Unit
+    onAudio: (AudioCodec) -> Unit,
+    onSampleRate: (Int) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -325,6 +369,27 @@ private fun CodecCard(
             options = AudioCodec.entries.map { it.label },
             enabled = !locked
         ) { picked -> onAudio(AudioCodec.entries.first { it.label == picked }) }
+
+        // 采样率:G.711 强制 8000(disabled),AAC 可选 8000 / 16000。
+        // 显示有效值 — 选 G.711 时即便存的是 16000,这里也亮 "8000"。
+        val isAac = audioCodec == AudioCodec.AAC
+        val effectiveRate = if (isAac) audioSampleRate else 8000
+        Column {
+            InlineSegmented(
+                label = "音频采样率",
+                active = effectiveRate.toString(),
+                options = listOf("8000", "16000"),
+                enabled = !locked && isAac
+            ) { picked ->
+                onSampleRate(picked.toIntOrNull() ?: 16000)
+            }
+            Spacer(Modifier.height(3.dp))
+            Text(
+                if (isAac) "Hz · AAC 推荐 16000(更亮的音质)"
+                else "Hz · G.711 协议固定 8000",
+                fontSize = 10.sp, color = UvpColor.TextHint, maxLines = 1
+            )
+        }
     }
 }
 
@@ -387,65 +452,104 @@ private fun AdvancedCard(
                 ) { picked ->
                     onResolution(VideoResolution.entries.first { it.label == picked })
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    LabeledNumberField(
-                        label = "帧率",
-                        suffix = "fps",
-                        hint = "通常 25",
-                        value = frameRate,
-                        onChange = { onFrameRate(it.filter { c -> c.isDigit() }) },
-                        modifier = Modifier.weight(1f),
-                        enabled = !locked
-                    )
-                    LabeledNumberField(
-                        label = "码率",
-                        suffix = "kbps",
-                        hint = "越大越清晰",
-                        value = bitrate,
-                        onChange = { onBitrate(it.filter { c -> c.isDigit() }) },
-                        modifier = Modifier.weight(1f),
-                        enabled = !locked
-                    )
-                }
-                LabeledNumberField(
-                    label = "关键帧间隔",
-                    suffix = "秒",
-                    hint = "通常 1 秒,越小越清晰但占带宽",
-                    value = gop,
-                    onChange = { onGop(it.filter { c -> c.isDigit() }) },
-                    enabled = !locked
+                LabeledChipRow(
+                    label = "帧率(fps)",
+                    suffix = "通常 25",
+                    options = FRAME_RATE_OPTIONS,
+                    active = frameRate,
+                    enabled = !locked,
+                    onPick = onFrameRate
+                )
+                LabeledChipRow(
+                    label = "码率(kbps)",
+                    suffix = "越大越清晰、越占带宽",
+                    options = BITRATE_OPTIONS,
+                    active = bitrate,
+                    enabled = !locked,
+                    onPick = onBitrate
+                )
+                LabeledChipRow(
+                    label = "关键帧间隔(秒)",
+                    suffix = "越小越清晰但占带宽",
+                    options = GOP_OPTIONS,
+                    active = gop,
+                    enabled = !locked,
+                    onPick = onGop
                 )
             }
         }
     }
 }
 
+private val FRAME_RATE_OPTIONS = listOf("15", "20", "25", "30")
+private val BITRATE_OPTIONS = listOf("600", "1200", "2000", "4000", "6000", "8000")
+private val GOP_OPTIONS = listOf("1", "2", "4")
+
 @Composable
-private fun LabeledNumberField(
+private fun LabeledChipRow(
     label: String,
     suffix: String,
-    hint: String,
-    value: String,
-    onChange: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    options: List<String>,
+    active: String,
+    enabled: Boolean,
+    onPick: (String) -> Unit
 ) {
-    Column(modifier = modifier) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(label, fontSize = 11.sp, color = UvpColor.TextSecondary,
-                fontWeight = FontWeight.Medium)
-            Spacer(Modifier.width(4.dp))
-            Text("($suffix)", fontSize = 10.sp, color = UvpColor.TextHint)
+    Column {
+        Text(label, fontSize = 11.sp, color = UvpColor.TextSecondary,
+            fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxWidth()) {
+            options.forEach { value ->
+                ChipCell(
+                    text = value,
+                    selected = value == active,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onPick(value) }
+                )
+            }
         }
-        Spacer(Modifier.height(3.dp))
-        InlineField(
-            label = "",
-            value = value,
-            onChange = onChange,
-            keyboard = KeyboardType.Number,
-            enabled = enabled
-        )
         Spacer(Modifier.height(2.dp))
-        Text(hint, fontSize = 10.sp, color = UvpColor.TextHint, maxLines = 1)
+        Text(suffix, fontSize = 10.sp, color = UvpColor.TextHint, maxLines = 1)
     }
 }
+
+@Composable
+private fun ChipCell(
+    text: String,
+    selected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val borderColor = when {
+        !enabled -> UvpColor.BorderLight
+        selected -> UvpColor.Primary
+        else -> UvpColor.Border
+    }
+    val bg = if (selected && enabled) UvpColor.PrimaryLight else UvpColor.Surface
+    val fg = when {
+        !enabled -> UvpColor.TextHint
+        selected -> UvpColor.Primary
+        else -> UvpColor.TextSecondary
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .border(if (selected) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(6.dp))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = fg,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+

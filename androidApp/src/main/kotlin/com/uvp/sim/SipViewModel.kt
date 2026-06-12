@@ -234,7 +234,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun newAudioCaptureConfig(): AudioCaptureConfig {
-        return AudioCaptureConfig(codec = _config.value.video.audioCodec)
+        val v = _config.value.video
+        return AudioCaptureConfig(
+            codec = v.audioCodec,
+            sampleRateHz = v.effectiveAudioSampleRateHz
+        )
     }
 
     companion object {

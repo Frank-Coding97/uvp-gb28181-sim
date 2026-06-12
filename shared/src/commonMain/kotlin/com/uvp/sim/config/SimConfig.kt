@@ -37,7 +37,13 @@ data class VideoProfile(
     val bitrateKbps: Int = 2000,
     val keyframeIntervalSeconds: Int = 1,
     val videoCodec: VideoCodec = VideoCodec.H264,
-    val audioCodec: AudioCodec = AudioCodec.G711A
+    val audioCodec: AudioCodec = AudioCodec.G711A,
+    /**
+     * Audio sample rate in Hz. G.711 is fixed at 8000 by ITU-T G.711 standard;
+     * AAC supports 8000 / 16000. The UI enforces this constraint by locking
+     * the field when codec is G.711.
+     */
+    val audioSampleRateHz: Int = 16000
 ) {
     val matchedPreset: VideoQualityPreset?
         get() = VideoQualityPreset.entries.firstOrNull {
@@ -45,6 +51,16 @@ data class VideoProfile(
                 it.frameRate == frameRate &&
                 it.bitrateKbps == bitrateKbps &&
                 it.keyframeIntervalSeconds == keyframeIntervalSeconds
+        }
+
+    /**
+     * Effective audio sample rate after applying codec constraints.
+     * G.711 always returns 8000 regardless of stored value.
+     */
+    val effectiveAudioSampleRateHz: Int
+        get() = when (audioCodec) {
+            AudioCodec.G711A, AudioCodec.G711U -> 8_000
+            AudioCodec.AAC -> audioSampleRateHz
         }
 }
 

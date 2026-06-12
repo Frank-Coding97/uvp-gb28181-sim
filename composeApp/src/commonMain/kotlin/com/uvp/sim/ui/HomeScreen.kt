@@ -616,15 +616,29 @@ internal fun InlineSegmented(
                     if (enabled) UvpColor.Border else UvpColor.BorderLight,
                     RoundedCornerShape(6.dp)
                 )
-                .padding(2.dp)
+                .padding(2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             options.forEach { t ->
                 val sel = t == active
                 Box(
                     modifier = Modifier
                         .weight(1f)
+                        .clip(RoundedCornerShape(4.dp))
                         .background(
-                            if (sel) UvpColor.Surface else Color.Transparent,
+                            when {
+                                sel && enabled -> UvpColor.PrimaryLight
+                                sel -> UvpColor.PrimaryLight.copy(alpha = 0.4f)
+                                else -> Color.Transparent
+                            }
+                        )
+                        .border(
+                            if (sel) 1.5.dp else 0.dp,
+                            when {
+                                !sel -> Color.Transparent
+                                enabled -> UvpColor.Primary
+                                else -> UvpColor.Primary.copy(alpha = 0.5f)
+                            },
                             RoundedCornerShape(4.dp)
                         )
                         .clickable(enabled = enabled) { onChange(t) }
@@ -634,8 +648,9 @@ internal fun InlineSegmented(
                     Text(
                         t,
                         fontSize = 12.sp,
-                        fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
+                        fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
                         color = when {
+                            sel && !enabled -> UvpColor.Primary.copy(alpha = 0.6f)
                             !enabled -> UvpColor.TextHint
                             sel -> UvpColor.Primary
                             else -> UvpColor.TextSecondary
