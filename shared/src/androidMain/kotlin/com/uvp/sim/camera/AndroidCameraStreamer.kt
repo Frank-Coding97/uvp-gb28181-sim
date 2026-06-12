@@ -14,6 +14,7 @@ import androidx.camera.view.PreviewView
 import androidx.lifecycle.LifecycleOwner
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
+import com.uvp.sim.media.H265NalType
 import com.uvp.sim.media.NalType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,8 +88,12 @@ class AndroidCameraStreamer(
 
     /** Hot Flow of encoded H.264 frames. Cancelling the collection stops encoding. */
     fun stream(): Flow<H264Frame> = callbackFlow {
+        val mime = when (config.videoCodec) {
+            com.uvp.sim.media.VideoCodec.H264 -> MediaFormat.MIMETYPE_VIDEO_AVC
+            com.uvp.sim.media.VideoCodec.H265 -> MediaFormat.MIMETYPE_VIDEO_HEVC
+        }
         val format = MediaFormat.createVideoFormat(
-            MediaFormat.MIMETYPE_VIDEO_AVC,
+            mime,
             config.widthPx,
             config.heightPx
         ).apply {
@@ -100,15 +105,17 @@ class AndroidCameraStreamer(
             setInteger(MediaFormat.KEY_FRAME_RATE, config.frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, config.keyframeIntervalSeconds)
         }
-        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
+        val codec = MediaCodec.createEncoderByType(mime).apply {
             configure(format, /*surface=*/null, /*crypto=*/null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         }
         val surface = codec.createInputSurface()
         encoder = codec
         encoderInputSurface = surface
 
-        var sps: ByteArray? = null
-        var pps: ByteArray? = null
+        // Parameter sets to prepend to every key frame. For H.264 these are
+        // SPS+PPS; for H.265 they are VPS+SPS+PPS. We keep the latest copy each
+        // time the encoder emits a CODEC_CONFIG buffer.
+        val paramSets = mutableMapOf<Int, ByteArray>()
 
         codec.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) { /* surface input */ }
@@ -130,26 +137,39 @@ class AndroidCameraStreamer(
 
                 val nals = AnnexB.splitNals(raw)
                 if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                    sps = nals.firstOrNull { (it[0].toInt() and 0x1F) == NalType.SPS }
-                    pps = nals.firstOrNull { (it[0].toInt() and 0x1F) == NalType.PPS }
+                    nals.forEach { nal ->
+                        val type = config.videoCodec.nalType(nal[0])
+                        if (config.videoCodec.isParameterSet(type)) {
+                            paramSets[type] = nal
+                        }
+                    }
                     return
                 }
                 val isKeyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
                 val finalNals = nals.toMutableList()
                 if (isKeyFrame) {
-                    val sp = sps; val pp = pps
-                    if (sp != null && finalNals.firstOrNull { (it[0].toInt() and 0x1F) == NalType.SPS } == null) {
-                        finalNals.add(0, sp)
+                    // Prepend any param sets that the bitstream itself didn't include.
+                    val existing = finalNals.map { config.videoCodec.nalType(it[0]) }.toSet()
+                    val ordered = when (config.videoCodec) {
+                        com.uvp.sim.media.VideoCodec.H264 ->
+                            listOf(NalType.SPS, NalType.PPS)
+                        com.uvp.sim.media.VideoCodec.H265 ->
+                            listOf(H265NalType.VPS_NUT, H265NalType.SPS_NUT, H265NalType.PPS_NUT)
                     }
-                    if (pp != null && finalNals.firstOrNull { (it[0].toInt() and 0x1F) == NalType.PPS } == null) {
-                        finalNals.add(if (sp != null) 1 else 0, pp)
+                    var insertAt = 0
+                    for (psType in ordered) {
+                        if (psType in existing) continue
+                        val ps = paramSets[psType] ?: continue
+                        finalNals.add(insertAt, ps)
+                        insertAt++
                     }
                 }
                 trySend(
                     H264Frame(
                         nalUnits = finalNals,
                         timestampUs = info.presentationTimeUs,
-                        isKeyFrame = isKeyFrame
+                        isKeyFrame = isKeyFrame,
+                        codec = config.videoCodec
                     )
                 )
             }

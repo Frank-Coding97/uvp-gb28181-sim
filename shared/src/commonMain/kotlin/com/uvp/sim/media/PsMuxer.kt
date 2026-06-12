@@ -25,7 +25,7 @@ package com.uvp.sim.media
  */
 class PsMuxer {
 
-    /** Mux one H.264 frame. Returns the PS byte stream for that frame. */
+    /** Mux one frame. Returns the PS byte stream for that frame. */
     fun muxFrame(frame: H264Frame): ByteArray {
         val pts90k = (frame.timestampUs * 9 / 100)  // 90 kHz clock
         val out = mutableListOf<Byte>()
@@ -36,15 +36,40 @@ class PsMuxer {
         // 2. Key frame extras
         if (frame.isKeyFrame) {
             appendSystemHeader(out)
-            appendProgramStreamMap(out)
+            appendProgramStreamMap(out, frame.codec, audioCodec)
         }
 
         // 3. PES (carrying all NAL units, with Annex-B start codes between)
         val es = buildElementaryStream(frame)
-        appendPesPacket(out, es, pts90k)
+        appendPesPacket(out, es, pts90k, streamId = 0xE0)
 
         return out.toByteArray()
     }
+
+    /**
+     * Mux one audio frame as a self-contained PS pack carrying audio PES.
+     *
+     * The pack uses stream_id 0xC0 (audio stream 0). The Program Stream Map is
+     * NOT re-emitted on audio packs — the platform should already have the PSM
+     * from the most recent video key frame. WVP / ZLMediaKit happily inject
+     * audio packs into an existing program stream this way.
+     */
+    fun muxAudio(frame: AudioFrame): ByteArray {
+        val pts90k = (frame.timestampUs * 9 / 100)
+        val out = mutableListOf<Byte>()
+        appendPackHeader(out, pts90k)
+        appendPesPacket(out, frame.payload, pts90k, streamId = 0xC0)
+        return out.toByteArray()
+    }
+
+    /**
+     * Audio codec hint embedded into the next key frame's Program Stream Map.
+     *
+     * Set this once per session before muxing the first key frame so the PSM
+     * advertises the correct audio elementary stream. Default is null, which
+     * keeps the legacy "video-only" behaviour with a padding placeholder entry.
+     */
+    var audioCodec: AudioCodec? = null
 
     private fun appendPackHeader(out: MutableList<Byte>, pts90k: Long) {
         // pack_start_code 0x000001BA
@@ -105,7 +130,11 @@ class PsMuxer {
         out += 0x14
     }
 
-    private fun appendProgramStreamMap(out: MutableList<Byte>) {
+    private fun appendProgramStreamMap(
+        out: MutableList<Byte>,
+        videoCodec: VideoCodec,
+        audioCodec: AudioCodec?
+    ) {
         // psm_start_code 0x000001BC
         out += 0x00; out += 0x00; out += 0x01; out += 0xBC.toByte()
         // program_stream_map_length (16 bits) = 18 bytes following (4+2+4+4+4)
@@ -116,26 +145,40 @@ class PsMuxer {
         out += 0xFF.toByte()
         // program_stream_info_length (16 bits) = 0
         out += 0x00; out += 0x00
-        // elementary_stream_map_length (16 bits) = 8 (one stream entry of 8 bytes)
+        // elementary_stream_map_length (16 bits) = 8 (two stream entries × 4 bytes)
         out += 0x00; out += 0x08
-        // ----- elementary stream entry: stream H.264 0x1B + stream id E0 + 4 bytes -----
-        out += 0x1B.toByte()  // stream_type = H.264
+
+        // ----- Video ES entry -----
+        out += videoCodec.psStreamType.toByte()  // 0x1B for H.264, 0x24 for H.265
         out += 0xE0.toByte()  // elementary_stream_id = video stream 0
         out += 0x00; out += 0x00  // ES_info_length = 0
-        // ----- another stream entry: G.711A 0x90 + stream_id C0 -----
-        // 简化:M1 仅视频流。不写第二条。
-        // 但 elementary_stream_map_length 必须是该段实际字节数,我们写了 1 条 = 4 字节,但段长度宣告是 8
-        // 修正:再补一条 dummy 占位
-        out += 0x00.toByte()  // padding stream_type (private)
-        out += 0xBE.toByte()  // padding stream_id
-        out += 0x00; out += 0x00  // ES_info_length = 0
-        // CRC32 (4 bytes) — 用一个固定占位(M1 不严格校验,WVP/ZLMediaKit 通常容忍)
+
+        // ----- Audio ES entry -----
+        // If an audio codec is configured, write it as the second ES entry
+        // (stream_id 0xC0). Otherwise write a private/padding placeholder so
+        // the segment length still matches the declared 8 bytes.
+        if (audioCodec != null) {
+            out += audioCodec.psStreamType.toByte()  // 0x90 for G.711, 0x0F for AAC
+            out += 0xC0.toByte()                      // audio stream 0
+            out += 0x00; out += 0x00                  // ES_info_length = 0
+        } else {
+            out += 0x00.toByte()  // padding stream_type (private)
+            out += 0xBE.toByte()  // padding stream_id
+            out += 0x00; out += 0x00
+        }
+
+        // CRC32 (4 bytes) — fixed placeholder; WVP/ZLMediaKit accept it.
         out += 0x00; out += 0x00; out += 0x00; out += 0x00
     }
 
-    private fun appendPesPacket(out: MutableList<Byte>, es: ByteArray, pts90k: Long) {
-        // packet_start_code_prefix + stream_id (E0 = video stream 0)
-        out += 0x00; out += 0x00; out += 0x01; out += 0xE0.toByte()
+    private fun appendPesPacket(
+        out: MutableList<Byte>,
+        es: ByteArray,
+        pts90k: Long,
+        streamId: Int
+    ) {
+        // packet_start_code_prefix + stream_id (E0 = video stream 0, C0 = audio stream 0)
+        out += 0x00; out += 0x00; out += 0x01; out += (streamId and 0xFF).toByte()
 
         // PES header length: 5 bytes for PTS
         val pesHeaderLen = 5

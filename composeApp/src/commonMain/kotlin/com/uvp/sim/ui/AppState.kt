@@ -32,5 +32,6 @@ interface AppActions {
 enum class AppTab(val label: String) {
     Home("主页"),
     Channel("通道"),
+    Media("音视频"),
     Log("日志");
 }

@@ -47,6 +47,7 @@ class SimulatorEngine(
     private val localIp: String = "0.0.0.0",
     private val localPortProvider: () -> Int = { 5060 },
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
+    private val audioCapture: com.uvp.sim.camera.AudioCapture? = null,
     private val rtpSenderFactory: ((host: String, port: Int) -> com.uvp.sim.network.RtpSender)? = null
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
@@ -75,6 +76,7 @@ class SimulatorEngine(
         val ssrc: String,
         val rtpSender: com.uvp.sim.network.RtpSender,
         val streamJob: Job,
+        val audioJob: Job? = null,
         var frameCount: Int = 0,
         var packetCount: Int = 0
     )
@@ -442,7 +444,10 @@ class SimulatorEngine(
             payloadType = 96,
             ssrc = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
         )
-        val muxer = com.uvp.sim.media.PsMuxer()
+        val muxer = com.uvp.sim.media.PsMuxer().apply {
+            audioCodec = if (audioCapture != null) config.video.audioCodec else null
+        }
+        val rtpMutex = Mutex()
 
         val streamJob = scope.launch {
             val active = activeStream
@@ -451,13 +456,15 @@ class SimulatorEngine(
                     val ps = muxer.muxFrame(frame)
                     val timestamp90k = frame.timestampUs * 9 / 100
                     val packets = packer.packFrame(ps, timestamp90k)
-                    for (p in packets) {
-                        try {
-                            rtp.send(p)
-                            active?.let { it.packetCount += 1 }
-                        } catch (e: Throwable) {
-                            _events.emit(SimEvent.TransportError("RTP send: ${e.message}"))
-                            return@collect
+                    rtpMutex.withLock {
+                        for (p in packets) {
+                            try {
+                                rtp.send(p)
+                                active?.let { it.packetCount += 1 }
+                            } catch (e: Throwable) {
+                                _events.emit(SimEvent.TransportError("RTP send: ${e.message}"))
+                                return@withLock
+                            }
                         }
                     }
                     active?.let { it.frameCount += 1 }
@@ -467,11 +474,38 @@ class SimulatorEngine(
             }
         }
 
+        val audioJob = audioCapture?.let { audio ->
+            scope.launch {
+                val active = activeStream
+                try {
+                    audio.start().collect { aFrame ->
+                        val ps = muxer.muxAudio(aFrame)
+                        val timestamp90k = aFrame.timestampUs * 9 / 100
+                        val packets = packer.packFrame(ps, timestamp90k)
+                        rtpMutex.withLock {
+                            for (p in packets) {
+                                try {
+                                    rtp.send(p)
+                                    active?.let { it.packetCount += 1 }
+                                } catch (e: Throwable) {
+                                    _events.emit(SimEvent.TransportError("RTP audio send: ${e.message}"))
+                                    return@withLock
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Throwable) {
+                    _events.emit(SimEvent.TransportError("audio flow: ${e.message}"))
+                }
+            }
+        }
+
         activeStream = ActiveStream(
             callId = cid,
             ssrc = ssrc,
             rtpSender = rtp,
-            streamJob = streamJob
+            streamJob = streamJob,
+            audioJob = audioJob
         )
     }
 
@@ -495,8 +529,10 @@ class SimulatorEngine(
         val active = activeStream ?: return
         activeStream = null
         active.streamJob.cancel()
+        active.audioJob?.cancel()
         try { active.rtpSender.close() } catch (_: Throwable) { }
         try { cameraCapture?.stop() } catch (_: Throwable) { }
+        try { audioCapture?.stop() } catch (_: Throwable) { }
         _events.emit(
             SimEvent.StreamStopped(
                 callId = callId,

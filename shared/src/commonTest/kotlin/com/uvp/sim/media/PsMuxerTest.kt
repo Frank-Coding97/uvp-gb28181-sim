@@ -133,6 +133,69 @@ class PsMuxerTest {
         assertEquals(listOf(NalType.SPS, NalType.PPS, NalType.IDR), frame.nalTypes())
     }
 
+    @Test fun h265KeyFramePsmHasStreamType0x24() {
+        // Build a minimal H.265 NAL: header byte = (type << 1) | 0
+        fun h265Nal(type: Int, size: Int): ByteArray {
+            val b = ByteArray(size)
+            b[0] = ((type and 0x3F) shl 1).toByte()
+            b[1] = 0x01  // layer_id=0, tid_plus_one=1
+            for (i in 2 until size) b[i] = (i and 0xFF).toByte()
+            return b
+        }
+        val frame = H264Frame(
+            nalUnits = listOf(
+                h265Nal(H265NalType.VPS_NUT, 24),
+                h265Nal(H265NalType.SPS_NUT, 32),
+                h265Nal(H265NalType.PPS_NUT, 12),
+                h265Nal(H265NalType.IDR_W_RADL, 200)
+            ),
+            timestampUs = 0,
+            isKeyFrame = true,
+            codec = VideoCodec.H265
+        )
+        val ps = PsMuxer().muxFrame(frame)
+        // PSM start code 0x000001BC, then header bytes; the elementary stream
+        // entry's first byte (stream_type) should be 0x24 for H.265.
+        val psmOff = findStartCode(ps, 0xBC)
+        assertTrue(psmOff >= 0, "PSM section must exist")
+        // Layout after BC start code:
+        //   length(2) + CNI/version(1) + marker(1) + psinfo_len(2) + esm_len(2) = 8
+        // → stream_type at psmOff + 4 + 8 = +12
+        val streamTypeIdx = psmOff + 12
+        assertEquals(0x24, ps[streamTypeIdx].toInt() and 0xFF,
+            "H.265 PSM stream_type must be 0x24")
+    }
+
+    @Test fun h264KeyFramePsmKeepsStreamType0x1B() {
+        val frame = H264Frame(
+            nalUnits = listOf(
+                nal(NalType.SPS, 16),
+                nal(NalType.PPS, 8),
+                nal(NalType.IDR, 100)
+            ),
+            timestampUs = 0,
+            isKeyFrame = true,
+            codec = VideoCodec.H264
+        )
+        val ps = PsMuxer().muxFrame(frame)
+        val psmOff = findStartCode(ps, 0xBC)
+        assertTrue(psmOff >= 0)
+        val streamTypeIdx = psmOff + 12
+        assertEquals(0x1B, ps[streamTypeIdx].toInt() and 0xFF,
+            "H.264 PSM stream_type must remain 0x1B")
+    }
+
+    @Test fun h265CodecExposesParameterSetTypes() {
+        val codec = VideoCodec.H265
+        assertTrue(codec.isParameterSet(H265NalType.VPS_NUT))
+        assertTrue(codec.isParameterSet(H265NalType.SPS_NUT))
+        assertTrue(codec.isParameterSet(H265NalType.PPS_NUT))
+        assertTrue(codec.isKeyNal(H265NalType.IDR_W_RADL))
+        assertTrue(codec.isKeyNal(H265NalType.IDR_N_LP))
+        // 数据帧不该被当 key
+        assertEquals(false, codec.isKeyNal(H265NalType.TRAIL_R))
+    }
+
     /** Helper: 找 0x000001<wantedByte> 的偏移,返回起始码第 0 字节位置(找不到返回 -1) */
     private fun findStartCode(data: ByteArray, wantedByte: Int): Int {
         for (i in 0..data.size - 4) {

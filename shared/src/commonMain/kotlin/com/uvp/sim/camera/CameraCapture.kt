@@ -37,7 +37,8 @@ data class CaptureConfig(
     val frameRate: Int = 25,
     val bitrateBps: Int = 2_000_000,
     val keyframeIntervalSeconds: Int = 1,
-    val cameraFacing: CameraFacing = CameraFacing.BACK
+    val cameraFacing: CameraFacing = CameraFacing.BACK,
+    val videoCodec: com.uvp.sim.media.VideoCodec = com.uvp.sim.media.VideoCodec.H264
 )
 
 enum class CameraFacing { FRONT, BACK }

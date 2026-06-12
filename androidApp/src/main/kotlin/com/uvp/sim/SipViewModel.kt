@@ -3,6 +3,8 @@ package com.uvp.sim
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.uvp.sim.camera.AudioCapture
+import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
 import com.uvp.sim.config.DeviceConfig
@@ -38,6 +40,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private var transport: UdpSipTransport? = null
     private var engine: SimulatorEngine? = null
     private var camera: CameraCapture? = null
+    private var audio: AudioCapture? = null
 
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -48,9 +51,22 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _config = MutableStateFlow(defaultConfig())
     val config: StateFlow<SimConfig> = _config.asStateFlow()
 
+    /**
+     * Bumped each time the video profile changes so the Activity can rebuild
+     * its [com.uvp.sim.camera.AndroidCameraStreamer] — encoder MIME / resolution
+     * / fps / bitrate / GOP all live there and need a fresh codec instance.
+     */
+    private val _videoConfigVersion = MutableStateFlow(0)
+    val videoConfigVersion: StateFlow<Int> = _videoConfigVersion.asStateFlow()
+
     /** Activity calls this after creating CameraCapture + AndroidCameraStreamer. */
     fun bindCamera(cam: CameraCapture) {
         this.camera = cam
+    }
+
+    /** Activity calls this after creating AudioCapture + AndroidAudioStreamer. */
+    fun bindAudio(aud: AudioCapture) {
+        this.audio = aud
     }
 
     fun connect() {
@@ -94,6 +110,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             localIp = localIp,
             localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
             cameraCapture = camera,
+            audioCapture = audio,
             rtpSenderFactory = rtpFactory
         )
         engine = eng
@@ -148,7 +165,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
      * if disconnected, just store for next connect.
      */
     fun updateConfig(newCfg: SimConfig) {
+        val prev = _config.value
         _config.value = newCfg
+        if (prev.video != newCfg.video) {
+            _videoConfigVersion.value += 1
+        }
         if (engine != null) {
             engineScope.launch {
                 try { engine?.unregister() } catch (_: Throwable) { }
@@ -185,7 +206,21 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Throwable) { /* ignore */ }
     }
 
-    fun newCaptureConfig(): CaptureConfig = CaptureConfig()
+    fun newCaptureConfig(): CaptureConfig {
+        val v = _config.value.video
+        return CaptureConfig(
+            widthPx = v.resolution.widthPx,
+            heightPx = v.resolution.heightPx,
+            frameRate = v.frameRate,
+            bitrateBps = v.bitrateKbps * 1000,
+            keyframeIntervalSeconds = v.keyframeIntervalSeconds,
+            videoCodec = v.videoCodec
+        )
+    }
+
+    fun newAudioCaptureConfig(): AudioCaptureConfig {
+        return AudioCaptureConfig(codec = _config.value.video.audioCodec)
+    }
 
     companion object {
         // ===== WVP target initial defaults; overridable via Config screen =====
