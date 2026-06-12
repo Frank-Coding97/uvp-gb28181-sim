@@ -96,22 +96,18 @@ private fun ToggleChip(label: String, active: Boolean, onClick: () -> Unit) {
 /**
  * 把 SimEvent 列表里的 SIP 消息抽出来 → SipFlowEvent。
  *
- * 时序图需要每条消息的时间戳;SimEvent 没存,这里用"出现顺序 + 起始时间偏移"
- * 模拟一个 epochMs(P0 简化:用进程启动时间 + index*1ms,真机看不出来)。
- *
- * P1 应在 SimEvent 上挂 timestampMs 字段(plan §6 已 deferred)。
+ * 用每条 SimEvent.timestampMs(emit 时的真实时间)。
  */
 private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> {
-    val baseMs = 1_700_000_000_000L  // 占位起点,UI 层只看相对顺序
-    return mapIndexedNotNull { idx, ev ->
+    return mapNotNull { ev ->
         val (msg, outgoing) = when (ev) {
             is SimEvent.MessageSent -> ev.message to true
             is SimEvent.MessageReceived -> ev.message to false
-            else -> return@mapIndexedNotNull null
+            else -> return@mapNotNull null
         }
-        val callId = msg.firstHeader("Call-ID") ?: return@mapIndexedNotNull null
+        val callId = msg.firstHeader("Call-ID") ?: return@mapNotNull null
         SipFlowEvent(
-            timestampMs = baseMs + idx,
+            timestampMs = ev.timestampMs,
             outgoing = outgoing,
             message = msg,
             callId = callId
@@ -120,22 +116,26 @@ private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> {
 }
 
 /**
- * 把 StreamStarted/Stopped 配对成 MediaSegmentEvent。
+ * 把 StreamStarted/Stopped/Stats 配对成 MediaSegmentEvent。
  *
- * 简化:只取最后一对(M1 至多 1 路并发流,plan §3)。
+ * 每个 callId 取最新的 StreamStarted,frameCount/packetCount 优先取 StreamStats
+ * (流仍在推时实时更新),没有 stats 才退到 StreamStopped(流已停)。
+ *
+ * 简化:M1 至多 1 路并发流,只取最后一路。
  */
 private fun List<SimEvent>.toMediaSegments(): List<MediaSegmentEvent> {
-    val baseMs = 1_700_000_000_000L
     val started = filterIsInstance<SimEvent.StreamStarted>().lastOrNull() ?: return emptyList()
     val stoppedAt = filterIsInstance<SimEvent.StreamStopped>()
         .lastOrNull { it.callId == started.callId }
-    val frameCount = stoppedAt?.frameCount ?: 0
-    val packetCount = stoppedAt?.packetCount ?: 0
+    val latestStats = filterIsInstance<SimEvent.StreamStats>()
+        .lastOrNull { it.callId == started.callId }
+    val frameCount = stoppedAt?.frameCount ?: latestStats?.frameCount ?: 0
+    val packetCount = stoppedAt?.packetCount ?: latestStats?.packetCount ?: 0
     return listOf(
         MediaSegmentEvent(
             callId = started.callId,
-            startedAtMs = baseMs + indexOf(started),
-            stoppedAtMs = stoppedAt?.let { baseMs + indexOf(it) },
+            startedAtMs = started.timestampMs,
+            stoppedAtMs = stoppedAt?.timestampMs,
             frameCount = frameCount,
             packetCount = packetCount,
             remoteHost = started.remoteHost,

@@ -128,6 +128,7 @@ object LogExport {
         is SimEvent.IncomingInvite -> "← INVITE   ${ev.callId}"
         is SimEvent.StreamStarted -> "→ 200      OK · RTP → ${ev.remoteHost}:${ev.remotePort} ssrc=${ev.ssrc}"
         is SimEvent.StreamStopped -> "■ STOP     ${ev.frameCount}f / ${ev.packetCount}p · ${ev.reason}"
+        is SimEvent.StreamStats -> "· STATS    ${ev.frameCount}f / ${ev.packetCount}p"
         is SimEvent.CallEnded -> "← BYE      ${ev.reason}"
         is SimEvent.SnapshotReported -> "→ ALARM    抓拍 SN=${ev.sn}"
         is SimEvent.MessageSent -> "→ ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"

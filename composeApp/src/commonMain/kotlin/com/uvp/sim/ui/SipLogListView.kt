@@ -38,6 +38,9 @@ import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 
 /**
  * SIP 协议日志列表视图(T08 补全:时间戳显示 + 行展开 + 暂停跟随 + 导出).
@@ -48,7 +51,7 @@ import com.uvp.sim.sip.SipResponse
 fun SipLogListView(events: List<SimEvent>) {
     var activeFilter by remember { mutableStateOf("全部") }
     var expandedIndex by remember { mutableStateOf<Int?>(null) }
-    val filtered = filterEvents(events, activeFilter)
+    val filtered = filterEvents(events, activeFilter).asReversed()  // 最新在顶
     val listState = rememberLazyListState()
     LaunchedEffect(events.size) {
         if (events.isNotEmpty()) listState.animateScrollToItem(0)
@@ -107,6 +110,7 @@ private fun SipChip(label: String, active: Boolean, onClick: () -> Unit) {
 @Composable
 private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
     val spec = logRowSpec(ev) ?: return
+    val time = formatHmsList(ev.timestampMs)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -115,7 +119,7 @@ private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
             .padding(horizontal = 4.dp, vertical = 6.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(spec.time, fontSize = 10.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace)
+            Text(time, fontSize = 10.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.width(6.dp))
             Text(
                 spec.arrow,
@@ -231,6 +235,7 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         "", "■", true, "END", UvpColor.TextHint, "${ev.frameCount}f / ${ev.packetCount}p · ${ev.reason}",
         category = "BYE"
     )
+    is SimEvent.StreamStats -> null  // 时序图 MediaSegment 显示,列表不重复
     is SimEvent.CallEnded -> LogRowSpec(
         "", "←", false, "BYE", UvpColor.Danger, ev.reason, category = "BYE"
     )
@@ -288,4 +293,10 @@ private fun filterEvents(events: List<SimEvent>, filter: String): List<SimEvent>
         val spec = logRowSpec(ev) ?: return@filter false
         spec.category == filter
     }
+}
+
+private fun formatHmsList(epochMs: Long): String {
+    if (epochMs <= 0) return "--:--:--"
+    val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
+    return "%02d:%02d:%02d".format(ldt.hour, ldt.minute, ldt.second)
 }

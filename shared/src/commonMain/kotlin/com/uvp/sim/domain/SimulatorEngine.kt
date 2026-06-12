@@ -557,6 +557,13 @@ class SimulatorEngine(
                         LogLevel.Info, LogTag.Media,
                         "RTP 推送中: ${a.frameCount} 帧 / ${a.packetCount} 包"
                     )
+                    _events.emit(
+                        SimEvent.StreamStats(
+                            callId = a.callId,
+                            frameCount = a.frameCount,
+                            packetCount = a.packetCount
+                        )
+                    )
                 }
             }
         )
