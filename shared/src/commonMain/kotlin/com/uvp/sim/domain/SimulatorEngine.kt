@@ -51,7 +51,18 @@ class SimulatorEngine(
     private val localPortProvider: () -> Int = { 5060 },
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
     private val audioCapture: com.uvp.sim.camera.AudioCapture? = null,
-    private val rtpSenderFactory: ((host: String, port: Int) -> com.uvp.sim.network.RtpSender)? = null
+    private val rtpSenderFactory: ((host: String, port: Int) -> com.uvp.sim.network.RtpSender)? = null,
+    /**
+     * 录像引擎(M2 加)。默认 NoopRecordingService,SIP 主路径不会被影响。
+     * Android 下由 ViewModel 注入 [com.uvp.sim.recording.AndroidRecordingService]。
+     */
+    private val recordingService: com.uvp.sim.recording.RecordingService =
+        com.uvp.sim.recording.NoopRecordingService,
+    /**
+     * PLAYBACK 推流构造器(M2 D 块)。null 时引擎收 PLAYBACK INVITE 直接 487。
+     * 真实场景由 ViewModel 注入: 拼装 Mp4DemuxFactory + RtpSink + clock。
+     */
+    private val playbackBuilder: PlaybackBuilder? = null
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -73,6 +84,8 @@ class SimulatorEngine(
 
     // Active streaming session state (M1: at most one)
     private var activeStream: ActiveStream? = null
+    /** Active PLAYBACK session(M2 D 块)。与 activeStream 互斥。 */
+    private var activePlayback: ActivePlayback? = null
 
     private data class ActiveStream(
         val callId: String,
@@ -83,6 +96,13 @@ class SimulatorEngine(
         val statsJob: Job? = null,
         var frameCount: Int = 0,
         var packetCount: Int = 0
+    )
+
+    private data class ActivePlayback(
+        val callId: String,
+        val ssrc: String,
+        val playbackJob: Job,
+        val rtpClose: suspend () -> Unit
     )
 
     /** Initiate registration. Returns immediately; observe [state] for completion. */
@@ -390,11 +410,91 @@ class SimulatorEngine(
         // Inspect body — only Catalog query needs a follow-up Notify response.
         val xml = message.body.decodeToString()
         val cmd = com.uvp.sim.gb28181.ManscdpParser.cmdType(xml)
-        if (cmd == "Catalog") {
-            val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-            sendCatalogResponse(sn)
+        when (cmd) {
+            "Catalog" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                sendCatalogResponse(sn)
+            }
+            "DeviceControl" -> handleDeviceControl(xml)
+            "RecordInfo" -> handleRecordInfoQuery(xml)
+            // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to later.
+            else -> Unit
         }
-        // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to M2.
+    }
+
+    private suspend fun handleDeviceControl(xml: String) {
+        val recordCmd = com.uvp.sim.gb28181.ManscdpParser.recordCmd(xml) ?: return
+        when (recordCmd.equals("Record", ignoreCase = true) to recordCmd.equals("StopRecord", ignoreCase = true)) {
+            true to false -> {
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "平台下发 Record → 启动录像 source=PlatformCmd"
+                )
+                runCatching {
+                    recordingService.start(
+                        com.uvp.sim.recording.RecordSource.PlatformCmd,
+                        config.device.videoChannelId
+                    )
+                }.onFailure {
+                    SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 启动录像异常: ${it.message}")
+                }
+            }
+            false to true -> {
+                SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台下发 StopRecord → 停止录像")
+                runCatching { recordingService.stop() }
+                    .onFailure { SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 停止录像异常: ${it.message}") }
+            }
+            else -> SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "平台 RecordCmd 未识别 → '$recordCmd'"
+            )
+        }
+    }
+
+    private suspend fun handleRecordInfoQuery(xml: String) {
+        val tz = "Asia/Shanghai"  // M2 默认本地时间(国标多用)
+        val query = com.uvp.sim.gb28181.RecordInfoQuery.parse(xml, tz) ?: run {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "RecordInfo 查询解析失败")
+            return
+        }
+        val files = recordingService.files.value
+        val hits = files.filter {
+            query.startMs <= it.endTimeMs && query.endMs >= it.startTimeMs &&
+                (query.type == null || it.type == query.type)
+        }
+        val packets = com.uvp.sim.gb28181.RecordInfoNotify.buildAll(
+            sn = query.sn,
+            deviceId = config.device.deviceId,
+            deviceName = config.device.name,
+            items = hits,
+            timeZoneId = tz
+        )
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "平台查询录像 → 命中 ${hits.size} 条 / 分 ${packets.size} 包"
+        )
+        for (xmlBody in packets) {
+            try {
+                cseq += 1
+                val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+                val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+                val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+                val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                    config = config,
+                    cseq = cseq,
+                    callId = callIdNow,
+                    branch = branch,
+                    fromTag = fromTagNow,
+                    localIp = localIp,
+                    localPort = localPortProvider(),
+                    xmlBody = xmlBody
+                )
+                transport.send(msg)
+                _events.emit(SimEvent.MessageSent(msg))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("send RecordInfo: ${e.message}"))
+            }
+        }
     }
 
     private suspend fun sendCatalogResponse(sn: String) {
@@ -422,6 +522,23 @@ class SimulatorEngine(
     }
 
     private suspend fun handleInvite(invite: SipRequest) {
+        // Probe SDP s= line to decide Play vs Playback path
+        val isPlayback = try {
+            val offer = com.uvp.sim.sip.SdpPlaybackParser.parse(invite.body)
+            offer.isPlayback
+        } catch (_: Throwable) { false }
+
+        if (isPlayback) {
+            handlePlaybackInvite(invite)
+            return
+        }
+
+        if (activePlayback != null) {
+            // 回放进行中,拒绝实时推流
+            sendBusyResponse(invite, "回放中,实时推流互斥")
+            return
+        }
+
         _state.value = SipStateMachine.transition(_state.value, SipEvent.InviteReceived)
         val cid = invite.callId() ?: ""
         _events.emit(SimEvent.IncomingInvite(cid))
@@ -580,9 +697,176 @@ class SimulatorEngine(
         }
 
         val cid = bye.callId() ?: ""
-        stopActiveStream(cid, "remote BYE")
+
+        // 区分 BYE 走 activeStream 还是 activePlayback
+        val playback = activePlayback
+        if (playback != null && playback.callId == cid) {
+            stopActivePlayback("remote BYE")
+        } else {
+            stopActiveStream(cid, "remote BYE")
+        }
         _state.value = SipStateMachine.transition(_state.value, SipEvent.ByeReceived)
         _events.emit(SimEvent.CallEnded(cid, "remote BYE"))
+    }
+
+    private suspend fun handlePlaybackInvite(invite: SipRequest) {
+        val cid = invite.callId() ?: ""
+        if (activeStream != null) {
+            sendBusyResponse(invite, "实时推流中,PLAYBACK 互斥")
+            return
+        }
+        if (activePlayback != null) {
+            sendBusyResponse(invite, "已有回放进行中")
+            return
+        }
+        val builder = playbackBuilder
+        if (builder == null) {
+            // 没注入 PLAYBACK 能力,直接 487
+            sendNotFoundResponse(invite, "PLAYBACK 能力未配置")
+            return
+        }
+        val offer = try {
+            com.uvp.sim.sip.SdpPlaybackParser.parse(invite.body)
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("PLAYBACK SDP parse: ${e.message}"))
+            sendNotFoundResponse(invite, "SDP 解析失败")
+            return
+        }
+        val segments = recordingService.files.value.filter {
+            offer.startMs <= it.endTimeMs && offer.endMs >= it.startTimeMs &&
+                (offer.channelId == null || it.channelId == offer.channelId)
+        }.sortedBy { it.startTimeMs }
+        if (segments.isEmpty()) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "平台 PLAYBACK 区间无录像 → 487 startSec=${offer.startEpochSec} endSec=${offer.endEpochSec}"
+            )
+            sendNotFoundResponse(invite, "区间无录像")
+            return
+        }
+
+        val ssrc = offer.ssrc ?: com.uvp.sim.sip.SsrcUtils.generate(
+            realtime = false,
+            domainCode = config.server.domain.takeLast(5).padStart(5, '0'),
+            sequence = (cseq + 1) and 0x0FFF
+        )
+
+        val playback = builder.build(offer, segments, ssrc) ?: run {
+            sendNotFoundResponse(invite, "PLAYBACK 构造失败")
+            return
+        }
+
+        // 200 OK + answer SDP(s=Playback)
+        val sdpAnswer = com.uvp.sim.sip.SdpAnswer.buildPlayAnswer(
+            deviceId = config.device.deviceId,
+            localIp = localIp,
+            localRtpPort = playback.localRtpPort,
+            ssrc = ssrc,
+            sessionName = "Playback"
+        )
+        val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
+        val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
+            invite = invite,
+            deviceContact = deviceContact,
+            toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+            sdpBody = sdpAnswer
+        )
+        try {
+            transport.send(response)
+            _events.emit(SimEvent.MessageSent(response))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send PLAYBACK 200: ${e.message}"))
+            playback.cancel()
+            return
+        }
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "开始回放 → ${segments.size} 段 spanMs=${offer.endMs - offer.startMs} ssrc=$ssrc"
+        )
+
+        val job = scope.launch {
+            try {
+                playback.run()
+                // 推完最后一帧 → 主动 BYE
+                sendBye(cid, ssrc, deviceContact, invite)
+                SystemLogger.emit(LogLevel.Info, LogTag.Media, "回放完成 → 主动 BYE")
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("PLAYBACK error: ${e.message}"))
+                SystemLogger.emit(LogLevel.Error, LogTag.Media, "回放异常: ${e.message}")
+            } finally {
+                activePlayback = null
+            }
+        }
+        activePlayback = ActivePlayback(
+            callId = cid,
+            ssrc = ssrc,
+            playbackJob = job,
+            rtpClose = playback::cancel
+        )
+    }
+
+    private suspend fun stopActivePlayback(reason: String) {
+        val pb = activePlayback ?: return
+        activePlayback = null
+        pb.playbackJob.cancel()
+        try { pb.rtpClose() } catch (_: Throwable) { }
+        SystemLogger.emit(LogLevel.Info, LogTag.Media, "回放中断 → reason=$reason")
+    }
+
+    private suspend fun sendBusyResponse(req: SipRequest, reason: String) {
+        runCatching {
+            val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
+                req, statusCode = 486, reasonPhrase = "Busy Here",
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+            )
+            transport.send(resp)
+            _events.emit(SimEvent.MessageSent(resp))
+        }
+        SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 INVITE → 486 ($reason)")
+    }
+
+    private suspend fun sendNotFoundResponse(req: SipRequest, reason: String) {
+        runCatching {
+            val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
+                req, statusCode = 487, reasonPhrase = "Request Terminated",
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+            )
+            transport.send(resp)
+            _events.emit(SimEvent.MessageSent(resp))
+        }
+        SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 INVITE → 487 ($reason)")
+    }
+
+    /**
+     * 主动 BYE — 回放推完最后一帧后调用,通知平台关闭对话框。
+     * 简化实现:重用 invite 的 To/From,反向构造 BYE。M3 可补完整 dialog 跟踪。
+     */
+    private suspend fun sendBye(callId: String, ssrc: String, deviceContact: String, originalInvite: SipRequest) {
+        runCatching {
+            cseq += 1
+            val byeReq = com.uvp.sim.sip.SipRequest(
+                method = com.uvp.sim.sip.SipMethod.BYE,
+                requestUri = originalInvite.requestUri,
+                headers = listOf(
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.VIA,
+                        "SIP/2.0/${config.transport.name} $localIp:${localPortProvider()};branch=${com.uvp.sim.sip.SipBuilders.randomBranch()}"),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.FROM,
+                        originalInvite.headers.firstOrNull { com.uvp.sim.sip.SipHeader.canonicalize(it.name) == com.uvp.sim.sip.SipHeader.TO }?.value
+                            ?: "<sip:${config.device.deviceId}@${config.server.domain}>"),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.TO,
+                        originalInvite.headers.firstOrNull { com.uvp.sim.sip.SipHeader.canonicalize(it.name) == com.uvp.sim.sip.SipHeader.FROM }?.value
+                            ?: "<sip:${config.server.serverId}@${config.server.domain}>"),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CALL_ID, callId),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CSEQ, "$cseq BYE"),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CONTACT, deviceContact),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.MAX_FORWARDS, "70"),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.USER_AGENT, config.userAgent)
+                ),
+                body = ByteArray(0)
+            )
+            transport.send(byeReq)
+            _events.emit(SimEvent.MessageSent(byeReq))
+        }
     }
 
     private suspend fun stopActiveStream(callId: String, reason: String) {

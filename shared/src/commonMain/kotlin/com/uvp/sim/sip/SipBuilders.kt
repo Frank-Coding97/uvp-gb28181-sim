@@ -196,7 +196,16 @@ object SipBuilders {
     }
 
     /** Build a simple 200 OK with no body for non-INVITE requests (MESSAGE, BYE). */
-    fun buildSimple200(request: SipRequest, toTag: String? = null): SipResponse {
+    fun buildSimple200(request: SipRequest, toTag: String? = null): SipResponse =
+        buildSimpleResponse(request, 200, "OK", toTag)
+
+    /** Build a simple non-2xx response (no body). Used for 486 Busy / 487 Terminated. */
+    fun buildSimpleResponse(
+        request: SipRequest,
+        statusCode: Int,
+        reasonPhrase: String,
+        toTag: String? = null
+    ): SipResponse {
         val newHeaders = mutableListOf<SipMessage.Header>()
         for (h in request.headers) {
             val canonical = SipHeader.canonicalize(h.name)
@@ -213,7 +222,7 @@ object SipBuilders {
                 else -> { /* drop */ }
             }
         }
-        return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders)
+        return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
     }
 
     /**
