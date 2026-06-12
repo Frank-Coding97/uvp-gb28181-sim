@@ -495,7 +495,6 @@ class SimulatorEngine(
         val rtpMutex = Mutex()
 
         val streamJob = scope.launch {
-            val active = activeStream
             try {
                 cam.start().collect { frame ->
                     val ps = muxer.muxFrame(frame)
@@ -505,14 +504,14 @@ class SimulatorEngine(
                         for (p in packets) {
                             try {
                                 rtp.send(p)
-                                active?.let { it.packetCount += 1 }
+                                activeStream?.let { it.packetCount += 1 }
                             } catch (e: Throwable) {
                                 _events.emit(SimEvent.TransportError("RTP send: ${e.message}"))
                                 return@withLock
                             }
                         }
                     }
-                    active?.let { it.frameCount += 1 }
+                    activeStream?.let { it.frameCount += 1 }
                 }
             } catch (e: Throwable) {
                 _events.emit(SimEvent.TransportError("camera flow: ${e.message}"))
@@ -521,7 +520,6 @@ class SimulatorEngine(
 
         val audioJob = audioCapture?.let { audio ->
             scope.launch {
-                val active = activeStream
                 try {
                     audio.start().collect { aFrame ->
                         val ps = muxer.muxAudio(aFrame)
@@ -531,7 +529,7 @@ class SimulatorEngine(
                             for (p in packets) {
                                 try {
                                     rtp.send(p)
-                                    active?.let { it.packetCount += 1 }
+                                    activeStream?.let { it.packetCount += 1 }
                                 } catch (e: Throwable) {
                                     _events.emit(SimEvent.TransportError("RTP audio send: ${e.message}"))
                                     return@withLock
