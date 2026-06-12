@@ -58,6 +58,7 @@ class MainActivity : ComponentActivity() {
         SessionTracker.install(AndroidSessionStore(applicationContext))
         SystemLogger.bindScope(lifecycleScope)
         installLogcatBridge()
+        com.uvp.sim.ui.ShareContextHolder.context = this
         SystemLogger.emit(
             LogLevel.Info, LogTag.Lifecycle,
             "应用启动 · 会话 #${SessionTracker.currentId}"
@@ -141,6 +142,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        com.uvp.sim.ui.ShareContextHolder.context = null
         CameraPreviewBinder.setBinder(null)
         super.onDestroy()
     }

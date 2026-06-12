@@ -98,7 +98,7 @@ private fun ToggleChip(label: String, active: Boolean, onClick: () -> Unit) {
  *
  * 用每条 SimEvent.timestampMs(emit 时的真实时间)。
  */
-private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> {
+internal fun List<SimEvent>.toFlowEventsForExport(): List<SipFlowEvent> {
     return mapNotNull { ev ->
         val (msg, outgoing) = when (ev) {
             is SimEvent.MessageSent -> ev.message to true
@@ -115,6 +115,8 @@ private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> {
     }
 }
 
+private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> = toFlowEventsForExport()
+
 /**
  * 把 StreamStarted/Stopped/Stats 配对成 MediaSegmentEvent。
  *
@@ -123,7 +125,7 @@ private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> {
  *
  * 简化:M1 至多 1 路并发流,只取最后一路。
  */
-private fun List<SimEvent>.toMediaSegments(): List<MediaSegmentEvent> {
+internal fun List<SimEvent>.toMediaSegmentsForExport(): List<MediaSegmentEvent> {
     val started = filterIsInstance<SimEvent.StreamStarted>().lastOrNull() ?: return emptyList()
     val stoppedAt = filterIsInstance<SimEvent.StreamStopped>()
         .lastOrNull { it.callId == started.callId }
@@ -143,3 +145,5 @@ private fun List<SimEvent>.toMediaSegments(): List<MediaSegmentEvent> {
         )
     )
 }
+
+private fun List<SimEvent>.toMediaSegments(): List<MediaSegmentEvent> = toMediaSegmentsForExport()

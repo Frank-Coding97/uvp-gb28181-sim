@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowDropDown
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -35,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -59,18 +62,25 @@ import kotlinx.datetime.toLocalDateTime
 @Composable
 fun SystemLogTab(
     logs: List<SystemLog>,
-    sessionMarker: SessionMarker?
+    sessionMarker: SessionMarker?,
+    paused: Boolean = false,
+    onPausedChange: (Boolean) -> Unit = {}
 ) {
     var levelThreshold by remember { mutableStateOf(LogLevel.Default) }
     var tagFilter by remember { mutableStateOf<LogTag?>(null) }
-    var paused by remember { mutableStateOf(false) }
+    var onlyErrors by remember { mutableStateOf(false) }
+    var onlyThisSession by remember { mutableStateOf(false) }
     var expandedSeq by remember { mutableStateOf<Long?>(null) }
     val listState = rememberLazyListState()
 
-    val visible by remember(logs, levelThreshold, tagFilter) {
+    val visible by remember(logs, levelThreshold, tagFilter, onlyErrors, onlyThisSession, sessionMarker) {
         derivedStateOf {
-            logs.filter { it.level.priority >= levelThreshold.priority }
+            val effectiveLevel = if (onlyErrors) LogLevel.Warning else levelThreshold
+            logs.asSequence()
+                .filter { it.level.priority >= effectiveLevel.priority }
                 .filter { tagFilter == null || it.tag == tagFilter }
+                .filter { !onlyThisSession || (sessionMarker != null && it.sessionId == sessionMarker.sessionId) }
+                .toList()
         }
     }
 
@@ -94,7 +104,12 @@ fun SystemLogTab(
             tagFilter = tagFilter,
             onTagChange = { tagFilter = it },
             level = levelThreshold,
-            onLevelChange = { levelThreshold = it }
+            onLevelChange = { levelThreshold = it },
+            onlyErrors = onlyErrors,
+            onOnlyErrorsChange = { onlyErrors = it },
+            onlyThisSession = onlyThisSession,
+            onOnlyThisSessionChange = { onlyThisSession = it },
+            sessionAvailable = sessionMarker != null
         )
         Spacer(Modifier.height(6.dp))
         Box(modifier = Modifier.fillMaxSize()) {
@@ -114,7 +129,7 @@ fun SystemLogTab(
                 PauseFloater(
                     count = pausedAccum,
                     onResume = {
-                        paused = false
+                        onPausedChange(false)
                         pausedAccum = 0
                     },
                     modifier = Modifier
@@ -152,9 +167,37 @@ private fun FilterRow(
     tagFilter: LogTag?,
     onTagChange: (LogTag?) -> Unit,
     level: LogLevel,
-    onLevelChange: (LogLevel) -> Unit
+    onLevelChange: (LogLevel) -> Unit,
+    onlyErrors: Boolean,
+    onOnlyErrorsChange: (Boolean) -> Unit,
+    onlyThisSession: Boolean,
+    onOnlyThisSessionChange: (Boolean) -> Unit,
+    sessionAvailable: Boolean
 ) {
     Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            BusinessChip(
+                label = "🔴 只看错误",
+                active = onlyErrors,
+                accent = UvpColor.Danger,
+                onClick = { onOnlyErrorsChange(!onlyErrors) }
+            )
+            if (sessionAvailable) {
+                BusinessChip(
+                    label = "🎯 只看本次会话",
+                    active = onlyThisSession,
+                    accent = UvpColor.Primary,
+                    onClick = { onOnlyThisSessionChange(!onlyThisSession) }
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -175,7 +218,31 @@ private fun FilterRow(
             Text("Level ≥", fontSize = 11.sp, color = UvpColor.TextSecondary)
             Spacer(Modifier.width(6.dp))
             LevelDropdown(level, onLevelChange)
+            if (onlyErrors) {
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "(锁定 ≥WRN)",
+                    fontSize = 10.sp,
+                    color = UvpColor.TextHint
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun BusinessChip(label: String, active: Boolean, accent: Color, onClick: () -> Unit) {
+    val bg = if (active) accent else UvpColor.Surface
+    val border = if (active) accent else UvpColor.Border
+    val textColor = if (active) Color.White else accent
+    Box(
+        modifier = Modifier
+            .background(bg, RoundedCornerShape(12.dp))
+            .border(1.dp, border, RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) {
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.Medium, color = textColor)
     }
 }
 
@@ -242,6 +309,8 @@ private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit)
         LogLevel.Warning -> UvpColor.Warning
         LogLevel.Error -> UvpColor.Danger
     }
+    val clipboard = LocalClipboardManager.current
+    val isError = log.level == LogLevel.Warning || log.level == LogLevel.Error
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -291,6 +360,34 @@ private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit)
                 modifier = Modifier.weight(1f),
                 maxLines = if (expanded) 10 else 1
             )
+            if (isError) {
+                Spacer(Modifier.width(6.dp))
+                Box(
+                    modifier = Modifier
+                        .background(UvpColor.Surface, RoundedCornerShape(3.dp))
+                        .border(1.dp, levelColor.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
+                        .clickable {
+                            clipboard.setText(AnnotatedString(formatLogForCopy(log)))
+                        }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = "复制错误",
+                            modifier = Modifier.size(11.dp),
+                            tint = levelColor
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            "复制",
+                            fontSize = 9.sp,
+                            color = levelColor,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
         }
         if (expanded) {
             val detail = log.detail
@@ -312,6 +409,18 @@ private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit)
                 }
             }
         }
+    }
+}
+
+internal fun formatLogForCopy(log: SystemLog): String = buildString {
+    append('[').append(formatHms(log.timestampMs)).append("] ")
+    append('[').append(log.level.short).append("] ")
+    append('[').append(log.tag.display).append("] ")
+    append(log.message)
+    val d = log.detail
+    if (!d.isNullOrBlank()) {
+        append('\n')
+        append(d)
     }
 }
 
