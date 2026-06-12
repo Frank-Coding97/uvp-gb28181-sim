@@ -76,7 +76,7 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
     val toast = LocalToastHost.current
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         StatusBanner(state)
         CameraPreviewBox(state)
@@ -310,7 +310,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
             .border(1.dp, UvpColor.Border, RoundedCornerShape(8.dp))
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
@@ -351,7 +351,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
 
         Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
         ) {
             // 编辑态:可改;只读态:同样的行,但 enabled = false 就显灰且不响应点击
             // 复用同一组组件,避免两种布局割裂
@@ -677,13 +677,13 @@ internal fun InlineEditableRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 9.dp),
+                .padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 label,
                 modifier = Modifier.width(72.dp),
-                fontSize = 12.sp,
+                fontSize = 11.5.sp,
                 color = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint,
                 fontWeight = FontWeight.Medium
             )
@@ -694,7 +694,7 @@ internal fun InlineEditableRow(
                 singleLine = true,
                 interactionSource = interactionSource,
                 textStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = 13.sp,
+                    fontSize = 12.5.sp,
                     fontFamily = if (keyboard == KeyboardType.Number) FontFamily.Monospace
                     else FontFamily.Default,
                     color = if (enabled) UvpColor.Text else UvpColor.TextHint
@@ -709,7 +709,7 @@ internal fun InlineEditableRow(
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(if (focused && enabled) 1.5.dp else 1.dp)
+                .height(if (focused && enabled) 1.dp else 0.5.dp)
                 .background(if (focused && enabled) UvpColor.Primary else UvpColor.BorderLight)
         )
     }
@@ -755,13 +755,13 @@ internal fun InlineSegmentedRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 8.dp),
+                .padding(vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 label,
                 modifier = Modifier.width(72.dp),
-                fontSize = 12.sp,
+                fontSize = 11.5.sp,
                 color = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint,
                 fontWeight = FontWeight.Medium
             )
@@ -791,12 +791,12 @@ internal fun InlineSegmentedRow(
                                 RoundedCornerShape(4.dp)
                             )
                             .clickable(enabled = enabled) { onChange(opt) }
-                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             opt,
-                            fontSize = 11.5.sp,
+                            fontSize = 11.sp,
                             fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
                             color = when {
                                 sel && !enabled -> UvpColor.Primary.copy(alpha = 0.6f)
@@ -809,6 +809,6 @@ internal fun InlineSegmentedRow(
                 }
             }
         }
-        Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
+        Box(Modifier.fillMaxWidth().height(0.5.dp).background(UvpColor.BorderLight))
     }
 }
