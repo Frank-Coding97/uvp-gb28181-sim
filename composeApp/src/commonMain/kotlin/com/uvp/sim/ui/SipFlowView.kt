@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.observability.DialogRow
 import com.uvp.sim.observability.FlowItem
+import com.uvp.sim.observability.Gb28181IdParser
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
@@ -373,8 +374,9 @@ private fun dialogBusinessTitle(dialog: FlowItem.Dialog): String {
         is SipRequest -> when (msg.method) {
             SipMethod.REGISTER -> "📡 注册"
             SipMethod.INVITE -> {
-                val channel = msg.requestUri.substringAfter("sip:").substringBefore('@')
-                "🎬 视频点播 · 通道 ${channel.takeLast(3)}"
+                val parsed = Gb28181IdParser.parseFromRequestUri(msg.requestUri)
+                if (parsed != null) "🎬 视频点播 · ${parsed.label}"
+                else "🎬 视频点播"
             }
             SipMethod.MESSAGE -> {
                 val body = msg.body.decodeToString()
