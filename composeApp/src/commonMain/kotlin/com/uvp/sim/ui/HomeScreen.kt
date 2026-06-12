@@ -26,9 +26,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.LocationOn
-import androidx.compose.material.icons.outlined.PhotoCamera
-import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -250,7 +250,6 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
     var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
     var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
-    var deviceName by remember(state.config) { mutableStateOf(state.config.device.name) }
     var password by remember(state.config) { mutableStateOf(state.config.device.password) }
     var transport by remember(state.config) { mutableStateOf(state.config.transport.name) }
     var audioTransport by remember(state.config) {
@@ -267,7 +266,6 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         ip = state.config.server.ip
         port = state.config.server.port.toString()
         deviceId = state.config.device.deviceId
-        deviceName = state.config.device.name
         password = state.config.device.password
         transport = state.config.transport.name
         audioTransport = state.config.audioTransport
@@ -291,7 +289,6 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                 ),
                 device = state.config.device.copy(
                     deviceId = deviceId,
-                    name = deviceName,
                     username = deviceId,
                     password = password
                 ),
@@ -380,9 +377,6 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
             InlineEditableRow("设备 ID", deviceId, canEdit, KeyboardType.Number) {
                 deviceId = it.filter { c -> c.isDigit() }
             }
-            InlineEditableRow("设备名称", deviceName, canEdit, KeyboardType.Text) {
-                deviceName = it
-            }
             InlineEditableRow("注册密码", password, canEdit, KeyboardType.Password,
                 masked = true) { password = it }
             InlineSegmentedRow("信令传输", transport, listOf("UDP", "TCP"), canEdit) {
@@ -403,42 +397,45 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
 @Composable
 private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     val canFire = state.sip == SipState.Registered || state.sip == SipState.InCall
-    if (!canFire) return
     val toast = LocalToastHost.current
+    var detailFor by remember { mutableStateOf<SubscriptionKind?>(null) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         ActionTile(
-            icon = Icons.Outlined.PhotoCamera,
-            label = "抓拍",
-            enabled = true,
+            icon = Icons.Outlined.Videocam,
+            label = "录像",
+            enabled = canFire,
             modifier = Modifier.weight(1f),
-            onClick = {
-                actions.onSnapshot()
-                onFeedback("抓拍已上报")
-            }
+            onClick = { toast.info("录像 — M2 上线") }
         )
         ActionTile(
             icon = Icons.Outlined.Warning,
             label = "报警",
-            enabled = false,
+            enabled = canFire,
             modifier = Modifier.weight(1f),
             onClick = { toast.info("报警 — M2 上线") }
         )
-        ActionTile(
+        SubscriptionTile(
             icon = Icons.Outlined.LocationOn,
-            label = "位置",
-            enabled = false,
+            label = "位置订阅",
+            kind = SubscriptionKind.MobilePosition,
             modifier = Modifier.weight(1f),
-            onClick = { toast.info("位置 — M2 上线") }
+            onClick = { detailFor = SubscriptionKind.MobilePosition }
         )
-        ActionTile(
-            icon = Icons.Outlined.PlayArrow,
-            label = "录像",
-            enabled = false,
+        SubscriptionTile(
+            icon = Icons.Outlined.FolderOpen,
+            label = "目录订阅",
+            kind = SubscriptionKind.Catalog,
             modifier = Modifier.weight(1f),
-            onClick = { toast.info("录像 — M2 上线") }
+            onClick = { detailFor = SubscriptionKind.Catalog }
+        )
+    }
+    detailFor?.let { kind ->
+        SubscriptionDetailSheet(
+            kind = kind,
+            onDismiss = { detailFor = null }
         )
     }
 }
@@ -451,22 +448,155 @@ private fun ActionTile(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    val border = if (enabled) UvpColor.Primary else UvpColor.Border
-    val tint = if (enabled) UvpColor.Primary else UvpColor.TextHint
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
             .background(UvpColor.Surface)
+            .border(1.dp, UvpColor.Primary, RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(vertical = 7.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Icon(
+            icon, contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = UvpColor.Primary
+        )
+        Text(
+            label, fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = UvpColor.Primary
+        )
+        Text(
+            "可触发",
+            fontSize = 8.5.sp,
+            color = UvpColor.Primary.copy(alpha = 0.55f),
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+private enum class SubscriptionKind(val title: String) {
+    MobilePosition("位置订阅"),
+    Catalog("目录订阅")
+}
+
+/** 占位:M2 接真订阅时改为读 SimulatorEngine.subscriptions[kind] */
+private data class SubscriptionStatus(
+    val active: Boolean = false,
+    val subscriber: String? = null,
+    val expiresSeconds: Int? = null,
+    val remainingSeconds: Int? = null,
+    val notifyCount: Int = 0
+)
+
+@Composable
+private fun rememberSubscriptionStatus(kind: SubscriptionKind): SubscriptionStatus =
+    remember(kind) { SubscriptionStatus(active = false) }
+
+@Composable
+private fun SubscriptionTile(
+    icon: ImageVector,
+    label: String,
+    kind: SubscriptionKind,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val status = rememberSubscriptionStatus(kind)
+    val tone = if (status.active) UvpColor.SuccessText else UvpColor.TextHint
+    val border = if (status.active) UvpColor.SuccessBorder else UvpColor.Border
+    val bg = if (status.active) UvpColor.SuccessBg else UvpColor.Surface
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
             .border(1.dp, border, RoundedCornerShape(8.dp))
             .clickable { onClick() }
-            .padding(vertical = 10.dp),
+            .padding(vertical = 7.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {
-        Icon(icon, contentDescription = null,
-            modifier = Modifier.size(20.dp), tint = tint)
-        Text(label, fontSize = 12.sp,
-            fontWeight = FontWeight.Medium, color = tint)
+        Icon(
+            icon, contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = tone
+        )
+        Text(
+            label, fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = tone
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(5.dp).clip(CircleShape).background(tone))
+            Spacer(Modifier.width(4.dp))
+            Text(
+                if (status.active) "已订阅" else "未订阅",
+                fontSize = 8.5.sp,
+                color = tone.copy(alpha = 0.7f),
+                fontFamily = FontFamily.Monospace
+            )
+        }
+    }
+}
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun SubscriptionDetailSheet(
+    kind: SubscriptionKind,
+    onDismiss: () -> Unit
+) {
+    val status = rememberSubscriptionStatus(kind)
+    androidx.compose.material3.ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = UvpColor.Surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .padding(bottom = 24.dp)
+        ) {
+            Text(kind.title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                color = UvpColor.Text)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                if (status.active) "上级平台已订阅,设备按周期 NOTIFY"
+                else "上级平台尚未发起 SUBSCRIBE",
+                fontSize = 12.sp, color = UvpColor.TextSecondary
+            )
+            Spacer(Modifier.height(16.dp))
+            DetailKv("状态", if (status.active) "已订阅" else "未订阅")
+            DetailKv("订阅者", status.subscriber ?: "—")
+            DetailKv("Expires", status.expiresSeconds?.let { "${it}s" } ?: "—")
+            DetailKv("剩余", status.remainingSeconds?.let { "${it}s" } ?: "—")
+            DetailKv("Notify 计数", status.notifyCount.toString())
+            Spacer(Modifier.height(16.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(UvpColor.WarningBg, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    "M2 接通真实 SUBSCRIBE 应答后此处显示动态数据",
+                    fontSize = 11.sp, color = UvpColor.Warning
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailKv(key: String, value: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(key, fontSize = 12.sp, color = UvpColor.TextHint,
+            modifier = Modifier.width(80.dp))
+        Text(value, fontSize = 12.sp, color = UvpColor.Text,
+            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium)
     }
 }
 

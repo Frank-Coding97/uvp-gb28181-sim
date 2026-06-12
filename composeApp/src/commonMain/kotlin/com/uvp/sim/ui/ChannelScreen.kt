@@ -34,7 +34,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.sip.SipState
@@ -133,9 +132,6 @@ private fun ChannelConfigCard(
 ) {
     var videoChannelId by remember(state.config) { mutableStateOf(state.config.device.videoChannelId) }
     var alarmChannelId by remember(state.config) { mutableStateOf(state.config.device.alarmChannelId) }
-    var keepalive by remember(state.config) {
-        mutableStateOf(state.config.keepaliveIntervalSeconds.toString())
-    }
 
     Column(
         modifier = Modifier
@@ -151,9 +147,6 @@ private fun ChannelConfigCard(
         InlineField("报警通道 ID", alarmChannelId,
             { alarmChannelId = it.filter { c -> c.isDigit() } },
             enabled = !locked)
-        InlineField("心跳间隔(秒)", keepalive,
-            { keepalive = it.filter { c -> c.isDigit() } },
-            keyboard = KeyboardType.Number, enabled = !locked)
         Spacer(Modifier.height(2.dp))
         Button(
             enabled = !locked,
@@ -163,8 +156,7 @@ private fun ChannelConfigCard(
                         device = state.config.device.copy(
                             videoChannelId = videoChannelId,
                             alarmChannelId = alarmChannelId
-                        ),
-                        keepaliveIntervalSeconds = keepalive.toIntOrNull()?.coerceIn(15, 600) ?: 60
+                        )
                     )
                 )
             },

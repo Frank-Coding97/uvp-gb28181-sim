@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.DevicesOther
 import androidx.compose.material.icons.outlined.MovieFilter
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.Icon
@@ -50,6 +51,10 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
             title = "通道",
             onBack = { page = SettingsPage.Index }
         ) { ChannelScreen(state, actions) }
+        SettingsPage.Device -> SettingsSubPage(
+            title = "设备",
+            onBack = { page = SettingsPage.Index }
+        ) { DeviceConfigScreen(state, actions) }
         SettingsPage.Media -> SettingsSubPage(
             title = "音视频",
             onBack = { page = SettingsPage.Index }
@@ -57,7 +62,7 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
     }
 }
 
-private enum class SettingsPage { Index, Channel, Media }
+private enum class SettingsPage { Index, Channel, Device, Media }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
@@ -66,9 +71,15 @@ private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SettingsEntry(
+            icon = Icons.Outlined.DevicesOther,
+            title = "设备",
+            description = "设备名称 · 注册周期 · 心跳",
+            onClick = { onPick(SettingsPage.Device) }
+        )
+        SettingsEntry(
             icon = Icons.Outlined.PhotoCamera,
-            title = "通道",
-            description = "通道列表 · 视频/报警通道ID · 密码 · 心跳",
+            title = "设备通道",
+            description = "视频/报警通道 ID",
             onClick = { onPick(SettingsPage.Channel) }
         )
         SettingsEntry(
