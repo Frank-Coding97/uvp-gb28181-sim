@@ -403,12 +403,21 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        val isRecording = state.recording.isRecording
         ActionTile(
             icon = Icons.Outlined.Videocam,
-            label = "录像",
-            enabled = canFire,
+            label = if (isRecording) "录像中" else "录像",
+            enabled = canFire || isRecording,  // 录像中也能点(用于停止)
             modifier = Modifier.weight(1f),
-            onClick = { toast.info("录像 — M2 上线") }
+            onClick = {
+                if (isRecording) {
+                    actions.onRecordingStop()
+                    toast.info("已停止录像")
+                } else {
+                    actions.onRecordingStart()
+                    toast.info("开始录像")
+                }
+            }
         )
         ActionTile(
             icon = Icons.Outlined.Warning,

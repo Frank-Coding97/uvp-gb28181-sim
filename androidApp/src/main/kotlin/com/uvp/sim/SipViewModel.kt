@@ -18,6 +18,11 @@ import com.uvp.sim.network.RemoteEndpoint
 import com.uvp.sim.network.RtpSender
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.network.UdpSipTransport
+import com.uvp.sim.recording.AndroidRecordingService
+import com.uvp.sim.recording.RecordSource
+import com.uvp.sim.recording.RecordingFile
+import com.uvp.sim.recording.RecordingService
+import com.uvp.sim.recording.RecordingState
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -42,6 +47,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private var engine: SimulatorEngine? = null
     private var camera: CameraCapture? = null
     private var audio: AudioCapture? = null
+    private var recordingService: RecordingService? = null
 
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -51,6 +57,13 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _config = MutableStateFlow(defaultConfig())
     val config: StateFlow<SimConfig> = _config.asStateFlow()
+
+    /** 录像状态(M2 D 块)。Activity 把它桥接到 AppUiState.recording。 */
+    private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)
+    val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
+
+    private val _recordingFiles = MutableStateFlow<List<RecordingFile>>(emptyList())
+    val recordingFiles: StateFlow<List<RecordingFile>> = _recordingFiles.asStateFlow()
 
     /**
      * Bumped each time the video profile changes so the Activity can rebuild
@@ -80,6 +93,38 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     /** Activity calls this after creating AudioCapture + AndroidAudioStreamer. */
     fun bindAudio(aud: AudioCapture) {
         this.audio = aud
+    }
+
+    /**
+     * Activity 在 onCreate 时调,把 [AndroidRecordingService] 注入。
+     *
+     * recordingService 需要 LifecycleOwner + Executor,只有 Activity 能拿到。
+     * 注入后 ViewModel 就可以指挥录像 + 在 connect() 时把它传给 SimulatorEngine
+     * 让平台 RecordCmd 也能驱动同一个 service。
+     */
+    fun bindRecordingService(svc: RecordingService) {
+        this.recordingService = svc
+        engineScope.launch { svc.load() }
+        engineScope.launch { svc.state.collect { _recordingState.value = it } }
+        engineScope.launch { svc.files.collect { _recordingFiles.value = it } }
+    }
+
+    fun startRecording() {
+        val svc = recordingService ?: return
+        val cfg = _config.value
+        engineScope.launch {
+            runCatching { svc.start(RecordSource.Manual, cfg.device.videoChannelId) }
+        }
+    }
+
+    fun stopRecording() {
+        val svc = recordingService ?: return
+        engineScope.launch { runCatching { svc.stop() } }
+    }
+
+    fun deleteRecording(id: String) {
+        val svc = recordingService ?: return
+        engineScope.launch { runCatching { svc.delete(id) } }
     }
 
     fun connect() {
@@ -124,7 +169,9 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
             cameraCapture = camera,
             audioCapture = audio,
-            rtpSenderFactory = rtpFactory
+            rtpSenderFactory = rtpFactory,
+            recordingService = recordingService
+                ?: com.uvp.sim.recording.NoopRecordingService
         )
         engine = eng
 

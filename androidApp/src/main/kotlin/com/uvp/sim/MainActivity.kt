@@ -69,6 +69,16 @@ class MainActivity : ComponentActivity() {
         viewModel.bindCamera(cameraCapture)
         viewModel.bindAudio(audioCapture)
 
+        // M2 录像服务 — 需要 LifecycleOwner + Executor,只能在 Activity 构造
+        val recordingService = com.uvp.sim.recording.AndroidRecordingService(
+            context = applicationContext,
+            lifecycleOwner = this,
+            executor = ContextCompat.getMainExecutor(this),
+            deviceId = viewModel.config.value.device.deviceId,
+            scope = lifecycleScope
+        )
+        viewModel.bindRecordingService(recordingService)
+
         val needs = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
@@ -86,12 +96,27 @@ class MainActivity : ComponentActivity() {
             val config by viewModel.config.collectAsStateWithLifecycle()
             val videoVersion by viewModel.videoConfigVersion.collectAsStateWithLifecycle()
             val sysLogs by systemEvents.collectAsState()
+            val recordingState by viewModel.recordingState.collectAsStateWithLifecycle()
+            val recordingFiles by viewModel.recordingFiles.collectAsStateWithLifecycle()
+            val recordingStatus = remember(recordingState, recordingFiles) {
+                val rec = recordingState as? com.uvp.sim.recording.RecordingState.Recording
+                val failed = recordingState as? com.uvp.sim.recording.RecordingState.Failed
+                com.uvp.sim.ui.RecordingStatus(
+                    isRecording = rec != null,
+                    source = rec?.source,
+                    startMs = rec?.startMs,
+                    segmentIndex = rec?.segmentIndex ?: 0,
+                    lastError = failed?.reason,
+                    files = recordingFiles
+                )
+            }
             val uiState = AppUiState(
                 sip = sipState,
                 config = config,
                 events = events,
                 systemEvents = sysLogs,
-                sessionMarker = SessionTracker.current
+                sessionMarker = SessionTracker.current,
+                recording = recordingStatus
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -116,6 +141,18 @@ class MainActivity : ComponentActivity() {
                         "配置已更新 device=${updated.device.deviceId} server=${updated.server.ip}:${updated.server.port}"
                     )
                     viewModel.updateConfig(updated)
+                }
+                override fun onRecordingStart() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击开始录像")
+                    viewModel.startRecording()
+                }
+                override fun onRecordingStop() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击停止录像")
+                    viewModel.stopRecording()
+                }
+                override fun onRecordingDelete(id: String) {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户删除录像 $id")
+                    viewModel.deleteRecording(id)
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.
