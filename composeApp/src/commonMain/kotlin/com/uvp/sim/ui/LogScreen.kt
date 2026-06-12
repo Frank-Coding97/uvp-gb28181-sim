@@ -38,7 +38,7 @@ fun LogScreen(state: AppUiState) {
         LogTabBar(selected) { selected = it }
         Box(modifier = Modifier.fillMaxSize().padding(top = 4.dp)) {
             when (selected) {
-                LogTabKind.Sip -> SipLogListView(state.events)
+                LogTabKind.Sip -> SipLogTab(state.events)
                 LogTabKind.System -> SystemLogTab(state.systemEvents, state.sessionMarker)
             }
         }
