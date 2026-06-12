@@ -104,7 +104,7 @@ fun App(state: AppUiState, actions: AppActions) {
                 when (currentTab) {
                     AppTab.Home -> HomeScreen(state, actions, snackbarHost)
                     AppTab.Channel -> ChannelScreen(state)
-                    AppTab.Media -> MediaScreen(state, actions)
+                    AppTab.Media -> MediaScreen(state, actions, snackbarHost)
                     AppTab.Log -> LogScreen(state)
                 }
             }

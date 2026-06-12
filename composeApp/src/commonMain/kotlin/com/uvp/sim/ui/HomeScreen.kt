@@ -562,8 +562,10 @@ internal fun InlineField(
     enabled: Boolean = true
 ) {
     Column(modifier = modifier) {
-        Text(label, fontSize = 11.sp, color = UvpColor.TextSecondary, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.height(3.dp))
+        if (label.isNotEmpty()) {
+            Text(label, fontSize = 11.sp, color = UvpColor.TextSecondary, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.height(3.dp))
+        }
         BasicTextField(
             value = value,
             onValueChange = onChange,

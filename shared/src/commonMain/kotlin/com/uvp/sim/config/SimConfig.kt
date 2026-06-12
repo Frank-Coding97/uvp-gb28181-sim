@@ -39,7 +39,39 @@ data class VideoProfile(
     val keyframeIntervalSeconds: Int = 1,
     val videoCodec: VideoCodec = VideoCodec.H264,
     val audioCodec: AudioCodec = AudioCodec.G711A
-)
+) {
+    /**
+     * Best-fit preset for the current numeric parameters, or null when the
+     * combination is custom. Used by the UI to show the preset selector
+     * highlighted when the user lands on a known good combo.
+     */
+    val matchedPreset: VideoQualityPreset?
+        get() = VideoQualityPreset.entries.firstOrNull {
+            it.resolution == resolution &&
+                it.frameRate == frameRate &&
+                it.bitrateKbps == bitrateKbps &&
+                it.keyframeIntervalSeconds == keyframeIntervalSeconds
+        }
+}
+
+/**
+ * Curated quality presets — what users actually want when they don't know
+ * what to pick. Each preset bakes in resolution / fps / bitrate / GOP; codec
+ * choice is orthogonal and stays user-controlled.
+ */
+enum class VideoQualityPreset(
+    val label: String,
+    val description: String,
+    val resolution: VideoResolution,
+    val frameRate: Int,
+    val bitrateKbps: Int,
+    val keyframeIntervalSeconds: Int = 1
+) {
+    SMOOTH("流畅", "480P·15fps", VideoResolution.SD_480P, 15, 600),
+    STANDARD("标准", "720P·20fps", VideoResolution.HD_720P, 20, 1200),
+    HD("高清", "720P·25fps", VideoResolution.HD_720P, 25, 2000),
+    UHD("超清", "1080P·25fps", VideoResolution.FHD_1080P, 25, 4000)
+}
 
 enum class VideoResolution(val widthPx: Int, val heightPx: Int, val label: String) {
     SD_480P(640, 480, "640×480"),
