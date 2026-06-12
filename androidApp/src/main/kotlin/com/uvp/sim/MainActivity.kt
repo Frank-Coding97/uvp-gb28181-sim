@@ -15,12 +15,14 @@ import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.CameraPreviewBinder
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: SipViewModel by viewModels()
 
     private lateinit var cameraCapture: CameraCapture
+    private var streamer: AndroidCameraStreamer? = null
 
     private val requestCameraPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -48,6 +50,7 @@ class MainActivity : ComponentActivity() {
             val uiState = AppUiState(sip = sipState, config = config, events = events)
             val actions = object : AppActions {
                 override fun onConnect() = viewModel.connect()
+                override fun onCancelConnect() = viewModel.cancelConnect()
                 override fun onDisconnect() = viewModel.disconnect()
                 override fun onSnapshot() = viewModel.reportSnapshot()
                 override fun onConfigSave(updated: com.uvp.sim.config.SimConfig) =
@@ -57,13 +60,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onDestroy() {
+        CameraPreviewBinder.setBinder(null)
+        super.onDestroy()
+    }
+
     private fun attachStreamer() {
-        val streamer = AndroidCameraStreamer(
+        val s = AndroidCameraStreamer(
             context = applicationContext,
             lifecycleOwner = this,
             mainExecutor = mainExecutor,
             config = viewModel.newCaptureConfig()
         )
-        cameraCapture.setStreamer(streamer)
+        streamer = s
+        cameraCapture.setStreamer(s)
+        CameraPreviewBinder.setBinder { view ->
+            if (view != null) s.attachPreviewView(view) else s.detachPreviewView()
+        }
     }
 }

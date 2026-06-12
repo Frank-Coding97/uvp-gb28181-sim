@@ -145,21 +145,25 @@ private data class BannerSpec(
 @Composable
 private fun CameraPreviewBox(state: AppUiState) {
     val live = state.sip == SipState.InCall
+    val showPreview = state.sip == SipState.Registered || state.sip == SipState.InCall
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(180.dp)
-            .background(Color(0xFF1F2937), RoundedCornerShape(8.dp)),
+            .background(Color(0xFF1F2937), RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(8.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            Icons.Outlined.PhotoCamera, contentDescription = null,
-            modifier = Modifier.size(28.dp),
-            tint = Color.White.copy(alpha = 0.3f)
-        )
-        if (!live) {
+        if (showPreview) {
+            PlatformCameraPreview(modifier = Modifier.fillMaxSize())
+        } else {
+            Icon(
+                Icons.Outlined.PhotoCamera, contentDescription = null,
+                modifier = Modifier.size(28.dp),
+                tint = Color.White.copy(alpha = 0.3f)
+            )
             Text(
-                "等待平台点播",
+                "注册后开启预览",
                 fontSize = 11.sp,
                 color = Color.White.copy(alpha = 0.3f),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
@@ -178,7 +182,11 @@ private fun CameraPreviewBox(state: AppUiState) {
                 Spacer(Modifier.width(4.dp))
             }
             Text(
-                if (live) "1280×720 · 25fps · LIVE" else "未推流",
+                when {
+                    live -> "1280×720 · 25fps · LIVE"
+                    showPreview -> "1280×720 · 预览"
+                    else -> "未推流"
+                },
                 fontSize = 9.sp, color = Color.White.copy(alpha = 0.55f),
                 fontFamily = FontFamily.Monospace
             )
@@ -335,15 +343,19 @@ private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (S
             }
         }
         SipState.Registering -> {
-            Button(
-                onClick = {}, enabled = false,
+            OutlinedButton(
+                onClick = {
+                    actions.onCancelConnect()
+                    onFeedback("已取消注册")
+                },
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(
-                    disabledContainerColor = UvpColor.Primary.copy(alpha = 0.5f),
-                    disabledContentColor = Color.White.copy(alpha = 0.7f)
-                )
-            ) { Text("注册中…", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 2.sp) }
+                border = BorderStroke(1.dp, UvpColor.Primary.copy(alpha = 0.5f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Primary)
+            ) {
+                Text("注册中… 点击取消", fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium, letterSpacing = 1.sp)
+            }
         }
         SipState.Registered, SipState.InCall -> {
             OutlinedButton(

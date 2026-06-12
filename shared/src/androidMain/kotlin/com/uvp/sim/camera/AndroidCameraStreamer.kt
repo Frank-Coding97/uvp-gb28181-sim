@@ -8,33 +8,42 @@ import android.util.Size
 import android.view.Surface
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.lifecycle.LifecycleOwner
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.media.NalType
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.util.concurrent.Executor
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Android camera + H.264 streamer that wires CameraX → MediaCodec input surface.
+ * Android camera + H.264 streamer with two independent CameraX Preview use cases:
  *
- * Design:
- *   1. MediaCodec is configured with COLOR_FormatSurface and createInputSurface()
- *      gives us a Surface that the encoder reads from.
- *   2. CameraX Preview use case has its SurfaceProvider hand back our encoder
- *      surface; CameraX writes camera frames straight in.
- *   3. The encoder's output buffers are scraped on a callback, NAL units
- *      extracted (Annex-B), and emitted as [H264Frame] over a Flow.
+ *   1. **Screen preview** — bound via [attachPreviewView]. Lets the user see what
+ *      the camera sees, regardless of whether SIP is streaming. The user calls
+ *      this from a Compose `AndroidView { PreviewView(...) }` once registered.
+ *   2. **Encoder feed** — bound when [stream] starts collecting. Routes camera
+ *      frames into a MediaCodec InputSurface for H.264 encoding.
  *
- * Lifecycle is bound to the provided [LifecycleOwner]; collecting [stream]
- * starts capture, cancelling the collection stops it. [stop] is also exposed
- * for explicit teardown.
+ * Both use cases share one [ProcessCameraProvider]. We re-bind whenever either
+ * side changes (provider only allows one bindToLifecycle per lifecycle owner —
+ * subsequent calls overwrite, so we always re-bind the *current set*).
+ *
+ * Threading: CameraX bindToLifecycle must run on the main thread. We marshal
+ * via [mainExecutor]. Encoder callbacks run on whatever MediaCodec picks; we
+ * forward H264Frames into the Flow and let collectors switch dispatchers.
  */
 class AndroidCameraStreamer(
     private val context: Context,
@@ -43,9 +52,40 @@ class AndroidCameraStreamer(
     private val config: CaptureConfig
 ) {
     private var encoder: MediaCodec? = null
-    private var inputSurface: Surface? = null
+    private var encoderInputSurface: Surface? = null
 
-    /** Returns a hot Flow that captures camera frames as long as it's collected. */
+    @Volatile private var screenPreview: Preview? = null
+    @Volatile private var encoderPreview: Preview? = null
+
+    @Volatile private var provider: ProcessCameraProvider? = null
+
+    /** Bind a screen-side PreviewView so the user can see live camera frames. */
+    fun attachPreviewView(view: PreviewView) {
+        runOnMain {
+            val prov = provider ?: run {
+                // Lazily acquire provider on a background path; rebind once ready.
+                CoroutineScope(Dispatchers.Main).launch {
+                    val p = withContext(Dispatchers.IO) { awaitCameraProvider(context) }
+                    provider = p
+                    bindScreenPreview(view)
+                    rebind()
+                }
+                return@runOnMain
+            }
+            bindScreenPreview(view)
+            rebind()
+        }
+    }
+
+    /** Detach screen preview (e.g. activity stopped); encoder feed is unaffected. */
+    fun detachPreviewView() {
+        runOnMain {
+            screenPreview = null
+            rebind()
+        }
+    }
+
+    /** Hot Flow of encoded H.264 frames. Cancelling the collection stops encoding. */
     fun stream(): Flow<H264Frame> = callbackFlow {
         val format = MediaFormat.createVideoFormat(
             MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -65,13 +105,13 @@ class AndroidCameraStreamer(
         }
         val surface = codec.createInputSurface()
         encoder = codec
-        inputSurface = surface
+        encoderInputSurface = surface
 
         var sps: ByteArray? = null
         var pps: ByteArray? = null
 
         codec.setCallback(object : MediaCodec.Callback() {
-            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) { /* unused for surface input */ }
+            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) { /* surface input */ }
 
             override fun onOutputBufferAvailable(
                 codec: MediaCodec,
@@ -89,13 +129,11 @@ class AndroidCameraStreamer(
                 codec.releaseOutputBuffer(index, false)
 
                 val nals = AnnexB.splitNals(raw)
-
                 if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
                     sps = nals.firstOrNull { (it[0].toInt() and 0x1F) == NalType.SPS }
                     pps = nals.firstOrNull { (it[0].toInt() and 0x1F) == NalType.PPS }
                     return
                 }
-
                 val isKeyFrame = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
                 val finalNals = nals.toMutableList()
                 if (isKeyFrame) {
@@ -116,18 +154,52 @@ class AndroidCameraStreamer(
                 )
             }
 
-            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                close(e)
-            }
-
-            override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                // CSD arrives via CODEC_CONFIG buffers
-            }
+            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) { close(e) }
+            override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) { /* CSD via CODEC_CONFIG */ }
         })
         codec.start()
 
-        // Bind CameraX Preview to feed our encoder's input Surface.
-        val provider = awaitCameraProvider(context)
+        runOnMain {
+            try {
+                if (provider == null) {
+                    provider = awaitCameraProviderBlocking(context)
+                }
+                bindEncoderPreview(surface)
+                rebind()
+            } catch (e: Throwable) { close(e) }
+        }
+
+        awaitClose {
+            runOnMain {
+                encoderPreview = null
+                rebind()
+            }
+            runCatching { codec.stop() }
+            runCatching { codec.release() }
+            runCatching { surface.release() }
+            encoder = null
+            encoderInputSurface = null
+        }
+    }.flowOn(Dispatchers.IO)
+
+    suspend fun stop() {
+        runCatching { encoder?.stop() }
+        runCatching { encoder?.release() }
+        runCatching { encoderInputSurface?.release() }
+        encoder = null
+        encoderInputSurface = null
+    }
+
+    // ============= internal binding =============
+
+    private fun bindScreenPreview(view: PreviewView) {
+        val preview = Preview.Builder().build().also {
+            it.setSurfaceProvider(view.surfaceProvider)
+        }
+        screenPreview = preview
+    }
+
+    private fun bindEncoderPreview(surface: Surface) {
         val targetSize = Size(config.widthPx, config.heightPx)
         val preview = Preview.Builder()
             .setTargetResolution(targetSize)
@@ -137,35 +209,29 @@ class AndroidCameraStreamer(
                     request.provideSurface(surface, mainExecutor) { /* released on awaitClose */ }
                 }
             }
+        encoderPreview = preview
+    }
+
+    /** Rebind whichever use cases are currently set. Must run on main thread. */
+    private fun rebind() {
+        val prov = provider ?: return
         val selector = when (config.cameraFacing) {
             CameraFacing.FRONT -> CameraSelector.DEFAULT_FRONT_CAMERA
             CameraFacing.BACK -> CameraSelector.DEFAULT_BACK_CAMERA
         }
+        val cases = mutableListOf<UseCase>()
+        screenPreview?.let { cases += it }
+        encoderPreview?.let { cases += it }
         try {
-            // CameraX bindToLifecycle must run on main thread. We assume the
-            // caller already invokes us on Dispatchers.Main, or via SipViewModel.
-            provider.unbindAll()
-            provider.bindToLifecycle(lifecycleOwner, selector, preview)
-        } catch (e: Throwable) {
-            close(e)
-        }
-
-        awaitClose {
-            runCatching { provider.unbindAll() }
-            runCatching { codec.stop() }
-            runCatching { codec.release() }
-            runCatching { surface.release() }
-            encoder = null
-            inputSurface = null
-        }
+            prov.unbindAll()
+            if (cases.isNotEmpty()) {
+                prov.bindToLifecycle(lifecycleOwner, selector, *cases.toTypedArray())
+            }
+        } catch (_: Throwable) { /* swallow — unbind path */ }
     }
 
-    suspend fun stop() {
-        runCatching { encoder?.stop() }
-        runCatching { encoder?.release() }
-        runCatching { inputSurface?.release() }
-        encoder = null
-        inputSurface = null
+    private fun runOnMain(block: () -> Unit) {
+        mainExecutor.execute(block)
     }
 
     companion object {
@@ -174,14 +240,14 @@ class AndroidCameraStreamer(
                 val future = ProcessCameraProvider.getInstance(context)
                 future.addListener(
                     {
-                        try {
-                            cont.resume(future.get())
-                        } catch (e: Throwable) {
-                            cont.resumeWithException(e)
-                        }
+                        try { cont.resume(future.get()) }
+                        catch (e: Throwable) { cont.resumeWithException(e) }
                     },
                     Runnable::run
                 )
             }
+
+        private fun awaitCameraProviderBlocking(context: Context): ProcessCameraProvider =
+            ProcessCameraProvider.getInstance(context).get()
     }
 }

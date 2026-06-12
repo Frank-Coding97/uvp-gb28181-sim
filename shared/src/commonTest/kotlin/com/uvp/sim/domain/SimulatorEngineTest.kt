@@ -150,6 +150,29 @@ class SimulatorEngineTest {
         }
     }
 
+    @Test fun registerTimeoutMovesToFailedAfterEightSeconds() = runTest {
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this)
+        try {
+            transport.connect()
+            engine.register()
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registering, engine.state.value)
+
+            // 7s — still waiting (under threshold)
+            testScheduler.advanceTimeBy(7_000)
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registering, engine.state.value)
+
+            // cross the 8s threshold
+            testScheduler.advanceTimeBy(2_000)
+            testScheduler.runCurrent()
+            assertEquals(SipState.Failed, engine.state.value)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
     @Test fun heartbeatStartsAfterRegistered() = runTest {
         val cfg = config().copy(keepaliveIntervalSeconds = 1)
         val transport = MockSipTransport()
@@ -172,6 +195,82 @@ class SimulatorEngineTest {
             assertEquals(3, keepalives.size)
             val body = (keepalives.first() as SipRequest).body.decodeToString()
             assertTrue(body.contains("<CmdType>Keepalive</CmdType>"))
+        } finally {
+            engine.shutdown()
+        }
+    }
+
+    @Test fun registerTimeoutCancelledOn200Ok() = runTest {
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this)
+        try {
+            transport.connect()
+            engine.register()
+            testScheduler.runCurrent()
+
+            // Reply quickly, then advance past the 8s window — must remain Registered.
+            val firstReq = transport.sent[0] as SipRequest
+            transport.deliver(fakeResponse(firstReq, 200, "OK"))
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registered, engine.state.value)
+
+            testScheduler.advanceTimeBy(20_000)
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registered, engine.state.value)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
+    @Test fun registerTimeoutResetOn401SoFullAuthFlowFits() = runTest {
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        try {
+            transport.connect()
+            engine.register()
+            testScheduler.runCurrent()
+
+            // 7s passes, then platform answers 401. Timer should be re-armed,
+            // so a 6s wait for the 200 OK still leaves us under threshold.
+            testScheduler.advanceTimeBy(7_000)
+            testScheduler.runCurrent()
+            val firstReq = transport.sent[0] as SipRequest
+            val challenge = "Digest realm=\"3402000000\",nonce=\"n\",algorithm=MD5"
+            transport.deliver(fakeResponse(firstReq, 401, "Unauthorized",
+                listOf(SipMessage.Header(SipHeader.WWW_AUTHENTICATE, challenge))))
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registering, engine.state.value)
+
+            testScheduler.advanceTimeBy(6_000)
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registering, engine.state.value)
+
+            val authedReq = transport.sent[1] as SipRequest
+            transport.deliver(fakeResponse(authedReq, 200, "OK"))
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registered, engine.state.value)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
+    @Test fun cancelRegisterReturnsToDisconnected() = runTest {
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this)
+        try {
+            transport.connect()
+            engine.register()
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registering, engine.state.value)
+
+            engine.cancelRegister()
+            testScheduler.runCurrent()
+            assertEquals(SipState.Disconnected, engine.state.value)
+
+            // Timer must be cancelled too — even past 10s we don't flip to Failed.
+            testScheduler.advanceTimeBy(10_000)
+            testScheduler.runCurrent()
+            assertEquals(SipState.Disconnected, engine.state.value)
         } finally {
             engine.shutdown()
         }

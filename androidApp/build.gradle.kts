@@ -39,4 +39,5 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.koin.android)
     implementation(libs.koin.compose)
+    implementation(libs.androidx.camera.view)
 }

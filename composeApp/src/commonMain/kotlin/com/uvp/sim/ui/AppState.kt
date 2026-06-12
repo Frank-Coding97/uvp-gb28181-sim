@@ -23,6 +23,7 @@ data class AppUiState(
  */
 interface AppActions {
     fun onConnect()
+    fun onCancelConnect()
     fun onDisconnect()
     fun onSnapshot()
     fun onConfigSave(updated: SimConfig)

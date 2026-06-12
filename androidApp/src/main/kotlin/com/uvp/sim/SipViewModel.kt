@@ -54,7 +54,26 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connect() {
-        if (engine != null) return  // already wired up
+        val existing = engine
+        if (existing != null) {
+            // Engine already wired up: only kick a fresh REGISTER if we're idle.
+            // Failed = previous attempt timed out/4xx, transport is still alive →
+            // just retry without rebuilding everything.
+            when (_state.value) {
+                SipState.Registering, SipState.Registered, SipState.InCall -> return
+                SipState.Disconnected, SipState.Failed -> {
+                    engineScope.launch {
+                        try { existing.register() } catch (e: Throwable) {
+                            _events.update { current ->
+                                (listOf(SimEvent.TransportError("register retry: ${e.message}")) + current)
+                                    .take(MAX_EVENT_LOG)
+                            }
+                        }
+                    }
+                    return
+                }
+            }
+        }
         val cfg = _config.value
         val ctx = getApplication<Application>()
         val localIp = AndroidNetwork.activeIpv4(ctx) ?: "0.0.0.0"
@@ -105,6 +124,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val eng = engine ?: return
         engineScope.launch {
             try { eng.unregister() } catch (_: Throwable) { }
+            try { eng.shutdown() } catch (_: Throwable) { }
+            try { transport?.close() } catch (_: Throwable) { }
+            engine = null
+            transport = null
+        }
+    }
+
+    /** Abort an in-flight REGISTER without sending Unregister (we never registered). */
+    fun cancelConnect() {
+        val eng = engine ?: return
+        engineScope.launch {
+            try { eng.cancelRegister() } catch (_: Throwable) { }
             try { eng.shutdown() } catch (_: Throwable) { }
             try { transport?.close() } catch (_: Throwable) { }
             engine = null

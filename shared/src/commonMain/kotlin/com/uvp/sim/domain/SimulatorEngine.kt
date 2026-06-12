@@ -15,6 +15,7 @@ import com.uvp.sim.sip.SipState
 import com.uvp.sim.sip.SipStateMachine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -98,6 +99,7 @@ class SimulatorEngine(
             try {
                 transport.send(req)
                 _events.emit(SimEvent.MessageSent(req))
+                armRegisterTimeout()
             } catch (e: Throwable) {
                 _state.value = SipStateMachine.transition(
                     _state.value, SipEvent.RegisterFailed("transport.send: ${e.message}")
@@ -108,10 +110,51 @@ class SimulatorEngine(
         }
     }
 
+    /** Cancel an in-flight REGISTER (before any response). Used by UI cancel. */
+    suspend fun cancelRegister() {
+        mutex.withLock {
+            if (_state.value != SipState.Registering) return
+            registerJob?.cancel()
+            registerJob = null
+            _state.value = SipStateMachine.transition(
+                _state.value, SipEvent.UnregisterRequested
+            )
+            _events.emit(SimEvent.RegistrationFailed("用户取消"))
+        }
+    }
+
+    /**
+     * Arm a watchdog so the UI doesn't sit in "Registering…" forever when the
+     * platform never replies (e.g. server down, UDP black hole, wrong IP).
+     *
+     * Re-armed on each REGISTER send (initial + 401 re-send), cancelled when
+     * we either succeed, get a terminal failure, or the user cancels.
+     */
+    private fun armRegisterTimeout() {
+        registerJob?.cancel()
+        registerJob = scope.launch {
+            delay(REGISTER_TIMEOUT_MS)
+            mutex.withLock {
+                if (_state.value != SipState.Registering) return@withLock
+                _state.value = SipStateMachine.transition(
+                    _state.value,
+                    SipEvent.RegisterFailed("timeout")
+                )
+                _events.emit(SimEvent.RegistrationFailed("平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应"))
+            }
+        }
+    }
+
+    private fun cancelRegisterTimeout() {
+        registerJob?.cancel()
+        registerJob = null
+    }
+
     /** Send Unregister and tear down. */
     suspend fun unregister() {
         mutex.withLock {
             if (_state.value == SipState.Disconnected) return
+            cancelRegisterTimeout()
             heartbeat?.stop()
             heartbeat = null
 
@@ -231,6 +274,7 @@ class SimulatorEngine(
     private suspend fun handleRegisterResponse(resp: SipResponse) {
         when (resp.statusCode) {
             in 200..299 -> {
+                cancelRegisterTimeout()
                 _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
                 _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
                 startHeartbeat()
@@ -241,6 +285,7 @@ class SimulatorEngine(
                     ?: resp.firstHeader("Proxy-Authenticate")
                 val pending = pendingRegister
                 if (challenge == null || pending == null) {
+                    cancelRegisterTimeout()
                     _state.value = SipStateMachine.transition(
                         _state.value, SipEvent.RegisterFailed("401 missing WWW-Authenticate")
                     )
@@ -266,9 +311,11 @@ class SimulatorEngine(
                 pendingRegister = authedReq
                 transport.send(authedReq)
                 _events.emit(SimEvent.MessageSent(authedReq))
+                armRegisterTimeout()
             }
 
             in 400..699 -> {
+                cancelRegisterTimeout()
                 val reason = "${resp.statusCode} ${resp.reasonPhrase}"
                 _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterFailed(reason))
                 _events.emit(SimEvent.RegistrationFailed(reason))
@@ -488,5 +535,15 @@ class SimulatorEngine(
             }
         }
         heartbeat?.start()
+    }
+
+    companion object {
+        /**
+         * Watchdog so the UI never sits in "Registering…" forever when the
+         * platform is dead / wrong IP / firewall black hole. SIP RFC 3261
+         * Timer F is 32s but for an interactive simulator UX 8s is plenty —
+         * a healthy platform answers in < 1s, and 401-then-200 is < 3s.
+         */
+        const val REGISTER_TIMEOUT_MS: Long = 8_000L
     }
 }
