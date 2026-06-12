@@ -133,7 +133,6 @@ private fun ChannelConfigCard(
 ) {
     var videoChannelId by remember(state.config) { mutableStateOf(state.config.device.videoChannelId) }
     var alarmChannelId by remember(state.config) { mutableStateOf(state.config.device.alarmChannelId) }
-    var password by remember(state.config) { mutableStateOf(state.config.device.password) }
     var keepalive by remember(state.config) {
         mutableStateOf(state.config.keepaliveIntervalSeconds.toString())
     }
@@ -152,7 +151,6 @@ private fun ChannelConfigCard(
         InlineField("报警通道 ID", alarmChannelId,
             { alarmChannelId = it.filter { c -> c.isDigit() } },
             enabled = !locked)
-        InlineField("注册密码", password, { password = it }, password = true, enabled = !locked)
         InlineField("心跳间隔(秒)", keepalive,
             { keepalive = it.filter { c -> c.isDigit() } },
             keyboard = KeyboardType.Number, enabled = !locked)
@@ -164,8 +162,7 @@ private fun ChannelConfigCard(
                     state.config.copy(
                         device = state.config.device.copy(
                             videoChannelId = videoChannelId,
-                            alarmChannelId = alarmChannelId,
-                            password = password
+                            alarmChannelId = alarmChannelId
                         ),
                         keepaliveIntervalSeconds = keepalive.toIntOrNull()?.coerceIn(15, 600) ?: 60
                     )

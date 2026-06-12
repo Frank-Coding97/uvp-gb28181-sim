@@ -128,6 +128,8 @@ data class ServerConfig(
 data class DeviceConfig(
     /** 设备编码 (device ID) — used as From URI user part */
     val deviceId: String,
+    /** 设备显示名称 — Catalog Name + 可选 SIP From display name。WVP 后台显示这个 */
+    val name: String = "UVP-Sim",
     /** 视频通道编码 — used in Catalog response and INVITE matching */
     val videoChannelId: String,
     /** 报警通道编码 — used by alarm Notify */

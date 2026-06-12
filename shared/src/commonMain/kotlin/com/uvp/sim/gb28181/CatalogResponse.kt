@@ -25,7 +25,7 @@ object CatalogResponse {
     fun build(
         config: SimConfig,
         sn: String,
-        channelName: String = "UVP-Sim Camera"
+        channelName: String = config.device.name
     ): String {
         val device = config.device
         val server = config.server

@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -245,23 +246,31 @@ private fun BrandCover() {
 @Composable
 private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     val toast = LocalToastHost.current
-    var editing by remember { mutableStateOf(false) }
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
     var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
     var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
+    var deviceName by remember(state.config) { mutableStateOf(state.config.device.name) }
+    var password by remember(state.config) { mutableStateOf(state.config.device.password) }
     var transport by remember(state.config) { mutableStateOf(state.config.transport.name) }
     var audioTransport by remember(state.config) {
         mutableStateOf(state.config.audioTransport)
     }
     var serverId by remember(state.config) { mutableStateOf(state.config.server.serverId) }
     var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
-    // 跟踪用户是否手改过域。一旦手改,服务器ID 不再自动同步前 10 位过来,
-    // 尊重用户的显式选择;保存或取消后重置,下次编辑又允许自动派生
     var domainManuallyEdited by remember(state.config) { mutableStateOf(false) }
 
     val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
-    // Force collapse when transitioning into a locked state mid-edit
-    if (locked && editing) editing = false
+
+    // 当前输入是否跟已保存配置不同 — 决定保存按钮是否可点
+    val dirty = ip != state.config.server.ip ||
+        (port.toIntOrNull() ?: 5060) != state.config.server.port ||
+        deviceId != state.config.device.deviceId ||
+        deviceName != state.config.device.name ||
+        password != state.config.device.password ||
+        transport != state.config.transport.name ||
+        audioTransport != state.config.audioTransport ||
+        serverId != state.config.server.serverId ||
+        domain != state.config.server.domain
 
     Column(
         modifier = Modifier
@@ -275,118 +284,103 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         ) {
             Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
             Spacer(Modifier.weight(1f))
-            val tint = if (locked) UvpColor.TextHint else UvpColor.Primary
-            Row(
-                modifier = Modifier
-                    .clickable(enabled = !locked) { editing = !editing }
-                    .padding(horizontal = 2.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.Edit, contentDescription = null,
-                    modifier = Modifier.size(14.dp), tint = tint)
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    when {
-                        locked -> "注销后修改"
-                        editing -> "收起"
-                        else -> "编辑"
-                    },
-                    fontSize = 12.sp, color = tint
-                )
+            if (locked) {
+                Text("注销后修改", fontSize = 11.sp, color = UvpColor.TextHint)
             }
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
 
-        if (!editing) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-                KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", true)
-                KvRow("服务器 ID", state.config.server.serverId, true)
-                KvRow("服务器域", state.config.server.domain, true)
-                KvRow("设备 ID", state.config.device.deviceId, true)
-                KvRow("信令传输", state.config.transport.name, true)
-                KvRow("对讲传输", state.config.audioTransport.label, false)
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            // 服务器 + 端口同行
+            InlineEditableRow(
+                label = "服务器",
+                value = ip,
+                enabled = !locked,
+                trailing = {
+                    InlineCompactPort(
+                        port = port,
+                        enabled = !locked,
+                        onChange = { port = it.filter { c -> c.isDigit() } }
+                    )
+                },
+                onChange = { ip = it }
+            )
+            InlineEditableRow("服务器 ID", serverId, !locked, KeyboardType.Number) { newId ->
+                serverId = newId.filter { c -> c.isDigit() }
+                if (!domainManuallyEdited) domain = serverId.take(10)
             }
-        } else {
-            Column(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    InlineField("服务器", ip, { ip = it }, Modifier.weight(2f))
-                    InlineField("端口", port, { port = it.filter { c -> c.isDigit() } }, Modifier.weight(1f),
-                        keyboard = KeyboardType.Number)
-                }
-                InlineField("服务器 ID", serverId, { newId ->
-                    serverId = newId.filter { c -> c.isDigit() }
-                    // 自动派生域:取前 10 位。仅当用户没手改过域时同步,
-                    // 否则尊重用户的自定义值(domainManuallyEdited 在域字段被改时置 true)
-                    if (!domainManuallyEdited) {
-                        domain = serverId.take(10)
+            InlineEditableRow("服务器域", domain, !locked, KeyboardType.Number) { newDomain ->
+                domain = newDomain.filter { c -> c.isDigit() }
+                domainManuallyEdited = true
+            }
+            InlineEditableRow("设备 ID", deviceId, !locked, KeyboardType.Number) {
+                deviceId = it.filter { c -> c.isDigit() }
+            }
+            InlineEditableRow("设备名称", deviceName, !locked, KeyboardType.Text) {
+                deviceName = it
+            }
+            InlineEditableRow("注册密码", password, !locked, KeyboardType.Password,
+                masked = true) { password = it }
+            InlineSegmentedRow("信令传输", transport, listOf("UDP", "TCP"), !locked) {
+                transport = it
+            }
+            InlineSegmentedRow(
+                "对讲传输", audioTransport.label,
+                AudioTransportType.entries.map { it.label }, !locked
+            ) { picked ->
+                audioTransport = AudioTransportType.entries.first { it.label == picked }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                enabled = !locked && dirty,
+                onClick = {
+                    if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
+                        toast.error("服务器、设备ID、服务器ID 不能为空")
+                        return@Button
                     }
-                })
-                InlineField("服务器域", domain, { newDomain ->
-                    domain = newDomain.filter { c -> c.isDigit() }
-                    // 用户主动改了域,从此不再自动派生
-                    domainManuallyEdited = true
-                })
-                InlineField("设备 ID", deviceId, { deviceId = it.filter { c -> c.isDigit() } })
-                InlineSegmented("信令传输方式", transport) { transport = it }
-                InlineSegmented(
-                    label = "对讲传输方式",
-                    active = audioTransport.label,
-                    options = AudioTransportType.entries.map { it.label }
-                ) { picked ->
-                    audioTransport = AudioTransportType.entries.first { it.label == picked }
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = {
-                            if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
-                                toast.error("服务器、设备ID、服务器ID 不能为空")
-                                return@Button
-                            }
-                            actions.onConfigSave(
-                                state.config.copy(
-                                    server = state.config.server.copy(
-                                        ip = ip,
-                                        port = port.toIntOrNull() ?: 5060,
-                                        serverId = serverId,
-                                        domain = domain
-                                    ),
-                                    device = state.config.device.copy(
-                                        deviceId = deviceId,
-                                        username = deviceId
-                                    ),
-                                    transport = com.uvp.sim.network.TransportType.valueOf(transport),
-                                    audioTransport = audioTransport
-                                )
-                            )
-                            editing = false
-                            domainManuallyEdited = false
-                            onFeedback("配置已保存")
-                        },
-                        modifier = Modifier.weight(1f).height(36.dp),
-                        shape = RoundedCornerShape(6.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
-                    ) { Text("保存", fontSize = 12.sp, color = Color.White) }
-                    OutlinedButton(
-                        onClick = {
-                            ip = state.config.server.ip
-                            port = state.config.server.port.toString()
-                            deviceId = state.config.device.deviceId
-                            transport = state.config.transport.name
-                            audioTransport = state.config.audioTransport
-                            serverId = state.config.server.serverId
-                            domain = state.config.server.domain
-                            editing = false
-                            domainManuallyEdited = false
-                        },
-                        modifier = Modifier.weight(1f).height(36.dp),
-                        shape = RoundedCornerShape(6.dp)
-                    ) { Text("取消", fontSize = 12.sp) }
-                }
+                    actions.onConfigSave(
+                        state.config.copy(
+                            server = state.config.server.copy(
+                                ip = ip,
+                                port = port.toIntOrNull() ?: 5060,
+                                serverId = serverId,
+                                domain = domain
+                            ),
+                            device = state.config.device.copy(
+                                deviceId = deviceId,
+                                name = deviceName,
+                                username = deviceId,
+                                password = password
+                            ),
+                            transport = com.uvp.sim.network.TransportType.valueOf(transport),
+                            audioTransport = audioTransport
+                        )
+                    )
+                    domainManuallyEdited = false
+                    onFeedback("配置已保存")
+                },
+                modifier = Modifier.fillMaxWidth().height(38.dp),
+                shape = RoundedCornerShape(6.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = UvpColor.Primary,
+                    disabledContainerColor = UvpColor.Border
+                )
+            ) {
+                Text(
+                    when {
+                        locked -> "已注册 · 不可修改"
+                        !dirty -> "无更改"
+                        else -> "保 存"
+                    },
+                    fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                    color = if (locked || !dirty) UvpColor.TextHint else Color.White,
+                    letterSpacing = if (!locked && dirty) 4.sp else 0.sp
+                )
             }
+            Spacer(Modifier.height(4.dp))
         }
     }
 }
@@ -640,5 +634,168 @@ internal fun InlineSegmented(
                 }
             }
         }
+    }
+}
+
+// ============= In-place editable row (no outline, focus underline) =============
+
+/**
+ * 一行 KV 风格原位编辑控件。左 label,右可编辑文字。
+ *
+ * 视觉:label 左对齐 72dp 宽,value 右占剩余宽,数字字段等宽字体。
+ * 不画外框,聚焦时下面亮 1.5dp 蓝线,失焦回归边线灰。
+ *
+ * trailing 可选:用于"服务器 + 端口同行"场景,主输入占大头,trailing 占小头。
+ */
+@Composable
+internal fun InlineEditableRow(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    keyboard: KeyboardType = KeyboardType.Text,
+    masked: Boolean = false,
+    trailing: (@Composable () -> Unit)? = null,
+    onChange: (String) -> Unit
+) {
+    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                label,
+                modifier = Modifier.width(72.dp),
+                fontSize = 12.sp,
+                color = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint,
+                fontWeight = FontWeight.Medium
+            )
+            BasicTextField(
+                value = value,
+                onValueChange = onChange,
+                enabled = enabled,
+                singleLine = true,
+                interactionSource = interactionSource,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    fontSize = 13.sp,
+                    fontFamily = if (keyboard == KeyboardType.Number) FontFamily.Monospace
+                    else FontFamily.Default,
+                    color = if (enabled) UvpColor.Text else UvpColor.TextHint
+                ),
+                keyboardOptions = KeyboardOptions(keyboardType = keyboard),
+                visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(UvpColor.Primary),
+                modifier = Modifier.weight(1f)
+            )
+            trailing?.invoke()
+        }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(if (focused && enabled) 1.5.dp else 1.dp)
+                .background(if (focused && enabled) UvpColor.Primary else UvpColor.BorderLight)
+        )
+    }
+}
+
+/** 紧凑端口字段,跟服务器 IP 同行,固定窄宽. */
+@Composable
+private fun InlineCompactPort(
+    port: String,
+    enabled: Boolean,
+    onChange: (String) -> Unit
+) {
+    Spacer(Modifier.width(8.dp))
+    Text(":", fontSize = 13.sp,
+        color = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint)
+    Spacer(Modifier.width(4.dp))
+    BasicTextField(
+        value = port,
+        onValueChange = onChange,
+        enabled = enabled,
+        singleLine = true,
+        textStyle = androidx.compose.ui.text.TextStyle(
+            fontSize = 13.sp,
+            fontFamily = FontFamily.Monospace,
+            color = if (enabled) UvpColor.Text else UvpColor.TextHint
+        ),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(UvpColor.Primary),
+        modifier = Modifier.width(54.dp)
+    )
+}
+
+/** 行式 segmented:左 label,右选项 chip 行. */
+@Composable
+internal fun InlineSegmentedRow(
+    label: String,
+    active: String,
+    options: List<String>,
+    enabled: Boolean,
+    onChange: (String) -> Unit
+) {
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                label,
+                modifier = Modifier.width(72.dp),
+                fontSize = 12.sp,
+                color = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint,
+                fontWeight = FontWeight.Medium
+            )
+            Row(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                options.forEach { opt ->
+                    val sel = opt == active
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(
+                                when {
+                                    sel && enabled -> UvpColor.PrimaryLight
+                                    sel -> UvpColor.PrimaryLight.copy(alpha = 0.4f)
+                                    else -> Color.Transparent
+                                }
+                            )
+                            .border(
+                                1.dp,
+                                when {
+                                    !sel -> UvpColor.BorderLight
+                                    enabled -> UvpColor.Primary
+                                    else -> UvpColor.Primary.copy(alpha = 0.5f)
+                                },
+                                RoundedCornerShape(4.dp)
+                            )
+                            .clickable(enabled = enabled) { onChange(opt) }
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            opt,
+                            fontSize = 11.5.sp,
+                            fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
+                            color = when {
+                                sel && !enabled -> UvpColor.Primary.copy(alpha = 0.6f)
+                                !enabled -> UvpColor.TextHint
+                                sel -> UvpColor.Primary
+                                else -> UvpColor.TextSecondary
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
     }
 }
