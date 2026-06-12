@@ -460,13 +460,13 @@ private fun InlineField(
 ) {
     Column(modifier = modifier) {
         Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
-        Spacer(Modifier.height(2.dp))
+        Spacer(Modifier.height(4.dp))
         OutlinedTextField(
             value = value,
             onValueChange = onChange,
-            modifier = Modifier.fillMaxWidth().height(42.dp),
+            modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp, fontFamily = FontFamily.Monospace),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontFamily = FontFamily.Monospace),
             keyboardOptions = KeyboardOptions(keyboardType = keyboard),
             visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
             shape = RoundedCornerShape(6.dp),
