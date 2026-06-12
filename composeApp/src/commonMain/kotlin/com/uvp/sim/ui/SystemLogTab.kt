@@ -310,6 +310,7 @@ private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit)
         LogLevel.Error -> UvpColor.Danger
     }
     val clipboard = LocalClipboardManager.current
+    val toast = LocalToastHost.current
     val isError = log.level == LogLevel.Warning || log.level == LogLevel.Error
     Column(
         modifier = Modifier
@@ -368,6 +369,7 @@ private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit)
                         .border(1.dp, levelColor.copy(alpha = 0.4f), RoundedCornerShape(3.dp))
                         .clickable {
                             clipboard.setText(AnnotatedString(formatLogForCopy(log)))
+                            toast.success("错误已复制到剪贴板")
                         }
                         .padding(horizontal = 6.dp, vertical = 2.dp)
                 ) {
