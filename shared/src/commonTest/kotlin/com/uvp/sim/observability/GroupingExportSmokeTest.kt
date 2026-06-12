@@ -35,7 +35,7 @@ class GroupingExportSmokeTest {
         val cfg = SimConfig(
             gbVersion = GbVersion.V2022,
             server = ServerConfig("127.0.0.1", 5060, "34020000002000000001", "3402000000"),
-            device = DeviceConfig("dev1", "ch1", "al1", "u", "p"),
+            device = DeviceConfig(deviceId = "dev1", videoChannelId = "ch1", alarmChannelId = "al1", username = "u", password = "p"),
             transport = TransportType.UDP, keepaliveIntervalSeconds = 60
         )
         val cid = "single@h"
