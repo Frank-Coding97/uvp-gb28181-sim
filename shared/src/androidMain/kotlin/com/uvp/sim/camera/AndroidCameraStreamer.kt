@@ -16,6 +16,9 @@ import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.media.H265NalType
 import com.uvp.sim.media.NalType
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -105,12 +108,25 @@ class AndroidCameraStreamer(
             setInteger(MediaFormat.KEY_FRAME_RATE, config.frameRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, config.keyframeIntervalSeconds)
         }
-        val codec = MediaCodec.createEncoderByType(mime).apply {
-            configure(format, /*surface=*/null, /*crypto=*/null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        val codec = try {
+            MediaCodec.createEncoderByType(mime).apply {
+                configure(format, /*surface=*/null, /*crypto=*/null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
+        } catch (e: Throwable) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "${config.videoCodec} 编码器初始化失败: ${e::class.simpleName}: ${e.message}"
+            )
+            close(e)
+            throw e
         }
         val surface = codec.createInputSurface()
         encoder = codec
         encoderInputSurface = surface
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "打开摄像头 ${config.widthPx}x${config.heightPx}@${config.frameRate}fps · ${config.videoCodec} ${config.bitrateBps / 1000}kbps"
+        )
 
         // Parameter sets to prepend to every key frame. For H.264 these are
         // SPS+PPS; for H.265 they are VPS+SPS+PPS. We keep the latest copy each
@@ -174,7 +190,13 @@ class AndroidCameraStreamer(
                 )
             }
 
-            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) { close(e) }
+            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "编码器异常: ${e.message}"
+                )
+                close(e)
+            }
             override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) { /* CSD via CODEC_CONFIG */ }
         })
         codec.start()
@@ -186,7 +208,13 @@ class AndroidCameraStreamer(
                 }
                 bindEncoderPreview(surface)
                 rebind()
-            } catch (e: Throwable) { close(e) }
+            } catch (e: Throwable) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "绑定 CameraX 失败: ${e::class.simpleName}: ${e.message}"
+                )
+                close(e)
+            }
         }
 
         awaitClose {
@@ -199,6 +227,7 @@ class AndroidCameraStreamer(
             runCatching { surface.release() }
             encoder = null
             encoderInputSurface = null
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "关闭摄像头编码器")
         }
     }.flowOn(Dispatchers.IO)
 

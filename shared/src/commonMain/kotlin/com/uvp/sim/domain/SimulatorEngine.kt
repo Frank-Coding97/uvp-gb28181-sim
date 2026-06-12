@@ -80,6 +80,7 @@ class SimulatorEngine(
         val rtpSender: com.uvp.sim.network.RtpSender,
         val streamJob: Job,
         val audioJob: Job? = null,
+        val statsJob: Job? = null,
         var frameCount: Int = 0,
         var packetCount: Int = 0
     )
@@ -194,6 +195,15 @@ class SimulatorEngine(
 
     /** Stop background work. The transport itself is not closed (caller's responsibility). */
     suspend fun shutdown() {
+        // 先把活跃流停掉(取消 statsJob / 关 RTP socket / 释放 camera),
+        // 不能持锁内调用 stopActiveStream(它会再 take 锁)。
+        activeStream?.let { active ->
+            active.statsJob?.cancel()
+            active.streamJob.cancel()
+            active.audioJob?.cancel()
+            try { active.rtpSender.close() } catch (_: Throwable) { }
+            activeStream = null
+        }
         mutex.withLock {
             heartbeat?.stop()
             heartbeat = null
@@ -470,6 +480,10 @@ class SimulatorEngine(
         }
 
         _events.emit(SimEvent.StreamStarted(cid, offer.remoteIp, offer.remotePort, ssrc))
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "开始推流 → ${offer.remoteIp}:${offer.remotePort} ssrc=$ssrc"
+        )
 
         val packer = com.uvp.sim.media.RtpPacker(
             payloadType = 96,
@@ -536,7 +550,17 @@ class SimulatorEngine(
             ssrc = ssrc,
             rtpSender = rtp,
             streamJob = streamJob,
-            audioJob = audioJob
+            audioJob = audioJob,
+            statsJob = scope.launch {
+                while (true) {
+                    delay(MEDIA_STATS_INTERVAL_MS)
+                    val a = activeStream ?: break
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Media,
+                        "RTP 推送中: ${a.frameCount} 帧 / ${a.packetCount} 包"
+                    )
+                }
+            }
         )
     }
 
@@ -561,6 +585,7 @@ class SimulatorEngine(
         activeStream = null
         active.streamJob.cancel()
         active.audioJob?.cancel()
+        active.statsJob?.cancel()
         try { active.rtpSender.close() } catch (_: Throwable) { }
         try { cameraCapture?.stop() } catch (_: Throwable) { }
         try { audioCapture?.stop() } catch (_: Throwable) { }
@@ -571,6 +596,10 @@ class SimulatorEngine(
                 packetCount = active.packetCount,
                 reason = reason
             )
+        )
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "停止推流 ($reason): ${active.frameCount} 帧 / ${active.packetCount} 包"
         )
     }
 
@@ -612,5 +641,8 @@ class SimulatorEngine(
          * a healthy platform answers in < 1s, and 401-then-200 is < 3s.
          */
         const val REGISTER_TIMEOUT_MS: Long = 8_000L
+
+        /** RTP 周期统计 emit 间隔(spec §6.2 MEDIA emit 时机点)。 */
+        const val MEDIA_STATS_INTERVAL_MS: Long = 30_000L
     }
 }

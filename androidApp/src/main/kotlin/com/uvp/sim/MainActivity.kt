@@ -78,12 +78,29 @@ class MainActivity : ComponentActivity() {
             val videoVersion by viewModel.videoConfigVersion.collectAsStateWithLifecycle()
             val uiState = AppUiState(sip = sipState, config = config, events = events)
             val actions = object : AppActions {
-                override fun onConnect() = viewModel.connect()
-                override fun onCancelConnect() = viewModel.cancelConnect()
-                override fun onDisconnect() = viewModel.disconnect()
-                override fun onSnapshot() = viewModel.reportSnapshot()
-                override fun onConfigSave(updated: com.uvp.sim.config.SimConfig) =
+                override fun onConnect() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击注册")
+                    viewModel.connect()
+                }
+                override fun onCancelConnect() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击取消注册")
+                    viewModel.cancelConnect()
+                }
+                override fun onDisconnect() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击注销")
+                    viewModel.disconnect()
+                }
+                override fun onSnapshot() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击抓拍")
+                    viewModel.reportSnapshot()
+                }
+                override fun onConfigSave(updated: com.uvp.sim.config.SimConfig) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "配置已更新 device=${updated.device.deviceId} server=${updated.server.ip}:${updated.server.port}"
+                    )
                     viewModel.updateConfig(updated)
+                }
             }
             // Rebuild encoder/streamer whenever video profile bumps.
             LaunchedEffect(videoVersion) {
