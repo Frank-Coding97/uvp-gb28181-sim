@@ -46,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
@@ -152,24 +154,24 @@ private fun CameraPreviewBox(state: AppUiState) {
         modifier = Modifier
             .fillMaxWidth()
             .height(180.dp)
-            .background(Color(0xFF1F2937), RoundedCornerShape(8.dp))
-            .clip(RoundedCornerShape(8.dp)),
+            .clip(RoundedCornerShape(8.dp))
+            .background(
+                if (showPreview) {
+                    Brush.linearGradient(listOf(Color(0xFF1F2937), Color(0xFF1F2937)))
+                } else {
+                    Brush.linearGradient(
+                        colors = listOf(Color(0xFF0B1E3F), Color(0xFF0F2A57), Color(0xFF1A4480)),
+                        start = Offset(0f, 0f),
+                        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
+                    )
+                }
+            ),
         contentAlignment = Alignment.Center
     ) {
         if (showPreview) {
             PlatformCameraPreview(modifier = Modifier.fillMaxSize())
         } else {
-            Icon(
-                Icons.Outlined.PhotoCamera, contentDescription = null,
-                modifier = Modifier.size(28.dp),
-                tint = Color.White.copy(alpha = 0.3f)
-            )
-            Text(
-                "注册后开启预览",
-                fontSize = 11.sp,
-                color = Color.White.copy(alpha = 0.3f),
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
-            )
+            BrandCover()
         }
         Row(
             modifier = Modifier
@@ -193,6 +195,52 @@ private fun CameraPreviewBox(state: AppUiState) {
                 fontFamily = FontFamily.Monospace
             )
         }
+    }
+}
+
+@Composable
+private fun BrandCover() {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // GB/T 28181 chip
+            Box(
+                modifier = Modifier
+                    .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
+                    .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 3.dp)
+            ) {
+                Text(
+                    "GB/T 28181-2022",
+                    fontSize = 9.sp,
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontFamily = FontFamily.Monospace,
+                    letterSpacing = 1.sp
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            // UVP 渐变大字
+            Text(
+                "UVP",
+                fontSize = 60.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 10.sp,
+                style = androidx.compose.ui.text.TextStyle(
+                    brush = Brush.linearGradient(
+                        listOf(Color(0xFFFFFFFF), Color(0xFF7CC4FF))
+                    )
+                )
+            )
+        }
+        Text(
+            "注册后开启预览",
+            fontSize = 10.sp,
+            color = Color.White.copy(alpha = 0.4f),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp)
+        )
     }
 }
 
@@ -504,7 +552,7 @@ private fun KvRow(key: String, value: String, divider: Boolean) {
 }
 
 @Composable
-private fun InlineField(
+internal fun InlineField(
     label: String,
     value: String,
     onChange: (String) -> Unit,
@@ -549,7 +597,7 @@ private fun InlineField(
 }
 
 @Composable
-private fun InlineSegmented(
+internal fun InlineSegmented(
     label: String,
     active: String,
     options: List<String> = listOf("UDP", "TCP"),
