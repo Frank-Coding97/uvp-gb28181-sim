@@ -13,6 +13,7 @@ data class SimConfig(
     val device: DeviceConfig,
     val transport: com.uvp.sim.network.TransportType =
         com.uvp.sim.network.TransportType.UDP,
+    val audioTransport: AudioTransportType = AudioTransportType.UDP,
     val expiresSeconds: Int = 3600,
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
@@ -22,6 +23,12 @@ data class SimConfig(
 enum class GbVersion(val label: String) {
     V2016("GB/T 28181-2016"),
     V2022("GB/T 28181-2022")
+}
+
+enum class AudioTransportType(val label: String) {
+    UDP("UDP"),
+    TCP_ACTIVE("TCP 主动"),
+    TCP_PASSIVE("TCP 被动")
 }
 
 data class ServerConfig(

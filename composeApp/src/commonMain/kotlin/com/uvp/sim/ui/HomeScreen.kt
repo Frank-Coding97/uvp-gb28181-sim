@@ -19,6 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
@@ -54,6 +55,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uvp.sim.config.AudioTransportType
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.launch
 
@@ -203,6 +205,9 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
     var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
     var transport by remember(state.config) { mutableStateOf(state.config.transport.name) }
+    var audioTransport by remember(state.config) {
+        mutableStateOf(state.config.audioTransport)
+    }
     var serverId by remember(state.config) { mutableStateOf(state.config.server.serverId) }
     var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
 
@@ -248,7 +253,8 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
                 KvRow("服务器", "${state.config.server.ip}:${state.config.server.port}", true)
                 KvRow("设备 ID", state.config.device.deviceId, true)
-                KvRow("传输", state.config.transport.name, true)
+                KvRow("信令传输", state.config.transport.name, true)
+                KvRow("对讲传输", state.config.audioTransport.label, true)
                 KvRow("服务器 ID", state.config.server.serverId, true)
                 KvRow("域", state.config.server.domain, false)
             }
@@ -263,7 +269,14 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                         keyboard = KeyboardType.Number)
                 }
                 InlineField("设备 ID", deviceId, { deviceId = it.filter { c -> c.isDigit() } })
-                InlineSegmented("传输方式", transport) { transport = it }
+                InlineSegmented("信令传输方式", transport) { transport = it }
+                InlineSegmented(
+                    label = "对讲传输方式",
+                    active = audioTransport.label,
+                    options = AudioTransportType.entries.map { it.label }
+                ) { picked ->
+                    audioTransport = AudioTransportType.entries.first { it.label == picked }
+                }
                 InlineField("服务器 ID", serverId, { serverId = it.filter { c -> c.isDigit() } })
                 InlineField("服务器域", domain, { domain = it.filter { c -> c.isDigit() } })
                 Spacer(Modifier.height(4.dp))
@@ -286,7 +299,8 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                                         deviceId = deviceId,
                                         username = deviceId
                                     ),
-                                    transport = com.uvp.sim.network.TransportType.valueOf(transport)
+                                    transport = com.uvp.sim.network.TransportType.valueOf(transport),
+                                    audioTransport = audioTransport
                                 )
                             )
                             editing = false
@@ -302,6 +316,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                             port = state.config.server.port.toString()
                             deviceId = state.config.device.deviceId
                             transport = state.config.transport.name
+                            audioTransport = state.config.audioTransport
                             serverId = state.config.server.serverId
                             domain = state.config.server.domain
                             editing = false
@@ -499,56 +514,85 @@ private fun InlineField(
     enabled: Boolean = true
 ) {
     Column(modifier = modifier) {
-        Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
-        Spacer(Modifier.height(4.dp))
-        OutlinedTextField(
+        Text(label, fontSize = 11.sp, color = UvpColor.TextSecondary, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(3.dp))
+        BasicTextField(
             value = value,
             onValueChange = onChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
             enabled = enabled,
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontFamily = FontFamily.Monospace),
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+                color = if (enabled) UvpColor.Text else UvpColor.TextSecondary
+            ),
             keyboardOptions = KeyboardOptions(keyboardType = keyboard),
             visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
-            shape = RoundedCornerShape(6.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = UvpColor.Primary,
-                unfocusedBorderColor = UvpColor.Border,
-                focusedContainerColor = UvpColor.Surface,
-                unfocusedContainerColor = UvpColor.Surface,
-                disabledBorderColor = UvpColor.BorderLight,
-                disabledTextColor = UvpColor.TextSecondary,
-                disabledContainerColor = UvpColor.Surface
-            )
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(UvpColor.Primary),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(38.dp)
+                .background(UvpColor.Surface, RoundedCornerShape(6.dp))
+                .border(
+                    1.dp,
+                    if (enabled) UvpColor.Border else UvpColor.BorderLight,
+                    RoundedCornerShape(6.dp)
+                )
+                .padding(horizontal = 10.dp),
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.CenterStart, modifier = Modifier.fillMaxSize()) {
+                    inner()
+                }
+            }
         )
     }
 }
 
 @Composable
-private fun InlineSegmented(label: String, active: String, onChange: (String) -> Unit) {
+private fun InlineSegmented(
+    label: String,
+    active: String,
+    options: List<String> = listOf("UDP", "TCP"),
+    enabled: Boolean = true,
+    onChange: (String) -> Unit
+) {
     Column {
-        Text(label, fontSize = 11.sp, color = UvpColor.TextHint)
-        Spacer(Modifier.height(2.dp))
+        Text(label, fontSize = 11.sp, color = UvpColor.TextSecondary, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(3.dp))
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(UvpColor.CodeBg, RoundedCornerShape(6.dp))
-                .border(1.dp, UvpColor.Border, RoundedCornerShape(6.dp))
+                .border(
+                    1.dp,
+                    if (enabled) UvpColor.Border else UvpColor.BorderLight,
+                    RoundedCornerShape(6.dp)
+                )
                 .padding(2.dp)
         ) {
-            listOf("UDP", "TCP").forEach { t ->
+            options.forEach { t ->
                 val sel = t == active
                 Box(
                     modifier = Modifier
                         .weight(1f)
-                        .background(if (sel) UvpColor.Surface else Color.Transparent, RoundedCornerShape(4.dp))
-                        .clickable { onChange(t) }
+                        .background(
+                            if (sel) UvpColor.Surface else Color.Transparent,
+                            RoundedCornerShape(4.dp)
+                        )
+                        .clickable(enabled = enabled) { onChange(t) }
                         .padding(vertical = 6.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(t, fontSize = 12.sp,
+                    Text(
+                        t,
+                        fontSize = 12.sp,
                         fontWeight = if (sel) FontWeight.Medium else FontWeight.Normal,
-                        color = if (sel) UvpColor.Primary else UvpColor.TextSecondary)
+                        color = when {
+                            !enabled -> UvpColor.TextHint
+                            sel -> UvpColor.Primary
+                            else -> UvpColor.TextSecondary
+                        }
+                    )
                 }
             }
         }
