@@ -21,8 +21,11 @@ class SipDialogGroupingTest {
         gbVersion = GbVersion.V2022,
         server = ServerConfig("127.0.0.1", 5060, "34020000002000000001", "3402000000"),
         device = DeviceConfig(
-            "34020000001110000001", "34020000001320000001", "34020000001340000001",
-            "34020000001110000001", "secret"
+            deviceId = "34020000001110000001",
+            videoChannelId = "34020000001320000001",
+            alarmChannelId = "34020000001340000001",
+            username = "34020000001110000001",
+            password = "secret"
         ),
         transport = TransportType.UDP, keepaliveIntervalSeconds = 60
     )

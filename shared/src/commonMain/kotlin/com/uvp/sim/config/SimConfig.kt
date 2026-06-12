@@ -10,6 +10,12 @@ import kotlinx.serialization.Serializable
  * The runtime state (current SipState, active calls) is held by SimulatorEngine.
  */
 @Serializable
+data class GeoPoint(
+    val longitude: Double = 116.404,
+    val latitude: Double = 39.915
+)
+
+@Serializable
 data class SimConfig(
     val gbVersion: GbVersion = GbVersion.V2022,
     val server: ServerConfig,
@@ -21,7 +27,8 @@ data class SimConfig(
     val expiresSeconds: Int = 3600,
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
-    val userAgent: String = "UVP-Sim/0.1"
+    val userAgent: String = "UVP-Sim/0.1",
+    val mockPosition: GeoPoint = GeoPoint()
 )
 
 /**

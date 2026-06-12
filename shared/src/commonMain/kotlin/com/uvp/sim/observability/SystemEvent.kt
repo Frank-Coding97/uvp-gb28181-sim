@@ -25,7 +25,8 @@ enum class LogTag(val display: String) {
     Media("MEDIA"),
     Lifecycle("LIFECYCLE"),
     Resource("RESOURCE"),
-    User("USER")
+    User("USER"),
+    Subscription("SUBSCRIPTION")
 }
 
 /**

@@ -253,6 +253,18 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
     is SimEvent.TransportError -> LogRowSpec(
         "", "⚠", true, "ERR", UvpColor.Danger, ev.description, category = ""
     )
+    is SimEvent.SubscribeReceived -> LogRowSpec(
+        "", "←", false, "SUB", UvpColor.Info, "${ev.kind} · from=${ev.subscriber}", category = "SUBSCRIBE"
+    )
+    is SimEvent.NotifySent -> LogRowSpec(
+        "", "→", true, "NTF", UvpColor.Primary, "${ev.kind} · SN=${ev.sn}", category = "NOTIFY"
+    )
+    is SimEvent.SubscribeExpired -> LogRowSpec(
+        "", "·", true, "EXP", UvpColor.TextHint, "${ev.kind} 过期", category = "SUBSCRIBE"
+    )
+    is SimEvent.SubscribeRefreshed -> LogRowSpec(
+        "", "←", false, "REF", UvpColor.Success, "续订 expires=${ev.newExpiresSeconds}s", category = "SUBSCRIBE"
+    )
 }
 
 private fun msgMethodShort(m: SipMessage): String = when (m) {

@@ -30,6 +30,8 @@ import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.SubscriptionKind
+import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.CameraPreviewBinder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -86,12 +88,25 @@ class MainActivity : ComponentActivity() {
             val config by viewModel.config.collectAsStateWithLifecycle()
             val videoVersion by viewModel.videoConfigVersion.collectAsStateWithLifecycle()
             val sysLogs by systemEvents.collectAsState()
+            val rawSubs by viewModel.subscriptions.collectAsStateWithLifecycle()
+            val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
+                val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
+                    ?: return@mapNotNull null
+                key to SubscriptionStatus(
+                    active = snap.active,
+                    subscriber = snap.subscriber,
+                    expiresSeconds = snap.expiresSeconds,
+                    remainingSeconds = snap.remainingSeconds,
+                    notifyCount = snap.notifyCount
+                )
+            }.toMap()
             val uiState = AppUiState(
                 sip = sipState,
                 config = config,
                 events = events,
                 systemEvents = sysLogs,
-                sessionMarker = SessionTracker.current
+                sessionMarker = SessionTracker.current,
+                subscriptions = subscriptions
             )
             val actions = object : AppActions {
                 override fun onConnect() {

@@ -93,4 +93,27 @@ sealed class SimEvent {
         val description: String,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+
+    data class SubscribeReceived(
+        val subscriber: String,
+        val kind: String,
+        val expiresSeconds: Int,
+        val intervalSeconds: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    data class NotifySent(
+        val kind: String,
+        val sn: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    data class SubscribeExpired(
+        val subscriber: String,
+        val kind: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    data class SubscribeRefreshed(
+        val subscriber: String,
+        val newExpiresSeconds: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
 }

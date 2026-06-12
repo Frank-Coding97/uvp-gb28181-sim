@@ -1,0 +1,141 @@
+package com.uvp.sim.domain
+
+import com.uvp.sim.network.Heartbeat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+data class SubscriptionDialog(
+    val kind: String,
+    val subscriberUri: String,
+    val callId: String,
+    val fromTag: String,
+    val toTag: String,
+    val intervalSeconds: Int,
+    val expiresSeconds: Int,
+    val remainingSeconds: Int,
+    val notifyCount: Int = 0,
+    val cseqNotify: Int = 0
+)
+
+data class SubscriptionSnapshot(
+    val active: Boolean = false,
+    val subscriber: String? = null,
+    val expiresSeconds: Int? = null,
+    val remainingSeconds: Int? = null,
+    val notifyCount: Int = 0
+)
+
+class SubscriptionRegistry(private val scope: CoroutineScope) {
+
+    private val _dialogs = MutableStateFlow<Map<String, SubscriptionDialog>>(emptyMap())
+
+    private val notifyJobs = mutableMapOf<String, Heartbeat>()
+    private val expiryJobs = mutableMapOf<String, Job>()
+
+    private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
+    val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
+
+    fun activate(
+        dialog: SubscriptionDialog,
+        onNotify: suspend (SubscriptionDialog) -> Unit
+    ) {
+        _dialogs.update { it + (dialog.callId to dialog) }
+        rebuildSnapshot()
+
+        val heartbeat = Heartbeat(
+            intervalMillis = dialog.intervalSeconds * 1000L,
+            scope = scope
+        ) {
+            val current = _dialogs.value[dialog.callId] ?: return@Heartbeat
+            val updated = current.copy(
+                notifyCount = current.notifyCount + 1,
+                cseqNotify = current.cseqNotify + 1
+            )
+            _dialogs.update { it + (dialog.callId to updated) }
+            rebuildSnapshot()
+            onNotify(updated)
+        }
+        notifyJobs[dialog.callId]?.stop()
+        notifyJobs[dialog.callId] = heartbeat
+        heartbeat.start()
+
+        startExpiryCountdown(dialog.callId, dialog.expiresSeconds)
+    }
+
+    fun refresh(callId: String, newExpires: Int) {
+        _dialogs.update { map ->
+            val existing = map[callId] ?: return@update map
+            map + (callId to existing.copy(
+                expiresSeconds = newExpires,
+                remainingSeconds = newExpires
+            ))
+        }
+        rebuildSnapshot()
+        expiryJobs[callId]?.cancel()
+        startExpiryCountdown(callId, newExpires)
+    }
+
+    fun cancel(callId: String) {
+        notifyJobs[callId]?.stop()
+        notifyJobs.remove(callId)
+        expiryJobs[callId]?.cancel()
+        expiryJobs.remove(callId)
+        _dialogs.update { it - callId }
+        rebuildSnapshot()
+    }
+
+    fun cancelAll() {
+        notifyJobs.values.forEach { it.stop() }
+        notifyJobs.clear()
+        expiryJobs.values.forEach { it.cancel() }
+        expiryJobs.clear()
+        _dialogs.value = emptyMap()
+        rebuildSnapshot()
+    }
+
+    fun currentDialog(callId: String): SubscriptionDialog? = _dialogs.value[callId]
+
+    fun knownCallIds(): Set<String> = _dialogs.value.keys
+
+    private fun startExpiryCountdown(callId: String, totalSeconds: Int) {
+        expiryJobs[callId]?.cancel()
+        expiryJobs[callId] = scope.launch {
+            var remaining = totalSeconds
+            while (isActive && remaining > 0) {
+                delay(1000L)
+                remaining--
+                _dialogs.update { map ->
+                    val d = map[callId] ?: return@update map
+                    map + (callId to d.copy(remainingSeconds = remaining))
+                }
+                rebuildSnapshot()
+            }
+            if (isActive) {
+                cancel(callId)
+            }
+        }
+    }
+
+    private fun rebuildSnapshot() {
+        val grouped = _dialogs.value.values.groupBy { it.kind }
+        val result = mutableMapOf<String, SubscriptionSnapshot>()
+        for ((kind, dialogs) in grouped) {
+            val first = dialogs.first()
+            result[kind] = SubscriptionSnapshot(
+                active = true,
+                subscriber = first.subscriberUri,
+                expiresSeconds = first.expiresSeconds,
+                remainingSeconds = first.remainingSeconds,
+                notifyCount = dialogs.sumOf { it.notifyCount }
+            )
+        }
+        _subscriptions.value = result
+    }
+}
