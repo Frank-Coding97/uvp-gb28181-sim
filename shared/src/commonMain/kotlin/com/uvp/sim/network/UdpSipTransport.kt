@@ -1,5 +1,8 @@
 package com.uvp.sim.network
 
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipParseException
 import com.uvp.sim.sip.SipParser
@@ -54,11 +57,25 @@ class UdpSipTransport(
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return
         val sm = SelectorManager(Dispatchers.Default)
-        val sk = aSocket(sm)
-            .udp()
-            .bind(InetSocketAddress("0.0.0.0", localBindPort))
+        val sk = try {
+            aSocket(sm)
+                .udp()
+                .bind(InetSocketAddress("0.0.0.0", localBindPort))
+        } catch (e: Throwable) {
+            sm.close()
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Network,
+                "UDP bind 失败 :$localBindPort → ${e::class.simpleName}: ${e.message}"
+            )
+            throw e
+        }
         selector = sm
         socket = sk
+        val boundPort = (sk.localAddress as? InetSocketAddress)?.port ?: -1
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "UDP socket bound :$boundPort → ${remote.host}:${remote.port}"
+        )
         receiveJob = ownedScope.launch {
             while (isActive) {
                 val datagram = try {
@@ -82,12 +99,20 @@ class UdpSipTransport(
     override suspend fun send(message: SipMessage) {
         val sk = socket ?: error("Transport not connected — call connect() first")
         val payload = message.toBytes()
-        sk.send(
-            Datagram(
-                packet = ByteReadPacket(payload),
-                address = InetSocketAddress(remote.host, remote.port)
+        try {
+            sk.send(
+                Datagram(
+                    packet = ByteReadPacket(payload),
+                    address = InetSocketAddress(remote.host, remote.port)
+                )
             )
-        )
+        } catch (e: Throwable) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Network,
+                "UDP sendto ${remote.host}:${remote.port} 失败: ${e::class.simpleName}: ${e.message}"
+            )
+            throw e
+        }
     }
 
     override suspend fun close(): Unit = mutex.withLock {

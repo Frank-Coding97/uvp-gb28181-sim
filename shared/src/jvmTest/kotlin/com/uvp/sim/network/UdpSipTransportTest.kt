@@ -1,5 +1,8 @@
 package com.uvp.sim.network
 
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipParser
@@ -150,5 +153,69 @@ class UdpSipTransportTest {
         val port2 = transport.localPort
         assertEquals(port1, port2)
         transport.close()
+    }
+
+    // ----- T04 — NETWORK emit 验证 -----
+
+    @Test fun connectSuccessEmitsNetworkInfo() = runBlocking {
+        SystemLogger.resetForTest()
+        SystemLogger.bindScope(scope)
+        val transport = UdpSipTransport(
+            remote = RemoteEndpoint("127.0.0.1", mockServer.localPort, TransportType.UDP),
+            parentScope = scope
+        )
+        try {
+            transport.connect()
+            // 给 actor 一点时间 emit
+            withTimeout(2000) {
+                while (SystemLogger.snapshot.none {
+                        it.tag == LogTag.Network && it.level == LogLevel.Info &&
+                            it.message.contains("UDP socket bound")
+                    }) {
+                    kotlinx.coroutines.delay(20)
+                }
+            }
+            val log = SystemLogger.snapshot.first {
+                it.tag == LogTag.Network && it.level == LogLevel.Info
+            }
+            assertTrue("UDP socket bound" in log.message)
+            assertTrue("127.0.0.1:${mockServer.localPort}" in log.message)
+        } finally {
+            transport.close()
+            SystemLogger.resetForTest()
+        }
+    }
+
+    @Test fun bindFailureEmitsNetworkError() = runBlocking {
+        SystemLogger.resetForTest()
+        SystemLogger.bindScope(scope)
+        // 占用一个端口,再让另一个 transport 强行 bind 同口,触发失败
+        val taken = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+        try {
+            val transport = UdpSipTransport(
+                remote = RemoteEndpoint("127.0.0.1", mockServer.localPort, TransportType.UDP),
+                localBindPort = taken.localPort,
+                parentScope = scope
+            )
+            try {
+                transport.connect()
+            } catch (_: Throwable) {
+                // 预期的 bind 失败
+            }
+            withTimeout(2000) {
+                while (SystemLogger.snapshot.none {
+                        it.tag == LogTag.Network && it.level == LogLevel.Error
+                    }) {
+                    kotlinx.coroutines.delay(20)
+                }
+            }
+            val err = SystemLogger.snapshot.first {
+                it.tag == LogTag.Network && it.level == LogLevel.Error
+            }
+            assertTrue("UDP bind 失败" in err.message, "actual: ${err.message}")
+        } finally {
+            taken.close()
+            SystemLogger.resetForTest()
+        }
     }
 }

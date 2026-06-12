@@ -3,6 +3,9 @@ package com.uvp.sim.domain
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.SipTransport
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.DigestAuth
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipEvent
@@ -98,6 +101,10 @@ class SimulatorEngine(
             pendingRegister = req
             _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterRequested)
             _events.emit(SimEvent.RegistrationStarted("${config.server.ip}:${config.server.port}"))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Lifecycle,
+                "开始注册到 ${config.server.ip}:${config.server.port}"
+            )
             try {
                 transport.send(req)
                 _events.emit(SimEvent.MessageSent(req))
@@ -108,6 +115,10 @@ class SimulatorEngine(
                 )
                 _events.emit(SimEvent.TransportError("send REGISTER: ${e::class.simpleName}: ${e.message}"))
                 _events.emit(SimEvent.RegistrationFailed("transport: ${e.message}"))
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Lifecycle,
+                    "注册请求发送失败: ${e::class.simpleName}: ${e.message}"
+                )
             }
         }
     }
@@ -143,6 +154,10 @@ class SimulatorEngine(
                     SipEvent.RegisterFailed("timeout")
                 )
                 _events.emit(SimEvent.RegistrationFailed("平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应"))
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "注册超时: 平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应"
+                )
             }
         }
     }
@@ -159,6 +174,10 @@ class SimulatorEngine(
             cancelRegisterTimeout()
             heartbeat?.stop()
             heartbeat = null
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Lifecycle,
+                "用户注销 → 发送 Unregister"
+            )
 
             cseq += 1
             val branch = SipBuilders.randomBranch()
@@ -279,6 +298,10 @@ class SimulatorEngine(
                 cancelRegisterTimeout()
                 _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
                 _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "已注册,expires=${config.expiresSeconds}s"
+                )
                 startHeartbeat()
             }
 
@@ -292,6 +315,10 @@ class SimulatorEngine(
                         _state.value, SipEvent.RegisterFailed("401 missing WWW-Authenticate")
                     )
                     _events.emit(SimEvent.RegistrationFailed("Missing challenge"))
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Lifecycle,
+                        "注册失败: 401 缺少 WWW-Authenticate"
+                    )
                     return
                 }
                 _events.emit(SimEvent.RegistrationChallenged(challenge))
@@ -321,6 +348,10 @@ class SimulatorEngine(
                 val reason = "${resp.statusCode} ${resp.reasonPhrase}"
                 _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterFailed(reason))
                 _events.emit(SimEvent.RegistrationFailed(reason))
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "注册被拒: $reason"
+                )
             }
         }
     }

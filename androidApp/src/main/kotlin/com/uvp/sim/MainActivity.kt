@@ -3,6 +3,7 @@ package com.uvp.sim
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,14 +12,21 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.uvp.sim.camera.AndroidAudioStreamer
 import com.uvp.sim.camera.AndroidCameraStreamer
 import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.CameraCapture
+import com.uvp.sim.observability.AndroidSessionStore
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SessionTracker
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.CameraPreviewBinder
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -37,6 +45,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // observability 接线 — 必须在任何业务 emit 之前
+        SessionTracker.install(AndroidSessionStore(applicationContext))
+        SystemLogger.bindScope(lifecycleScope)
+        installLogcatBridge()
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "应用启动 · 会话 #${SessionTracker.currentId}"
+        )
 
         cameraCapture = CameraCapture(viewModel.newCaptureConfig())
         audioCapture = AudioCapture(viewModel.newAudioCaptureConfig())
@@ -81,9 +98,41 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "前台恢复")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "进入后台")
+    }
+
     override fun onDestroy() {
         CameraPreviewBinder.setBinder(null)
         super.onDestroy()
+    }
+
+    /**
+     * 把 SystemLogger.flow 桥接到 Android logcat。
+     *
+     * 期 1-2 阶段没有专属 UI,运维和 overnight 自动跑都靠这里看事件。
+     * 期 3 上 SystemLogTab 后保留 — logcat 是诊断兜底,任何时候都有用。
+     */
+    private fun installLogcatBridge() {
+        lifecycleScope.launch {
+            SystemLogger.flow.collect { log ->
+                val priority = when (log.level) {
+                    LogLevel.Debug -> Log.DEBUG
+                    LogLevel.Info -> Log.INFO
+                    LogLevel.Warning -> Log.WARN
+                    LogLevel.Error -> Log.ERROR
+                }
+                val line = "[#${log.sessionId}][${log.tag.display}] ${log.message}"
+                Log.println(priority, TAG_SYS, line)
+                log.detail?.let { Log.println(priority, TAG_SYS, "  ↳ $it") }
+            }
+        }
     }
 
     private fun attachStreamer() {
@@ -111,5 +160,9 @@ class MainActivity : ComponentActivity() {
         val s = AndroidAudioStreamer(viewModel.newAudioCaptureConfig())
         audioStreamer = s
         audioCapture.setStreamer(s)
+    }
+
+    companion object {
+        private const val TAG_SYS = "SystemLogger"
     }
 }
