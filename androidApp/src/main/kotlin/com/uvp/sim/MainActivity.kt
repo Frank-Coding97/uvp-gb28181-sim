@@ -9,7 +9,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
@@ -21,11 +25,14 @@ import com.uvp.sim.observability.AndroidSessionStore
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SessionTracker
+import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.CameraPreviewBinder
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -36,6 +43,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var audioCapture: AudioCapture
     private var streamer: AndroidCameraStreamer? = null
     private var audioStreamer: AndroidAudioStreamer? = null
+    private val systemEvents = MutableStateFlow<List<SystemLog>>(emptyList())
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -76,7 +84,14 @@ class MainActivity : ComponentActivity() {
             val events by viewModel.events.collectAsStateWithLifecycle()
             val config by viewModel.config.collectAsStateWithLifecycle()
             val videoVersion by viewModel.videoConfigVersion.collectAsStateWithLifecycle()
-            val uiState = AppUiState(sip = sipState, config = config, events = events)
+            val sysLogs by systemEvents.collectAsState()
+            val uiState = AppUiState(
+                sip = sipState,
+                config = config,
+                events = events,
+                systemEvents = sysLogs,
+                sessionMarker = SessionTracker.current
+            )
             val actions = object : AppActions {
                 override fun onConnect() {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击注册")
@@ -148,6 +163,8 @@ class MainActivity : ComponentActivity() {
                 val line = "[#${log.sessionId}][${log.tag.display}] ${log.message}"
                 Log.println(priority, TAG_SYS, line)
                 log.detail?.let { Log.println(priority, TAG_SYS, "  ↳ $it") }
+                // 同步给 UI(SystemLogger.snapshot 在 actor 内已写入,这里聚合给 Compose state)
+                systemEvents.value = SystemLogger.snapshot
             }
         }
     }

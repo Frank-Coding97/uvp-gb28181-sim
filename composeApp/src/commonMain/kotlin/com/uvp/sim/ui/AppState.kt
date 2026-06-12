@@ -2,6 +2,8 @@ package com.uvp.sim.ui
 
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
+import com.uvp.sim.observability.SessionMarker
+import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.sip.SipState
 
 /**
@@ -14,7 +16,9 @@ import com.uvp.sim.sip.SipState
 data class AppUiState(
     val sip: SipState,
     val config: SimConfig,
-    val events: List<SimEvent>
+    val events: List<SimEvent>,
+    val systemEvents: List<SystemLog> = emptyList(),
+    val sessionMarker: SessionMarker? = null
 )
 
 /**

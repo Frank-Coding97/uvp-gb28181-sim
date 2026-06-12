@@ -34,6 +34,7 @@ kotlin {
             implementation(libs.compose.material.icons.extended)
             implementation(libs.compose.ui)
             implementation(libs.kotlinx.coroutines.core)
+            implementation(libs.kotlinx.datetime)
             implementation(libs.koin.core)
             implementation(libs.koin.compose)
         }
