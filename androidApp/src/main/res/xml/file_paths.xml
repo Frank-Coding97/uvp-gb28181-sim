@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 暴露 app 内部 files/recordings/ 给系统播放器 / 分享。
+         FileProvider 走这里把绝对路径转 content:// URI,
+         保证跨 app 文件访问不需要 WRITE_EXTERNAL_STORAGE。 -->
+    <files-path name="recordings" path="recordings/" />
+</paths>

@@ -179,8 +179,16 @@ y=0123456789
             testScheduler.runCurrent()
             assertEquals(1, rec.starts.size)
             assertEquals(RecordSource.PlatformCmd to "34020000001320000001", rec.starts[0])
+            // sent[0] = SIP 200 OK; sent[1] = MANSCDP DeviceControl Response (Result=OK)
             val firstSent = transport.sent.firstOrNull() as? SipResponse
             assertEquals(200, firstSent?.statusCode)
+            val response = transport.sent.filterIsInstance<SipRequest>()
+                .firstOrNull { it.method == SipMethod.MESSAGE }
+            assertNotNull(response, "应有 DeviceControl Response MESSAGE")
+            val xml = response.body.decodeToString()
+            assertTrue(xml.contains("<CmdType>DeviceControl</CmdType>"))
+            assertTrue(xml.contains("<Result>OK</Result>"))
+            assertTrue(xml.contains("<SN>17</SN>"))
         } finally {
             engine.shutdown()
         }

@@ -44,6 +44,8 @@ kotlin {
             implementation(libs.androidx.lifecycle.runtime.compose)
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.androidx.camera.view)
+            implementation(libs.androidx.media3.exoplayer)
+            implementation(libs.androidx.media3.ui)
             implementation(libs.koin.android)
         }
     }
