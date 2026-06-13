@@ -41,9 +41,18 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var cameraCapture: CameraCapture
     private lateinit var audioCapture: AudioCapture
-    private var streamer: AndroidCameraStreamer? = null
     private var audioStreamer: AndroidAudioStreamer? = null
     private val systemEvents = MutableStateFlow<List<SystemLog>>(emptyList())
+
+    /** 进程级单例,跨 Activity 重建。第一次 onCreate 创建,之后复用。 */
+    private var streamerRef: AndroidCameraStreamer?
+        get() = sStreamer
+        set(value) { sStreamer = value }
+
+    /** 进程级单例,跨 Activity 重建。第一次 onCreate 创建,之后复用。 */
+    private var recordingServiceRef: com.uvp.sim.recording.AndroidRecordingService?
+        get() = sRecordingService
+        set(value) { sRecordingService = value }
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -69,15 +78,22 @@ class MainActivity : ComponentActivity() {
         viewModel.bindCamera(cameraCapture)
         viewModel.bindAudio(audioCapture)
 
-        // M2 录像服务 — 需要 LifecycleOwner + Executor,只能在 Activity 构造
-        val recordingService = com.uvp.sim.recording.AndroidRecordingService(
-            context = applicationContext,
-            lifecycleOwner = this,
-            executor = ContextCompat.getMainExecutor(this),
-            deviceId = viewModel.config.value.device.deviceId,
-            scope = lifecycleScope
-        )
-        viewModel.bindRecordingService(recordingService)
+        // M2 录像服务 — 与 AndroidCameraStreamer 共享同一 ProcessCameraProvider
+        // 单例 + streamer 的自驱 STARTED LifecycleOwner。
+        // 切后台 / Activity 重建时 streamer 的 lifecycle 仍 STARTED,所以录像和
+        // 实时推流都不会被系统自动 unbind 干掉(切后台不录像 / 预览黑屏的根因)。
+        if (recordingServiceRef == null) {
+            recordingServiceRef = com.uvp.sim.recording.AndroidRecordingService(
+                context = applicationContext,
+                streamerSupplier = {
+                    sStreamer ?: error("streamer must be initialized before recording")
+                },
+                executor = ContextCompat.getMainExecutor(applicationContext),
+                deviceId = viewModel.config.value.device.deviceId,
+                scope = AppScope.scope
+            )
+            viewModel.bindRecordingService(recordingServiceRef!!)
+        }
 
         val needs = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
@@ -209,17 +225,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun attachStreamer() {
-        streamer?.let { old ->
-            runCatching { old.detachPreviewView() }
-            kotlinx.coroutines.runBlocking { runCatching { old.stop() } }
-        }
-        val s = AndroidCameraStreamer(
+        // streamer 是进程级单例:首次创建,后续 Activity 重建复用同一实例。
+        // 这样切后台 / 旋屏时 streamer 的自驱 lifecycle 不被销毁,CameraX 不会
+        // 自动 unbind 录像 / 推流的 use cases。
+        val s = streamerRef ?: AndroidCameraStreamer(
             context = applicationContext,
-            lifecycleOwner = this,
-            mainExecutor = mainExecutor,
+            mainExecutor = ContextCompat.getMainExecutor(applicationContext),
             config = viewModel.newCaptureConfig()
-        )
-        streamer = s
+        ).also { streamerRef = it }
         cameraCapture.setStreamer(s)
         CameraPreviewBinder.setBinder { view ->
             if (view != null) s.attachPreviewView(view) else s.detachPreviewView()
@@ -237,5 +250,13 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG_SYS = "SystemLogger"
+
+        /** 进程级单例,跨 Activity 重建。 */
+        @Volatile
+        private var sStreamer: AndroidCameraStreamer? = null
+
+        /** 进程级单例,跨 Activity 重建。 */
+        @Volatile
+        private var sRecordingService: com.uvp.sim.recording.AndroidRecordingService? = null
     }
 }

@@ -11,7 +11,9 @@ import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.media.H265NalType
@@ -41,9 +43,17 @@ import kotlin.coroutines.resumeWithException
  *   2. **Encoder feed** — bound when [stream] starts collecting. Routes camera
  *      frames into a MediaCodec InputSurface for H.264 encoding.
  *
- * Both use cases share one [ProcessCameraProvider]. We re-bind whenever either
- * side changes (provider only allows one bindToLifecycle per lifecycle owner —
- * subsequent calls overwrite, so we always re-bind the *current set*).
+ * Lifecycle: streamer owns its own [LifecycleRegistry] held permanently in
+ * STARTED. CameraX auto-unbinds when the bound owner drops below STARTED, which
+ * means an Activity or ProcessLifecycleOwner can't be used here — Activity
+ * onStop / locked screen would silently kill streaming and recording. The
+ * caller's Activity drives only [attachPreviewView] / [detachPreviewView]; the
+ * camera pipeline keeps running across configuration changes and backgrounding.
+ *
+ * Provider sharing: [ProcessCameraProvider] is a process singleton — recording
+ * (AndroidRecordingService) shares the same instance. We never call
+ * [ProcessCameraProvider.unbindAll]; instead each subsystem unbinds only its
+ * own use cases via [ProcessCameraProvider.unbind] so the others survive.
  *
  * Threading: CameraX bindToLifecycle must run on the main thread. We marshal
  * via [mainExecutor]. Encoder callbacks run on whatever MediaCodec picks; we
@@ -51,10 +61,21 @@ import kotlin.coroutines.resumeWithException
  */
 class AndroidCameraStreamer(
     private val context: Context,
-    private val lifecycleOwner: LifecycleOwner,
     private val mainExecutor: Executor,
     private val config: CaptureConfig
 ) {
+    /**
+     * Self-driven lifecycle pinned to STARTED. Avoids being torn down by Activity
+     * onStop / process backgrounding. Released only on [release].
+     */
+    private val lifecycleOwner: LifecycleOwner = object : LifecycleOwner {
+        private val registry = LifecycleRegistry(this)
+        override val lifecycle: Lifecycle get() = registry
+        init { mainExecutor.execute { registry.currentState = Lifecycle.State.STARTED } }
+    }
+    private val lifecycleRegistry: LifecycleRegistry
+        get() = lifecycleOwner.lifecycle as LifecycleRegistry
+
     private var encoder: MediaCodec? = null
     private var encoderInputSurface: Surface? = null
 
@@ -261,23 +282,66 @@ class AndroidCameraStreamer(
         encoderPreview = preview
     }
 
-    /** Rebind whichever use cases are currently set. Must run on main thread. */
+    /** Rebind whichever use cases are currently set. Must run on main thread.
+     *
+     *  Critical: we MUST NOT call [ProcessCameraProvider.unbindAll] — that wipes
+     *  use cases owned by other subsystems (e.g. AndroidRecordingService's
+     *  VideoCapture), causing silent recording stops and preview blackouts.
+     *  Instead unbind only the previous *streamer* cases. Any UseCase already
+     *  bound by another owner is left intact. */
+    private val boundCases = mutableListOf<UseCase>()
     private fun rebind() {
         val prov = provider ?: return
         val selector = when (config.cameraFacing) {
             CameraFacing.FRONT -> CameraSelector.DEFAULT_FRONT_CAMERA
             CameraFacing.BACK -> CameraSelector.DEFAULT_BACK_CAMERA
         }
-        val cases = mutableListOf<UseCase>()
-        screenPreview?.let { cases += it }
-        encoderPreview?.let { cases += it }
+        val nextCases = mutableListOf<UseCase>()
+        screenPreview?.let { nextCases += it }
+        encoderPreview?.let { nextCases += it }
         try {
-            prov.unbindAll()
-            if (cases.isNotEmpty()) {
-                prov.bindToLifecycle(lifecycleOwner, selector, *cases.toTypedArray())
+            if (boundCases.isNotEmpty()) {
+                prov.unbind(*boundCases.toTypedArray())
+                boundCases.clear()
+            }
+            if (nextCases.isNotEmpty()) {
+                prov.bindToLifecycle(lifecycleOwner, selector, *nextCases.toTypedArray())
+                boundCases += nextCases
             }
         } catch (_: Throwable) { /* swallow — unbind path */ }
     }
+
+    /** Release the self-driven lifecycle so CameraX drops our use cases.
+     *  Caller (Activity onDestroy of the *last* instance / process exit). */
+    fun release() {
+        runOnMain {
+            try {
+                if (boundCases.isNotEmpty()) {
+                    provider?.unbind(*boundCases.toTypedArray())
+                    boundCases.clear()
+                }
+            } catch (_: Throwable) { }
+            lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        }
+    }
+
+    /** Exposed for AndroidRecordingService — both share the same provider singleton.
+     *  Returns null if streamer hasn't acquired the provider yet (rare; first call
+     *  to attachPreviewView/stream() forces acquisition). */
+    fun cameraProvider(): ProcessCameraProvider? = provider
+
+    /** Block until the provider has been acquired, then return it together with
+     *  the self-driven STARTED lifecycle. Used by AndroidRecordingService.start.
+     *  Safe to call from any dispatcher; it blocks the current thread briefly via
+     *  ListenableFuture.get on first call only. */
+    fun awaitCameraOwner(): Pair<ProcessCameraProvider, LifecycleOwner> {
+        val p = provider ?: awaitCameraProviderBlocking(context).also { provider = it }
+        return p to lifecycleOwner
+    }
+
+    /** The self-driven STARTED lifecycle. AndroidRecordingService binds its
+     *  VideoCapture to this owner so recording survives Activity backgrounding. */
+    fun streamerLifecycleOwner(): LifecycleOwner = lifecycleOwner
 
     private fun runOnMain(block: () -> Unit) {
         mainExecutor.execute(block)

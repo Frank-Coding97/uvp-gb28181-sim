@@ -22,7 +22,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -33,8 +32,6 @@ import kotlinx.datetime.toLocalDateTime
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.Executor
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * AndroidRecordingService — CameraX VideoCapture<Recorder> 实现。
@@ -45,6 +42,13 @@ import kotlin.coroutines.resumeWithException
  *   - 30 分钟 timer 切片(后续 R04+:目前只做手动起停,timer 留扩展)
  *   - 录像与实时推流互斥(plan §5),由 SimulatorEngine 在 handleInvite 把住
  *
+ * Lifecycle / provider 共享(2026-06-13 修):
+ *   - [ProcessCameraProvider] 是进程单例 — 录像和 streamer 必须共用
+ *   - 通过 [cameraOwnerSupplier] 获取 streamer 自驱的 STARTED LifecycleOwner,
+ *     避免 Activity onStop 把录像一起干掉(切后台不录的根因)
+ *   - 用 `provider.unbind(videoCapture)` 而非 `unbindAll()`,不影响 streamer 的
+ *     Preview / EncoderPreview(预览黑屏的根因)
+ *
  * 异常处理:
  *   - bindToLifecycle 失败 → 状态进 Failed,UI toast
  *   - Recorder 抛异常 → 通过 VideoRecordEvent.Finalize.hasError 反馈
@@ -53,7 +57,7 @@ import kotlin.coroutines.resumeWithException
  */
 class AndroidRecordingService(
     private val context: Context,
-    private val lifecycleOwner: LifecycleOwner,
+    private val streamerSupplier: () -> com.uvp.sim.camera.AndroidCameraStreamer,
     private val executor: Executor,
     private val deviceId: String,
     private val scope: CoroutineScope,
@@ -69,7 +73,6 @@ class AndroidRecordingService(
     private val _files = MutableStateFlow<List<RecordingFile>>(emptyList())
     override val files: StateFlow<List<RecordingFile>> = _files.asStateFlow()
 
-    private var provider: ProcessCameraProvider? = null
     private var videoCapture: VideoCapture<Recorder>? = null
     private var activeRecording: Recording? = null
     private var activeOutputFile: File? = null
@@ -94,7 +97,82 @@ class AndroidRecordingService(
         }.onFailure {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "录像索引加载失败 → ${it.message}")
         }
+        // 扫孤儿文件:进程被杀 / OOM 后,mp4 还在但 index 漏记。
+        // 把不在 index 里的 mp4 补回(用 MediaMetadataRetriever 拿时长),
+        // size=0 的视为录到一半就崩,直接清掉。
+        runCatching { reconcileOrphans() }.onFailure {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "扫孤儿文件失败: ${it.message}")
+        }
         Unit
+    }
+
+    /**
+     * 启动时一致性检查:
+     *   - mp4 大小为 0 → 录到一半进程死,删文件 + 同名 jpg
+     *   - mp4 不在 index → 用 MediaMetadataRetriever 抽时长,补回 index
+     */
+    private suspend fun reconcileOrphans() = withContext(Dispatchers.IO) {
+        val deviceDir = File(baseDir, deviceId)
+        if (!deviceDir.exists()) return@withContext
+        val indexed = _files.value.map { it.filePath }.toSet()
+        val orphans = mutableListOf<RecordingFile>()
+        var cleaned = 0
+        deviceDir.listFiles()?.forEach { dayDir ->
+            if (!dayDir.isDirectory) return@forEach
+            dayDir.listFiles { _, name -> name.endsWith(".mp4") }?.forEach { mp4 ->
+                if (mp4.absolutePath in indexed) return@forEach
+                if (mp4.length() == 0L) {
+                    runCatching { mp4.delete() }
+                    runCatching { File(mp4.absolutePath.removeSuffix(".mp4") + ".jpg").delete() }
+                    cleaned += 1
+                    return@forEach
+                }
+                // 用 MediaMetadataRetriever 拿真实时长(避免猜)
+                val durationMs = runCatching {
+                    val mmr = android.media.MediaMetadataRetriever()
+                    try {
+                        mmr.setDataSource(mp4.absolutePath)
+                        mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                            ?.toLongOrNull() ?: 0L
+                    } finally {
+                        runCatching { mmr.release() }
+                    }
+                }.getOrDefault(0L)
+                if (durationMs <= 0L) {
+                    // 文件存在但 demuxer 读不出时长 → 不可恢复,删除
+                    runCatching { mp4.delete() }
+                    runCatching { File(mp4.absolutePath.removeSuffix(".mp4") + ".jpg").delete() }
+                    cleaned += 1
+                    return@forEach
+                }
+                // 起始时间用 mtime 倒推:endTimeMs = mtime, startTimeMs = mtime - durationMs
+                val endMs = mp4.lastModified()
+                val startMs = endMs - durationMs
+                val thumb = File(mp4.absolutePath.removeSuffix(".mp4") + ".jpg")
+                orphans += RecordingFile(
+                    id = UUID.randomUUID().toString(),
+                    startTimeMs = startMs,
+                    endTimeMs = endMs,
+                    durationMs = durationMs,
+                    channelId = activeChannelId ?: deviceId,
+                    filePath = mp4.absolutePath,
+                    sizeBytes = mp4.length(),
+                    thumbnailPath = if (thumb.exists()) thumb.absolutePath else null,
+                    source = RecordSource.Manual,
+                    type = RecordType.Time,
+                    secrecy = 0
+                )
+            }
+        }
+        if (orphans.isNotEmpty() || cleaned > 0) {
+            val merged = _files.value + orphans
+            _files.value = merged
+            persistIndex(RecordingIndexFile(files = merged))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "启动一致性检查 → 补回 ${orphans.size} 段,清理 $cleaned 个损坏文件"
+            )
+        }
     }
 
     override suspend fun start(source: RecordSource, channelId: String): Result<Unit> {
@@ -107,6 +185,14 @@ class AndroidRecordingService(
                 )
                 return Result.success(Unit)
             }
+        }
+        // 磁盘兜底:可用空间 < 200MB 不开录(1080p 4Mbps 一分钟 ≈30MB)
+        val freeBytes = baseDir.usableSpace
+        if (freeBytes < MIN_FREE_BYTES) {
+            val msg = "磁盘空间不足 (${freeBytes / 1024 / 1024}MB < ${MIN_FREE_BYTES / 1024 / 1024}MB),拒绝录像"
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, msg)
+            _state.value = RecordingState.Failed(msg)
+            return Result.failure(IllegalStateException(msg))
         }
         return runCatching {
             val capture = rebindFreshVideoCapture()
@@ -131,6 +217,14 @@ class AndroidRecordingService(
                 segmentIndex = 0,
                 source = source
             )
+            // 拉起前台 Service:Android 14+ 后台录视频必须的保活手段
+            runCatching { RecordingForegroundService.start(context) }
+                .onFailure {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Media,
+                        "前台 Service 启动失败(降级:仅前台可录): ${it.message}"
+                    )
+                }
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
                 "开始录像 → source=$source channel=$channelId path=${outputFile.absolutePath}"
@@ -176,6 +270,8 @@ class AndroidRecordingService(
             is VideoRecordEvent.Start -> Unit
             is VideoRecordEvent.Status -> Unit
             is VideoRecordEvent.Finalize -> {
+                // 不论成功失败,前台 Service 都该停 — 录像已结束
+                runCatching { RecordingForegroundService.stop(context) }
                 val outputFile = activeOutputFile
                 val started = activeStartMs
                 val channel = activeChannelId
@@ -239,28 +335,37 @@ class AndroidRecordingService(
     }
 
     /**
-     * 每次 start() 时调用,重新构造 Recorder + VideoCapture 并 rebind 到 lifecycle。
+     * 每次 start() 时调用,重新构造 Recorder + VideoCapture 并 rebind 到 streamer 的
+     * 自驱 LifecycleOwner。
      *
      * CameraX 硬约束(踩过的坑):
      *   - `Recorder` 实例只能录一次,完成后 prepareRecording().start() 会立刻
      *     finalize 报 "Recording was stopped before any data could be produced"
-     *   - 解法:每次都建新 Recorder + VideoCapture,并 unbind 旧的(否则两个
-     *     VideoCapture 同时 bind 到 BACK_CAMERA 会冲突)
+     *   - 解法:每次都建新 Recorder + VideoCapture,**只 unbind 上一个 VideoCapture**
+     *     (不能 unbindAll,会一并干掉 streamer 的 Preview)
      *
-     * 第一次调用时 provider 也是这里 awaitCameraProvider 拿到的;后续复用同一 provider。
+     * 共享决策:provider 与 lifecycleOwner 都来自 streamer.cameraOwnerSupplier,
+     * 切后台 / Activity 重建时 streamer 的自驱 lifecycle 仍 STARTED,录像不被
+     * 系统自动 unbind。
      */
     private suspend fun rebindFreshVideoCapture(): VideoCapture<Recorder> {
-        val p = provider ?: awaitCameraProvider(context).also { provider = it }
+        val (provider, lifecycleOwner) = streamerSupplier().awaitCameraOwner()
         val recorder = Recorder.Builder()
             .setQualitySelector(QualitySelector.from(Quality.HD))
             .build()
         val capture = VideoCapture.withOutput(recorder)
+        val previous = videoCapture
         withContext(Dispatchers.Main) {
-            // 解绑旧 VideoCapture(若有),再绑新的。AndroidCameraStreamer 用的是
-            // 另一个独立的 ProcessCameraProvider 实例(plan §5),所以这里 unbindAll
-            // 不会影响实时推流路径。
-            p.unbindAll()
-            p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, capture)
+            // 精确解绑:只 unbind 自己上一个 VideoCapture,streamer 的 Preview /
+            // EncoderPreview 不受影响,所以预览不会黑屏、推流不会断。
+            if (previous != null) {
+                runCatching { provider.unbind(previous) }
+            }
+            provider.bindToLifecycle(
+                lifecycleOwner,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                capture
+            )
         }
         videoCapture = capture
         return capture
@@ -284,20 +389,13 @@ class AndroidRecordingService(
         }
     }
 
-    private suspend fun awaitCameraProvider(ctx: Context): ProcessCameraProvider =
-        suspendCancellableCoroutine { cont ->
-            val future = ProcessCameraProvider.getInstance(ctx)
-            future.addListener(
-                {
-                    try { cont.resume(future.get()) }
-                    catch (e: Throwable) { cont.resumeWithException(e) }
-                },
-                Runnable::run
-            )
-        }
-
     /** Internal helper(实现注释 plan §6 配套缩略图)。 */
     private fun emitState(update: (RecordingState) -> RecordingState) {
         _state.update(update)
+    }
+
+    companion object {
+        /** 录像启动最低剩余磁盘字节数 — 200MB,够录约 6 分钟 1080p。 */
+        const val MIN_FREE_BYTES: Long = 200L * 1024 * 1024
     }
 }
