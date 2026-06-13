@@ -107,6 +107,7 @@ fun CatalogManagementScreen(
     var showExport by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var showOnboarding by remember { mutableStateOf(true) }
     val isDirty = draft != initial
     val toast = com.uvp.sim.ui.LocalToastHost.current
     val catalogActive =
@@ -155,6 +156,10 @@ fun CatalogManagementScreen(
                 onQueryChange = { searchQuery = it },
                 onClose = { showSearch = false; searchQuery = "" }
             )
+        }
+
+        if (showOnboarding) {
+            OnboardingHint(onDismiss = { showOnboarding = false })
         }
 
         Box(modifier = Modifier.weight(1f)) {
@@ -1116,6 +1121,41 @@ private fun ImportJsonDialog(
         },
         dismissButton = { TextButton(onCancel) { Text("取消") } }
     )
+}
+
+@Composable
+private fun OnboardingHint(onDismiss: () -> Unit) {
+    Surface(
+        color = UvpColor.PrimaryLight,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "目录管理使用提示",
+                    color = UvpColor.PrimaryDark,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "• 默认 3 节点从设备配置生成,可点 ⋮ 加分组、克隆、移动\n" +
+                    "• 工具栏 ⋮ 菜单可应用模板 / 导入导出 JSON / 复位\n" +
+                    "• 编辑后点保存生效;若 WVP 已订阅会立刻推送\n" +
+                    "• 注意:WVP 后台可能扁平展示树结构,这是平台限制",
+                    color = UvpColor.Text,
+                    fontSize = 11.sp
+                )
+            }
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Outlined.Close, "关闭提示",
+                    tint = UvpColor.TextSecondary, modifier = Modifier.size(16.dp))
+            }
+        }
+    }
 }
 
 @Composable
