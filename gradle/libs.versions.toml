@@ -31,7 +31,9 @@ junit = "4.13.2"
 turbine = "1.2.0"
 
 # 3D rendering (Android only — iOS uses SceneKit, JVM falls back to 2D placeholder)
-filament = "1.54.4"
+# plan §3 wrote 1.54.4 but that version doesn't exist on maven central;
+# using latest stable 1.71.6 (2026-06-13). See overnight handoff G1.
+filament = "1.71.6"
 
 [libraries]
 # Compose Multiplatform
@@ -79,7 +81,7 @@ kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotl
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 junit = { module = "junit:junit", version.ref = "junit" }
 
-# Filament (Android 3D)
+# Filament (Android 3D) — see overnight G1
 filament-android = { module = "com.google.android.filament:filament-android", version.ref = "filament" }
 filament-utils = { module = "com.google.android.filament:filament-utils-android", version.ref = "filament" }
 

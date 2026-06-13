@@ -45,7 +45,7 @@ kotlin {
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.androidx.camera.view)
             implementation(libs.koin.android)
-            // 3D rendering — only on Android. iOS uses SceneKit via cinterop.
+            // 3D rendering — Android only. iOS uses SceneKit via cinterop.
             implementation(libs.filament.android)
             implementation(libs.filament.utils)
         }
