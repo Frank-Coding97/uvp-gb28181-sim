@@ -69,3 +69,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 }
+
+tasks.withType<Test> {
+    maxHeapSize = "1536m"
+}

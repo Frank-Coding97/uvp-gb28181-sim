@@ -217,6 +217,77 @@ object SipBuilders {
     }
 
     /**
+     * Build a 200 OK for SUBSCRIBE with Subscription-State and Expires.
+     * Per RFC 6665 § 4.2.1.
+     */
+    fun buildSubscribe200(
+        request: SipRequest,
+        toTag: String,
+        expires: Int,
+        terminated: Boolean = false
+    ): SipResponse {
+        val newHeaders = mutableListOf<SipMessage.Header>()
+        for (h in request.headers) {
+            val canonical = SipHeader.canonicalize(h.name)
+            when (canonical) {
+                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ -> {
+                    newHeaders += h
+                }
+                SipHeader.TO -> {
+                    val v = if (!h.value.contains(";tag=")) "${h.value};tag=$toTag" else h.value
+                    newHeaders += SipMessage.Header(SipHeader.TO, v)
+                }
+                else -> { /* drop */ }
+            }
+        }
+        newHeaders += SipMessage.Header(SipHeader.EXPIRES, expires.toString())
+        val ssValue = if (terminated) "terminated;reason=timeout" else "active;expires=$expires"
+        newHeaders += SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, ssValue)
+        return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders)
+    }
+
+    /**
+     * Build a NOTIFY request for in-dialog subscription notification.
+     * From/To are from the device perspective (From = device, To = subscriber).
+     */
+    fun buildNotify(
+        subscriberUri: String,
+        callId: String,
+        fromTag: String,
+        toTag: String,
+        event: String,
+        subscriptionState: String,
+        cseq: Int,
+        xmlBody: String,
+        localIp: String,
+        localPort: Int,
+        transport: String = "UDP"
+    ): SipRequest {
+        val body = xmlBody.encodeToByteArray()
+        val branch = randomBranch()
+        return SipRequest(
+            method = SipMethod.NOTIFY,
+            requestUri = subscriberUri,
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA,
+                    "SIP/2.0/$transport $localIp:$localPort;rport;branch=$branch"),
+                SipMessage.Header(SipHeader.FROM,
+                    "<sip:$localIp:$localPort>;tag=$fromTag"),
+                SipMessage.Header(SipHeader.TO,
+                    "<$subscriberUri>;tag=$toTag"),
+                SipMessage.Header(SipHeader.CALL_ID, callId),
+                SipMessage.Header(SipHeader.CSEQ, "$cseq NOTIFY"),
+                SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
+                SipMessage.Header(SipHeader.EVENT, event),
+                SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, subscriptionState),
+                SipMessage.Header(SipHeader.CONTENT_TYPE, "Application/MANSCDP+xml"),
+                SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
+            ),
+            body = body
+        )
+    }
+
+    /**
      * Build a generic outbound MESSAGE carrying a MANSCDP+xml body
      * (used by Catalog response, DeviceInfo response, Alarm Notify, etc.).
      *

@@ -13,6 +13,7 @@ import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
+import com.uvp.sim.domain.SubscriptionSnapshot
 import com.uvp.sim.network.AndroidNetwork
 import com.uvp.sim.network.RemoteEndpoint
 import com.uvp.sim.network.RtpSender
@@ -24,6 +25,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -59,6 +61,9 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
      */
     private val _videoConfigVersion = MutableStateFlow(0)
     val videoConfigVersion: StateFlow<Int> = _videoConfigVersion.asStateFlow()
+
+    private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
+    val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
 
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
@@ -136,6 +141,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
 
         engineScope.launch {
             try {

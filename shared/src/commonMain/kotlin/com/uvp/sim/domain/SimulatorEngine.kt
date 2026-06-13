@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
@@ -16,6 +17,8 @@ import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipState
 import com.uvp.sim.sip.SipStateMachine
+import com.uvp.sim.sip.SubscribeHandler
+import com.uvp.sim.sip.SubscribeIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -120,6 +123,13 @@ class SimulatorEngine(
 
     // Active streaming session state (M1: at most one)
     private var activeStream: ActiveStream? = null
+
+    // M2: Subscription registry + mock GPS
+    private val subscriptionRegistry = SubscriptionRegistry(scope)
+    private val mockGps = MockGpsSource(config.mockPosition)
+    private var notifySn = 0
+
+    val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
     private data class ActiveStream(
         val callId: String,
@@ -293,6 +303,7 @@ class SimulatorEngine(
             renewalJob = null
             heartbeat?.stop()
             heartbeat = null
+            subscriptionRegistry.cancelAll()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Lifecycle,
                 "用户注销 → 发送 Unregister"
@@ -332,6 +343,7 @@ class SimulatorEngine(
             ackTimeoutJob?.cancel()
             ackTimeoutJob = null
             awaitingAckCallId = null
+            subscriptionRegistry.cancelAll()
             inboundJob?.cancel()
             inboundJob = null
             registerJob?.cancel()
@@ -564,6 +576,7 @@ class SimulatorEngine(
             SipMethod.BYE -> handleBye(req)
             SipMethod.MESSAGE -> handleMessage(req)
             SipMethod.CANCEL -> handleCancel(req)
+            SipMethod.SUBSCRIBE -> handleSubscribe(req)
             else -> Unit
         }
     }
@@ -906,6 +919,132 @@ class SimulatorEngine(
             LogLevel.Info, LogTag.Media,
             "停止推流 ($reason): ${active.frameCount} 帧 / ${active.packetCount} 包"
         )
+    }
+
+    private suspend fun handleSubscribe(req: SipRequest) {
+        val intent = SubscribeHandler.parse(req, subscriptionRegistry.knownCallIds())
+        when (intent) {
+            is SubscribeIntent.NewSubscription -> {
+                val toTag = SipBuilders.randomTag()
+                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds)
+                transport.send(ok)
+                _events.emit(SimEvent.MessageSent(ok))
+
+                val dialog = SubscriptionDialog(
+                    kind = intent.kind,
+                    subscriberUri = intent.subscriberUri,
+                    callId = intent.callId,
+                    fromTag = intent.fromTag,
+                    toTag = toTag,
+                    intervalSeconds = intent.intervalSeconds,
+                    expiresSeconds = intent.expiresSeconds,
+                    remainingSeconds = intent.expiresSeconds
+                )
+                subscriptionRegistry.activate(dialog) { d -> sendPositionNotify(d) }
+
+                sendPositionNotify(dialog)
+
+                _events.emit(SimEvent.SubscribeReceived(
+                    subscriber = intent.subscriberUri,
+                    kind = intent.kind,
+                    expiresSeconds = intent.expiresSeconds,
+                    intervalSeconds = intent.intervalSeconds
+                ))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Subscription,
+                    "收到位置订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
+                )
+            }
+
+            is SubscribeIntent.Refresh -> {
+                val toTag = subscriptionRegistry.currentDialog(intent.callId)?.toTag
+                    ?: SipBuilders.randomTag()
+                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds)
+                transport.send(ok)
+                _events.emit(SimEvent.MessageSent(ok))
+                subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
+
+                val d = subscriptionRegistry.currentDialog(intent.callId)
+                _events.emit(SimEvent.SubscribeRefreshed(
+                    subscriber = d?.subscriberUri ?: "",
+                    newExpiresSeconds = intent.newExpiresSeconds
+                ))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Subscription,
+                    "位置订阅已刷新: expires=${intent.newExpiresSeconds}s"
+                )
+            }
+
+            is SubscribeIntent.Cancel -> {
+                val d = subscriptionRegistry.currentDialog(intent.callId)
+                val toTag = d?.toTag ?: SipBuilders.randomTag()
+                val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true)
+                transport.send(ok)
+                _events.emit(SimEvent.MessageSent(ok))
+                subscriptionRegistry.cancel(intent.callId)
+
+                _events.emit(SimEvent.SubscribeExpired(
+                    subscriber = d?.subscriberUri ?: "",
+                    kind = d?.kind ?: "MobilePosition"
+                ))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Subscription,
+                    "位置订阅已取消: ${d?.subscriberUri}"
+                )
+            }
+
+            is SubscribeIntent.Reject -> {
+                val resp = SipResponse(
+                    statusCode = intent.statusCode,
+                    reasonPhrase = intent.reason,
+                    headers = req.headers.filter {
+                        val c = SipHeader.canonicalize(it.name)
+                        c == SipHeader.VIA || c == SipHeader.FROM || c == SipHeader.TO ||
+                            c == SipHeader.CALL_ID || c == SipHeader.CSEQ
+                    }
+                )
+                transport.send(resp)
+                _events.emit(SimEvent.MessageSent(resp))
+            }
+
+            is SubscribeIntent.Ignored -> Unit
+        }
+    }
+
+    private suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
+        notifySn++
+        val fix = mockGps.next()
+        val xml = MobilePositionNotify.build(
+            deviceId = config.device.deviceId,
+            sn = notifySn,
+            point = fix.point,
+            speed = fix.speed,
+            direction = fix.direction,
+            altitude = fix.altitude
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = notifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
     }
 
     private fun startHeartbeat() {
