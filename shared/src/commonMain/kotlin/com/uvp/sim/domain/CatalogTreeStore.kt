@@ -54,6 +54,107 @@ object CatalogTreeStore {
         if (config.catalogTree.isEmpty()) defaultTree(config) else config.catalogTree
 
     /**
+     * P2-1 预设模板:演示间快速切换不同客户场景。
+     * 模板用 `config.server.domain` 和 `config.device.{deviceId,name}` 作为基底,
+     * 通过 IdEncoder 自动生成各类型 channelId。
+     */
+    fun templates(config: SimConfig): List<CatalogTemplate> {
+        val rootId = config.device.deviceId
+        val name = config.device.name
+        val domain = config.server.domain
+
+        fun id(type: CatalogNodeType, seq: Int) =
+            com.uvp.sim.gb28181.IdEncoder.genChildId(domain, type, seq)
+
+        fun root() = CatalogNode(
+            rootId, CatalogNodeType.Device, name, rootId,
+            mapOf("Manufacturer" to "UVP", "Model" to "UVP-Sim", "Status" to "ON")
+        )
+
+        return listOf(
+            CatalogTemplate(
+                id = "single",
+                title = "单设备(默认)",
+                description = "1 设备 + 1 视频通道 + 1 报警通道。最简结构。",
+                nodes = defaultTree(config)
+            ),
+            CatalogTemplate(
+                id = "nvr-8ch",
+                title = "8 通道 NVR",
+                description = "1 设备根 + 1 业务分组「NVR-8」+ 8 个视频通道。",
+                nodes = buildList {
+                    add(root())
+                    val groupId = id(CatalogNodeType.BusinessGroup, 1)
+                    add(CatalogNode(groupId, CatalogNodeType.BusinessGroup, "NVR-8", rootId))
+                    for (i in 1..8) {
+                        val ch = id(CatalogNodeType.VideoChannel, i)
+                        add(CatalogNode(
+                            ch, CatalogNodeType.VideoChannel,
+                            "通道-${i.toString().padStart(2, '0')}", groupId,
+                            mapOf("Manufacturer" to "UVP", "Status" to "ON")
+                        ))
+                    }
+                }
+            ),
+            CatalogTemplate(
+                id = "civil-3x2",
+                title = "跨区划演示(3 区 × 2 通道)",
+                description = "1 设备根 + 3 个虚拟组织(行政区划)各挂 2 个视频通道,演示 CivilCode 分组。",
+                nodes = buildList {
+                    add(root())
+                    val areas = listOf("浦东" to "310115", "黄浦" to "310101", "徐汇" to "310104")
+                    var chSeq = 1
+                    for ((idx, area) in areas.withIndex()) {
+                        val orgId = id(CatalogNodeType.VirtualOrg, idx + 1)
+                        add(CatalogNode(
+                            orgId, CatalogNodeType.VirtualOrg,
+                            "${area.first}区", rootId,
+                            mapOf("CivilCode" to area.second, "Status" to "ON")
+                        ))
+                        for (k in 1..2) {
+                            val ch = id(CatalogNodeType.VideoChannel, chSeq++)
+                            add(CatalogNode(
+                                ch, CatalogNodeType.VideoChannel,
+                                "${area.first}-${k}号", orgId,
+                                mapOf("CivilCode" to area.second, "Status" to "ON")
+                            ))
+                        }
+                    }
+                }
+            ),
+            CatalogTemplate(
+                id = "large-16ch",
+                title = "16 通道大型监控",
+                description = "1 设备 + 2 业务分组(室内/室外)各 8 通道 + 1 个报警通道总挂根下。",
+                nodes = buildList {
+                    add(root())
+                    val indoor = id(CatalogNodeType.BusinessGroup, 1)
+                    val outdoor = id(CatalogNodeType.BusinessGroup, 2)
+                    add(CatalogNode(indoor, CatalogNodeType.BusinessGroup, "室内监控", rootId))
+                    add(CatalogNode(outdoor, CatalogNodeType.BusinessGroup, "室外监控", rootId))
+                    var chSeq = 1
+                    for (i in 1..8) {
+                        val ch = id(CatalogNodeType.VideoChannel, chSeq++)
+                        add(CatalogNode(
+                            ch, CatalogNodeType.VideoChannel,
+                            "室内-${i.toString().padStart(2, '0')}", indoor
+                        ))
+                    }
+                    for (i in 1..8) {
+                        val ch = id(CatalogNodeType.VideoChannel, chSeq++)
+                        add(CatalogNode(
+                            ch, CatalogNodeType.VideoChannel,
+                            "室外-${i.toString().padStart(2, '0')}", outdoor
+                        ))
+                    }
+                    val alarm = id(CatalogNodeType.AlarmChannel, 1)
+                    add(CatalogNode(alarm, CatalogNodeType.AlarmChannel, "总报警", rootId))
+                }
+            )
+        )
+    }
+
+    /**
      * P1-4: 树合法性校验。返回 [ValidationResult.Ok] 或 [ValidationResult.Invalid] 含错误清单。
      *
      * 校验项:
@@ -142,3 +243,10 @@ sealed class ValidationResult {
 
     val isOk: Boolean get() = this is Ok
 }
+
+data class CatalogTemplate(
+    val id: String,
+    val title: String,
+    val description: String,
+    val nodes: List<CatalogNode>
+)

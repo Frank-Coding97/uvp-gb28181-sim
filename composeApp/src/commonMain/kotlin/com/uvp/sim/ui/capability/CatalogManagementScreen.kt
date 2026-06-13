@@ -181,6 +181,20 @@ fun CatalogManagementScreen(
         }
     }
 
+    if (showTemplate) {
+        ApplyTemplateDialog(
+            templates = remember(state.config) {
+                com.uvp.sim.domain.CatalogTreeStore.templates(state.config)
+            },
+            onCancel = { showTemplate = false },
+            onConfirm = { tpl ->
+                draft = tpl.nodes
+                showTemplate = false
+                toast.success("已应用模板「${tpl.title}」(${tpl.nodes.size} 节点,待保存)")
+            }
+        )
+    }
+
     if (showExport) {
         val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
             ?: state.config.device.deviceId
@@ -937,6 +951,53 @@ internal fun exportTreeAsJson(tree: List<CatalogNode>): String =
 
 internal fun parseTreeJson(json: String): Result<List<CatalogNode>> = runCatching {
     com.uvp.sim.config.CatalogTreeJson.decode(json)
+}
+
+@Composable
+private fun ApplyTemplateDialog(
+    templates: List<com.uvp.sim.domain.CatalogTemplate>,
+    onCancel: () -> Unit,
+    onConfirm: (com.uvp.sim.domain.CatalogTemplate) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("应用模板", fontSize = 14.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "应用后会替换当前编辑中的树(待保存,可反悔)。",
+                    color = UvpColor.TextSecondary, fontSize = 11.sp
+                )
+                templates.forEach { tpl ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .border(
+                                1.dp,
+                                Color(0xFFE5E7EB),
+                                RoundedCornerShape(6.dp)
+                            )
+                            .clickable { onConfirm(tpl) },
+                        color = UvpColor.Bg
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(tpl.title, color = UvpColor.Text,
+                                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.weight(1f))
+                                Text("${tpl.nodes.size} 节点",
+                                    color = UvpColor.Primary, fontSize = 10.sp)
+                            }
+                            Text(tpl.description,
+                                color = UvpColor.TextSecondary, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onCancel) { Text("取消") } }
+    )
 }
 
 @Composable
