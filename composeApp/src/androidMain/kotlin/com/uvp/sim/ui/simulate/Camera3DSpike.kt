@@ -202,24 +202,43 @@ private class Camera3DState {
 }
 
 /**
- * 内置 unlit material,避免引入 .filamat 资源.
- * Filament Material.Builder 不支持纯 Kotlin 构造,临时方案是用 utils 自带的 default。
+ * 用 filamat-android 在运行时编译 Filament 默认 lit material.
  *
- * 但 filament-utils 1.71 没有 KtxLoader 预编译 material 的便捷 API;
- * 这里用最低限度的字节码 fallback——加载默认 lit material(filament 自带).
+ * G2 选方案 1:`com.google.android.filament:filamat-android` 提供 [com.google.android.filament.filamat.MaterialBuilder]
+ * (matc 编译器的 JNI 绑定).第一次构造 100-300ms 内完成,之后跑通 surface shading.
  *
- * TODO(T7): 改用 ubershader 或 .filamat 资源,支持自定义 emissive(用于 LED).
+ * material 源:最小 lit 模型(baseColor + emissive,unlit 不写),足够覆盖
+ *   - 摄像机金属外壳 baseColor
+ *   - LED emissive 自发光(录像红 / 布防绿 / 报警闪)
+ *   - 镜头 metallic + roughness
+ *
+ * 后续 T11/T13 给不同 sub-mesh 用各自 MaterialInstance,setParameter 改色即可.
  */
 private fun createUnlitMaterial(engine: Engine): com.google.android.filament.Material {
-    // M2 T5 spike: 暂时让模型不可见 / 只显示线框,
-    // 等 T7 拉入正式 material 文件再 fix.
-    // Filament 不允许 Material 为 null,所以这里用 builder 的 minimal default。
-    //
-    // 实际上 Material.Builder 需要 .filamat 字节码 buffer,
-    // 而 spike 阶段不便预编译,本函数仅供编译通过用,运行时可能渲染失败.
-    // 老板真机跑 spike 时如果黑屏,就是这里的 placeholder,T7 会替换.
-    val payload = java.nio.ByteBuffer.allocateDirect(0)
+    com.google.android.filament.filamat.MaterialBuilder.init()
+    val builder = com.google.android.filament.filamat.MaterialBuilder()
+        .name("CameraDeviceMat")
+        .targetApi(com.google.android.filament.filamat.MaterialBuilder.TargetApi.OPENGL)
+        .platform(com.google.android.filament.filamat.MaterialBuilder.Platform.MOBILE)
+        .shading(com.google.android.filament.filamat.MaterialBuilder.Shading.LIT)
+        .require(com.google.android.filament.filamat.MaterialBuilder.VertexAttribute.TANGENTS)
+        .uniformParameter(com.google.android.filament.filamat.MaterialBuilder.UniformType.FLOAT4, "baseColor")
+        .uniformParameter(com.google.android.filament.filamat.MaterialBuilder.UniformType.FLOAT3, "emissive")
+        .uniformParameter(com.google.android.filament.filamat.MaterialBuilder.UniformType.FLOAT, "metallic")
+        .uniformParameter(com.google.android.filament.filamat.MaterialBuilder.UniformType.FLOAT, "roughness")
+        .material("""
+            void material(inout MaterialInputs material) {
+                prepareMaterial(material);
+                material.baseColor = materialParams.baseColor;
+                material.emissive = vec4(materialParams.emissive, 1.0);
+                material.metallic = materialParams.metallic;
+                material.roughness = materialParams.roughness;
+            }
+        """.trimIndent())
+    val pkg = builder.build(java.util.concurrent.Executors.newSingleThreadExecutor())
+    val buffer = pkg.buffer
+    com.google.android.filament.filamat.MaterialBuilder.shutdown()
     return com.google.android.filament.Material.Builder()
-        .payload(payload, 0)
+        .payload(buffer, buffer.remaining())
         .build(engine)
 }

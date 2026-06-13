@@ -84,6 +84,7 @@ junit = { module = "junit:junit", version.ref = "junit" }
 # Filament (Android 3D) — see overnight G1
 filament-android = { module = "com.google.android.filament:filament-android", version.ref = "filament" }
 filament-utils = { module = "com.google.android.filament:filament-utils-android", version.ref = "filament" }
+filamat-android = { module = "com.google.android.filament:filamat-android", version.ref = "filament" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
