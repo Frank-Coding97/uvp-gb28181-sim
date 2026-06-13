@@ -6,16 +6,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
 
@@ -41,7 +35,7 @@ fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
             .fillMaxSize()
             .background(UvpColor.Bg)
     ) {
-        // 上半部分:3D 视图占位
+        // 上半部分:等距投影摄像机视图
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -49,7 +43,7 @@ fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
                 .background(UvpColor.Surface),
             contentAlignment = Alignment.Center
         ) {
-            Camera3DView(
+            CameraIsoView(
                 state = deviceControl,
                 modifier = Modifier.fillMaxSize()
             )
@@ -65,13 +59,3 @@ fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
         }
     }
 }
-
-/**
- * 3D 摄像机视图,平台特定实现:
- * - Android: Filament (composeApp/androidMain)
- * - iOS: SceneKit (composeApp/iosMain)
- *
- * T14 阶段所有 actual 都是占位,T6-T13 逐步替换为真 3D 渲染.
- */
-@Composable
-expect fun Camera3DView(state: DeviceControlState, modifier: Modifier)
