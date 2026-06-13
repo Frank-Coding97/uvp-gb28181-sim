@@ -89,6 +89,9 @@ fun RecordingScreen(state: AppUiState, actions: AppActions) {
             },
             onClear = { filter = null }
         )
+        if (filtered.isNotEmpty()) {
+            SummaryBar(filtered)
+        }
         if (filtered.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyHint(
@@ -228,6 +231,43 @@ private fun FilterBar(
             }
         }
     }
+}
+
+@Composable
+private fun SummaryBar(files: List<RecordingFile>) {
+    val totalBytes = files.sumOf { it.sizeBytes }
+    val totalDurationMs = files.sumOf { it.durationMs }
+    val sizeText = formatBytes(totalBytes)
+    val durationText = formatDurationShort(totalDurationMs)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(UvpColor.Bg)
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("${files.size} 段", color = UvpColor.TextSecondary, fontSize = 11.sp)
+        Text("·", color = UvpColor.TextHint, fontSize = 11.sp)
+        Text(sizeText, color = UvpColor.TextSecondary, fontSize = 11.sp)
+        Text("·", color = UvpColor.TextHint, fontSize = 11.sp)
+        Text(durationText, color = UvpColor.TextSecondary, fontSize = 11.sp)
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> "%.1fGB".format(bytes / 1024.0 / 1024 / 1024)
+    bytes >= 1024L * 1024 -> "%.0fMB".format(bytes / 1024.0 / 1024)
+    bytes >= 1024L -> "%.0fKB".format(bytes / 1024.0)
+    else -> "${bytes}B"
+}
+
+private fun formatDurationShort(ms: Long): String {
+    val totalSec = ms / 1000
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return if (h > 0) "${h}h${m}m" else if (m > 0) "${m}m${s}s" else "${s}s"
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
