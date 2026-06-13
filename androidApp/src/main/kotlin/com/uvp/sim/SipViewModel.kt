@@ -26,8 +26,11 @@ import com.uvp.sim.recording.RecordingState
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
@@ -64,6 +67,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _recordingFiles = MutableStateFlow<List<RecordingFile>>(emptyList())
     val recordingFiles: StateFlow<List<RecordingFile>> = _recordingFiles.asStateFlow()
+
+    /** 一次性用户提示(toast 等)。任何模块都可以推消息进来,UI 订阅展示一次。
+     *  典型用例:录像失败 / 删除完成 / 切片完成等。 */
+    private val _toasts = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val toasts: SharedFlow<String> = _toasts.asSharedFlow()
 
     /**
      * Bumped each time the video profile changes so the Activity can rebuild
@@ -105,7 +113,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     fun bindRecordingService(svc: RecordingService) {
         this.recordingService = svc
         engineScope.launch { svc.load() }
-        engineScope.launch { svc.state.collect { _recordingState.value = it } }
+        engineScope.launch {
+            // 监听状态,Failed → toast(只在进入 Failed 时弹一次,reason 变化也再弹)
+            var lastFailedReason: String? = null
+            svc.state.collect { st ->
+                _recordingState.value = st
+                val reason = (st as? RecordingState.Failed)?.reason
+                if (reason != null && reason != lastFailedReason) {
+                    _toasts.tryEmit("录像失败:$reason")
+                }
+                lastFailedReason = reason
+            }
+        }
         engineScope.launch { svc.files.collect { _recordingFiles.value = it } }
     }
 
@@ -124,7 +143,14 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteRecording(id: String) {
         val svc = recordingService ?: return
-        engineScope.launch { runCatching { svc.delete(id) } }
+        engineScope.launch {
+            val result = runCatching { svc.delete(id) }
+            if (result.isSuccess) {
+                _toasts.tryEmit("已删除")
+            } else {
+                _toasts.tryEmit("删除失败:${result.exceptionOrNull()?.message ?: "unknown"}")
+            }
+        }
     }
 
     fun connect() {
@@ -163,7 +189,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
         val pbBuilder = com.uvp.sim.recording.AndroidPlaybackBuilder(
             scope = engineScope,
-            rtpSenderFactory = rtpFactory
+            rtpSenderFactory = rtpFactory,
+            audioCodec = cfg.recording.playbackAudioCodec
         )
         val eng = SimulatorEngine(
             config = cfg,

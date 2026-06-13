@@ -826,12 +826,14 @@ class SimulatorEngine(
         val job = scope.launch {
             try {
                 playback.run()
-                // 推完最后一帧 → 主动 BYE
+                // 推完最后一帧 → 主动 BYE,然后关 RTP sink(顺序很重要,否则 RTP 流静默→BYE 空窗)
                 sendBye(cid, ssrc, deviceContact, invite)
+                runCatching { playback.cancel() }
                 SystemLogger.emit(LogLevel.Info, LogTag.Media, "回放完成 → 主动 BYE")
             } catch (e: Throwable) {
                 _events.emit(SimEvent.TransportError("PLAYBACK error: ${e.message}"))
                 SystemLogger.emit(LogLevel.Error, LogTag.Media, "回放异常: ${e.message}")
+                runCatching { playback.cancel() }
             } finally {
                 activePlayback = null
             }

@@ -61,6 +61,7 @@ class AndroidRecordingService(
     private val executor: Executor,
     private val deviceId: String,
     private val scope: CoroutineScope,
+    private val profile: com.uvp.sim.config.RecordingProfile = com.uvp.sim.config.RecordingProfile(),
     private val clock: Clock = Clock.System,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault()
 ) : RecordingService {
@@ -78,8 +79,13 @@ class AndroidRecordingService(
     private var activeOutputFile: File? = null
     private var activeChannelId: String? = null
     private var activeStartMs: Long = 0L
+    private var activeSegmentIndex: Int = 0
     private var activeSource: RecordSource = RecordSource.Manual
     private var thumbJob: Job? = null
+    /** 守护协程:30 分钟切片 + 滚动磁盘检查。start 时拉起,stop/finalize 时取消。 */
+    private var guardJob: Job? = null
+    /** 切片到来时,handleRecordEvent finalize 后由这个标志驱动接力 start 下一段。 */
+    @Volatile private var pendingSegmentSplit: Boolean = false
 
     private val baseDir: File by lazy {
         File(context.filesDir, "recordings").apply { if (!exists()) mkdirs() }
@@ -186,10 +192,11 @@ class AndroidRecordingService(
                 return Result.success(Unit)
             }
         }
-        // 磁盘兜底:可用空间 < 200MB 不开录(1080p 4Mbps 一分钟 ≈30MB)
+        // 磁盘兜底:可用空间 < 配置阈值不开录(默认 200MB,1080p 4Mbps 一分钟 ≈30MB)
+        val minFreeBytes = profile.minFreeMb.toLong() * 1024 * 1024
         val freeBytes = baseDir.usableSpace
-        if (freeBytes < MIN_FREE_BYTES) {
-            val msg = "磁盘空间不足 (${freeBytes / 1024 / 1024}MB < ${MIN_FREE_BYTES / 1024 / 1024}MB),拒绝录像"
+        if (freeBytes < minFreeBytes) {
+            val msg = "磁盘空间不足 (${freeBytes / 1024 / 1024}MB < ${profile.minFreeMb}MB),拒绝录像"
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, msg)
             _state.value = RecordingState.Failed(msg)
             return Result.failure(IllegalStateException(msg))
@@ -212,11 +219,17 @@ class AndroidRecordingService(
             activeChannelId = channelId
             activeStartMs = now.toEpochMilliseconds()
             activeSource = source
+            // 切片接力时(pendingSegmentSplit=true)保留 segmentIndex 自增;否则归零。
+            if (!pendingSegmentSplit) activeSegmentIndex = 0
+            pendingSegmentSplit = false
             _state.value = RecordingState.Recording(
                 startMs = activeStartMs,
-                segmentIndex = 0,
+                segmentIndex = activeSegmentIndex,
                 source = source
             )
+            // 守护协程:30 分钟切片 + 滚动磁盘检查
+            guardJob?.cancel()
+            guardJob = scope.launch { runGuard(channelId, source) }
             // 拉起前台 Service:Android 14+ 后台录视频必须的保活手段
             runCatching { RecordingForegroundService.start(context) }
                 .onFailure {
@@ -243,8 +256,63 @@ class AndroidRecordingService(
             if (previous != null) {
                 _state.value = RecordingState.Stopping(previous, reason = "user_stop")
             }
+            // 用户主动停 → 不再接力切片
+            pendingSegmentSplit = false
+            guardJob?.cancel()
+            guardJob = null
             recording.stop()
             null  // 实际 finalize 在 handleRecordEvent 里
+        }
+    }
+
+    /**
+     * 录像守护协程 — 跟单段录像同生命周期(由 [start] 拉起,[stop]/finalize 终止)。
+     *
+     * 职责:
+     *   1. 每分钟扫一次磁盘,跌破 [MIN_FREE_BYTES] 主动 stop,避免半截损坏录像
+     *   2. 当前段录到 [SEGMENT_DURATION_MS] 时触发切片(set pendingSegmentSplit + recording.stop)
+     *      finalize 回调里看到 pendingSegmentSplit=true 就接力 start 下一段
+     *
+     * 用 delay(30_000) 粒度即可,30s 误差不影响切片节奏。
+     */
+    private suspend fun runGuard(channelId: String, source: RecordSource) {
+        val segmentMs = profile.segmentMinutes.toLong() * 60 * 1000
+        val minFreeBytes = profile.minFreeMb.toLong() * 1024 * 1024
+        try {
+            while (true) {
+                kotlinx.coroutines.delay(GUARD_TICK_MS)
+                if (activeRecording == null) return
+                val started = activeStartMs
+                val nowMs = clock.now().toEpochMilliseconds()
+                val recordedMs = nowMs - started
+
+                // 切片(profile.segmentMinutes <= 0 时关闭切片)
+                if (segmentMs > 0 && recordedMs >= segmentMs) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Media,
+                        "录像满 ${profile.segmentMinutes} 分钟,触发切片"
+                    )
+                    pendingSegmentSplit = true
+                    val rec = activeRecording ?: return
+                    runCatching { rec.stop() }
+                    return
+                }
+
+                // 滚动磁盘检查
+                val free = baseDir.usableSpace
+                if (free < minFreeBytes) {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Media,
+                        "磁盘剩余 ${free / 1024 / 1024}MB < ${profile.minFreeMb}MB,主动停止录像"
+                    )
+                    pendingSegmentSplit = false
+                    val rec = activeRecording ?: return
+                    runCatching { rec.stop() }
+                    return
+                }
+            }
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // stop / finalize 路径正常 cancel
         }
     }
 
@@ -270,8 +338,13 @@ class AndroidRecordingService(
             is VideoRecordEvent.Start -> Unit
             is VideoRecordEvent.Status -> Unit
             is VideoRecordEvent.Finalize -> {
-                // 不论成功失败,前台 Service 都该停 — 录像已结束
-                runCatching { RecordingForegroundService.stop(context) }
+                val isSplit = pendingSegmentSplit
+                // 切片接力时不停前台 Service — 下一段录像马上接上
+                if (!isSplit) {
+                    runCatching { RecordingForegroundService.stop(context) }
+                    guardJob?.cancel()
+                    guardJob = null
+                }
                 val outputFile = activeOutputFile
                 val started = activeStartMs
                 val channel = activeChannelId
@@ -280,6 +353,7 @@ class AndroidRecordingService(
                 activeOutputFile = null
                 if (event.hasError() || outputFile == null || channel == null || started == 0L) {
                     val reason = event.cause?.message ?: "finalize error code=${event.error}"
+                    pendingSegmentSplit = false  // 接力中失败,不接了
                     scope.launch {
                         mutex.withLock {
                             _state.value = RecordingState.Failed(reason)
@@ -309,11 +383,15 @@ class AndroidRecordingService(
                             val updated = RecordingIndexFile(files = current + recordingFile)
                             _files.value = updated.files
                             persistIndex(updated)
-                            _state.value = RecordingState.Idle
+                            // 切片接力:不进 Idle,下一段录像马上启动
+                            if (!isSplit) {
+                                _state.value = RecordingState.Idle
+                            }
                         }
                         SystemLogger.emit(
                             LogLevel.Info, LogTag.Media,
-                            "停止录像 → 文件=${outputFile.name} 时长=${durationMs}ms 大小=${sizeBytes}B"
+                            if (isSplit) "切片完成 → 文件=${outputFile.name} 时长=${durationMs}ms,接力下一段"
+                            else "停止录像 → 文件=${outputFile.name} 时长=${durationMs}ms 大小=${sizeBytes}B"
                         )
                         thumbJob = scope.launch(Dispatchers.IO) {
                             val thumbPath = ThumbnailExtractor.extract(outputFile.absolutePath, durationMs)
@@ -326,6 +404,18 @@ class AndroidRecordingService(
                                     _files.value = list
                                     persistIndex(RecordingIndexFile(files = list))
                                 }
+                            }
+                        }
+                        // 接力启动下一段
+                        if (isSplit) {
+                            activeSegmentIndex += 1
+                            val resumeResult = runCatching { start(source, channel) }
+                            if (resumeResult.isFailure) {
+                                pendingSegmentSplit = false
+                                SystemLogger.emit(
+                                    LogLevel.Error, LogTag.Media,
+                                    "切片接力启动失败: ${resumeResult.exceptionOrNull()?.message}"
+                                )
                             }
                         }
                     }
@@ -350,8 +440,15 @@ class AndroidRecordingService(
      */
     private suspend fun rebindFreshVideoCapture(): VideoCapture<Recorder> {
         val (provider, lifecycleOwner) = streamerSupplier().awaitCameraOwner()
+        val quality = when (profile.quality.uppercase()) {
+            "SD" -> Quality.SD
+            "HD" -> Quality.HD
+            "FHD" -> Quality.FHD
+            "UHD" -> Quality.UHD
+            else -> Quality.HD
+        }
         val recorder = Recorder.Builder()
-            .setQualitySelector(QualitySelector.from(Quality.HD))
+            .setQualitySelector(QualitySelector.from(quality))
             .build()
         val capture = VideoCapture.withOutput(recorder)
         val previous = videoCapture
@@ -395,7 +492,9 @@ class AndroidRecordingService(
     }
 
     companion object {
-        /** 录像启动最低剩余磁盘字节数 — 200MB,够录约 6 分钟 1080p。 */
+        /** 录像启动最低剩余磁盘字节数 — 默认 200MB,够录约 6 分钟 1080p。可被 [RecordingProfile.minFreeMb] 覆盖。 */
         const val MIN_FREE_BYTES: Long = 200L * 1024 * 1024
+        /** 守护协程扫描间隔 — 30 秒粒度,切片误差 ±30s 可接受。 */
+        const val GUARD_TICK_MS: Long = 30L * 1000
     }
 }

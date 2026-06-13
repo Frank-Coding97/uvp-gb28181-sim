@@ -67,6 +67,7 @@ class MainActivity : ComponentActivity() {
         SessionTracker.install(AndroidSessionStore(applicationContext))
         SystemLogger.bindScope(lifecycleScope)
         installLogcatBridge()
+        installToastBridge()
         com.uvp.sim.ui.ShareContextHolder.context = this
         SystemLogger.emit(
             LogLevel.Info, LogTag.Lifecycle,
@@ -90,7 +91,8 @@ class MainActivity : ComponentActivity() {
                 },
                 executor = ContextCompat.getMainExecutor(applicationContext),
                 deviceId = viewModel.config.value.device.deviceId,
-                scope = AppScope.scope
+                scope = AppScope.scope,
+                profile = viewModel.config.value.recording
             )
             viewModel.bindRecordingService(recordingServiceRef!!)
         }
@@ -200,12 +202,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /**
-     * 把 SystemLogger.flow 桥接到 Android logcat。
-     *
-     * 期 1-2 阶段没有专属 UI,运维和 overnight 自动跑都靠这里看事件。
-     * 期 3 上 SystemLogTab 后保留 — logcat 是诊断兜底,任何时候都有用。
-     */
     private fun installLogcatBridge() {
         lifecycleScope.launch {
             SystemLogger.flow.collect { log ->
@@ -220,6 +216,17 @@ class MainActivity : ComponentActivity() {
                 log.detail?.let { Log.println(priority, TAG_SYS, "  ↳ $it") }
                 // 同步给 UI(SystemLogger.snapshot 在 actor 内已写入,这里聚合给 Compose state)
                 systemEvents.value = SystemLogger.snapshot
+            }
+        }
+    }
+
+    /** 订阅 ViewModel 一次性消息流,转成系统 Toast。录像失败 / 删除完成等。 */
+    private fun installToastBridge() {
+        lifecycleScope.launch {
+            viewModel.toasts.collect { msg ->
+                android.widget.Toast.makeText(
+                    this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }

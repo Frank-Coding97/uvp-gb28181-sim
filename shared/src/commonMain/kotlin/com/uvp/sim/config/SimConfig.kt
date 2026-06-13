@@ -18,10 +18,28 @@ data class SimConfig(
         com.uvp.sim.network.TransportType.UDP,
     val audioTransport: AudioTransportType = AudioTransportType.TCP_ACTIVE,
     val video: VideoProfile = VideoProfile(),
+    val recording: RecordingProfile = RecordingProfile(),
     val expiresSeconds: Int = 3600,
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
     val userAgent: String = "UVP-Sim/0.1"
+)
+
+/**
+ * 录像引擎参数 — 默认值对标 plan §4 / §5。
+ *
+ * 字段含义:
+ *   - [quality]:CameraX [androidx.camera.video.Quality] 档位字符串("HD"/"FHD"/"SD")
+ *   - [segmentMinutes]:单段录像最长分钟数,超过即切片接力(0 = 关切片)
+ *   - [minFreeMb]:磁盘最低剩余 MB,启动时 / 录像中跌破即拒绝/停止
+ *   - [playbackAudioCodec]:PLAYBACK 推流时 PsMuxer 的 audio 类型
+ */
+@Serializable
+data class RecordingProfile(
+    val quality: String = "HD",
+    val segmentMinutes: Int = 30,
+    val minFreeMb: Int = 200,
+    val playbackAudioCodec: com.uvp.sim.media.AudioCodec = com.uvp.sim.media.AudioCodec.AAC
 )
 
 /**

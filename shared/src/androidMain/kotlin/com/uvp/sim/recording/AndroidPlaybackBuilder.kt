@@ -19,6 +19,7 @@ import kotlinx.coroutines.CoroutineScope
 class AndroidPlaybackBuilder(
     private val scope: CoroutineScope,
     private val rtpSenderFactory: (host: String, port: Int) -> RtpSender,
+    private val audioCodec: com.uvp.sim.media.AudioCodec = com.uvp.sim.media.AudioCodec.AAC,
 ) : PlaybackBuilder {
 
     override suspend fun build(
@@ -85,8 +86,7 @@ class AndroidPlaybackBuilder(
             ),
             rtp = sink,
             clock = WallClock,
-            // 国标 PLAYBACK 默认音频 G.711 不强制,先用 AAC 跟录像保持一致。
-            audioCodec = com.uvp.sim.media.AudioCodec.AAC
+            audioCodec = audioCodec
         )
 
         return AndroidPlaybackSession(
@@ -103,11 +103,9 @@ class AndroidPlaybackBuilder(
     ) : PlaybackSession {
 
         override suspend fun run() {
-            try {
-                engine.run()
-            } finally {
-                runCatching { sink.close() }
-            }
+            // sink 不在这里 close — SimulatorEngine 在 sendBye 完成后才 cancel,
+            // 早关导致 RTP 流静默→BYE 之间有空窗,WVP 端日志难看。
+            engine.run()
         }
 
         override suspend fun cancel() {
@@ -116,6 +114,6 @@ class AndroidPlaybackBuilder(
     }
 
     private object WallClock : PlaybackClock {
-        override fun nowMs(): Long = System.currentTimeMillis()
+        override fun nowMs(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
     }
 }
