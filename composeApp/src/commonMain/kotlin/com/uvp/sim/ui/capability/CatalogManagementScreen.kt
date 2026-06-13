@@ -259,10 +259,10 @@ fun CatalogManagementScreen(
             existingIds = draft.map { it.id }.toSet(),
             parentNode = parentNode,
             onCancel = { showAdd = null },
-            onConfirm = { newNode ->
-                draft = draft + newNode
+            onConfirm = { newNodes ->
+                draft = draft + newNodes
                 showAdd = null
-                editingId = newNode.id  // 添加后直接进编辑
+                if (newNodes.size == 1) editingId = newNodes.first().id
             }
         )
     }
@@ -728,16 +728,21 @@ private fun AddChildDialog(
     existingIds: Set<String>,
     parentNode: CatalogNode?,
     onCancel: () -> Unit,
-    onConfirm: (CatalogNode) -> Unit
+    onConfirm: (List<CatalogNode>) -> Unit
 ) {
     var selectedType by remember { mutableStateOf(CatalogNodeType.VideoChannel) }
     var name by remember { mutableStateOf("新节点") }
+    var batchCountText by remember { mutableStateOf("1") }
     val typeOptions = listOf(
         CatalogNodeType.BusinessGroup,
         CatalogNodeType.VirtualOrg,
         CatalogNodeType.VideoChannel,
         CatalogNodeType.AlarmChannel
     )
+    // 只有视频/报警通道支持批量,组织类型只能单个
+    val supportsBatch = selectedType == CatalogNodeType.VideoChannel ||
+        selectedType == CatalogNodeType.AlarmChannel
+    val batchCount = batchCountText.toIntOrNull()?.coerceIn(1, 50) ?: 1
 
     AlertDialog(
         onDismissRequest = onCancel,
@@ -772,27 +777,55 @@ private fun AddChildDialog(
                 }
                 OutlinedTextField(
                     value = name, onValueChange = { name = it },
-                    label = { Text("名称") }, singleLine = true,
+                    label = { Text(if (batchCount > 1) "名称(批量自动加序号)" else "名称") },
+                    singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (supportsBatch) {
+                    OutlinedTextField(
+                        value = batchCountText,
+                        onValueChange = { v ->
+                            // 限输入数字,最多 2 位
+                            batchCountText = v.filter { it.isDigit() }.take(2)
+                        },
+                        label = { Text("数量(1-50)") },
+                        supportingText = { Text("≥2 时按 'name-001' 顺序生成",
+                            color = UvpColor.TextHint, fontSize = 10.sp) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                val seq = nextSeq(existingIds, selectedType)
-                val newId = IdEncoder.genChildId(domain, selectedType, seq)
                 val parentId = parentNode?.id
                     ?: existingIds.firstOrNull()
-                    ?: newId
-                onConfirm(
-                    CatalogNode(
+                    ?: ""
+                val baseName = name.ifBlank { selectedType.displayName() }
+                val nodes = mutableListOf<CatalogNode>()
+                val ids = existingIds.toMutableSet()
+                repeat(batchCount.coerceAtLeast(1)) { i ->
+                    val seq = nextSeq(ids, selectedType)
+                    val newId = IdEncoder.genChildId(domain, selectedType, seq)
+                    ids += newId
+                    val itemName = if (batchCount > 1) {
+                        "$baseName-${(i + 1).toString().padStart(3, '0')}"
+                    } else baseName
+                    nodes += CatalogNode(
                         id = newId,
                         type = selectedType,
-                        name = name.ifBlank { selectedType.displayName() },
-                        parentId = parentId
+                        name = itemName,
+                        parentId = parentId.ifBlank { newId }  // 没父节点 → 自指(根节点场景)
                     )
+                }
+                onConfirm(nodes)
+            }) {
+                Text(
+                    if (batchCount > 1) "批量新增 ($batchCount)" else "确定",
+                    color = UvpColor.Primary
                 )
-            }) { Text("确定", color = UvpColor.Primary) }
+            }
         },
         dismissButton = { TextButton(onCancel) { Text("取消") } }
     )
