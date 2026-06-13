@@ -31,4 +31,10 @@ object ManscdpParser {
     fun sn(xml: String): String? = tagValue(xml, "SN")
 
     fun deviceId(xml: String): String? = tagValue(xml, "DeviceID")
+
+    /**
+     * GB/T 28181 §9.3 DeviceControl <RecordCmd> 值。标准取值 "Record" / "StopRecord"。
+     * 实现侧不做大小写归一,如实返回(交由 [com.uvp.sim.domain.SimulatorEngine] 判断)。
+     */
+    fun recordCmd(xml: String): String? = tagValue(xml, "RecordCmd")
 }

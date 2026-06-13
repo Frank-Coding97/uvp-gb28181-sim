@@ -20,11 +20,19 @@ import com.uvp.sim.network.RemoteEndpoint
 import com.uvp.sim.network.RtpSender
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.network.UdpSipTransport
+import com.uvp.sim.recording.AndroidRecordingService
+import com.uvp.sim.recording.RecordSource
+import com.uvp.sim.recording.RecordingFile
+import com.uvp.sim.recording.RecordingService
+import com.uvp.sim.recording.RecordingState
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -45,6 +53,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private var engine: SimulatorEngine? = null
     private var camera: CameraCapture? = null
     private var audio: AudioCapture? = null
+    private var recordingService: RecordingService? = null
 
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -54,6 +63,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _config = MutableStateFlow(defaultConfig())
     val config: StateFlow<SimConfig> = _config.asStateFlow()
+
+    /** 录像状态(M2 D 块)。Activity 把它桥接到 AppUiState.recording。 */
+    private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)
+    val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
+
+    private val _recordingFiles = MutableStateFlow<List<RecordingFile>>(emptyList())
+    val recordingFiles: StateFlow<List<RecordingFile>> = _recordingFiles.asStateFlow()
+
+    /** 一次性用户提示(toast 等)。任何模块都可以推消息进来,UI 订阅展示一次。
+     *  典型用例:录像失败 / 删除完成 / 切片完成等。 */
+    private val _toasts = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val toasts: SharedFlow<String> = _toasts.asSharedFlow()
 
     /**
      * Bumped each time the video profile changes so the Activity can rebuild
@@ -91,6 +112,56 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         this.audio = aud
     }
 
+    /**
+     * Activity 在 onCreate 时调,把 [AndroidRecordingService] 注入。
+     *
+     * recordingService 需要 LifecycleOwner + Executor,只有 Activity 能拿到。
+     * 注入后 ViewModel 就可以指挥录像 + 在 connect() 时把它传给 SimulatorEngine
+     * 让平台 RecordCmd 也能驱动同一个 service。
+     */
+    fun bindRecordingService(svc: RecordingService) {
+        this.recordingService = svc
+        engineScope.launch { svc.load() }
+        engineScope.launch {
+            // 监听状态,Failed → toast(只在进入 Failed 时弹一次,reason 变化也再弹)
+            var lastFailedReason: String? = null
+            svc.state.collect { st ->
+                _recordingState.value = st
+                val reason = (st as? RecordingState.Failed)?.reason
+                if (reason != null && reason != lastFailedReason) {
+                    _toasts.tryEmit("录像失败:$reason")
+                }
+                lastFailedReason = reason
+            }
+        }
+        engineScope.launch { svc.files.collect { _recordingFiles.value = it } }
+    }
+
+    fun startRecording() {
+        val svc = recordingService ?: return
+        val cfg = _config.value
+        engineScope.launch {
+            runCatching { svc.start(RecordSource.Manual, cfg.device.videoChannelId) }
+        }
+    }
+
+    fun stopRecording() {
+        val svc = recordingService ?: return
+        engineScope.launch { runCatching { svc.stop() } }
+    }
+
+    fun deleteRecording(id: String) {
+        val svc = recordingService ?: return
+        engineScope.launch {
+            val result = runCatching { svc.delete(id) }
+            if (result.isSuccess) {
+                _toasts.tryEmit("已删除")
+            } else {
+                _toasts.tryEmit("删除失败:${result.exceptionOrNull()?.message ?: "unknown"}")
+            }
+        }
+    }
+
     fun connect() {
         val existing = engine
         if (existing != null) {
@@ -125,6 +196,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->
             RtpSender(host, port, engineScope, mode)
         }
+        val pbBuilder = com.uvp.sim.recording.AndroidPlaybackBuilder(
+            scope = engineScope,
+            rtpSenderFactory = rtpFactory,
+            audioCodec = cfg.recording.playbackAudioCodec
+        )
         val eng = SimulatorEngine(
             config = cfg,
             transport = tx,
@@ -133,7 +209,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
             cameraCapture = camera,
             audioCapture = audio,
-            rtpSenderFactory = rtpFactory
+            rtpSenderFactory = rtpFactory,
+            recordingService = recordingService
+                ?: com.uvp.sim.recording.NoopRecordingService,
+            playbackBuilder = pbBuilder
         )
         engine = eng
 

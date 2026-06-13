@@ -196,7 +196,16 @@ object SipBuilders {
     }
 
     /** Build a simple 200 OK with no body for non-INVITE requests (MESSAGE, BYE). */
-    fun buildSimple200(request: SipRequest, toTag: String? = null): SipResponse {
+    fun buildSimple200(request: SipRequest, toTag: String? = null): SipResponse =
+        buildSimpleResponse(request, 200, "OK", toTag)
+
+    /** Build a simple non-2xx response (no body). Used for 486 Busy / 487 Terminated. */
+    fun buildSimpleResponse(
+        request: SipRequest,
+        statusCode: Int,
+        reasonPhrase: String,
+        toTag: String? = null
+    ): SipResponse {
         val newHeaders = mutableListOf<SipMessage.Header>()
         for (h in request.headers) {
             val canonical = SipHeader.canonicalize(h.name)
@@ -213,7 +222,7 @@ object SipBuilders {
                 else -> { /* drop */ }
             }
         }
-        return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders)
+        return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
     }
 
     /**
@@ -244,34 +253,6 @@ object SipBuilders {
         val ssValue = if (terminated) "terminated;reason=timeout" else "active;expires=$expires"
         newHeaders += SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, ssValue)
         return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders)
-    }
-
-    /**
-     * Build a generic non-2xx response (e.g. 487 Request Terminated for CANCEL).
-     */
-    fun buildSimpleResponse(
-        request: SipRequest,
-        statusCode: Int,
-        reasonPhrase: String,
-        toTag: String? = null
-    ): SipResponse {
-        val newHeaders = mutableListOf<SipMessage.Header>()
-        for (h in request.headers) {
-            val canonical = SipHeader.canonicalize(h.name)
-            when (canonical) {
-                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ -> {
-                    newHeaders += h
-                }
-                SipHeader.TO -> {
-                    val v = if (toTag != null && !h.value.contains(";tag=")) {
-                        "${h.value};tag=$toTag"
-                    } else h.value
-                    newHeaders += SipMessage.Header(SipHeader.TO, v)
-                }
-                else -> { /* drop */ }
-            }
-        }
-        return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
     }
 
     /**

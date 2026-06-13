@@ -38,7 +38,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -147,6 +149,7 @@ private data class BannerSpec(
 private fun CameraPreviewBox(state: AppUiState) {
     val live = state.sip == SipState.InCall
     val showPreview = state.sip == SipState.Registered || state.sip == SipState.InCall
+    val isRecording = state.recording.isRecording
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -170,6 +173,16 @@ private fun CameraPreviewBox(state: AppUiState) {
         } else {
             BrandCover()
         }
+        // 录像红点(左上角):脉动闪烁 + REC + 计时器
+        if (isRecording) {
+            RecordingBadge(
+                startMs = state.recording.startMs,
+                source = state.recording.source,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+            )
+        }
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -192,6 +205,67 @@ private fun CameraPreviewBox(state: AppUiState) {
                 fontFamily = FontFamily.Monospace
             )
         }
+    }
+}
+
+/**
+ * 录像标徽 — 脉动红点 + REC + 计时器(mm:ss)。
+ *
+ * 放在视频预览区左上角,不挡现有 LIVE 标(右上角)。脉动用 infiniteTransition
+ * 让 alpha 在 1.0 ↔ 0.35 之间 800ms 周期循环,跟相机录像机的视觉惯例一致。
+ */
+@Composable
+private fun RecordingBadge(
+    startMs: Long?,
+    source: com.uvp.sim.recording.RecordSource?,
+    modifier: Modifier = Modifier
+) {
+    val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "rec-pulse")
+    val alpha by transition.animateFloat(
+        initialValue = 1f,
+        targetValue = 0.35f,
+        animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+            animation = androidx.compose.animation.core.tween(durationMillis = 800),
+            repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+        ),
+        label = "rec-alpha"
+    )
+    // 计时器:每秒重组一次,显示从 startMs 到现在的 mm:ss
+    var elapsedSec by remember { mutableStateOf(0L) }
+    LaunchedEffect(startMs) {
+        if (startMs == null) return@LaunchedEffect
+        while (true) {
+            elapsedSec = ((kotlinx.datetime.Clock.System.now().toEpochMilliseconds() - startMs) / 1000)
+                .coerceAtLeast(0)
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+    val mm = (elapsedSec / 60).toString().padStart(2, '0')
+    val ss = (elapsedSec % 60).toString().padStart(2, '0')
+    val sourceLabel = when (source) {
+        com.uvp.sim.recording.RecordSource.PlatformCmd -> "REC·平台"
+        else -> "REC"
+    }
+    Row(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(4.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(UvpColor.Danger.copy(alpha = alpha))
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            "$sourceLabel  $mm:$ss",
+            fontSize = 10.sp,
+            color = Color.White,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
@@ -403,12 +477,22 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        val isRecording = state.recording.isRecording
         ActionTile(
             icon = Icons.Outlined.Videocam,
-            label = "录像",
-            enabled = canFire,
+            label = if (isRecording) "停止录像" else "录像",
+            enabled = canFire || isRecording,
             modifier = Modifier.weight(1f),
-            onClick = { toast.info("录像 — M2 上线") }
+            recordingActive = isRecording,
+            onClick = {
+                if (isRecording) {
+                    actions.onRecordingStop()
+                    toast.info("已停止录像")
+                } else {
+                    actions.onRecordingStart()
+                    toast.info("开始录像")
+                }
+            }
         )
         ActionTile(
             icon = Icons.Outlined.Warning,
@@ -447,34 +531,60 @@ private fun ActionTile(
     label: String,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    recordingActive: Boolean = false,
     onClick: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(UvpColor.Surface)
-            .border(1.dp, UvpColor.Primary, RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled) { onClick() }
-            .padding(vertical = 7.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        Icon(
-            icon, contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = UvpColor.Primary
-        )
-        Text(
-            label, fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            color = UvpColor.Primary
-        )
-        Text(
-            "可触发",
-            fontSize = 8.5.sp,
-            color = UvpColor.Primary.copy(alpha = 0.55f),
-            fontFamily = FontFamily.Monospace
-        )
+    val accent = if (recordingActive) UvpColor.Danger else UvpColor.Primary
+    Box(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (recordingActive) UvpColor.DangerBg else UvpColor.Surface)
+                .border(1.dp, accent, RoundedCornerShape(8.dp))
+                .clickable(enabled = enabled) { onClick() }
+                .padding(vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Icon(
+                icon, contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = accent
+            )
+            Text(
+                label, fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = accent
+            )
+            Text(
+                if (recordingActive) "录像中" else "可触发",
+                fontSize = 8.5.sp,
+                color = accent.copy(alpha = 0.7f),
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        if (recordingActive) {
+            // 右上角脉动红点 — 跟视频区红点呼应,主屏一眼可见
+            val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "tile-pulse")
+            val alpha by transition.animateFloat(
+                initialValue = 1f,
+                targetValue = 0.3f,
+                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                    animation = androidx.compose.animation.core.tween(durationMillis = 800),
+                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+                ),
+                label = "tile-alpha"
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(UvpColor.Danger.copy(alpha = alpha))
+            )
+        }
     }
 }
 
