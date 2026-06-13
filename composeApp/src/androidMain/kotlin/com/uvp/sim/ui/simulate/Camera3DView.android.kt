@@ -20,6 +20,7 @@ import com.google.android.filament.View
 import com.google.android.filament.Viewport
 import com.google.android.filament.android.UiHelper
 import com.google.android.filament.utils.Manipulator
+import com.google.android.filament.utils.Utils
 import com.uvp.sim.domain.DeviceControlState
 
 /**
@@ -83,6 +84,9 @@ private class CameraSceneState {
     }
 
     fun attach(surfaceView: SurfaceView, provider: () -> DeviceControlState) {
+        // Filament 的 native 库不会自动 load,显式 init() 触发
+        // System.loadLibrary("filament-jni") + filamat + utils
+        Utils.init()
         stateProvider = provider
         val eng = Engine.create()
         engine = eng
