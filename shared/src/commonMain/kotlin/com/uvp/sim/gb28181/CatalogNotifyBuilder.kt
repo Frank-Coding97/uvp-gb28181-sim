@@ -22,14 +22,41 @@ object CatalogNotifyBuilder {
         deviceId: String,
         sn: Int,
         tree: List<CatalogNode>
+    ): String = renderEnvelope(
+        wrapperTag = "Notify",
+        deviceId = deviceId,
+        sn = sn.toString(),
+        tree = tree
+    )
+
+    /**
+     * 给 [CatalogResponse.buildFromTree] 用 — 同样的 DFS 序列化,
+     * 顶层 wrapper 是 Response 而不是 Notify。
+     */
+    internal fun renderResponse(
+        deviceId: String,
+        sn: String,
+        tree: List<CatalogNode>
+    ): String = renderEnvelope(
+        wrapperTag = "Response",
+        deviceId = deviceId,
+        sn = sn,
+        tree = tree
+    )
+
+    private fun renderEnvelope(
+        wrapperTag: String,
+        deviceId: String,
+        sn: String,
+        tree: List<CatalogNode>
     ): String {
         val ordered = orderDfs(tree)
         val items = ordered.joinToString(separator = "\n") { renderItem(it) }
         val sumNum = ordered.size
 
         val sb = StringBuilder()
-        sb.append("<?xml version=\"1.0\" encoding=\"GB2312\"?>\n")
-        sb.append("<Notify>\n")
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<").append(wrapperTag).append(">\n")
         sb.append("<CmdType>Catalog</CmdType>\n")
         sb.append("<SN>").append(sn).append("</SN>\n")
         sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
@@ -41,7 +68,7 @@ object CatalogNotifyBuilder {
             sb.append(items).append("\n")
             sb.append("</DeviceList>\n")
         }
-        sb.append("</Notify>\n")
+        sb.append("</").append(wrapperTag).append(">\n")
         return sb.toString().replace("\n", "\r\n")
     }
 

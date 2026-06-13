@@ -678,7 +678,12 @@ class SimulatorEngine(
             val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
             val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
             val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
-            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.build(config, sn)
+            // M2: Query 响应跟 NOTIFY 共用同一棵 catalog tree,保证 WVP 看到的总数一致
+            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.buildFromTree(
+                config = config,
+                sn = sn,
+                tree = _catalogTree.value
+            )
             val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
                 config = config,
                 cseq = cseq,

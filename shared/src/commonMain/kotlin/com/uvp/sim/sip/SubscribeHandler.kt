@@ -38,8 +38,17 @@ object SubscribeHandler {
 
     fun parse(request: SipRequest, knownCallIds: Set<String>): SubscribeIntent {
         val event = request.firstHeader(SipHeader.EVENT)
+        // GB28181 不同订阅类型的 Event 头不同:
+        //   §9.3.1.2 目录订阅:    Event: Catalog
+        //   §9.3.5   移动位置订阅: Event: presence
+        // 两种都接受,具体 kind 后面看 body CmdType 再确认。
+        // Event 头允许带参数,如 "presence;id=xxx"、"Catalog;id=yyy",取分号前主标识。
         val eventName = event?.trim()?.substringBefore(';')?.trim()
-        if (eventName == null || !eventName.equals("presence", ignoreCase = true)) {
+        val eventOk = eventName != null && (
+            eventName.equals("presence", ignoreCase = true) ||
+                eventName.equals("Catalog", ignoreCase = true)
+            )
+        if (!eventOk) {
             return SubscribeIntent.Reject(489, "Bad Event: ${event ?: "(missing)"}")
         }
 

@@ -1,5 +1,6 @@
 package com.uvp.sim.gb28181
 
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
 
 /**
@@ -11,11 +12,10 @@ import com.uvp.sim.config.SimConfig
  *   - SumNum = total number of items across paginated responses
  *   - DeviceList Num="N" with N <Item> children
  *
- * Each <Item> describes one channel. M1 emits a single video channel:
- *   - DeviceID = videoChannelId from SimConfig
- *   - Name = configurable label
- *   - Manufacturer / Model / Owner / CivilCode / Address / Status (Online)
- *   - Parental = 0 (leaf channel, not a parent NVR)
+ * Two builders:
+ *   - [build]: legacy single-channel response,M1 范围。
+ *   - [buildFromTree]: M2 范围 — 用动态目录树整棵推过去,跟
+ *     [CatalogNotifyBuilder] 用同一份 Item 序列化逻辑保证一致。
  *
  * The format is exactly what WVP-pro / EasyCVR expect. Minor capitalization
  * differences exist between GB-2016 and GB-2022; we emit GB-2022 form here.
@@ -31,7 +31,7 @@ object CatalogResponse {
         val server = config.server
         // CivilCode 取行政区划前 6 位(domain 前 6 位即可,GB28181 ID 前 6 位也是行政区划)
         val civilCode = server.domain.take(6).padEnd(6, '0')
-        return """<?xml version="1.0" encoding="GB2312"?>
+        return """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
 <CmdType>Catalog</CmdType>
 <SN>$sn</SN>
@@ -57,4 +57,18 @@ object CatalogResponse {
 </Response>
 """.replace("\n", "\r\n")
     }
+
+    /**
+     * 按当前生效目录树构造 Catalog Response,DFS 序列化跟 NOTIFY 一致。
+     * 推荐 M2 之后的 Query 响应路径都走这条。
+     */
+    fun buildFromTree(
+        config: SimConfig,
+        sn: String,
+        tree: List<CatalogNode>
+    ): String = CatalogNotifyBuilder.renderResponse(
+        deviceId = config.device.deviceId,
+        sn = sn,
+        tree = tree
+    )
 }
