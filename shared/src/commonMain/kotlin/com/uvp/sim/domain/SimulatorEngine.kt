@@ -464,6 +464,53 @@ class SimulatorEngine(
         return if (end < 0) rest else rest.substring(0, end)
     }
 
+    /**
+     * 从 INVITE 提取被叫 channelId(国标 20 位编码)。
+     * 优先从 Request-URI(`sip:<channelId>@host:port`)取 user part,
+     * 退化到 To 头。提不出来返回空串。
+     */
+    private fun extractInviteTarget(invite: SipRequest): String {
+        // requestUri 形如 "sip:34020000001320000001@192.168.10.50:5060"
+        val ru = invite.requestUri
+        val sipBody = ru.substringAfter("sip:", "").substringAfter("sips:", ru.substringAfter("sip:", ""))
+        val userHost = if (sipBody.isNotEmpty()) sipBody else ""
+        val user = userHost.substringBefore('@', "").substringBefore(';').trim()
+        if (user.isNotEmpty()) return user
+
+        val to = invite.toHeader() ?: return ""
+        return parseUri(to).substringAfter("sip:", "")
+            .substringBefore('@', "")
+            .substringBefore(';')
+            .trim()
+    }
+
+    /**
+     * P1-2: 按 channelId 类型决定是否拒绝 INVITE。
+     * 返回 null 表示放行,非 null 是 (statusCode, reasonPhrase) 拒绝原因。
+     *
+     * 判定规则:
+     *  - 在当前 _catalogTree 找该 channelId 的节点
+     *  - 视频通道 (132): 放行(走原 INVITE 链路)
+     *  - 报警通道 (134): 488 — 报警通道不应用于 RTP 流(GB §10)
+     *  - 容器节点 Device/137/138: 488 — 不可对设备根/分组/虚组织发起 INVITE
+     *  - 找不到的 channelId: 放行(向后兼容,保留 SimConfig.device.videoChannelId 等)
+     */
+    private fun classifyInviteTarget(channelId: String): Pair<Int, String>? {
+        if (channelId.isBlank()) return null
+        val node = _catalogTree.value.firstOrNull { it.id == channelId } ?: return null
+        return when (node.type) {
+            com.uvp.sim.config.CatalogNodeType.VideoChannel -> null
+            com.uvp.sim.config.CatalogNodeType.AlarmChannel ->
+                488 to "Not Acceptable Here (alarm channel does not stream)"
+            com.uvp.sim.config.CatalogNodeType.Device ->
+                488 to "Not Acceptable Here (cannot invite device root)"
+            com.uvp.sim.config.CatalogNodeType.BusinessGroup ->
+                488 to "Not Acceptable Here (cannot invite business group)"
+            com.uvp.sim.config.CatalogNodeType.VirtualOrg ->
+                488 to "Not Acceptable Here (cannot invite virtual org)"
+        }
+    }
+
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {
@@ -702,6 +749,29 @@ class SimulatorEngine(
     }
 
     private suspend fun handleInvite(invite: SipRequest) {
+        // M2 P1-2: 按 INVITE 目标 channelId 类型路由 — 不支持的类型立即 488
+        val channelId = extractInviteTarget(invite)
+        val rejection = classifyInviteTarget(channelId)
+        if (rejection != null) {
+            try {
+                val resp = SipBuilders.buildSimpleError(
+                    request = invite,
+                    statusCode = rejection.first,
+                    reasonPhrase = rejection.second,
+                    toTag = SipBuilders.randomTag()
+                )
+                transport.send(resp)
+                _events.emit(SimEvent.MessageSent(resp))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "拒绝 INVITE: channelId=$channelId → ${rejection.first} ${rejection.second}"
+                )
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("send INVITE reject: ${e.message}"))
+            }
+            return
+        }
+
         _state.value = SipStateMachine.transition(_state.value, SipEvent.InviteReceived)
         val cid = invite.callId() ?: ""
         _events.emit(SimEvent.IncomingInvite(cid))

@@ -78,11 +78,12 @@ class StreamingEngineTest {
         """.trimIndent().replace("\n", "\r\n")
         return SipRequest(
             method = SipMethod.INVITE,
-            requestUri = "sip:35020000001310000001@3502000000",
+            // GB §10: INVITE Request-URI 的 user 是被叫 channelId,不是 deviceId
+            requestUri = "sip:35020000001320000001@3502000000",
             headers = listOf(
                 SipMessage.Header("Via", "SIP/2.0/UDP 192.168.10.222:8160;branch=z9hG4bKabc"),
                 SipMessage.Header("From", "<sip:35020000002000000001@3502000000>;tag=server"),
-                SipMessage.Header("To", "<sip:35020000001310000001@3502000000>"),
+                SipMessage.Header("To", "<sip:35020000001320000001@3502000000>"),
                 SipMessage.Header("Call-ID", "test-invite@server"),
                 SipMessage.Header("CSeq", "1 INVITE"),
                 SipMessage.Header("Contact", "<sip:34020000002000000001@192.168.10.222:8160>"),
