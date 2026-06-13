@@ -93,4 +93,28 @@ sealed class SimEvent {
         val description: String,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+    data class HeartbeatTimeoutDetected(
+        val missedCount: Int,
+        val maxAllowed: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    data class AutoReregisterTriggered(
+        val reason: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    data class RegistrationRetryScheduled(
+        val delayMs: Long,
+        val attempt: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    data class InviteAckTimeout(
+        val callId: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+    /** 平台下发 DeviceControl 子命令 — UI 日志列表用. */
+    data class DeviceControlReceived(
+        val commandType: String,
+        val detail: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
 }

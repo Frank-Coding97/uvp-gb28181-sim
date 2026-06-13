@@ -13,6 +13,8 @@ import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -164,8 +166,13 @@ class SimulatorEngineTest {
             testScheduler.runCurrent()
             assertEquals(SipState.Registering, engine.state.value)
 
-            // cross the 8s threshold
+            // cross the 8s threshold — retry #1 scheduled (2s delay)
             testScheduler.advanceTimeBy(2_000)
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registering, engine.state.value)
+
+            // exhaust all retries: 2s delay + 8s timeout + 4s delay + 8s timeout + 8s delay + 8s timeout
+            testScheduler.advanceTimeBy(2_000 + 8_000 + 4_000 + 8_000 + 8_000 + 8_000)
             testScheduler.runCurrent()
             assertEquals(SipState.Failed, engine.state.value)
         } finally {
@@ -271,6 +278,91 @@ class SimulatorEngineTest {
             testScheduler.advanceTimeBy(10_000)
             testScheduler.runCurrent()
             assertEquals(SipState.Disconnected, engine.state.value)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
+    /** ((B0+B1+B2+B3+B4+B5+B6) mod 256) hex. */
+    private fun ptzHex(opCode: Int, pan: Int = 0, tilt: Int = 0, zoom: Int = 0): String {
+        val b6 = (zoom and 0x0F) shl 4
+        val sum = (0xA5 + 0x0F + 0x01 + opCode + pan + tilt + b6) and 0xFF
+        return listOf(0xA5, 0x0F, 0x01, opCode, pan, tilt, b6, sum)
+            .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
+    }
+
+    private fun incomingMessage(callId: String, xmlBody: String): SipRequest = SipRequest(
+        method = SipMethod.MESSAGE,
+        requestUri = "sip:34020000001110000001@3402000000",
+        headers = listOf(
+            SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK-test"),
+            SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=server-tag"),
+            SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+            SipMessage.Header(SipHeader.CALL_ID, callId),
+            SipMessage.Header(SipHeader.CSEQ, "1 MESSAGE"),
+            SipMessage.Header(SipHeader.CONTENT_TYPE, "Application/MANSCDP+xml"),
+            SipMessage.Header(SipHeader.CONTENT_LENGTH, xmlBody.length.toString()),
+        ),
+        body = xmlBody.encodeToByteArray()
+    )
+
+    private suspend fun TestScope.registerAnd200(
+        transport: MockSipTransport,
+        engine: SimulatorEngine
+    ) {
+        transport.connect()
+        engine.register()
+        testScheduler.runCurrent()
+        val firstReq = transport.sent.first() as SipRequest
+        val challenge = "Digest realm=\"3402000000\",nonce=\"n\",algorithm=MD5"
+        transport.deliver(fakeResponse(firstReq, 401, "Unauthorized",
+            listOf(SipMessage.Header(SipHeader.WWW_AUTHENTICATE, challenge))))
+        testScheduler.runCurrent()
+        val authedReq = transport.sent[1] as SipRequest
+        transport.deliver(fakeResponse(authedReq, 200, "OK"))
+        testScheduler.runCurrent()
+    }
+
+    @Test fun deviceControlPtzCmdUpdatesStateAndEmits() = runTest {
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this)
+        val received = mutableListOf<SimEvent>()
+        val sub = launch { engine.events.collect { received += it } }
+        try {
+            registerAnd200(transport, engine)
+            val before = transport.sent.size
+            val xml = "<?xml version=\"1.0\"?>" +
+                "<Control><CmdType>DeviceControl</CmdType><SN>1</SN>" +
+                "<DeviceID>34020000001320000001</DeviceID>" +
+                "<PTZCmd>${ptzHex(0x02, pan = 50)}</PTZCmd></Control>"
+            transport.deliver(incomingMessage("dc-call-1", xml))
+            testScheduler.runCurrent()
+
+            assertTrue(engine.deviceControlState.value.panSpeed < 0f,
+                "panSpeed should be negative for LEFT, got ${engine.deviceControlState.value.panSpeed}")
+            assertEquals("PTZCmd", engine.deviceControlState.value.lastCommand?.type)
+            assertTrue(received.any { it is SimEvent.DeviceControlReceived && it.commandType == "PTZCmd" })
+            // 200 OK 应已回送(register 期间也会有 sent 项,从 before 之后开始数)
+            assertTrue(transport.sent.drop(before).any { it is SipResponse && it.statusCode == 200 })
+        } finally {
+            sub.cancel()
+            engine.shutdown()
+        }
+    }
+
+    @Test fun deviceControlIFameCmdRequestsKeyFrameAndEffect() = runTest {
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this)
+        try {
+            registerAnd200(transport, engine)
+            val xml = "<Control><CmdType>DeviceControl</CmdType>" +
+                "<DeviceID>34020000001320000001</DeviceID>" +
+                "<IFameCmd>Send</IFameCmd></Control>"
+            transport.deliver(incomingMessage("dc-call-2", xml))
+            testScheduler.runCurrent()
+
+            assertEquals(DeviceEffect.IFrameFlash, engine.deviceControlState.value.pendingEffect)
+            assertEquals("IFameCmd", engine.deviceControlState.value.lastCommand?.type)
         } finally {
             engine.shutdown()
         }

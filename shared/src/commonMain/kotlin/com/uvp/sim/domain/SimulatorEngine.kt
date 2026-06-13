@@ -51,13 +51,44 @@ class SimulatorEngine(
     private val localPortProvider: () -> Int = { 5060 },
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
     private val audioCapture: com.uvp.sim.camera.AudioCapture? = null,
-    private val rtpSenderFactory: ((host: String, port: Int) -> com.uvp.sim.network.RtpSender)? = null
+    private val rtpSenderFactory: ((host: String, port: Int, mode: com.uvp.sim.network.RtpMode) -> com.uvp.sim.network.RtpSender)? = null
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
 
     private val _events = MutableSharedFlow<SimEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<SimEvent> = _events.asSharedFlow()
+
+    /**
+     * 5.13 / M2 §F.3 — 设备控制运行时状态.
+     * UI 3D 渲染层订阅,Dispatcher 写入.
+     */
+    private val _deviceControlState = MutableStateFlow(DeviceControlState())
+    val deviceControlState: StateFlow<DeviceControlState> = _deviceControlState.asStateFlow()
+
+    private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
+        DeviceControlDispatcher(
+            state = _deviceControlState,
+            config = config,
+            actions = object : DeviceControlActions {
+                override suspend fun reboot() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "TeleBoot → 重新注册")
+                    try {
+                        unregister()
+                    } catch (_: Throwable) { /* 平台可能已不可达 */ }
+                    delay(1_000L)
+                    register()
+                }
+                override suspend fun snapshot() {
+                    reportSnapshot()
+                }
+                override fun requestKeyFrame() {
+                    cameraCapture?.requestKeyFrame()
+                }
+            },
+            scope = scope
+        )
+    }
 
     private val mutex = Mutex()
     private var registerJob: Job? = null
@@ -71,6 +102,22 @@ class SimulatorEngine(
     private var pendingRegister: SipRequest? = null
     private var keepaliveSn: Int = 0
 
+    // 1.5: Heartbeat timeout detection
+    private var consecutiveKeepaliveTimeouts: Int = 0
+    private var lastKeepaliveAcked: Boolean = true
+
+    // 1.6: Expires auto-renewal
+    private var renewalJob: Job? = null
+    private var isRenewal: Boolean = false
+
+    // 1.7: Registration retry with backoff
+    private var registerRetryCount: Int = 0
+    private var retryJob: Job? = null
+
+    // 5.14: ACK verification after we 200-OK an INVITE
+    private var ackTimeoutJob: Job? = null
+    private var awaitingAckCallId: String? = null
+
     // Active streaming session state (M1: at most one)
     private var activeStream: ActiveStream? = null
 
@@ -82,7 +129,13 @@ class SimulatorEngine(
         val audioJob: Job? = null,
         val statsJob: Job? = null,
         var frameCount: Int = 0,
-        var packetCount: Int = 0
+        var packetCount: Int = 0,
+        // Dialog state for device-initiated BYE
+        val localUri: String = "",
+        val localTag: String = "",
+        val remoteUri: String = "",
+        val remoteTag: String = "",
+        val remoteTarget: String = ""
     )
 
     /** Initiate registration. Returns immediately; observe [state] for completion. */
@@ -90,6 +143,9 @@ class SimulatorEngine(
         mutex.withLock {
             if (_state.value == SipState.Registering ||
                 _state.value == SipState.Registered) return
+            retryJob?.cancel()
+            retryJob = null
+            registerRetryCount = 0
             startInboundIfNeeded()
 
             cseq = 1
@@ -130,6 +186,9 @@ class SimulatorEngine(
             if (_state.value != SipState.Registering) return
             registerJob?.cancel()
             registerJob = null
+            retryJob?.cancel()
+            retryJob = null
+            registerRetryCount = 0
             _state.value = SipStateMachine.transition(
                 _state.value, SipEvent.UnregisterRequested
             )
@@ -150,15 +209,7 @@ class SimulatorEngine(
             delay(REGISTER_TIMEOUT_MS)
             mutex.withLock {
                 if (_state.value != SipState.Registering) return@withLock
-                _state.value = SipStateMachine.transition(
-                    _state.value,
-                    SipEvent.RegisterFailed("timeout")
-                )
-                _events.emit(SimEvent.RegistrationFailed("平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应"))
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Lifecycle,
-                    "注册超时: 平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应"
-                )
+                scheduleRetryOrFail("平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应")
             }
         }
     }
@@ -168,11 +219,78 @@ class SimulatorEngine(
         registerJob = null
     }
 
+    /**
+     * 1.7: Decide whether to retry registration or give up.
+     * Retries only for transient failures (timeout / 5xx). Permanent rejections
+     * (403, 404, bad credentials) go straight to Failed.
+     */
+    private suspend fun scheduleRetryOrFail(reason: String, permanent: Boolean = false) {
+        if (permanent || registerRetryCount >= MAX_REGISTER_RETRIES) {
+            _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterFailed(reason))
+            _events.emit(SimEvent.RegistrationFailed(reason))
+            SystemLogger.emit(LogLevel.Warning, LogTag.Lifecycle, "注册失败(不重试): $reason")
+            registerRetryCount = 0
+            return
+        }
+        registerRetryCount++
+        val delayMs = INITIAL_RETRY_DELAY_MS * (1L shl (registerRetryCount - 1))
+        _events.emit(SimEvent.RegistrationRetryScheduled(delayMs, registerRetryCount))
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "注册失败: $reason → 第 $registerRetryCount 次重试,${delayMs}ms 后"
+        )
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            delay(delayMs)
+            doRegisterInternal()
+        }
+    }
+
+    /**
+     * Internal register logic reused by initial register and retry.
+     * Unlike public [register], does NOT reset retryCount.
+     */
+    private suspend fun doRegisterInternal() {
+        mutex.withLock {
+            if (_state.value != SipState.Registering &&
+                _state.value != SipState.Failed &&
+                _state.value != SipState.Disconnected
+            ) return
+            startInboundIfNeeded()
+            cseq = 1
+            callId = SipBuilders.randomCallId(localIp)
+            fromTag = SipBuilders.randomTag()
+            val branch = SipBuilders.randomBranch()
+            val req = SipBuilders.buildRegister(
+                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider()
+            )
+            pendingRegister = req
+            _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterRequested)
+            try {
+                transport.send(req)
+                _events.emit(SimEvent.MessageSent(req))
+                armRegisterTimeout()
+            } catch (e: Throwable) {
+                scheduleRetryOrFail("transport.send: ${e.message}")
+            }
+        }
+    }
+
     /** Send Unregister and tear down. */
     suspend fun unregister() {
+        // 5.5: device-initiated BYE before Unregister if a stream is active.
+        // Outside the mutex because stopStream() takes the mutex itself.
+        if (activeStream != null) {
+            stopStream("user unregister")
+        }
         mutex.withLock {
             if (_state.value == SipState.Disconnected) return
             cancelRegisterTimeout()
+            retryJob?.cancel()
+            retryJob = null
+            registerRetryCount = 0
+            renewalJob?.cancel()
+            renewalJob = null
             heartbeat?.stop()
             heartbeat = null
             SystemLogger.emit(
@@ -207,6 +325,13 @@ class SimulatorEngine(
         mutex.withLock {
             heartbeat?.stop()
             heartbeat = null
+            renewalJob?.cancel()
+            renewalJob = null
+            retryJob?.cancel()
+            retryJob = null
+            ackTimeoutJob?.cancel()
+            ackTimeoutJob = null
+            awaitingAckCallId = null
             inboundJob?.cancel()
             inboundJob = null
             registerJob?.cancel()
@@ -261,6 +386,64 @@ class SimulatorEngine(
         }
     }
 
+    /**
+     * 5.5: Device-initiated BYE for an active stream.
+     * Sends BYE to the platform, awaits no response (200 OK arrives async via
+     * handleResponse), then tears down the local pipeline.
+     */
+    suspend fun stopStream(reason: String = "user stop") {
+        val active = activeStream ?: return
+        if (active.remoteUri.isEmpty() || active.remoteTag.isEmpty()) {
+            // Dialog state incomplete (e.g. test path) — just tear down locally
+            stopActiveStream(active.callId, reason)
+            return
+        }
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val bye = com.uvp.sim.sip.SipBuilders.buildBye(
+                config = config,
+                callId = active.callId,
+                cseq = cseq,
+                branch = branch,
+                localUri = active.localUri,
+                localTag = active.localTag,
+                remoteUri = active.remoteUri,
+                remoteTag = active.remoteTag,
+                remoteTarget = active.remoteTarget,
+                localIp = localIp,
+                localPort = localPortProvider()
+            )
+            transport.send(bye)
+            _events.emit(SimEvent.MessageSent(bye))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Lifecycle,
+                "主动 BYE 终止推流: $reason"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send BYE: ${e.message}"))
+        }
+        stopActiveStream(active.callId, reason)
+        if (_state.value == SipState.InCall) {
+            _state.value = SipStateMachine.transition(_state.value, SipEvent.CallEnded)
+        }
+    }
+
+    private fun parseUri(headerValue: String): String {
+        val lt = headerValue.indexOf('<')
+        val gt = headerValue.indexOf('>')
+        return if (lt >= 0 && gt > lt) headerValue.substring(lt + 1, gt)
+        else headerValue.substringBefore(';').trim()
+    }
+
+    private fun parseTag(headerValue: String): String {
+        val idx = headerValue.indexOf(";tag=")
+        if (idx < 0) return ""
+        val rest = headerValue.substring(idx + 5)
+        val end = rest.indexOfAny(charArrayOf(';', ' ', '>', '\r', '\n'))
+        return if (end < 0) rest else rest.substring(0, end)
+    }
+
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {
@@ -295,6 +478,8 @@ class SimulatorEngine(
             SipMethod.MESSAGE -> {
                 if (resp.statusCode in 200..299) {
                     val sn = keepaliveSn
+                    consecutiveKeepaliveTimeouts = 0
+                    lastKeepaliveAcked = true
                     _events.emit(SimEvent.HeartbeatAcknowledged(sn))
                 }
             }
@@ -306,13 +491,23 @@ class SimulatorEngine(
         when (resp.statusCode) {
             in 200..299 -> {
                 cancelRegisterTimeout()
-                _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
-                _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Lifecycle,
-                    "已注册,expires=${config.expiresSeconds}s"
-                )
-                startHeartbeat()
+                registerRetryCount = 0
+                if (!isRenewal) {
+                    _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
+                    _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Lifecycle,
+                        "已注册,expires=${config.expiresSeconds}s"
+                    )
+                    startHeartbeat()
+                } else {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Lifecycle,
+                        "续约成功,expires=${config.expiresSeconds}s"
+                    )
+                    isRenewal = false
+                }
+                scheduleExpiresRenewal()
             }
 
             401, 407 -> {
@@ -356,12 +551,8 @@ class SimulatorEngine(
             in 400..699 -> {
                 cancelRegisterTimeout()
                 val reason = "${resp.statusCode} ${resp.reasonPhrase}"
-                _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterFailed(reason))
-                _events.emit(SimEvent.RegistrationFailed(reason))
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Lifecycle,
-                    "注册被拒: $reason"
-                )
+                val permanent = resp.statusCode in 400..499 && resp.statusCode != 401 && resp.statusCode != 407
+                scheduleRetryOrFail(reason, permanent)
             }
         }
     }
@@ -369,9 +560,50 @@ class SimulatorEngine(
     private suspend fun handleRequest(req: SipRequest) {
         when (req.method) {
             SipMethod.INVITE -> handleInvite(req)
+            SipMethod.ACK -> handleAck(req)
             SipMethod.BYE -> handleBye(req)
             SipMethod.MESSAGE -> handleMessage(req)
+            SipMethod.CANCEL -> handleCancel(req)
             else -> Unit
+        }
+    }
+
+    /** 5.14: Cancel ACK timeout when the platform's ACK lands. */
+    private fun handleAck(ack: SipRequest) {
+        val cid = ack.callId() ?: return
+        if (cid == awaitingAckCallId) {
+            ackTimeoutJob?.cancel()
+            ackTimeoutJob = null
+            awaitingAckCallId = null
+        }
+    }
+
+    /**
+     * 5.15: Handle platform CANCEL (RFC 3261 §9).
+     *
+     * CANCEL aborts an INVITE that has not yet been finally answered. Our
+     * INVITE handler currently answers synchronously with 200 OK before any
+     * caller could realistically CANCEL, so by the time a CANCEL arrives the
+     * dialog is already established — in that case we ignore (RFC 3261 says
+     * to ack with 200 anyway). If a stream is active, also tear it down to be
+     * safe (some platforms send CANCEL instead of BYE under error paths).
+     */
+    private suspend fun handleCancel(cancel: SipRequest) {
+        try {
+            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(cancel)
+            transport.send(ok)
+            _events.emit(SimEvent.MessageSent(ok))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send CANCEL 200: ${e.message}"))
+        }
+        val cid = cancel.callId() ?: ""
+        val active = activeStream
+        if (active != null && active.callId == cid) {
+            stopActiveStream(cid, "remote CANCEL")
+            if (_state.value == SipState.InCall) {
+                _state.value = SipStateMachine.transition(_state.value, SipEvent.CallEnded)
+            }
+            _events.emit(SimEvent.CallEnded(cid, "remote CANCEL"))
         }
     }
 
@@ -390,11 +622,33 @@ class SimulatorEngine(
         // Inspect body — only Catalog query needs a follow-up Notify response.
         val xml = message.body.decodeToString()
         val cmd = com.uvp.sim.gb28181.ManscdpParser.cmdType(xml)
-        if (cmd == "Catalog") {
-            val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-            sendCatalogResponse(sn)
+        when (cmd) {
+            "Catalog" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                sendCatalogResponse(sn)
+            }
+            "DeviceControl" -> handleDeviceControl(xml)
+            // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to M2.
         }
-        // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to M2.
+    }
+
+    /**
+     * 5.13 / M2 §F.3 — 委托给 [DeviceControlDispatcher] 处理 10 项子命令:
+     * PTZCmd / IFameCmd / TeleBoot / RecordCmd / GuardCmd / AlarmCmd /
+     * DragZoomIn-Out / HomePosition / BasicParam / SnapShotCmd.
+     *
+     * Dispatcher 内部更新 [_deviceControlState],UI 3D 渲染层订阅消费;
+     * 这里再 emit 一条高层事件供日志列表展示.
+     */
+    private suspend fun handleDeviceControl(xml: String) {
+        deviceControlDispatcher.dispatch(xml)
+        val cmd = _deviceControlState.value.lastCommand ?: return
+        _events.emit(
+            SimEvent.DeviceControlReceived(
+                commandType = cmd.type,
+                detail = cmd.rawHex
+            )
+        )
     }
 
     private suspend fun sendCatalogResponse(sn: String) {
@@ -448,7 +702,19 @@ class SimulatorEngine(
             sequence = (cseq + 1) and 0x0FFF
         )
 
-        val rtp = sender(offer.remoteIp, offer.remotePort)
+        // 5.10: pick RTP transport mode from the SDP offer.
+        // Platform offers passive → device connects out (TCP_ACTIVE).
+        // Platform offers active  → device listens (TCP_PASSIVE).
+        val rtpMode = when (offer.transport) {
+            com.uvp.sim.sip.SdpTransport.UDP -> com.uvp.sim.network.RtpMode.UDP
+            com.uvp.sim.sip.SdpTransport.TCP -> when (offer.tcpSetup) {
+                com.uvp.sim.sip.SdpTcpSetup.PASSIVE -> com.uvp.sim.network.RtpMode.TCP_ACTIVE
+                com.uvp.sim.sip.SdpTcpSetup.ACTIVE -> com.uvp.sim.network.RtpMode.TCP_PASSIVE
+                com.uvp.sim.sip.SdpTcpSetup.ACTPASS -> com.uvp.sim.network.RtpMode.TCP_ACTIVE
+            }
+        }
+
+        val rtp = sender(offer.remoteIp, offer.remotePort, rtpMode)
         val localRtpPort = try {
             rtp.bindLocalPort()
         } catch (e: Throwable) {
@@ -461,15 +727,26 @@ class SimulatorEngine(
             localIp = localIp,
             localRtpPort = localRtpPort,
             ssrc = ssrc,
-            sessionName = "Play"
+            sessionName = "Play",
+            transport = offer.transport,
+            tcpSetup = offer.tcpSetup
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
+        val localToTag = com.uvp.sim.sip.SipBuilders.randomTag()
         val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
-            toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+            toTag = localToTag,
             sdpBody = sdpAnswer
         )
+        // Capture dialog routing for later device-initiated BYE
+        val inviteFromHeader = invite.fromHeader() ?: ""
+        val inviteToHeader = invite.toHeader() ?: ""
+        val inviteContact = invite.firstHeader(com.uvp.sim.sip.SipHeader.CONTACT) ?: ""
+        val remoteUri = parseUri(inviteFromHeader)
+        val remoteTag = parseTag(inviteFromHeader)
+        val localUri = parseUri(inviteToHeader)
+        val remoteTarget = parseUri(inviteContact).ifEmpty { remoteUri }
         try {
             transport.send(response)
             _events.emit(SimEvent.MessageSent(response))
@@ -477,6 +754,21 @@ class SimulatorEngine(
             _events.emit(SimEvent.TransportError("send 200 OK: ${e.message}"))
             try { rtp.close() } catch (_: Throwable) { }
             return
+        }
+
+        // 5.14: arm an ACK watchdog (RFC 3261 § 17.2.1 Timer H = 64*T1 = 32s)
+        awaitingAckCallId = cid
+        ackTimeoutJob?.cancel()
+        ackTimeoutJob = scope.launch {
+            delay(ACK_TIMEOUT_MS)
+            if (awaitingAckCallId == cid) {
+                _events.emit(SimEvent.InviteAckTimeout(cid))
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开"
+                )
+                awaitingAckCallId = null
+            }
         }
 
         _events.emit(SimEvent.StreamStarted(cid, offer.remoteIp, offer.remotePort, ssrc))
@@ -549,6 +841,11 @@ class SimulatorEngine(
             rtpSender = rtp,
             streamJob = streamJob,
             audioJob = audioJob,
+            localUri = localUri,
+            localTag = localToTag,
+            remoteUri = remoteUri,
+            remoteTag = remoteTag,
+            remoteTarget = remoteTarget,
             statsJob = scope.launch {
                 while (true) {
                     delay(MEDIA_STATS_INTERVAL_MS)
@@ -588,6 +885,9 @@ class SimulatorEngine(
     private suspend fun stopActiveStream(callId: String, reason: String) {
         val active = activeStream ?: return
         activeStream = null
+        ackTimeoutJob?.cancel()
+        ackTimeoutJob = null
+        awaitingAckCallId = null
         active.streamJob.cancel()
         active.audioJob?.cancel()
         active.statsJob?.cancel()
@@ -610,10 +910,30 @@ class SimulatorEngine(
 
     private fun startHeartbeat() {
         heartbeat?.stop()
+        consecutiveKeepaliveTimeouts = 0
+        lastKeepaliveAcked = true
         heartbeat = Heartbeat(
             intervalMillis = config.keepaliveIntervalSeconds * 1000L,
             scope = scope
         ) {
+            if (!lastKeepaliveAcked) {
+                consecutiveKeepaliveTimeouts++
+                if (consecutiveKeepaliveTimeouts >= config.maxKeepaliveTimeouts) {
+                    _events.emit(
+                        SimEvent.HeartbeatTimeoutDetected(
+                            consecutiveKeepaliveTimeouts,
+                            config.maxKeepaliveTimeouts
+                        )
+                    )
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Lifecycle,
+                        "心跳连续 ${consecutiveKeepaliveTimeouts} 次未响应,触发重注册"
+                    )
+                    triggerAutoReregister("heartbeat timeout ×${consecutiveKeepaliveTimeouts}")
+                    return@Heartbeat
+                }
+            }
+            lastKeepaliveAcked = false
             keepaliveSn += 1
             cseq += 1
             val branch = SipBuilders.randomBranch()
@@ -638,16 +958,73 @@ class SimulatorEngine(
         heartbeat?.start()
     }
 
-    companion object {
-        /**
-         * Watchdog so the UI never sits in "Registering…" forever when the
-         * platform is dead / wrong IP / firewall black hole. SIP RFC 3261
-         * Timer F is 32s but for an interactive simulator UX 8s is plenty —
-         * a healthy platform answers in < 1s, and 401-then-200 is < 3s.
-         */
-        const val REGISTER_TIMEOUT_MS: Long = 8_000L
+    /**
+     * 1.5: Auto re-register after heartbeat timeout.
+     * Tears down current session (heartbeat + active stream) without sending
+     * Unregister (platform is likely unreachable), then re-starts registration.
+     */
+    private fun triggerAutoReregister(reason: String) {
+        scope.launch {
+            _events.emit(SimEvent.AutoReregisterTriggered(reason))
+            heartbeat?.stop()
+            heartbeat = null
+            renewalJob?.cancel()
+            renewalJob = null
+            activeStream?.let { active ->
+                active.statsJob?.cancel()
+                active.streamJob.cancel()
+                active.audioJob?.cancel()
+                try { active.rtpSender.close() } catch (_: Throwable) {}
+                activeStream = null
+            }
+            mutex.withLock {
+                _state.value = SipState.Disconnected
+            }
+            register()
+        }
+    }
 
-        /** RTP 周期统计 emit 间隔(spec §6.2 MEDIA emit 时机点)。 */
+    /**
+     * 1.6: Schedule a REGISTER renewal before expires lapses.
+     * Fires at 80% of expiresSeconds to give time for auth challenge round-trip.
+     */
+    private fun scheduleExpiresRenewal() {
+        renewalJob?.cancel()
+        val renewalDelayMs = (config.expiresSeconds * 800L)
+        renewalJob = scope.launch {
+            delay(renewalDelayMs)
+            mutex.withLock {
+                if (_state.value != SipState.Registered && _state.value != SipState.InCall) return@withLock
+                isRenewal = true
+                cseq += 1
+                val branch = SipBuilders.randomBranch()
+                val req = SipBuilders.buildRegister(
+                    config, cseq, callId ?: SipBuilders.randomCallId(localIp),
+                    branch, fromTag ?: SipBuilders.randomTag(), localIp, localPortProvider()
+                )
+                pendingRegister = req
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "Expires 续约: 发送 REGISTER(剩余 ${config.expiresSeconds * 200 / 1000}s)"
+                )
+                try {
+                    transport.send(req)
+                    _events.emit(SimEvent.MessageSent(req))
+                    armRegisterTimeout()
+                } catch (e: Throwable) {
+                    isRenewal = false
+                    _events.emit(SimEvent.TransportError("renewal send: ${e.message}"))
+                }
+            }
+        }
+    }
+
+    companion object {
+        const val REGISTER_TIMEOUT_MS: Long = 8_000L
         const val MEDIA_STATS_INTERVAL_MS: Long = 30_000L
+        const val MAX_REGISTER_RETRIES: Int = 3
+        const val INITIAL_RETRY_DELAY_MS: Long = 2_000L
+        /** RFC 3261 § 17.2.1 Timer H = 64*T1 = 32s for ACK reception window. */
+        const val ACK_TIMEOUT_MS: Long = 32_000L
     }
 }
