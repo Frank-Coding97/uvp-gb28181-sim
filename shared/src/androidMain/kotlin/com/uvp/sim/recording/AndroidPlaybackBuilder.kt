@@ -112,6 +112,13 @@ class AndroidPlaybackBuilder(
         override suspend fun cancel() {
             runCatching { sink.close() }
         }
+
+        override fun setScale(scale: Double) = engine.setScale(scale)
+        override fun pause() = engine.pause()
+        override fun resume() = engine.resume()
+        override fun seek(targetMs: Long) = engine.seek(targetMs)
+        override val progressMs = engine.progressFlow
+        override val totalDurationMs: Long get() = engine.totalDurationMs
     }
 
     private object WallClock : PlaybackClock {

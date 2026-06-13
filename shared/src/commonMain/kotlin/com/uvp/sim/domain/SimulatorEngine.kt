@@ -168,8 +168,13 @@ class SimulatorEngine(
         val callId: String,
         val ssrc: String,
         val playbackJob: Job,
-        val rtpClose: suspend () -> Unit
+        val rtpClose: suspend () -> Unit,
+        // M3: session 控制接口(setScale / pause / resume / seek)+ mode 标识
+        val session: PlaybackSession? = null,
+        val mode: MediaMode = MediaMode.PLAYBACK
     )
+
+    enum class MediaMode { PLAYBACK, DOWNLOAD }
 
     /** Initiate registration. Returns immediately; observe [state] for completion. */
     suspend fun register() {
@@ -607,15 +612,60 @@ class SimulatorEngine(
 
     /**
      * Handle SIP INFO request (M3 §9.7.2 PLAY/PAUSE/Range/Scale via MANSRTSP).
-     * T01 stage: stub returning 200 OK only, full handler arrives in T08.
+     *
+     * 流程:
+     *   1. 检查 activePlayback 是否存在 → 不存在 481
+     *   2. MansRtspParser.parse → 失败 400
+     *   3. 200 OK 先发(spec §B.6 不阻塞)
+     *   4. 异步执行 setScale / pause / resume / seek / teardown
      */
     private suspend fun handleInfo(req: SipRequest) {
+        val pb = activePlayback
+        if (pb == null) {
+            sendSimpleResponse(req, 481, "Call/Transaction Does Not Exist")
+            return
+        }
+        val cmd = try {
+            com.uvp.sim.sip.MansRtspParser.parse(req.body.decodeToString())
+        } catch (e: com.uvp.sim.sip.MansRtspParseException) {
+            sendSimpleResponse(req, 400, "Bad Request: ${e.message}")
+            SystemLogger.emit(LogLevel.Warning, LogTag.Lifecycle, "INFO_PARSE_ERROR: ${e.message}")
+            return
+        }
+
+        // 200 OK 必须先发,然后异步执行控制(spec §B.6)
+        sendSimpleResponse(req, 200, "OK")
+
+        val session = pb.session
+        scope.launch {
+            when (cmd) {
+                is com.uvp.sim.sip.MansRtspCommand.Play -> {
+                    cmd.scale?.let { session?.setScale(it) }
+                    val rangeMs = cmd.rangeStartMs
+                    if (rangeMs != null) {
+                        session?.seek(rangeMs)
+                    } else {
+                        session?.resume()
+                    }
+                }
+                is com.uvp.sim.sip.MansRtspCommand.Pause -> session?.pause()
+                is com.uvp.sim.sip.MansRtspCommand.Teardown -> stopActivePlayback("INFO TEARDOWN")
+            }
+        }
+    }
+
+    /** 通用应答 - 200 / 400 / 481 等单行响应。 */
+    private suspend fun sendSimpleResponse(req: SipRequest, statusCode: Int, reasonPhrase: String) {
         runCatching {
-            val resp = com.uvp.sim.sip.SipBuilders.buildSimple200(req)
+            val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
+                req,
+                statusCode = statusCode,
+                reasonPhrase = reasonPhrase,
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+            )
             transport.send(resp)
             _events.emit(SimEvent.MessageSent(resp))
         }
-        SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "INFO 收到(占位 200,完整路由 T08)")
     }
 
     /** 5.14: Cancel ACK timeout when the platform's ACK lands. */
@@ -1371,7 +1421,9 @@ class SimulatorEngine(
             callId = cid,
             ssrc = ssrc,
             playbackJob = job,
-            rtpClose = playback::cancel
+            rtpClose = playback::cancel,
+            session = playback,
+            mode = MediaMode.PLAYBACK
         )
     }
 

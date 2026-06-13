@@ -38,4 +38,27 @@ interface PlaybackSession {
 
     /** 中止推流,关闭底层 RTP / demux。可重入。 */
     suspend fun cancel()
+
+    // M3 §A/B/C 控制接口 — handleInfo 通过 ActiveMediaSession 调到这里。
+    // 默认空实现:M2 fake 不需要控制,无需修改;实现走 androidMain。
+
+    /** M3 §A 倍速:hot-swap 节流时基。非档位会被忽略(实现内部判断)。 */
+    fun setScale(scale: Double) {}
+
+    /** M3 §C 暂停。 */
+    fun pause() {}
+
+    /** M3 §C 继续。 */
+    fun resume() {}
+
+    /** M3 §B 拖动到全局时间轴 ms。 */
+    fun seek(targetMs: Long) {}
+
+    /** M3 进度推送(ms),给 UI PlaybackPanel 用。 */
+    val progressMs: kotlinx.coroutines.flow.StateFlow<Long>?
+        get() = null
+
+    /** M3 总时长(ms)。 */
+    val totalDurationMs: Long
+        get() = 0L
 }
