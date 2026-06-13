@@ -480,9 +480,10 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
         val isRecording = state.recording.isRecording
         ActionTile(
             icon = Icons.Outlined.Videocam,
-            label = if (isRecording) "录像中" else "录像",
-            enabled = canFire || isRecording,  // 录像中也能点(用于停止)
+            label = if (isRecording) "停止录像" else "录像",
+            enabled = canFire || isRecording,
             modifier = Modifier.weight(1f),
+            recordingActive = isRecording,
             onClick = {
                 if (isRecording) {
                     actions.onRecordingStop()
@@ -530,34 +531,60 @@ private fun ActionTile(
     label: String,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    recordingActive: Boolean = false,
     onClick: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(UvpColor.Surface)
-            .border(1.dp, UvpColor.Primary, RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled) { onClick() }
-            .padding(vertical = 7.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
-    ) {
-        Icon(
-            icon, contentDescription = null,
-            modifier = Modifier.size(18.dp),
-            tint = UvpColor.Primary
-        )
-        Text(
-            label, fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            color = UvpColor.Primary
-        )
-        Text(
-            "可触发",
-            fontSize = 8.5.sp,
-            color = UvpColor.Primary.copy(alpha = 0.55f),
-            fontFamily = FontFamily.Monospace
-        )
+    val accent = if (recordingActive) UvpColor.Danger else UvpColor.Primary
+    Box(modifier = modifier) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (recordingActive) UvpColor.DangerBg else UvpColor.Surface)
+                .border(1.dp, accent, RoundedCornerShape(8.dp))
+                .clickable(enabled = enabled) { onClick() }
+                .padding(vertical = 7.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Icon(
+                icon, contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = accent
+            )
+            Text(
+                label, fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = accent
+            )
+            Text(
+                if (recordingActive) "录像中" else "可触发",
+                fontSize = 8.5.sp,
+                color = accent.copy(alpha = 0.7f),
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        if (recordingActive) {
+            // 右上角脉动红点 — 跟视频区红点呼应,主屏一眼可见
+            val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "tile-pulse")
+            val alpha by transition.animateFloat(
+                initialValue = 1f,
+                targetValue = 0.3f,
+                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                    animation = androidx.compose.animation.core.tween(durationMillis = 800),
+                    repeatMode = androidx.compose.animation.core.RepeatMode.Reverse
+                ),
+                label = "tile-alpha"
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(UvpColor.Danger.copy(alpha = alpha))
+            )
+        }
     }
 }
 
