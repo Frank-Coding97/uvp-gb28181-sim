@@ -83,7 +83,7 @@ class AndroidMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
 
             when (track) {
                 videoTrack -> {
-                    val nals = sampleToNalList(raw).toMutableList()
+                    val nals = Mp4SampleParser.toNalList(raw).toMutableList()
                     if (!firstVideoLogged) {
                         firstVideoLogged = true
                         val firstByteHex = raw.take(8).joinToString(" ") {
@@ -98,8 +98,8 @@ class AndroidMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
                     if (isKey) {
                         // IDR 前补 SPS / PPS
                         val key = mutableListOf<ByteArray>()
-                        sps?.let { key += stripStartCode(it) }
-                        pps?.let { key += stripStartCode(it) }
+                        sps?.let { key += Mp4SampleParser.stripStartCode(it) }
+                        pps?.let { key += Mp4SampleParser.stripStartCode(it) }
                         key.addAll(nals)
                         emit(MediaFrame.Video(timestampUs = sampleTime, nalUnits = key, isKeyframe = true))
                     } else {
@@ -118,56 +118,6 @@ class AndroidMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
             .onFailure { SystemLogger.emit(LogLevel.Warning, LogTag.Media, "MediaExtractor close 失败: ${it.message}") }
         extractor = null
         Unit
-    }
-
-    /** Sample → 不带起始码的 NAL list。
-     *
-     *  CameraX Recorder 录出来的 mp4 sample **可能是 AnnexB 起始码格式**(`00 00 00 01`
-     *  打头),不是标准 AVCC `[len4][nalu]`。前 4 字节先 sniff:
-     *    - `00 00 00 01` → AnnexB,走 [com.uvp.sim.media.AnnexB.splitNals]
-     *    - 否则 → AVCC,按长度前缀拆
-     *
-     *  这步如果搞错(把 AnnexB 当 AVCC 解),前 4 字节会被读成 len=1,剩下整个 IDR
-     *  帧数据(140KB)全部丢掉,RTP 推到 WVP 只剩个 1 字节的 NAL header。 */
-    private fun sampleToNalList(sample: ByteArray): List<ByteArray> {
-        if (sample.size >= 4 &&
-            sample[0] == 0.toByte() && sample[1] == 0.toByte() &&
-            sample[2] == 0.toByte() && sample[3] == 1.toByte()
-        ) {
-            return com.uvp.sim.media.AnnexB.splitNals(sample)
-        }
-        return avccToNalList(sample)
-    }
-
-    /** AVCC sample(`[len4][nalu]`...) → 不带起始码的 NAL list。 */
-    private fun avccToNalList(sample: ByteArray): List<ByteArray> {
-        val out = mutableListOf<ByteArray>()
-        var i = 0
-        while (i + 4 <= sample.size) {
-            val len = ((sample[i].toInt() and 0xFF) shl 24) or
-                ((sample[i + 1].toInt() and 0xFF) shl 16) or
-                ((sample[i + 2].toInt() and 0xFF) shl 8) or
-                (sample[i + 3].toInt() and 0xFF)
-            i += 4
-            if (len <= 0 || i + len > sample.size) break
-            val nal = ByteArray(len)
-            System.arraycopy(sample, i, nal, 0, len)
-            out += nal
-            i += len
-        }
-        return out
-    }
-
-    /** 去掉 csd-0 / csd-1 里可能的 Annex-B 起始码,留纯 NAL。 */
-    private fun stripStartCode(csd: ByteArray): ByteArray {
-        // csd 形式可能是 0x00 0x00 0x00 0x01 NAL... 或直接 NAL...
-        if (csd.size >= 4 && csd[0] == 0.toByte() && csd[1] == 0.toByte() &&
-            csd[2] == 0.toByte() && csd[3] == 1.toByte()
-        ) return csd.copyOfRange(4, csd.size)
-        if (csd.size >= 3 && csd[0] == 0.toByte() && csd[1] == 0.toByte() && csd[2] == 1.toByte()) {
-            return csd.copyOfRange(3, csd.size)
-        }
-        return csd
     }
 }
 
