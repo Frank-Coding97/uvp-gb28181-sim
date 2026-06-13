@@ -45,6 +45,10 @@ kotlin {
             implementation(libs.kotlinx.coroutines.android)
             implementation(libs.androidx.camera.view)
             implementation(libs.koin.android)
+            // 3D rendering — load .glb model
+            implementation(libs.filament.android)
+            implementation(libs.filament.utils)
+            implementation(libs.gltfio.android)
         }
     }
 }

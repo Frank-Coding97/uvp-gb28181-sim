@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
 
@@ -43,7 +44,7 @@ fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
                 .background(UvpColor.Surface),
             contentAlignment = Alignment.Center
         ) {
-            CameraIsoView(
+            CameraGlbView(
                 state = deviceControl,
                 modifier = Modifier.fillMaxSize()
             )
@@ -59,3 +60,11 @@ fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/**
+ * 加载 .glb 摄像机模型(C 方案 2026-06-13).
+ * - Android: Filament + gltfio,加载 assets/security_camera.glb
+ * - iOS: SceneKit 占位(待 cinterop)
+ */
+@Composable
+expect fun CameraGlbView(state: DeviceControlState, modifier: Modifier)
