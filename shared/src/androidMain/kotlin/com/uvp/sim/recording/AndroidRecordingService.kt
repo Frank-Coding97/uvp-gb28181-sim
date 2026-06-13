@@ -109,11 +109,11 @@ class AndroidRecordingService(
             }
         }
         return runCatching {
-            ensureCameraBound()
+            val capture = rebindFreshVideoCapture()
             val now = clock.now()
             val outputFile = newOutputFile(now)
             outputFile.parentFile?.mkdirs()
-            val recorder = videoCapture?.output ?: error("VideoCapture 未就绪")
+            val recorder = capture.output
             val pendingRecording = recorder.prepareRecording(
                 context,
                 FileOutputOptions.Builder(outputFile).build()
@@ -238,18 +238,32 @@ class AndroidRecordingService(
         }
     }
 
-    private suspend fun ensureCameraBound() {
-        if (videoCapture != null) return
-        val p = awaitCameraProvider(context)
-        provider = p
+    /**
+     * 每次 start() 时调用,重新构造 Recorder + VideoCapture 并 rebind 到 lifecycle。
+     *
+     * CameraX 硬约束(踩过的坑):
+     *   - `Recorder` 实例只能录一次,完成后 prepareRecording().start() 会立刻
+     *     finalize 报 "Recording was stopped before any data could be produced"
+     *   - 解法:每次都建新 Recorder + VideoCapture,并 unbind 旧的(否则两个
+     *     VideoCapture 同时 bind 到 BACK_CAMERA 会冲突)
+     *
+     * 第一次调用时 provider 也是这里 awaitCameraProvider 拿到的;后续复用同一 provider。
+     */
+    private suspend fun rebindFreshVideoCapture(): VideoCapture<Recorder> {
+        val p = provider ?: awaitCameraProvider(context).also { provider = it }
         val recorder = Recorder.Builder()
             .setQualitySelector(QualitySelector.from(Quality.HD))
             .build()
         val capture = VideoCapture.withOutput(recorder)
         withContext(Dispatchers.Main) {
+            // 解绑旧 VideoCapture(若有),再绑新的。AndroidCameraStreamer 用的是
+            // 另一个独立的 ProcessCameraProvider 实例(plan §5),所以这里 unbindAll
+            // 不会影响实时推流路径。
+            p.unbindAll()
             p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, capture)
         }
         videoCapture = capture
+        return capture
     }
 
     private fun newOutputFile(instant: Instant): File {
