@@ -31,6 +31,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 
 /**
  * Top-level orchestrator that wires SIP state machine, transport, auth, and
@@ -664,9 +667,13 @@ class SimulatorEngine(
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 sendDeviceInfoResponse(sn)
             }
+            "DeviceStatus" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                sendDeviceStatusResponse(sn)
+            }
             "DeviceControl" -> handleDeviceControl(xml)
             "RecordInfo" -> handleRecordInfoQuery(xml)
-            // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to later.
+            // Other CmdTypes (ConfigDownload, PresetQuery, MobilePosition, ...) deferred.
             else -> Unit
         }
     }
@@ -858,6 +865,63 @@ class SimulatorEngine(
             )
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send DeviceInfo response: ${e.message}"))
+        }
+    }
+
+    private suspend fun sendDeviceStatusResponse(sn: String) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val ctrl = _deviceControlState.value
+            val snapshot = com.uvp.sim.gb28181.DeviceStatusSnapshot(
+                online = _state.value == com.uvp.sim.sip.SipState.Registered ||
+                    _state.value == com.uvp.sim.sip.SipState.InCall,
+                deviceTime = currentLocalIso(),
+                recording = ctrl.isRecording,
+                alarming = ctrl.isAlarming,
+                guarded = ctrl.isGuarded
+            )
+            val xmlBody = com.uvp.sim.gb28181.DeviceStatusResponse.build(config, sn, snapshot)
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台查询 DeviceStatus → 已应答 sn=$sn online=${snapshot.online} record=${snapshot.recording} alarm=${snapshot.alarming}"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send DeviceStatus response: ${e.message}"))
+        }
+    }
+
+    /** 设备本地时间 ISO8601 无偏移,GB28181 默认格式 "yyyy-MM-ddTHH:mm:ss" */
+    private fun currentLocalIso(): String {
+        val now = Clock.System.now()
+        val tz = TimeZone.currentSystemDefault()
+        val ldt = now.toLocalDateTime(tz)
+        return buildString {
+            append(ldt.year.toString().padStart(4, '0'))
+            append('-')
+            append(ldt.monthNumber.toString().padStart(2, '0'))
+            append('-')
+            append(ldt.dayOfMonth.toString().padStart(2, '0'))
+            append('T')
+            append(ldt.hour.toString().padStart(2, '0'))
+            append(':')
+            append(ldt.minute.toString().padStart(2, '0'))
+            append(':')
+            append(ldt.second.toString().padStart(2, '0'))
         }
     }
 
