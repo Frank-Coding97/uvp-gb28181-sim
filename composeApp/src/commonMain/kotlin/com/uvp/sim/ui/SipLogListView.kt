@@ -253,6 +253,11 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
     is SimEvent.TransportError -> LogRowSpec(
         "", "⚠", true, "ERR", UvpColor.Danger, ev.description, category = ""
     )
+    is SimEvent.DeviceControlReceived -> LogRowSpec(
+        "", "←", false, "CTL", UvpColor.Info,
+        "${ev.commandType} · ${ev.detail.take(40)}",
+        category = "CONTROL"
+    )
     is SimEvent.SubscribeReceived -> LogRowSpec(
         "", "←", false, "SUB", UvpColor.Info, "${ev.kind} · from=${ev.subscriber}", category = "SUBSCRIBE"
     )

@@ -134,6 +134,7 @@ object LogExport {
         is SimEvent.MessageSent -> "→ ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
         is SimEvent.MessageReceived -> "← ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
         is SimEvent.TransportError -> "⚠ ERROR    ${ev.description}"
+        is SimEvent.DeviceControlReceived -> "← CONTROL  ${ev.commandType} ${ev.detail}"
         is SimEvent.SubscribeReceived -> "← SUBSCRIBE ${ev.kind} from=${ev.subscriber}"
         is SimEvent.NotifySent -> "→ NOTIFY   ${ev.kind} SN=${ev.sn}"
         is SimEvent.SubscribeExpired -> "· EXPIRED  ${ev.kind} ${ev.subscriber}"
