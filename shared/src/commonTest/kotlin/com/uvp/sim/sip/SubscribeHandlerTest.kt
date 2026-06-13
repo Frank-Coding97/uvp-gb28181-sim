@@ -91,13 +91,38 @@ class SubscribeHandlerTest {
     }
 
     @Test
-    fun catalogCmdTypeReturnsIgnored() {
+    fun catalogCmdTypeReturnsNewSubscriptionWithKindCatalog() {
         val body = """<?xml version="1.0"?>
 <Query><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>dev1</DeviceID></Query>"""
+        val req = subscribeRequest(body = body, expires = null)
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Catalog", intent.kind)
+        // Catalog 默认 Expires 86400(24h)
+        assertEquals(86400, intent.expiresSeconds)
+        // Catalog 不周期推送,interval=0
+        assertEquals(0, intent.intervalSeconds)
+    }
+
+    @Test
+    fun catalogWithExplicitExpiresUsesHeader() {
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>Catalog</CmdType><SN>1</SN></Query>"""
+        val req = subscribeRequest(body = body, expires = "7200")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Catalog", intent.kind)
+        assertEquals(7200, intent.expiresSeconds)
+    }
+
+    @Test
+    fun unsupportedCmdTypeReturnsIgnored() {
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>RecordInfo</CmdType><SN>1</SN></Query>"""
         val req = subscribeRequest(body = body)
         val intent = SubscribeHandler.parse(req, emptySet())
         assertIs<SubscribeIntent.Ignored>(intent)
-        assertEquals("Catalog", intent.cmdType)
+        assertEquals("RecordInfo", intent.cmdType)
     }
 
     @Test

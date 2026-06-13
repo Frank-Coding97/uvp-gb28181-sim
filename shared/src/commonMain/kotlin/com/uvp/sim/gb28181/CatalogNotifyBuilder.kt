@@ -1,0 +1,115 @@
+package com.uvp.sim.gb28181
+
+import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.CatalogNodeType
+
+/**
+ * 构造 GB/T 28181 Catalog NOTIFY body(MANSCDP+xml,GB2312)。
+ *
+ * 跟 [CatalogResponse.build] 区别:
+ *   - 顶层是 `<Notify>`(不是 `<Response>`)
+ *   - 节点列表来自动态目录树,不是单通道硬编码
+ *   - 输出顺序:深度优先(父先于子),从根开始 DFS
+ *
+ * 字段映射:
+ *   - Parental: 来自 CatalogNodeType.parental
+ *   - ParentID: 根节点指向自身,其余指向 parentId
+ *   - 其它字段从 CatalogNode.fields 取,缺失给保守默认
+ */
+object CatalogNotifyBuilder {
+
+    fun build(
+        deviceId: String,
+        sn: Int,
+        tree: List<CatalogNode>
+    ): String {
+        val ordered = orderDfs(tree)
+        val items = ordered.joinToString(separator = "\n") { renderItem(it) }
+        val sumNum = ordered.size
+
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"GB2312\"?>\n")
+        sb.append("<Notify>\n")
+        sb.append("<CmdType>Catalog</CmdType>\n")
+        sb.append("<SN>").append(sn).append("</SN>\n")
+        sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
+        sb.append("<SumNum>").append(sumNum).append("</SumNum>\n")
+        if (ordered.isEmpty()) {
+            sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
+        } else {
+            sb.append("<DeviceList Num=\"").append(sumNum).append("\">\n")
+            sb.append(items).append("\n")
+            sb.append("</DeviceList>\n")
+        }
+        sb.append("</Notify>\n")
+        return sb.toString().replace("\n", "\r\n")
+    }
+
+    /**
+     * 深度优先排序:根节点先,再按 children 出现顺序递归。
+     * 孤儿节点(parentId 找不到对应父)按原顺序追加在末尾,保证不丢节点。
+     */
+    private fun orderDfs(tree: List<CatalogNode>): List<CatalogNode> {
+        if (tree.isEmpty()) return emptyList()
+        val byParent = tree.groupBy { it.parentId }
+        val nodeIds = tree.mapTo(mutableSetOf()) { it.id }
+        val visited = mutableSetOf<String>()
+        val result = mutableListOf<CatalogNode>()
+
+        // 根 = parentId 指向自身 OR parentId 不在节点集合里
+        val roots = tree.filter { it.parentId == it.id || it.parentId !in nodeIds }
+        roots.forEach { dfs(it, byParent, visited, result) }
+
+        // 兜底:还有没访问到的(循环引用 / 孤儿),按原顺序追加
+        tree.filter { it.id !in visited }.forEach {
+            visited += it.id
+            result += it
+        }
+        return result
+    }
+
+    private fun dfs(
+        node: CatalogNode,
+        byParent: Map<String, List<CatalogNode>>,
+        visited: MutableSet<String>,
+        out: MutableList<CatalogNode>
+    ) {
+        if (node.id in visited) return
+        visited += node.id
+        out += node
+        // 跳过自指向(根 parentId=自身)避免无限递归
+        byParent[node.id].orEmpty().filter { it.id != node.id }.forEach {
+            dfs(it, byParent, visited, out)
+        }
+    }
+
+    private fun renderItem(node: CatalogNode): String {
+        val f = node.fields
+        val parentId = if (node.parentId == node.id) node.id else node.parentId
+        val sb = StringBuilder()
+        sb.append("<Item>\n")
+        sb.append("<DeviceID>").append(node.id).append("</DeviceID>\n")
+        sb.append("<Name>").append(node.name).append("</Name>\n")
+        sb.append("<Manufacturer>").append(f["Manufacturer"] ?: "UVP").append("</Manufacturer>\n")
+        sb.append("<Model>").append(f["Model"] ?: "UVP-Sim").append("</Model>\n")
+        sb.append("<Owner>").append(f["Owner"] ?: "UVP").append("</Owner>\n")
+        sb.append("<CivilCode>").append(f["CivilCode"] ?: node.id.take(6)).append("</CivilCode>\n")
+        if (node.type == CatalogNodeType.BusinessGroup ||
+            node.type == CatalogNodeType.VirtualOrg ||
+            node.type == CatalogNodeType.Device
+        ) {
+            // 目录类节点不需要 Address(可省),写空保留对齐
+            sb.append("<Address>").append(f["Address"] ?: "").append("</Address>\n")
+        } else {
+            sb.append("<Address>").append(f["Address"] ?: "Mobile").append("</Address>\n")
+        }
+        sb.append("<Parental>").append(node.type.parental).append("</Parental>\n")
+        sb.append("<ParentID>").append(parentId).append("</ParentID>\n")
+        sb.append("<SafetyWay>").append(f["SafetyWay"] ?: "0").append("</SafetyWay>\n")
+        sb.append("<RegisterWay>").append(f["RegisterWay"] ?: "1").append("</RegisterWay>\n")
+        sb.append("<Secrecy>").append(f["Secrecy"] ?: "0").append("</Secrecy>\n")
+        sb.append("<Status>").append(f["Status"] ?: "ON").append("</Status>")
+        sb.append("\n</Item>")
+        return sb.toString()
+    }
+}

@@ -128,6 +128,14 @@ class SimulatorEngine(
     private val subscriptionRegistry = SubscriptionRegistry(scope)
     private val mockGps = MockGpsSource(config.mockPosition)
     private var notifySn = 0
+    private var catalogNotifySn = 0
+
+    /**
+     * 当前生效的目录树。初始从 SimConfig.catalogTree 取(为空时用默认),
+     * 用户在 UI 编辑器修改后通过 [updateCatalogTree] 写回。
+     */
+    private val _catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(config))
+    val catalogTree: StateFlow<List<com.uvp.sim.config.CatalogNode>> = _catalogTree.asStateFlow()
 
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
@@ -940,9 +948,20 @@ class SimulatorEngine(
                     expiresSeconds = intent.expiresSeconds,
                     remainingSeconds = intent.expiresSeconds
                 )
-                subscriptionRegistry.activate(dialog) { d -> sendPositionNotify(d) }
+                // Catalog: SubscriptionRegistry 不会启 Heartbeat,但仍 activate 以维护 expiry
+                // MobilePosition: SubscriptionRegistry 启 Heartbeat 周期推
+                subscriptionRegistry.activate(dialog) { d ->
+                    when (d.kind) {
+                        "Catalog" -> sendCatalogNotify(d)
+                        else -> sendPositionNotify(d)
+                    }
+                }
 
-                sendPositionNotify(dialog)
+                // initial NOTIFY:两种 kind 都立即推一次
+                when (intent.kind) {
+                    "Catalog" -> sendCatalogNotify(dialog)
+                    else -> sendPositionNotify(dialog)
+                }
 
                 _events.emit(SimEvent.SubscribeReceived(
                     subscriber = intent.subscriberUri,
@@ -952,7 +971,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "收到位置订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
+                    "收到${if (intent.kind == "Catalog") "目录" else "位置"}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
                 )
             }
 
@@ -971,7 +990,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "位置订阅已刷新: expires=${intent.newExpiresSeconds}s"
+                    "${if (d?.kind == "Catalog") "目录" else "位置"}订阅已刷新: expires=${intent.newExpiresSeconds}s"
                 )
             }
 
@@ -989,7 +1008,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "位置订阅已取消: ${d?.subscriberUri}"
+                    "${if (d?.kind == "Catalog") "目录" else "位置"}订阅已取消: ${d?.subscriberUri}"
                 )
             }
 
@@ -1008,6 +1027,59 @@ class SimulatorEngine(
             }
 
             is SubscribeIntent.Ignored -> Unit
+        }
+    }
+
+    private suspend fun sendCatalogNotify(dialog: SubscriptionDialog) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.build(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            tree = _catalogTree.value
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
+    /**
+     * 用户在 UI 编辑器修改目录树后,写入引擎当前树,并对所有活跃的
+     * Catalog 订阅推一次完整 NOTIFY(对应 spec Q6 行为)。
+     */
+    suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) {
+        _catalogTree.value = tree
+        pushCatalogNotify()
+    }
+
+    /**
+     * 主动给所有活跃 Catalog 订阅推一次完整 NOTIFY。
+     * 调用时不要持 mutex,自身会 bumpNotify 维护计数。
+     */
+    suspend fun pushCatalogNotify() {
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogNotify(updated)
         }
     }
 

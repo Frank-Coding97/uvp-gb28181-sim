@@ -1,0 +1,276 @@
+package com.uvp.sim.domain
+
+import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.CatalogNodeType
+import com.uvp.sim.config.DeviceConfig
+import com.uvp.sim.config.GbVersion
+import com.uvp.sim.config.GeoPoint
+import com.uvp.sim.config.ServerConfig
+import com.uvp.sim.config.SimConfig
+import com.uvp.sim.network.TransportType
+import com.uvp.sim.sip.SipHeader
+import com.uvp.sim.sip.SipMessage
+import com.uvp.sim.sip.SipMethod
+import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.sip.SipResponse
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class CatalogSubscribeIntegrationTest {
+
+    private fun config(catalogTree: List<CatalogNode> = emptyList()) = SimConfig(
+        gbVersion = GbVersion.V2022,
+        server = ServerConfig(
+            ip = "192.168.1.100",
+            port = 5060,
+            serverId = "34020000002000000001",
+            domain = "3402000000"
+        ),
+        device = DeviceConfig(
+            deviceId = "34020000001110000001",
+            videoChannelId = "34020000001320000001",
+            alarmChannelId = "34020000001340000001",
+            username = "34020000001110000001",
+            password = "wvp2025!!!"
+        ),
+        transport = TransportType.UDP,
+        keepaliveIntervalSeconds = 60,
+        mockPosition = GeoPoint(116.404, 39.915),
+        catalogTree = catalogTree
+    )
+
+    private fun catalogSubscribeRequest(
+        expires: Int? = 86400,
+        callId: String = "cat-sub@plat"
+    ): SipRequest {
+        val body = """<?xml version="1.0"?>
+<Query>
+<CmdType>Catalog</CmdType>
+<SN>1</SN>
+<DeviceID>34020000001110000001</DeviceID>
+</Query>""".encodeToByteArray()
+        val headers = mutableListOf(
+            SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-cat1"),
+            SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=plat-tag"),
+            SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+            SipMessage.Header(SipHeader.CALL_ID, callId),
+            SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
+            SipMessage.Header(SipHeader.EVENT, "presence")
+        )
+        if (expires != null) headers += SipMessage.Header(SipHeader.EXPIRES, expires.toString())
+        return SipRequest(
+            method = SipMethod.SUBSCRIBE,
+            requestUri = "sip:34020000001110000001@192.168.1.50:5060",
+            headers = headers,
+            body = body
+        )
+    }
+
+    private suspend fun registerEngine(transport: MockSipTransport, engine: SimulatorEngine) {
+        engine.register()
+        val regReq = transport.sent.filterIsInstance<SipRequest>().first { it.method == SipMethod.REGISTER }
+        transport.deliver(fakeRegister200(regReq))
+    }
+
+    private fun fakeRegister200(req: SipRequest): SipResponse {
+        val headers = req.headers.filter {
+            val c = SipHeader.canonicalize(it.name)
+            c == SipHeader.VIA || c == SipHeader.FROM || c == SipHeader.CALL_ID || c == SipHeader.CSEQ
+        } + SipMessage.Header(SipHeader.TO,
+            (req.toHeader() ?: "<sip:u@e>") + ";tag=server-tag")
+        return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = headers)
+    }
+
+    @Test
+    fun catalogSubscribeReturns200AndInitialNotify() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+
+        val responses = transport.sent.filterIsInstance<SipResponse>()
+        assertTrue(responses.any { it.statusCode == 200 }, "Expected 200 OK for Catalog SUBSCRIBE")
+
+        val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
+        assertEquals(1, notifies.size, "Expected exactly 1 initial NOTIFY")
+
+        val body = notifies.first().body.decodeToString()
+        assertTrue(body.contains("<CmdType>Catalog</CmdType>"))
+        assertTrue(body.contains("<DeviceList Num=\"3\">"), "default tree has 3 nodes")
+
+        val snap = engine.subscriptions.value["Catalog"]
+        assertTrue(snap != null && snap.active)
+        assertEquals(86400, snap!!.expiresSeconds)
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun catalogSubscribeDoesNotPushPeriodicNotify() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+
+        val initialCount = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(1, initialCount)
+
+        // Catalog 不周期推送:推进 2 分钟也只有 initial 那一次
+        advanceTimeBy(120_000)
+        val laterCount = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(1, laterCount)
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun pushCatalogNotifySendsExtraNotifyToActiveSubscribers() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+        val countAfterSub = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(1, countAfterSub)
+
+        engine.pushCatalogNotify()
+        runCurrent()
+        val countAfterPush = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(2, countAfterPush)
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun pushCatalogNotifyWithoutSubscriberIsNoop() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        engine.pushCatalogNotify()
+        runCurrent()
+
+        val notifies = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(0, notifies)
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun updateCatalogTreeReflectsInNextNotify() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+        transport.sent.clear()
+
+        // 推一棵新树:加一个业务分组
+        val newTree = listOf(
+            CatalogNode("34020000001110000001", CatalogNodeType.Device, "DEV", "34020000001110000001"),
+            CatalogNode("34020000001370000001", CatalogNodeType.BusinessGroup, "新分组", "34020000001110000001"),
+            CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "新通道", "34020000001370000001")
+        )
+        engine.updateCatalogTree(newTree)
+        runCurrent()
+
+        val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
+        assertEquals(1, notifies.size, "updateCatalogTree should push exactly one NOTIFY")
+        val body = notifies.first().body.decodeToString()
+        assertTrue(body.contains("<DeviceList Num=\"3\">"))
+        assertTrue(body.contains("<Name>新分组</Name>"))
+        assertTrue(body.contains("<Name>新通道</Name>"))
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun catalogAndMobilePositionCoexist() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        // 平台先订阅 MobilePosition
+        val mpBody = """<?xml version="1.0"?>
+<Query><CmdType>MobilePosition</CmdType><SN>1</SN><Interval>3</Interval></Query>"""
+        val mpReq = SipRequest(
+            method = SipMethod.SUBSCRIBE,
+            requestUri = "sip:34020000001110000001@192.168.1.50:5060",
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-mp"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=plat-mp"),
+                SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+                SipMessage.Header(SipHeader.CALL_ID, "mp-sub@plat"),
+                SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
+                SipMessage.Header(SipHeader.EVENT, "presence"),
+                SipMessage.Header(SipHeader.EXPIRES, "10")
+            ),
+            body = mpBody.encodeToByteArray()
+        )
+        transport.deliver(mpReq)
+        runCurrent()
+
+        // 再订阅 Catalog
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+
+        // 两种订阅状态都应 active
+        assertTrue(engine.subscriptions.value["MobilePosition"]?.active == true)
+        assertTrue(engine.subscriptions.value["Catalog"]?.active == true)
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun catalogSubscribeRefreshDoesNotRepushInitial() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(catalogSubscribeRequest(callId = "refresh-cat"))
+        runCurrent()
+        val countAfterInitial = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(1, countAfterInitial)
+
+        // 续订(同 callId,新 expires)
+        transport.deliver(catalogSubscribeRequest(expires = 7200, callId = "refresh-cat"))
+        runCurrent()
+
+        val countAfterRefresh = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(1, countAfterRefresh, "refresh should NOT re-send initial NOTIFY")
+
+        engine.shutdown()
+    }
+}
