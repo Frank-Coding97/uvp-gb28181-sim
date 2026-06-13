@@ -61,6 +61,7 @@ interface AppActions {
 
 enum class AppTab(val label: String) {
     Home("主页"),
+    Simulate("模拟"),
     Settings("设置"),
     Recording("录像"),
     Log("日志");
