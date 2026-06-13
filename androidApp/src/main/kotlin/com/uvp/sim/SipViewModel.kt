@@ -216,15 +216,22 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * 用户保存目录树:
-     *  - 写回 SimConfig.catalogTree 并持久化(下次冷启动恢复)
+     *  - 先校验:不合法直接返回 Invalid 含错误清单,UI 显示并不持久化
+     *  - 通过校验:写回 SimConfig.catalogTree 并持久化(下次冷启动恢复)
      *  - 通知 engine,触发 pushCatalogNotify(若有活跃订阅)
+     *
+     * 返回值供 UI 显示 toast:Ok 显示成功,Invalid 显示错误。
      */
-    fun saveCatalogTree(tree: List<CatalogNode>) {
+    fun saveCatalogTree(tree: List<CatalogNode>): com.uvp.sim.domain.ValidationResult {
+        val result = com.uvp.sim.domain.CatalogTreeStore.validate(tree)
+        if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
+            return result
+        }
         val newCfg = _config.value.copy(catalogTree = tree)
         _config.value = newCfg
         _catalogTree.value = tree
         viewModelScope.launch { runCatching { configStore.save(newCfg) } }
-        val eng = engine ?: return
+        val eng = engine ?: return result
         engineScope.launch {
             try {
                 eng.updateCatalogTree(tree)
@@ -235,6 +242,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        return result
     }
 
     /** Trigger a snapshot upload (T15). Engine handles the rest. */

@@ -120,8 +120,10 @@ fun CatalogManagementScreen(
             },
             onPreview = { showPreview = true },
             onSave = {
-                actions.onCatalogTreeSave(draft)
-                if (catalogActive) {
+                val error = actions.onCatalogTreeSave(draft)
+                if (error != null) {
+                    toast.error("保存失败:\n$error")
+                } else if (catalogActive) {
                     toast.success("已保存,推送 ${draft.size} 节点到平台")
                 } else {
                     toast.success("已保存(${draft.size} 节点)")

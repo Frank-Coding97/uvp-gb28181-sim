@@ -134,12 +134,15 @@ class MainActivity : ComponentActivity() {
                     )
                     viewModel.updateConfig(updated)
                 }
-                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>) {
+                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>): String? {
                     SystemLogger.emit(
                         LogLevel.Info, LogTag.User,
                         "保存目录树 节点数=${tree.size}"
                     )
-                    viewModel.saveCatalogTree(tree)
+                    val result = viewModel.saveCatalogTree(tree)
+                    return if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
+                        result.message
+                    } else null
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

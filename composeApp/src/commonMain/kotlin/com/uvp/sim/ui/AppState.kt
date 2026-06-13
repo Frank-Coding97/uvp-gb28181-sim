@@ -66,8 +66,10 @@ interface AppActions {
     /**
      * 用户在目录管理界面点保存,把新树写回 engine + 持久化。
      * 若有活跃 Catalog 订阅,engine 会立即推一次完整 NOTIFY(spec Q6)。
+     *
+     * 返回值:null 表示成功;非 null 是校验失败的错误消息(用 \n 分隔多行)。
      */
-    fun onCatalogTreeSave(tree: List<CatalogNode>) {}
+    fun onCatalogTreeSave(tree: List<CatalogNode>): String? = null
 }
 
 enum class AppTab(val label: String) {
