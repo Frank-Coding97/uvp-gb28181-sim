@@ -671,6 +671,11 @@ class SimulatorEngine(
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 sendDeviceStatusResponse(sn)
             }
+            "PresetQuery" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
+                sendPresetQueryResponse(sn, channelId)
+            }
             "DeviceControl" -> handleDeviceControl(xml)
             "RecordInfo" -> handleRecordInfoQuery(xml)
             // Other CmdTypes (ConfigDownload, PresetQuery, MobilePosition, ...) deferred.
@@ -922,6 +927,34 @@ class SimulatorEngine(
             append(ldt.minute.toString().padStart(2, '0'))
             append(':')
             append(ldt.second.toString().padStart(2, '0'))
+        }
+    }
+
+    private suspend fun sendPresetQueryResponse(sn: String, channelId: String) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val xmlBody = com.uvp.sim.gb28181.PresetQueryResponse.build(config, sn, channelId)
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台查询 PresetQuery → 已应答(空清单)sn=$sn"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send PresetQuery response: ${e.message}"))
         }
     }
 
