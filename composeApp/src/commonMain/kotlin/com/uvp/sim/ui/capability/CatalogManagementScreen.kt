@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.Edit
@@ -97,6 +98,10 @@ fun CatalogManagementScreen(
     var showAdd by remember { mutableStateOf<String?>(null) }   // 父节点 id
     var showPreview by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
+    var showResetConfirm by remember { mutableStateOf(false) }
+    var showTemplate by remember { mutableStateOf(false) }
+    var showImport by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
     val isDirty = draft != initial
     val toast = com.uvp.sim.ui.LocalToastHost.current
     val catalogActive =
@@ -128,7 +133,11 @@ fun CatalogManagementScreen(
                 } else {
                     toast.success("已保存(${draft.size} 节点)")
                 }
-            }
+            },
+            onResetDefault = { showResetConfirm = true },
+            onApplyTemplate = { showTemplate = true },
+            onImportJson = { showImport = true },
+            onExportJson = { showExport = true }
         )
 
         Box(modifier = Modifier.weight(1f)) {
@@ -138,6 +147,32 @@ fun CatalogManagementScreen(
                 onNodeMenu = { menuFor = it }
             )
         }
+    }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text("复位到默认?") },
+            text = {
+                Text(
+                    "把当前编辑中的目录树替换为默认树(从设备配置生成的 3 节点扁平树)。" +
+                    "替换后还需要点保存才会真正写入平台。",
+                    color = UvpColor.TextSecondary, fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetConfirm = false
+                    draft = com.uvp.sim.domain.CatalogTreeStore.defaultTree(state.config)
+                    toast.info("已复位为默认树,点保存生效")
+                }) { Text("复位", color = UvpColor.Danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) {
+                    Text("取消", color = UvpColor.Primary)
+                }
+            }
+        )
     }
 
     if (showLeaveConfirm) {
@@ -171,6 +206,17 @@ fun CatalogManagementScreen(
             onEdit = { editingId = menuNode.id; menuFor = null },
             onAddChild = { showAdd = menuNode.id; menuFor = null },
             onMove = { movingId = menuNode.id; menuFor = null },
+            onClone = {
+                val cloneId = nextSeqId(state.config.server.domain, draft, menuNode.type)
+                val clone = menuNode.copy(
+                    id = cloneId,
+                    name = "${menuNode.name}-副本",
+                    parentId = menuNode.parentId
+                )
+                draft = draft + clone
+                editingId = clone.id  // 克隆后直接进编辑
+                menuFor = null
+            },
             onDelete = {
                 val ids = collectDescendants(menuNode.id, draft) + menuNode.id
                 draft = draft.filterNot { it.id in ids }
@@ -263,8 +309,13 @@ private fun Toolbar(
     onBack: () -> Unit,
     onAddRoot: () -> Unit,
     onPreview: () -> Unit,
-    onSave: () -> Unit
+    onSave: () -> Unit,
+    onResetDefault: () -> Unit,
+    onApplyTemplate: () -> Unit,
+    onImportJson: () -> Unit,
+    onExportJson: () -> Unit
 ) {
+    var menuExpanded by remember { mutableStateOf(false) }
     Surface(color = UvpColor.Surface) {
         Row(
             modifier = Modifier
@@ -290,6 +341,30 @@ private fun Toolbar(
             IconButton(onClick = onPreview, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.Outlined.Code, "预览 NOTIFY",
                     tint = UvpColor.Primary, modifier = Modifier.size(20.dp))
+            }
+            Box {
+                IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Outlined.MoreVert, "更多",
+                        tint = UvpColor.TextSecondary, modifier = Modifier.size(20.dp))
+                }
+                DropdownMenu(menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("应用模板", fontSize = 13.sp) },
+                        onClick = { menuExpanded = false; onApplyTemplate() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导入 JSON", fontSize = 13.sp) },
+                        onClick = { menuExpanded = false; onImportJson() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导出 JSON", fontSize = 13.sp) },
+                        onClick = { menuExpanded = false; onExportJson() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("复位到默认", fontSize = 13.sp, color = UvpColor.Danger) },
+                        onClick = { menuExpanded = false; onResetDefault() }
+                    )
+                }
             }
             Button(
                 onClick = onSave,
@@ -481,6 +556,7 @@ private fun NodeActionsSheet(
     onEdit: () -> Unit,
     onAddChild: () -> Unit,
     onMove: () -> Unit,
+    onClone: () -> Unit,
     onDelete: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
@@ -515,8 +591,9 @@ private fun NodeActionsSheet(
             ) {
                 ActionRow(Icons.Outlined.Add, "新增子节点", UvpColor.Primary, onAddChild)
             }
-            // Device 不能移动
+            // Device 不能克隆/移动
             if (node.type != CatalogNodeType.Device) {
+                ActionRow(Icons.Outlined.ContentCopy, "克隆节点", UvpColor.Primary, onClone)
                 ActionRow(Icons.Outlined.DriveFileMove, "移到其它父节点", UvpColor.Info, onMove)
                 ActionRow(Icons.Outlined.Delete, "删除(连同子节点)", UvpColor.Danger, onDelete)
             }
@@ -751,6 +828,12 @@ private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
         .mapNotNull { it.takeLast(7).toIntOrNull() }
         .maxOrNull() ?: 0
     return maxSeq + 1
+}
+
+/** 给指定 type 算下一个可用 ID(自动避开树中已有同类型节点的最大序号)。 */
+internal fun nextSeqId(domain: String, tree: List<CatalogNode>, type: CatalogNodeType): String {
+    val seq = nextSeq(tree.map { it.id }.toSet(), type)
+    return com.uvp.sim.gb28181.IdEncoder.genChildId(domain, type, seq)
 }
 
 @Composable
