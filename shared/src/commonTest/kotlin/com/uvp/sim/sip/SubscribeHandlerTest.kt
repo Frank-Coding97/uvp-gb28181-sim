@@ -117,4 +117,11 @@ class SubscribeHandlerTest {
         assertIs<SubscribeIntent.NewSubscription>(intent)
         assertEquals(3600, intent.expiresSeconds)
     }
+
+    @Test
+    fun eventWithIdParameterAccepted() {
+        val req = subscribeRequest(event = "presence;id=abc123")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+    }
 }

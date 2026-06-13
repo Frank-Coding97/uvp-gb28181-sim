@@ -35,8 +35,11 @@ object SubscribeHandler {
 
     fun parse(request: SipRequest, knownCallIds: Set<String>): SubscribeIntent {
         val event = request.firstHeader(SipHeader.EVENT)
-        if (event == null || !event.trim().equals("presence", ignoreCase = true)) {
-            return SubscribeIntent.Reject(489, "Bad Event")
+        // GB28181 平台可能发 "Event: presence" 也可能 "Event: presence;id=xxx",
+        // 取分号前的主标识比对。
+        val eventName = event?.trim()?.substringBefore(';')?.trim()
+        if (eventName == null || !eventName.equals("presence", ignoreCase = true)) {
+            return SubscribeIntent.Reject(489, "Bad Event: ${event ?: "(missing)"}")
         }
 
         val expiresStr = request.firstHeader(SipHeader.EXPIRES)
