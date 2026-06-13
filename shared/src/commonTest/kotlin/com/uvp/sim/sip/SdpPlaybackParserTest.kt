@@ -88,4 +88,71 @@ y=0123456789
         assertNull(o.channelId)
         assertEquals("0123456789", o.ssrc)
     }
+
+    // ========== T09: Download 分支 ==========
+
+    @Test fun parse_downloadSdp_isPlaybackTrueAndIsDownloadTrue() {
+        val sdp = """v=0
+o=dev 0 0 IN IP4 192.0.2.10
+s=Download
+u=34020000001320000001:0
+c=IN IP4 192.0.2.20
+t=1718208000 1718208600
+m=video 9000 RTP/AVP 96
+a=rtpmap:96 PS/90000
+a=downloadspeed:4
+a=recvonly
+y=1023456789
+"""
+        val o = SdpPlaybackParser.parse(sdp.encodeToByteArray())
+        assertTrue(o.isPlayback, "Download 也算 isPlayback=true(共享流程)")
+        assertTrue(o.isDownload, "isDownload 应为 true")
+        assertEquals(4.0, o.downloadSpeed)
+    }
+
+    @Test fun parse_downloadWithoutSpeedAttr_defaultsToOne() {
+        val sdp = """v=0
+s=Download
+c=IN IP4 1.2.3.4
+t=1 2
+m=video 9000 RTP/AVP 96
+y=1023456789
+"""
+        val o = SdpPlaybackParser.parse(sdp.encodeToByteArray())
+        assertTrue(o.isDownload)
+        assertEquals(1.0, o.downloadSpeed, "无 a=downloadspeed 时默认 1.0")
+    }
+
+    @Test fun parse_downloadWithIllegalSpeed_fallsBackToOne() {
+        val sdp = """v=0
+s=Download
+c=IN IP4 1.2.3.4
+t=1 2
+m=video 9000 RTP/AVP 96
+a=downloadspeed:abc
+y=1023456789
+"""
+        val o = SdpPlaybackParser.parse(sdp.encodeToByteArray())
+        assertTrue(o.isDownload)
+        assertEquals(1.0, o.downloadSpeed, "非数字 downloadspeed 应兜底 1.0")
+    }
+
+    @Test fun parse_playbackHasIsDownloadFalse() {
+        val o = SdpPlaybackParser.parse(playbackSdp.encodeToByteArray())
+        assertFalse(o.isDownload, "Playback 不应被识别为 Download")
+        assertEquals(1.0, o.downloadSpeed)
+    }
+
+    @Test fun parse_downloadSpeedCaseInsensitive() {
+        val sdp = """v=0
+s=Download
+c=IN IP4 1.2.3.4
+t=1 2
+m=video 9000 RTP/AVP 96
+A=DownloadSpeed:8
+y=1023456789
+"""
+        val o = SdpPlaybackParser.parse(sdp.encodeToByteArray())
+        assertEquals(8.0, o.downloadSpeed, "header 大小写不敏感")
+    }
 }

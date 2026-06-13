@@ -18,7 +18,11 @@ data class PlaybackOffer(
     val startEpochSec: Long,
     /** `t=` 结束 epoch 秒。Play 时是 0。 */
     val endEpochSec: Long,
-    val isPlayback: Boolean
+    val isPlayback: Boolean,
+    /** M3 §D 是否 Download(s=Download)。Download 也算 isPlayback=true(共享流程)。 */
+    val isDownload: Boolean = false,
+    /** M3 §D 下载倍速(SDP `a=downloadspeed:N`)。Playback 时为 1.0。 */
+    val downloadSpeed: Double = 1.0
 ) {
     val startMs: Long get() = startEpochSec * 1000L
     val endMs: Long get() = endEpochSec * 1000L
@@ -36,6 +40,8 @@ object SdpPlaybackParser {
         var startSec = 0L
         var endSec = 0L
         var isPlayback = false
+        var isDownload = false
+        var downloadSpeed = 1.0
 
         for (line in text.lineSequence()) {
             val l = line.trim().trimEnd('\r')
@@ -45,6 +51,7 @@ object SdpPlaybackParser {
                     val s = l.removePrefix("s=").trim()
                     isPlayback = s.equals("Playback", ignoreCase = true) ||
                         s.equals("Download", ignoreCase = true)
+                    isDownload = s.equals("Download", ignoreCase = true)
                 }
                 l.startsWith("c=IN IP4 ") -> {
                     ip = l.removePrefix("c=IN IP4 ").trim()
@@ -61,13 +68,16 @@ object SdpPlaybackParser {
                     }
                 }
                 l.startsWith("u=") -> {
-                    // 形如 "u=34020000001320000001:0" 或 "u=channelId"
                     val v = l.removePrefix("u=").trim()
                     val colon = v.indexOf(':')
                     channelId = if (colon > 0) v.substring(0, colon) else v
-                    // u= 第二段(分号后)在 GB28181 是回放序号,不当 ssrc 用
                 }
                 l.startsWith("y=") -> ssrc = l.removePrefix("y=").trim()
+                // M3 §D Download SDP 扩展:a=downloadspeed:N
+                l.startsWith("a=downloadspeed:", ignoreCase = true) -> {
+                    val v = l.substringAfter(":").trim()
+                    downloadSpeed = v.toDoubleOrNull() ?: 1.0
+                }
             }
         }
 
@@ -80,7 +90,9 @@ object SdpPlaybackParser {
             channelId = channelId,
             startEpochSec = startSec,
             endEpochSec = endSec,
-            isPlayback = isPlayback
+            isPlayback = isPlayback,
+            isDownload = isDownload,
+            downloadSpeed = downloadSpeed
         )
     }
 }
