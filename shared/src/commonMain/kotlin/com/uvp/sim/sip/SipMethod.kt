@@ -5,7 +5,7 @@ package com.uvp.sim.sip
  * See plan v1 §4.2.
  */
 enum class SipMethod {
-    REGISTER, MESSAGE, INVITE, ACK, BYE, SUBSCRIBE, NOTIFY, OPTIONS, CANCEL;
+    REGISTER, MESSAGE, INVITE, ACK, BYE, SUBSCRIBE, NOTIFY, OPTIONS, CANCEL, INFO;
 
     companion object {
         fun fromString(name: String): SipMethod? =

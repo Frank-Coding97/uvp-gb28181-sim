@@ -600,8 +600,22 @@ class SimulatorEngine(
             SipMethod.MESSAGE -> handleMessage(req)
             SipMethod.CANCEL -> handleCancel(req)
             SipMethod.SUBSCRIBE -> handleSubscribe(req)
+            SipMethod.INFO -> handleInfo(req)
             else -> Unit
         }
+    }
+
+    /**
+     * Handle SIP INFO request (M3 §9.7.2 PLAY/PAUSE/Range/Scale via MANSRTSP).
+     * T01 stage: stub returning 200 OK only, full handler arrives in T08.
+     */
+    private suspend fun handleInfo(req: SipRequest) {
+        runCatching {
+            val resp = com.uvp.sim.sip.SipBuilders.buildSimple200(req)
+            transport.send(resp)
+            _events.emit(SimEvent.MessageSent(resp))
+        }
+        SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "INFO 收到(占位 200,完整路由 T08)")
     }
 
     /** 5.14: Cancel ACK timeout when the platform's ACK lands. */
