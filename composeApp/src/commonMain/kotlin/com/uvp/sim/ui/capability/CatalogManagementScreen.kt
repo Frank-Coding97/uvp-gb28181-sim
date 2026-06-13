@@ -54,6 +54,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -178,6 +179,32 @@ fun CatalogManagementScreen(
                 )
             }
         }
+    }
+
+    if (showExport) {
+        val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
+            ?: state.config.device.deviceId
+        val json = exportTreeAsJson(draft)
+        ExportJsonDialog(
+            json = json,
+            nodeCount = draft.size,
+            deviceId = deviceId,
+            onDismiss = { showExport = false }
+        )
+    }
+
+    if (showImport) {
+        ImportJsonDialog(
+            onCancel = { showImport = false },
+            onConfirm = { imported ->
+                draft = imported
+                showImport = false
+                toast.success("已导入 ${imported.size} 个节点(待保存)")
+            },
+            onError = { msg ->
+                toast.error(msg)
+            }
+        )
     }
 
     if (showResetConfirm) {
@@ -903,6 +930,131 @@ private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
 internal fun nextSeqId(domain: String, tree: List<CatalogNode>, type: CatalogNodeType): String {
     val seq = nextSeq(tree.map { it.id }.toSet(), type)
     return com.uvp.sim.gb28181.IdEncoder.genChildId(domain, type, seq)
+}
+
+internal fun exportTreeAsJson(tree: List<CatalogNode>): String =
+    com.uvp.sim.config.CatalogTreeJson.encode(tree)
+
+internal fun parseTreeJson(json: String): Result<List<CatalogNode>> = runCatching {
+    com.uvp.sim.config.CatalogTreeJson.decode(json)
+}
+
+@Composable
+private fun ExportJsonDialog(
+    json: String,
+    nodeCount: Int,
+    deviceId: String,
+    onDismiss: () -> Unit
+) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("导出 JSON · $nodeCount 节点", modifier = Modifier.weight(1f), fontSize = 14.sp)
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(json))
+                    copied = true
+                }) {
+                    Text(if (copied) "已复制 ✓" else "复制",
+                        color = if (copied) UvpColor.Success else UvpColor.Primary,
+                        fontSize = 12.sp)
+                }
+            }
+        },
+        text = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp)
+                    .background(UvpColor.CodeBg)
+                    .horizontalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState())
+                    .padding(8.dp)
+            ) {
+                Text(
+                    text = json,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = UvpColor.Text,
+                    softWrap = false
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } }
+    )
+}
+
+@Composable
+private fun ImportJsonDialog(
+    onCancel: () -> Unit,
+    onConfirm: (List<CatalogNode>) -> Unit,
+    onError: (String) -> Unit
+) {
+    var jsonText by remember { mutableStateOf("") }
+    var preview by remember { mutableStateOf<List<CatalogNode>?>(null) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("导入 JSON", fontSize = 14.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = jsonText,
+                    onValueChange = {
+                        jsonText = it
+                        errorMsg = null
+                        preview = null
+                    },
+                    placeholder = { Text("粘贴 JSON 数组(对应导出格式)", fontSize = 11.sp) },
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    ),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 240.dp)
+                )
+                if (preview != null) {
+                    Text("解析成功:${preview!!.size} 个节点。点确定替换当前编辑中的树(待保存)。",
+                        color = UvpColor.Success, fontSize = 11.sp)
+                }
+                if (errorMsg != null) {
+                    Text("解析失败:$errorMsg",
+                        color = UvpColor.Danger, fontSize = 11.sp)
+                }
+                TextButton(onClick = {
+                    parseTreeJson(jsonText)
+                        .onSuccess {
+                            preview = it
+                            errorMsg = null
+                        }
+                        .onFailure {
+                            errorMsg = it.message ?: "未知错误"
+                            preview = null
+                        }
+                }) {
+                    Text("解析预览", color = UvpColor.Primary, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val p = preview
+                    if (p != null) {
+                        onConfirm(p)
+                    } else {
+                        onError("请先点「解析预览」确认 JSON 合法")
+                    }
+                },
+                enabled = preview != null
+            ) {
+                Text("确定", color = if (preview != null) UvpColor.Primary else UvpColor.TextHint)
+            }
+        },
+        dismissButton = { TextButton(onCancel) { Text("取消") } }
+    )
 }
 
 @Composable
