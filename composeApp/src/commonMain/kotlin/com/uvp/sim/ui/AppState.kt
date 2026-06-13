@@ -1,6 +1,7 @@
 package com.uvp.sim.ui
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
@@ -23,7 +24,12 @@ data class AppUiState(
      * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 SimulatorEngine 推。
      * 主屏「位置订阅」「目录订阅」状态卡读这个 map 做活/灰判定。
      */
-    val subscriptions: Map<SubscriptionKind, SubscriptionStatus> = emptyMap()
+    val subscriptions: Map<SubscriptionKind, SubscriptionStatus> = emptyMap(),
+    /**
+     * M2 设备控制运行时状态(SimulatorEngine.deviceControlState 快照).
+     * 由 SimulateScreen 的 PtzHudPanel + Camera3DView 订阅消费.
+     */
+    val deviceControl: DeviceControlState = DeviceControlState()
 )
 
 /**

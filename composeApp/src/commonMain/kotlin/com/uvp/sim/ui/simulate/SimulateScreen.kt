@@ -35,9 +35,7 @@ import com.uvp.sim.ui.UvpColor
  */
 @Composable
 fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
-    // T14 占位:暂时用空 state.先让 UI 编译通过 + tab 可见 + HUD 显示"等待平台指令".
-    // 等 AppUiState 加 deviceControlState 字段后,这里换成 by state.deviceControlState.collectAsState().
-    val deviceControl = DeviceControlState()
+    val deviceControl = state.deviceControl
     Column(
         modifier = modifier
             .fillMaxSize()

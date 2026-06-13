@@ -11,6 +11,7 @@ import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
 import com.uvp.sim.domain.SubscriptionSnapshot
@@ -64,6 +65,9 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
+
+    private val _deviceControl = MutableStateFlow(DeviceControlState())
+    val deviceControl: StateFlow<DeviceControlState> = _deviceControl.asStateFlow()
 
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
@@ -142,6 +146,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
+        engineScope.launch { eng.deviceControlState.collect { _deviceControl.value = it } }
 
         engineScope.launch {
             try {

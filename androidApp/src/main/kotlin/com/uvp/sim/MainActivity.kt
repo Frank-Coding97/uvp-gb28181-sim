@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
             val videoVersion by viewModel.videoConfigVersion.collectAsStateWithLifecycle()
             val sysLogs by systemEvents.collectAsState()
             val rawSubs by viewModel.subscriptions.collectAsStateWithLifecycle()
+            val deviceControl by viewModel.deviceControl.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -106,7 +107,8 @@ class MainActivity : ComponentActivity() {
                 events = events,
                 systemEvents = sysLogs,
                 sessionMarker = SessionTracker.current,
-                subscriptions = subscriptions
+                subscriptions = subscriptions,
+                deviceControl = deviceControl
             )
             val actions = object : AppActions {
                 override fun onConnect() {
