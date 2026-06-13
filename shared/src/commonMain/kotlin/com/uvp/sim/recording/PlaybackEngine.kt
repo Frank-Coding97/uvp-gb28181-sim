@@ -30,7 +30,10 @@ interface FramePacker {
     fun packAudio(frame: AudioFrame, timestamp90k: Long): List<ByteArray>
 }
 
-/** 默认实现 — PsMuxer + RtpPacker 串联。 */
+/** 默认实现 — PsMuxer + RtpPacker 串联。
+ *
+ *  注意:RtpPacker 必须用 SDP answer 里宣告的 SSRC,否则 WVP / ZLMediaKit 按
+ *  SSRC 路由会丢包。construct 时由调用方把协商好的 SSRC int 传入。 */
 class DefaultFramePacker(
     private val muxer: PsMuxer = PsMuxer(),
     private val packer: RtpPacker = RtpPacker()

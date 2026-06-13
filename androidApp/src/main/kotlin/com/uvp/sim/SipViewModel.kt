@@ -161,6 +161,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val rtpFactory: (String, Int) -> RtpSender = { host, port ->
             RtpSender(host, port, engineScope)
         }
+        val pbBuilder = com.uvp.sim.recording.AndroidPlaybackBuilder(
+            scope = engineScope,
+            rtpSenderFactory = rtpFactory
+        )
         val eng = SimulatorEngine(
             config = cfg,
             transport = tx,
@@ -171,7 +175,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             audioCapture = audio,
             rtpSenderFactory = rtpFactory,
             recordingService = recordingService
-                ?: com.uvp.sim.recording.NoopRecordingService
+                ?: com.uvp.sim.recording.NoopRecordingService,
+            playbackBuilder = pbBuilder
         )
         engine = eng
 

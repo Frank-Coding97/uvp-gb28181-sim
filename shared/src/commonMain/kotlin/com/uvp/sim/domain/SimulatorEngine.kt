@@ -424,6 +424,9 @@ class SimulatorEngine(
 
     private suspend fun handleDeviceControl(xml: String) {
         val recordCmd = com.uvp.sim.gb28181.ManscdpParser.recordCmd(xml) ?: return
+        val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+        val deviceId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: config.device.deviceId
+        var result = "OK"
         when (recordCmd.equals("Record", ignoreCase = true) to recordCmd.equals("StopRecord", ignoreCase = true)) {
             true to false -> {
                 SystemLogger.emit(
@@ -437,17 +440,58 @@ class SimulatorEngine(
                     )
                 }.onFailure {
                     SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 启动录像异常: ${it.message}")
+                    result = "ERROR"
                 }
             }
             false to true -> {
                 SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台下发 StopRecord → 停止录像")
                 runCatching { recordingService.stop() }
-                    .onFailure { SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 停止录像异常: ${it.message}") }
+                    .onFailure {
+                        SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 停止录像异常: ${it.message}")
+                        result = "ERROR"
+                    }
             }
-            else -> SystemLogger.emit(
-                LogLevel.Warning, LogTag.Media,
-                "平台 RecordCmd 未识别 → '$recordCmd'"
+            else -> {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "平台 RecordCmd 未识别 → '$recordCmd'"
+                )
+                result = "ERROR"
+            }
+        }
+        // GB28181 §9.3 要求设备 DeviceControl 后回 MANSCDP Response,
+        // 部分平台没收到这条会显"操作失败"
+        sendDeviceControlResponse(sn = sn, deviceId = deviceId, result = result)
+    }
+
+    private suspend fun sendDeviceControlResponse(sn: String, deviceId: String, result: String) {
+        val xmlBody = """<?xml version="1.0" encoding="GB2312"?>
+<Response>
+<CmdType>DeviceControl</CmdType>
+<SN>$sn</SN>
+<DeviceID>$deviceId</DeviceID>
+<Result>$result</Result>
+</Response>
+""".replace("\n", "\r\n")
+        runCatching {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
             )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+        }.onFailure {
+            _events.emit(SimEvent.TransportError("send DeviceControl Response: ${it.message}"))
         }
     }
 
@@ -533,11 +577,7 @@ class SimulatorEngine(
             return
         }
 
-        if (activePlayback != null) {
-            // 回放进行中,拒绝实时推流
-            sendBusyResponse(invite, "回放中,实时推流互斥")
-            return
-        }
+        // 回放和直播各自有独立的 RtpSender / 端口 / SSRC,不抢摄像头硬件,可以并行。
 
         _state.value = SipStateMachine.transition(_state.value, SipEvent.InviteReceived)
         val cid = invite.callId() ?: ""
@@ -711,10 +751,8 @@ class SimulatorEngine(
 
     private suspend fun handlePlaybackInvite(invite: SipRequest) {
         val cid = invite.callId() ?: ""
-        if (activeStream != null) {
-            sendBusyResponse(invite, "实时推流中,PLAYBACK 互斥")
-            return
-        }
+        // 直播 (activeStream) 和回放 (activePlayback) 用各自独立的 RtpSender + 端口 + SSRC,
+        // 不共享摄像头硬件,可以并行。只在回放 vs 回放之间互斥(单一 demux/RTP session)。
         if (activePlayback != null) {
             sendBusyResponse(invite, "已有回放进行中")
             return
@@ -781,7 +819,8 @@ class SimulatorEngine(
         }
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "开始回放 → ${segments.size} 段 spanMs=${offer.endMs - offer.startMs} ssrc=$ssrc"
+            "开始回放 → ${segments.size} 段 spanMs=${offer.endMs - offer.startMs} ssrc=$ssrc " +
+                "localRtpPort=${playback.localRtpPort} target=${offer.remoteIp}:${offer.remotePort}"
         )
 
         val job = scope.launch {
