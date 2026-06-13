@@ -676,6 +676,11 @@ class SimulatorEngine(
                 val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
                 sendPresetQueryResponse(sn, channelId)
             }
+            "ConfigDownload" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                val types = com.uvp.sim.gb28181.ConfigDownloadResponse.parseConfigTypes(xml)
+                sendConfigDownloadResponse(sn, types)
+            }
             "DeviceControl" -> handleDeviceControl(xml)
             "RecordInfo" -> handleRecordInfoQuery(xml)
             // Other CmdTypes (ConfigDownload, PresetQuery, MobilePosition, ...) deferred.
@@ -955,6 +960,34 @@ class SimulatorEngine(
             )
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send PresetQuery response: ${e.message}"))
+        }
+    }
+
+    private suspend fun sendConfigDownloadResponse(sn: String, configTypes: List<String>) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val xmlBody = com.uvp.sim.gb28181.ConfigDownloadResponse.build(config, sn, configTypes)
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台查询 ConfigDownload → 已应答 sn=$sn types=${configTypes.joinToString("/")}"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send ConfigDownload response: ${e.message}"))
         }
     }
 
