@@ -14,11 +14,15 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,6 +33,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,7 +57,7 @@ import kotlinx.datetime.toLocalDateTime
 fun SipLogListView(events: List<SimEvent>) {
     var activeFilter by remember { mutableStateOf("全部") }
     var expandedIndex by remember { mutableStateOf<Int?>(null) }
-    val filtered = filterEvents(events, activeFilter).asReversed()  // 最新在顶
+    val filtered = filterEvents(events, activeFilter)  // events 已是最新在前(SipViewModel prepend),无需再 reverse
     val listState = rememberLazyListState()
     LaunchedEffect(events.size) {
         if (events.isNotEmpty()) listState.animateScrollToItem(0)
@@ -111,6 +117,8 @@ private fun SipChip(label: String, active: Boolean, onClick: () -> Unit) {
 private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
     val spec = logRowSpec(ev) ?: return
     val time = formatHmsList(ev.timestampMs)
+    val clipboard = LocalClipboardManager.current
+    val toast = LocalToastHost.current
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -143,6 +151,39 @@ private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
             val raw = rawSipBody(ev)
             if (raw.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
+                // 工具栏:右对齐复制按钮(避免遮挡 raw 文本起头)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .background(UvpColor.Bg, RoundedCornerShape(3.dp))
+                            .border(1.dp, UvpColor.Border, RoundedCornerShape(3.dp))
+                            .clickable {
+                                clipboard.setText(AnnotatedString(raw))
+                                toast.success("已复制到剪贴板")
+                            }
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Outlined.ContentCopy,
+                                contentDescription = "复制 SIP 报文",
+                                modifier = Modifier.size(11.dp),
+                                tint = UvpColor.TextSecondary
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                "复制",
+                                fontSize = 9.sp,
+                                color = UvpColor.TextSecondary,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
