@@ -118,10 +118,10 @@ class StreamingEngineTest {
     @Test fun inviteWithMediaPlumbingSends200OkPlusSdpAnswer() = runTest {
         val transport = MockSipTransport()
         val capture = CameraCapture(CaptureConfig())
-        val rtpFactory: (String, Int) -> RtpSender = { host, port ->
+        val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->
             // Use a real RtpSender against a closed port — bind succeeds, sends will
             // fail silently (we don't assert RTP delivery in commonTest).
-            RtpSender(host, port, this)
+            RtpSender(host, port, this, mode)
         }
         val engine = SimulatorEngine(
             cfg(), transport, this,
@@ -158,8 +158,8 @@ class StreamingEngineTest {
     @Test fun byeStopsActiveStreamAndTransitionsToRegistered() = runTest {
         val transport = MockSipTransport()
         val capture = CameraCapture(CaptureConfig())
-        val rtpFactory: (String, Int) -> RtpSender = { host, port ->
-            RtpSender(host, port, this)
+        val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->
+            RtpSender(host, port, this, mode)
         }
         val engine = SimulatorEngine(
             cfg(), transport, this,

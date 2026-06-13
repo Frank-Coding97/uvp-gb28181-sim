@@ -265,6 +265,24 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
     is SimEvent.SubscribeRefreshed -> LogRowSpec(
         "", "←", false, "REF", UvpColor.Success, "续订 expires=${ev.newExpiresSeconds}s", category = "SUBSCRIBE"
     )
+    is SimEvent.HeartbeatTimeoutDetected -> LogRowSpec(
+        "", "⚠", true, "HB!", UvpColor.Danger,
+        "心跳连续 ${ev.missedCount}/${ev.maxAllowed} 未响应",
+        highlight = true, category = "MESSAGE"
+    )
+    is SimEvent.AutoReregisterTriggered -> LogRowSpec(
+        "", "↻", true, "RE", UvpColor.Warning, "自动重注册 · ${ev.reason}",
+        highlight = true, category = "REGISTER"
+    )
+    is SimEvent.RegistrationRetryScheduled -> LogRowSpec(
+        "", "↻", true, "TRY", UvpColor.Info,
+        "第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后", category = "REGISTER"
+    )
+    is SimEvent.InviteAckTimeout -> LogRowSpec(
+        "", "⚠", true, "ACK", UvpColor.Warning,
+        "平台 ACK 未到达 · ${ev.callId.take(20)}",
+        highlight = true, category = "INVITE"
+    )
 }
 
 private fun msgMethodShort(m: SipMessage): String = when (m) {

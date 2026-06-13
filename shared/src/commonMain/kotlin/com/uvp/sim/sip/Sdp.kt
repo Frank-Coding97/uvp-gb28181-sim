@@ -26,11 +26,26 @@ data class SdpOffer(
     val ssrc: String?,
     /** Media direction the offerer wants. We answer with the inverse. */
     val direction: SdpDirection,
+    /** Transport profile from m= line: RTP/AVP (UDP) or TCP/RTP/AVP (TCP RFC 4571). */
+    val transport: SdpTransport = SdpTransport.UDP,
+    /** TCP setup attribute from a=setup line. Only meaningful when [transport] = TCP. */
+    val tcpSetup: SdpTcpSetup = SdpTcpSetup.PASSIVE,
     /** Whatever lines we don't understand — preserved for round-trip diagnostics. */
     val rawBody: String
 )
 
 enum class SdpDirection { SENDRECV, SENDONLY, RECVONLY, INACTIVE }
+
+/** RTP transport from SDP m= line proto field. */
+enum class SdpTransport { UDP, TCP }
+
+/**
+ * RFC 4145 setup attribute. For RTP/AVP over TCP per GB28181:
+ *   - PASSIVE: device listens, platform connects (the common GB28181 default)
+ *   - ACTIVE:  device connects to platform's listening port
+ *   - ACTPASS: either side OK
+ */
+enum class SdpTcpSetup { ACTIVE, PASSIVE, ACTPASS }
 
 object SdpParser {
 
@@ -41,6 +56,8 @@ object SdpParser {
         var port: Int? = null
         var ssrc: String? = null
         var direction = SdpDirection.SENDRECV
+        var transport = SdpTransport.UDP
+        var tcpSetup = SdpTcpSetup.PASSIVE
 
         for (line in text.lineSequence()) {
             val l = line.trim().trimEnd('\r')
@@ -50,16 +67,22 @@ object SdpParser {
                     ip = l.removePrefix("c=IN IP4 ").trim()
                 }
                 l.startsWith("m=video ") -> {
-                    // m=video <port> RTP/AVP 96
+                    // m=video <port> RTP/AVP 96  (UDP — default)
+                    // m=video <port> TCP/RTP/AVP 96  (TCP — RFC 4571)
                     val parts = l.split(" ")
                     if (parts.size >= 4) {
                         port = parts[1].toIntOrNull()
+                        transport = if (parts[2].startsWith("TCP", ignoreCase = true))
+                            SdpTransport.TCP else SdpTransport.UDP
                     }
                 }
                 l == "a=sendrecv" -> direction = SdpDirection.SENDRECV
                 l == "a=sendonly" -> direction = SdpDirection.SENDONLY
                 l == "a=recvonly" -> direction = SdpDirection.RECVONLY
                 l == "a=inactive" -> direction = SdpDirection.INACTIVE
+                l == "a=setup:active" -> tcpSetup = SdpTcpSetup.ACTIVE
+                l == "a=setup:passive" -> tcpSetup = SdpTcpSetup.PASSIVE
+                l == "a=setup:actpass" -> tcpSetup = SdpTcpSetup.ACTPASS
                 l.startsWith("y=") -> ssrc = l.removePrefix("y=").trim()
             }
         }
@@ -71,6 +94,8 @@ object SdpParser {
             remotePort = port,
             ssrc = ssrc,
             direction = direction,
+            transport = transport,
+            tcpSetup = tcpSetup,
             rawBody = text
         )
     }
@@ -93,7 +118,9 @@ object SdpAnswer {
         localIp: String,
         localRtpPort: Int,
         ssrc: String,
-        sessionName: String = "Play"
+        sessionName: String = "Play",
+        transport: SdpTransport = SdpTransport.UDP,
+        tcpSetup: SdpTcpSetup = SdpTcpSetup.PASSIVE
     ): String {
         require(ssrc.length == 10) { "GB28181 SSRC must be 10 decimal digits, got '$ssrc'" }
         require(ssrc.all { it.isDigit() }) { "SSRC must be all digits: '$ssrc'" }
@@ -103,9 +130,22 @@ object SdpAnswer {
             append("s=").append(sessionName).append("\r\n")
             append("c=IN IP4 ").append(localIp).append("\r\n")
             append("t=0 0\r\n")
-            append("m=video ").append(localRtpPort).append(" RTP/AVP 96\r\n")
+            val proto = if (transport == SdpTransport.TCP) "TCP/RTP/AVP" else "RTP/AVP"
+            append("m=video ").append(localRtpPort).append(' ').append(proto).append(" 96\r\n")
             append("a=sendonly\r\n")
             append("a=rtpmap:96 PS/90000\r\n")
+            if (transport == SdpTransport.TCP) {
+                // Answer with the opposite of what platform offered:
+                // platform offers PASSIVE (waits) → we ACTIVE (connect to it)
+                // platform offers ACTIVE (will connect) → we PASSIVE (listen)
+                val answerSetup = when (tcpSetup) {
+                    SdpTcpSetup.PASSIVE -> "active"
+                    SdpTcpSetup.ACTIVE -> "passive"
+                    SdpTcpSetup.ACTPASS -> "active"
+                }
+                append("a=setup:").append(answerSetup).append("\r\n")
+                append("a=connection:new\r\n")
+            }
             append("y=").append(ssrc).append("\r\n")
         }
     }

@@ -247,6 +247,34 @@ object SipBuilders {
     }
 
     /**
+     * Build a generic non-2xx response (e.g. 487 Request Terminated for CANCEL).
+     */
+    fun buildSimpleResponse(
+        request: SipRequest,
+        statusCode: Int,
+        reasonPhrase: String,
+        toTag: String? = null
+    ): SipResponse {
+        val newHeaders = mutableListOf<SipMessage.Header>()
+        for (h in request.headers) {
+            val canonical = SipHeader.canonicalize(h.name)
+            when (canonical) {
+                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ -> {
+                    newHeaders += h
+                }
+                SipHeader.TO -> {
+                    val v = if (toTag != null && !h.value.contains(";tag=")) {
+                        "${h.value};tag=$toTag"
+                    } else h.value
+                    newHeaders += SipMessage.Header(SipHeader.TO, v)
+                }
+                else -> { /* drop */ }
+            }
+        }
+        return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
+    }
+
+    /**
      * Build a NOTIFY request for in-dialog subscription notification.
      * From/To are from the device perspective (From = device, To = subscriber).
      */
@@ -284,6 +312,45 @@ object SipBuilders {
                 SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
             ),
             body = body
+        )
+    }
+
+    /**
+     * Build a BYE for an established dialog (device-initiated stop).
+     *
+     * In-dialog routing per RFC 3261 § 12.2:
+     *   - Request-URI = remote target (peer's Contact URI from the INVITE)
+     *   - From = local URI + local tag (we sent the 200 OK so this is To-tag of the dialog)
+     *   - To = remote URI + remote tag (came from INVITE's From header)
+     *   - Call-ID = dialog Call-ID
+     *   - CSeq = local CSeq + 1, method=BYE
+     */
+    fun buildBye(
+        config: SimConfig,
+        callId: String,
+        cseq: Int,
+        branch: String,
+        localUri: String,
+        localTag: String,
+        remoteUri: String,
+        remoteTag: String,
+        remoteTarget: String,
+        localIp: String,
+        localPort: Int
+    ): SipRequest {
+        return SipRequest(
+            method = SipMethod.BYE,
+            requestUri = remoteTarget,
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA,
+                    "SIP/2.0/${config.transport.name} $localIp:$localPort;rport;branch=$branch"),
+                SipMessage.Header(SipHeader.FROM, "<$localUri>;tag=$localTag"),
+                SipMessage.Header(SipHeader.TO, "<$remoteUri>;tag=$remoteTag"),
+                SipMessage.Header(SipHeader.CALL_ID, callId),
+                SipMessage.Header(SipHeader.CSEQ, "$cseq BYE"),
+                SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
+                SipMessage.Header(SipHeader.USER_AGENT, config.userAgent)
+            )
         )
     }
 

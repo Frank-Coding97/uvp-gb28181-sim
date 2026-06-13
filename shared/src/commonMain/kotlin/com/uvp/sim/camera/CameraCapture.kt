@@ -21,6 +21,12 @@ import kotlinx.coroutines.flow.Flow
 expect class CameraCapture(config: CaptureConfig) {
     fun start(): Flow<H264Frame>
     suspend fun stop()
+    /**
+     * Request the encoder to emit a key frame on the next encode pass.
+     * Used in response to GB28181 IFameCmd from the platform (§9.3.4).
+     * No-op when no encoder is running.
+     */
+    fun requestKeyFrame()
 }
 
 /**

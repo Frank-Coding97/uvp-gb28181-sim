@@ -118,8 +118,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         )
         transport = tx
 
-        val rtpFactory: (String, Int) -> RtpSender = { host, port ->
-            RtpSender(host, port, engineScope)
+        val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->
+            RtpSender(host, port, engineScope, mode)
         }
         val eng = SimulatorEngine(
             config = cfg,

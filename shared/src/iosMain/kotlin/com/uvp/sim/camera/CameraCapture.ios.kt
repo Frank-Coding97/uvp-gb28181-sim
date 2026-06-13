@@ -26,4 +26,8 @@ actual class CameraCapture actual constructor(@Suppress("unused") private val co
     actual suspend fun stop() {
         streamer?.stop()
     }
+
+    actual fun requestKeyFrame() {
+        streamer?.requestKeyFrame()
+    }
 }

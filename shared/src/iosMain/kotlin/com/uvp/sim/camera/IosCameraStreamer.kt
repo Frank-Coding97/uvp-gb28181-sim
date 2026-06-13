@@ -31,4 +31,9 @@ class IosCameraStreamer(@Suppress("UNUSED_PARAMETER") private val config: Captur
     suspend fun stop() {
         // no-op
     }
+
+    fun requestKeyFrame() {
+        // Will call VTCompressionSessionEncodeFrame with kVTEncodeFrameOptionKey_ForceKeyFrame
+        // when the iOS streamer lands in T13.
+    }
 }

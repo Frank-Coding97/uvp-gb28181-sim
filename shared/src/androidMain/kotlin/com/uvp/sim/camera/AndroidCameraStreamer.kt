@@ -239,6 +239,18 @@ class AndroidCameraStreamer(
         encoderInputSurface = null
     }
 
+    /**
+     * Force the encoder to emit a key frame on the next pass.
+     * Used in response to GB28181 IFameCmd from the platform (§9.3.4).
+     */
+    fun requestKeyFrame() {
+        val codec = encoder ?: return
+        val params = android.os.Bundle().apply {
+            putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+        }
+        runCatching { codec.setParameters(params) }
+    }
+
     // ============= internal binding =============
 
     private fun bindScreenPreview(view: PreviewView) {

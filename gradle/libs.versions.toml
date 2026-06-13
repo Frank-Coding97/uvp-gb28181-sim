@@ -30,6 +30,9 @@ koin = "4.0.0"
 junit = "4.13.2"
 turbine = "1.2.0"
 
+# 3D rendering (Android only — iOS uses SceneKit, JVM falls back to 2D placeholder)
+filament = "1.54.4"
+
 [libraries]
 # Compose Multiplatform
 compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "compose-multiplatform" }
@@ -75,6 +78,10 @@ koin-compose = { module = "io.insert-koin:koin-compose", version.ref = "koin" }
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
 junit = { module = "junit:junit", version.ref = "junit" }
+
+# Filament (Android 3D)
+filament-android = { module = "com.google.android.filament:filament-android", version.ref = "filament" }
+filament-utils = { module = "com.google.android.filament:filament-utils-android", version.ref = "filament" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

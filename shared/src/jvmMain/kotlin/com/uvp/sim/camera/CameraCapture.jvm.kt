@@ -11,4 +11,5 @@ import kotlinx.coroutines.flow.flow
 actual class CameraCapture actual constructor(private val config: CaptureConfig) {
     actual fun start(): Flow<H264Frame> = flow { /* no-op */ }
     actual suspend fun stop() { /* no-op */ }
+    actual fun requestKeyFrame() { /* no-op */ }
 }

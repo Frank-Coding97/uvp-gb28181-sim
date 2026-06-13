@@ -138,6 +138,10 @@ object LogExport {
         is SimEvent.NotifySent -> "→ NOTIFY   ${ev.kind} SN=${ev.sn}"
         is SimEvent.SubscribeExpired -> "· EXPIRED  ${ev.kind} ${ev.subscriber}"
         is SimEvent.SubscribeRefreshed -> "← REFRESH  expires=${ev.newExpiresSeconds}s"
+        is SimEvent.HeartbeatTimeoutDetected -> "⚠ HB-LOST  心跳连续 ${ev.missedCount}/${ev.maxAllowed} 未响应"
+        is SimEvent.AutoReregisterTriggered -> "↻ RE-REG   自动重注册 · ${ev.reason}"
+        is SimEvent.RegistrationRetryScheduled -> "↻ RETRY    第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后"
+        is SimEvent.InviteAckTimeout -> "⚠ ACK-TO   平台 ACK 未到达 · ${ev.callId}"
     }
 
     private fun msgShort(m: SipMessage): String = when (m) {
