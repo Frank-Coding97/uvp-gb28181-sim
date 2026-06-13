@@ -22,7 +22,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:screenOrientation="user"
+            android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
