@@ -73,6 +73,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _catalogTree = MutableStateFlow<List<CatalogNode>>(emptyList())
     val catalogTree: StateFlow<List<CatalogNode>> = _catalogTree.asStateFlow()
 
+    /** 最后一次成功保存目录树的 epoch 毫秒,UI 显示"X 分钟前已保存"。 */
+    private val _lastCatalogSavedAt = MutableStateFlow<Long?>(null)
+    val lastCatalogSavedAt: StateFlow<Long?> = _lastCatalogSavedAt.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -230,6 +234,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val newCfg = _config.value.copy(catalogTree = tree)
         _config.value = newCfg
         _catalogTree.value = tree
+        _lastCatalogSavedAt.value = System.currentTimeMillis()
         viewModelScope.launch { runCatching { configStore.save(newCfg) } }
         val eng = engine ?: return result
         engineScope.launch {

@@ -90,6 +90,7 @@ class MainActivity : ComponentActivity() {
             val sysLogs by systemEvents.collectAsState()
             val rawSubs by viewModel.subscriptions.collectAsStateWithLifecycle()
             val catalogTree by viewModel.catalogTree.collectAsStateWithLifecycle()
+            val lastCatalogSavedAt by viewModel.lastCatalogSavedAt.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -108,7 +109,8 @@ class MainActivity : ComponentActivity() {
                 systemEvents = sysLogs,
                 sessionMarker = SessionTracker.current,
                 subscriptions = subscriptions,
-                catalogTree = catalogTree
+                catalogTree = catalogTree,
+                lastCatalogSavedAt = lastCatalogSavedAt
             )
             val actions = object : AppActions {
                 override fun onConnect() {

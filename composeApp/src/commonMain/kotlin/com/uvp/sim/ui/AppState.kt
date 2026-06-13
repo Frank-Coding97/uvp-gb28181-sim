@@ -29,7 +29,9 @@ data class AppUiState(
      * 当前生效的目录树。SimulatorEngine.catalogTree 投影,
      * 「能力」Tab 的目录管理界面读这个 list 做编辑入口的初始 draft。
      */
-    val catalogTree: List<CatalogNode> = emptyList()
+    val catalogTree: List<CatalogNode> = emptyList(),
+    /** 上一次保存目录树的 epoch ms,UI 显示「X 分钟前已保存」。 */
+    val lastCatalogSavedAt: Long? = null
 )
 
 /**

@@ -147,6 +147,19 @@ fun CatalogManagementScreen(
                 onNodeMenu = { menuFor = it }
             )
         }
+
+        if (state.lastCatalogSavedAt != null) {
+            Surface(color = UvpColor.Surface) {
+                Text(
+                    text = "上次保存:${humanizedAgo(state.lastCatalogSavedAt)}",
+                    color = UvpColor.TextHint,
+                    fontSize = 10.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                )
+            }
+        }
     }
 
     if (showResetConfirm) {
@@ -834,6 +847,19 @@ private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
 internal fun nextSeqId(domain: String, tree: List<CatalogNode>, type: CatalogNodeType): String {
     val seq = nextSeq(tree.map { it.id }.toSet(), type)
     return com.uvp.sim.gb28181.IdEncoder.genChildId(domain, type, seq)
+}
+
+private fun humanizedAgo(epochMs: Long): String {
+    val nowMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+    val diff = (nowMs - epochMs).coerceAtLeast(0L)
+    val sec = diff / 1000
+    return when {
+        sec < 5 -> "刚刚"
+        sec < 60 -> "${sec} 秒前"
+        sec < 3600 -> "${sec / 60} 分钟前"
+        sec < 86400 -> "${sec / 3600} 小时前"
+        else -> "${sec / 86400} 天前"
+    }
 }
 
 @Composable
