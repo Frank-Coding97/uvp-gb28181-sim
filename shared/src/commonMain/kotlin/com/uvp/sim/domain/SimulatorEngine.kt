@@ -681,9 +681,13 @@ class SimulatorEngine(
                 val types = com.uvp.sim.gb28181.ConfigDownloadResponse.parseConfigTypes(xml)
                 sendConfigDownloadResponse(sn, types)
             }
+            "MobilePosition" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                sendMobilePositionResponse(sn)
+            }
             "DeviceControl" -> handleDeviceControl(xml)
             "RecordInfo" -> handleRecordInfoQuery(xml)
-            // Other CmdTypes (ConfigDownload, PresetQuery, MobilePosition, ...) deferred.
+            // 其它 CmdType(SVAC*、AlarmStatusQuery 等)暂不处理。
             else -> Unit
         }
     }
@@ -988,6 +992,48 @@ class SimulatorEngine(
             )
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send ConfigDownload response: ${e.message}"))
+        }
+    }
+
+    /**
+     * 3.7 / §9.5.4 MobilePosition 单次查询应答。
+     * 区别于 8.3 的 SUBSCRIBE 周期 NOTIFY,这是 MESSAGE 单次 Response wrapper,
+     * 从 [mockGps] 取一条最新 fix 即返。
+     */
+    private suspend fun sendMobilePositionResponse(sn: String) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val fix = mockGps.next()
+            val xmlBody = com.uvp.sim.gb28181.MobilePositionResponse.build(
+                deviceId = config.device.deviceId,
+                sn = sn,
+                point = fix.point,
+                speed = fix.speed,
+                direction = fix.direction,
+                altitude = fix.altitude,
+                timestamp = currentLocalIso()
+            )
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台查询 MobilePosition → 已应答 sn=$sn lng=${fix.point.longitude} lat=${fix.point.latitude}"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send MobilePosition response: ${e.message}"))
         }
     }
 
