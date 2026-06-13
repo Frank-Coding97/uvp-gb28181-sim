@@ -32,6 +32,9 @@ class AndroidMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
     override var firstFramePtsUs: Long = 0L
         private set
 
+    /** seek 后第一帧 keyframe 时是否需要重发 SPS/PPS(平台播放器在新位置需参数集才能解码)。 */
+    @Volatile private var needsSpsPpsBeforeNextKeyframe: Boolean = false
+
     override suspend fun open(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val ex = MediaExtractor()
@@ -118,6 +121,17 @@ class AndroidMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
             .onFailure { SystemLogger.emit(LogLevel.Warning, LogTag.Media, "MediaExtractor close 失败: ${it.message}") }
         extractor = null
         Unit
+    }
+
+    /**
+     * Seek 到目标 PTS,SEEK_TO_PREVIOUS_SYNC 语义保证落点是 keyframe(IDR),
+     * 设标志让下次抽到 keyframe 时重发 SPS/PPS。
+     */
+    override suspend fun seekTo(targetUs: Long): Long = withContext(Dispatchers.IO) {
+        val ex = extractor ?: return@withContext firstFramePtsUs
+        ex.seekTo(targetUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+        needsSpsPpsBeforeNextKeyframe = true
+        ex.sampleTime.coerceAtLeast(0L)
     }
 }
 
