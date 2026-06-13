@@ -12,10 +12,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -25,6 +29,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -94,6 +100,8 @@ private fun DialogCard(
 ) {
     val title = dialogBusinessTitle(dialog)
     val timeRange = "${formatHmsFlow(dialog.startedAtMs)} - ${formatHmsFlow(dialog.rows.lastTimestamp() ?: dialog.startedAtMs)}"
+    val clipboard = LocalClipboardManager.current
+    val toast = LocalToastHost.current
 
     Column(
         modifier = Modifier
@@ -128,6 +136,32 @@ private fun DialogCard(
                     color = UvpColor.TextSecondary,
                     fontFamily = FontFamily.Monospace
                 )
+            }
+            Box(
+                modifier = Modifier
+                    .background(UvpColor.Bg, RoundedCornerShape(3.dp))
+                    .border(1.dp, UvpColor.Border, RoundedCornerShape(3.dp))
+                    .clickable {
+                        clipboard.setText(AnnotatedString(formatDialogForCopy(dialog, title)))
+                        toast.success("会话已复制到剪贴板")
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.ContentCopy,
+                        contentDescription = "复制本次会话",
+                        modifier = Modifier.size(11.dp),
+                        tint = UvpColor.TextSecondary
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        "复制",
+                        fontSize = 9.sp,
+                        color = UvpColor.TextSecondary,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             }
         }
         if (!isCollapsed) {
@@ -400,4 +434,54 @@ private fun formatHmsFlow(epochMs: Long): String {
     if (epochMs <= 0) return "--:--:--"
     val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
     return "%02d:%02d:%02d".format(ldt.hour, ldt.minute, ldt.second)
+}
+
+private fun formatHmsMillis(epochMs: Long): String {
+    if (epochMs <= 0) return "--:--:--.---"
+    val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
+    val ms = epochMs % 1000
+    return "%02d:%02d:%02d.%03d".format(ldt.hour, ldt.minute, ldt.second, ms)
+}
+
+/**
+ * 把整段 Dialog 序列化成可粘贴的纯文本(带分隔)——给"复制本次会话"按钮用。
+ *
+ * 每条消息原样输出 SIP wire 格式(请求行/状态行 + headers + body),
+ * 媒体段以 `--- RTP ... ---` 注释形式标注,方便贴到工单或 IDE 里直接看。
+ */
+private fun formatDialogForCopy(dialog: FlowItem.Dialog, title: String): String = buildString {
+    appendLine("# $title")
+    appendLine("# Call-ID: ${dialog.callId}")
+    appendLine("# 开始: ${formatHmsMillis(dialog.startedAtMs)}  · 共 ${dialog.rows.size} 条")
+    appendLine()
+    dialog.rows.forEachIndexed { idx, row ->
+        when (row) {
+            is DialogRow.Message -> {
+                val arrow = if (row.outgoing) "→ sim → 平台" else "← 平台 → sim"
+                appendLine("--- [${idx + 1}] ${formatHmsMillis(row.timestampMs)} $arrow ${row.title} ---")
+                append(formatSipMessage(row.rawMessage))
+                appendLine()
+            }
+            is DialogRow.MediaSegment -> {
+                val end = row.stoppedAtMs?.let { formatHmsMillis(it) } ?: "(推送中)"
+                appendLine("--- [${idx + 1}] RTP ${formatHmsMillis(row.startedAtMs)} → $end ---")
+                appendLine("# 目标: ${row.remoteHost}:${row.remotePort}")
+                appendLine("# 帧数: ${row.frameCount}  包数: ${row.packetCount}")
+                appendLine()
+            }
+        }
+    }
+}
+
+private fun formatSipMessage(msg: com.uvp.sim.sip.SipMessage): String = buildString {
+    when (msg) {
+        is SipRequest -> appendLine("${msg.method} ${msg.requestUri} SIP/2.0")
+        is SipResponse -> appendLine("SIP/2.0 ${msg.statusCode} ${msg.reasonPhrase}")
+    }
+    msg.headers.forEach { appendLine("${it.name}: ${it.value}") }
+    if (msg.body.isNotEmpty()) {
+        appendLine()
+        append(msg.body.decodeToString())
+        if (!endsWith('\n')) appendLine()
+    }
 }
