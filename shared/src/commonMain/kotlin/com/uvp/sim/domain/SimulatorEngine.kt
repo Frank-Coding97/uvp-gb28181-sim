@@ -660,6 +660,10 @@ class SimulatorEngine(
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 sendCatalogResponse(sn)
             }
+            "DeviceInfo" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                sendDeviceInfoResponse(sn)
+            }
             "DeviceControl" -> handleDeviceControl(xml)
             "RecordInfo" -> handleRecordInfoQuery(xml)
             // Other CmdTypes (DeviceInfo, DeviceStatus, ...) deferred to later.
@@ -826,6 +830,34 @@ class SimulatorEngine(
             _events.emit(SimEvent.MessageSent(msg))
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send Catalog response: ${e.message}"))
+        }
+    }
+
+    private suspend fun sendDeviceInfoResponse(sn: String) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val xmlBody = com.uvp.sim.gb28181.DeviceInfoResponse.build(config, sn)
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台查询 DeviceInfo → 已应答 sn=$sn"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send DeviceInfo response: ${e.message}"))
         }
     }
 

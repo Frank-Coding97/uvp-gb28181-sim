@@ -161,5 +161,96 @@ data class DeviceConfig(
     val alarmChannelId: String,
     /** SIP authentication username (often equals deviceId) */
     val username: String,
-    val password: String
+    val password: String,
+    /**
+     * GB/T 28181 §9.3.2 DeviceInfo 应答的"出厂级"标识。
+     * 默认即模拟器自报值,UI 设备配置页可改。
+     */
+    val manufacturer: String = "UVP",
+    val model: String = "GB28181-Sim",
+    val firmware: String = "0.1.0",
+    val hardwareVersion: String = "Mobile",
+    /** 通道高级属性 — GB/T 28181-2022 §9.3.1 Catalog 新增字段集合。M2 单通道全部挂这里。 */
+    val channel: ChannelProfile = ChannelProfile()
 )
+
+/**
+ * GB/T 28181-2022 Catalog Item 新增字段集合(§9.3.1)。
+ *
+ * 这些字段是**通道级**属性,不是设备级。M1/M2 阶段只有一个视频通道,先把它平放在
+ * [DeviceConfig] 里。后续多通道时再按 channel 拆。
+ *
+ * V2016 模式下这些字段不输出(由 [com.uvp.sim.gb28181.CatalogResponse] 按 gbVersion 决定)。
+ */
+@Serializable
+data class ChannelProfile(
+    /** 通道接入网络的 IP / 端口(展示给上级平台,默认 0.0.0.0 / 5060,运行期可由 SimulatorEngine 注入实际值) */
+    val ipAddress: String = "0.0.0.0",
+    val port: Int = 5060,
+    val ptzType: PtzType = PtzType.FixedGun,
+    val positionType: PositionType = PositionType.Street,
+    val roomType: RoomType = RoomType.Outdoor,
+    val useType: UseType = UseType.PublicSecurity,
+    val supplyLightType: SupplyLightType = SupplyLightType.None,
+    val directionType: DirectionType = DirectionType.North,
+    /** 字符串如 "1280*720/1920*1080",多分辨率以 / 分隔 */
+    val resolution: String = "1280*720",
+    /** 业务分组 ID,默认空字符串(平台一般可空) */
+    val businessGroupId: String = ""
+)
+
+/** §9.3.1 PTZType:0 不支持 / 1 球机 / 2 半球 / 3 固定枪机 / 4 遥控枪机 */
+@Serializable
+enum class PtzType(val gbCode: Int, val label: String) {
+    Unsupported(0, "不支持"),
+    Dome(1, "球机"),
+    HalfDome(2, "半球"),
+    FixedGun(3, "固定枪机"),
+    RemoteGun(4, "遥控枪机")
+}
+
+/** §9.3.1 PositionType:1 省级 / 2 市级 / 3 区县级 / 4 街道级 / 5 关键节点 */
+@Serializable
+enum class PositionType(val gbCode: Int, val label: String) {
+    Province(1, "省级监控点"),
+    City(2, "市级监控点"),
+    District(3, "区县级监控点"),
+    Street(4, "街道级监控点"),
+    KeyNode(5, "关键节点")
+}
+
+/** §9.3.1 RoomType:1 室内 / 2 室外 */
+@Serializable
+enum class RoomType(val gbCode: Int, val label: String) {
+    Indoor(1, "室内"),
+    Outdoor(2, "室外")
+}
+
+/** §9.3.1 UseType:1 治安 / 2 交通 / 3 重点 */
+@Serializable
+enum class UseType(val gbCode: Int, val label: String) {
+    PublicSecurity(1, "治安"),
+    Traffic(2, "交通"),
+    Important(3, "重点")
+}
+
+/** §9.3.1 SupplyLightType:1 无补光 / 2 红外补光 / 3 白光补光 */
+@Serializable
+enum class SupplyLightType(val gbCode: Int, val label: String) {
+    None(1, "无补光"),
+    Infrared(2, "红外补光"),
+    White(3, "白光补光")
+}
+
+/** §9.3.1 DirectionType:1 东 / 2 西 / 3 南 / 4 北 / 5 东南 / 6 东北 / 7 西南 / 8 西北 */
+@Serializable
+enum class DirectionType(val gbCode: Int, val label: String) {
+    East(1, "东"),
+    West(2, "西"),
+    South(3, "南"),
+    North(4, "北"),
+    Southeast(5, "东南"),
+    Northeast(6, "东北"),
+    Southwest(7, "西南"),
+    Northwest(8, "西北")
+}
