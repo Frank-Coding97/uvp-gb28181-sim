@@ -1373,13 +1373,15 @@ class SimulatorEngine(
             return
         }
 
-        // 200 OK + answer SDP(s=Playback)
+        // 200 OK + answer SDP(s=Playback / s=Download)
+        val sessionMode = if (offer.isDownload) MediaMode.DOWNLOAD else MediaMode.PLAYBACK
+        val sessionName = if (offer.isDownload) "Download" else "Playback"
         val sdpAnswer = com.uvp.sim.sip.SdpAnswer.buildPlayAnswer(
             deviceId = config.device.deviceId,
             localIp = localIp,
             localRtpPort = playback.localRtpPort,
             ssrc = ssrc,
-            sessionName = "Playback"
+            sessionName = sessionName
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
         val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
@@ -1392,26 +1394,40 @@ class SimulatorEngine(
             transport.send(response)
             _events.emit(SimEvent.MessageSent(response))
         } catch (e: Throwable) {
-            _events.emit(SimEvent.TransportError("send PLAYBACK 200: ${e.message}"))
+            _events.emit(SimEvent.TransportError("send ${sessionName.uppercase()} 200: ${e.message}"))
             playback.cancel()
             return
         }
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "开始回放 → ${segments.size} 段 spanMs=${offer.endMs - offer.startMs} ssrc=$ssrc " +
-                "localRtpPort=${playback.localRtpPort} target=${offer.remoteIp}:${offer.remotePort}"
+            "${if (offer.isDownload) "DOWNLOAD_START" else "开始回放"} → ${segments.size} 段 spanMs=${offer.endMs - offer.startMs} ssrc=$ssrc " +
+                "localRtpPort=${playback.localRtpPort} target=${offer.remoteIp}:${offer.remotePort}" +
+                if (offer.isDownload) " downloadSpeed=${offer.downloadSpeed}" else ""
         )
+
+        // M3 §D Download:启动前注入下载倍速到 PlaybackEngine
+        if (offer.isDownload && offer.downloadSpeed != 1.0) {
+            playback.setScale(offer.downloadSpeed)
+        }
 
         val job = scope.launch {
             try {
                 playback.run()
+                // M3 §D Download 完成 → 先发 MediaStatusNotify(NotifyType=121),再 BYE
+                if (offer.isDownload) {
+                    sendMediaStatusNotify()
+                    SystemLogger.emit(LogLevel.Info, LogTag.Media, "DOWNLOAD_COMPLETE → MediaStatus Notify 已发")
+                }
                 // 推完最后一帧 → 主动 BYE,然后关 RTP sink(顺序很重要,否则 RTP 流静默→BYE 空窗)
                 sendBye(cid, ssrc, deviceContact, invite)
                 runCatching { playback.cancel() }
-                SystemLogger.emit(LogLevel.Info, LogTag.Media, "回放完成 → 主动 BYE")
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "${if (offer.isDownload) "下载完成" else "回放完成"} → 主动 BYE"
+                )
             } catch (e: Throwable) {
-                _events.emit(SimEvent.TransportError("PLAYBACK error: ${e.message}"))
-                SystemLogger.emit(LogLevel.Error, LogTag.Media, "回放异常: ${e.message}")
+                _events.emit(SimEvent.TransportError("${sessionName.uppercase()} error: ${e.message}"))
+                SystemLogger.emit(LogLevel.Error, LogTag.Media, "${sessionName} 异常: ${e.message}")
                 runCatching { playback.cancel() }
             } finally {
                 activePlayback = null
@@ -1423,8 +1439,36 @@ class SimulatorEngine(
             playbackJob = job,
             rtpClose = playback::cancel,
             session = playback,
-            mode = MediaMode.PLAYBACK
+            mode = sessionMode
         )
+    }
+
+    /**
+     * M3 §D 录像下载完成 → 发 MediaStatusNotify (NotifyType=121)。
+     * 不强等 200 OK,失败仅日志(plan §8.2)。
+     */
+    private suspend fun sendMediaStatusNotify() {
+        runCatching {
+            cseq += 1
+            notifySn += 1
+            val req = com.uvp.sim.sip.MediaStatusNotify.build(
+                config = config,
+                cseq = cseq,
+                callId = com.uvp.sim.sip.SipBuilders.randomCallId(localIp),
+                branch = com.uvp.sim.sip.SipBuilders.randomBranch(),
+                fromTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                localIp = localIp,
+                localPort = localPortProvider(),
+                sn = notifySn
+            )
+            transport.send(req)
+            _events.emit(SimEvent.MessageSent(req))
+        }.onFailure {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "MediaStatus Notify 发送失败: ${it.message}(BYE 仍发)"
+            )
+        }
     }
 
     private suspend fun stopActivePlayback(reason: String) {
