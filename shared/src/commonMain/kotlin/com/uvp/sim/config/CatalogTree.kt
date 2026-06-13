@@ -29,3 +29,17 @@ data class CatalogNode(
     val parentId: String,
     val fields: Map<String, String> = emptyMap()
 )
+
+/**
+ * 增量 NOTIFY 的变更事件(GB §9.3.1.4):
+ *  - [Add]    新增节点 → Item 带 `<Event>ADD</Event>`
+ *  - [Del]    删除节点 → Item 带 `<Event>DEL</Event>` (只发 DeviceID + Event)
+ *  - [Update] 字段/位置变更 → Item 带 `<Event>UPDATE</Event>` 含完整新字段
+ *
+ * Status 字段 ON/OFF 变化也走 Update,平台按字段差异自行解读。
+ */
+sealed class CatalogChangeEvent {
+    data class Add(val node: CatalogNode) : CatalogChangeEvent()
+    data class Del(val id: String) : CatalogChangeEvent()
+    data class Update(val node: CatalogNode) : CatalogChangeEvent()
+}

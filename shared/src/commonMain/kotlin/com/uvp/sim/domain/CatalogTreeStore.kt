@@ -1,5 +1,6 @@
 package com.uvp.sim.domain
 
+import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.config.SimConfig
@@ -152,6 +153,53 @@ object CatalogTreeStore {
                 }
             )
         )
+    }
+
+    /**
+     * P1-3: 树差异算法。返回从 [old] 到 [new] 需要应用的变更事件列表。
+     *
+     * - 在 new 但不在 old → Add
+     * - 在 old 但不在 new → Del
+     * - 两边都有但内容不一致 → Update
+     *
+     * 顺序:Add 按 new 出现顺序,Update 按 new 出现顺序,Del 按 old 出现顺序。
+     */
+    fun diff(
+        old: List<CatalogNode>,
+        new: List<CatalogNode>
+    ): List<CatalogChangeEvent> {
+        val oldById = old.associateBy { it.id }
+        val newById = new.associateBy { it.id }
+        val events = mutableListOf<CatalogChangeEvent>()
+        // Add / Update — 按 new 顺序
+        for (n in new) {
+            val o = oldById[n.id]
+            if (o == null) events += CatalogChangeEvent.Add(n)
+            else if (o != n) events += CatalogChangeEvent.Update(n)
+        }
+        // Del — 按 old 顺序
+        for (o in old) {
+            if (o.id !in newById) events += CatalogChangeEvent.Del(o.id)
+        }
+        return events
+    }
+
+    /**
+     * 决定增量 vs 全量 NOTIFY:
+     *   - 老树为空(initial) → 全量
+     *   - 变更节点 / 老树节点 > 30% → 全量
+     *   - 总变更 ≥ 20 → 全量
+     *   - 否则 → 增量(节省带宽,且 WVP 处理 incremental 比较平稳)
+     */
+    fun shouldUseIncremental(
+        events: List<CatalogChangeEvent>,
+        oldSize: Int
+    ): Boolean {
+        if (events.isEmpty()) return false       // 没变更不发,这里返回 false 更安全
+        if (oldSize == 0) return false           // 第一次必须全量
+        if (events.size >= 20) return false      // 大批量改动直接全量
+        val ratio = events.size.toDouble() / oldSize
+        return ratio < 0.30
     }
 
     /**

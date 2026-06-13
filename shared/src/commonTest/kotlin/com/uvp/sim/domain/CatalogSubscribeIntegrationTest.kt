@@ -211,6 +211,160 @@ class CatalogSubscribeIntegrationTest {
     }
 
     @Test
+    fun smallChangeUsesIncrementalNotify() = runTest {
+        // P1-3:小变更(单个节点改名)应走增量 NOTIFY,body 含 <Event>UPDATE</Event>
+        // 起手用 10 节点的"老树",后续只改 1 个节点(变更率 1/10 = 10% < 30%)
+        val rootId = "34020000001110000001"
+        val largeTree = buildList {
+            add(CatalogNode(rootId, CatalogNodeType.Device, "Dev", rootId))
+            for (i in 1..9) {
+                add(CatalogNode(
+                    "video-$i", CatalogNodeType.VideoChannel,
+                    "通道-$i", rootId
+                ))
+            }
+        }
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(
+            config(catalogTree = largeTree), transport, this,
+            localIp = "192.168.1.50"
+        )
+        registerEngine(transport, engine)
+        runCurrent()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+        transport.sent.clear()
+
+        // 改一个节点名字
+        val updated = largeTree.map {
+            if (it.id == "video-3") it.copy(name = "改名通道") else it
+        }
+        engine.updateCatalogTree(updated)
+        runCurrent()
+
+        val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
+        assertEquals(1, notifies.size)
+        val body = notifies.first().body.decodeToString()
+        // 增量 NOTIFY 标志
+        assertTrue(body.contains("<Event>UPDATE</Event>"), "应是增量 NOTIFY")
+        assertTrue(body.contains("<Name>改名通道</Name>"))
+        // 增量 SumNum 是变更数,不是全树大小
+        assertTrue(body.contains("<SumNum>1</SumNum>"))
+        // 没改的节点不在增量 body 里
+        assertTrue(!body.contains("通道-1"))
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun largeChangeUsesFullNotify() = runTest {
+        // P1-3:大变更(>30% 节点变化)应走全量 NOTIFY,无 <Event> 标签
+        val rootId = "34020000001110000001"
+        val oldTree = buildList {
+            add(CatalogNode(rootId, CatalogNodeType.Device, "Dev", rootId))
+            for (i in 1..3) {
+                add(CatalogNode("v$i", CatalogNodeType.VideoChannel, "V$i", rootId))
+            }
+        }
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(
+            config(catalogTree = oldTree), transport, this,
+            localIp = "192.168.1.50"
+        )
+        registerEngine(transport, engine)
+        runCurrent()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+        transport.sent.clear()
+
+        // 全删 channels,只剩根 → 3/4 = 75% 变更
+        val newTree = listOf(oldTree.first())
+        engine.updateCatalogTree(newTree)
+        runCurrent()
+
+        val body = transport.sent.filterIsInstance<SipRequest>()
+            .first { it.method == SipMethod.NOTIFY }.body.decodeToString()
+        // 全量 NOTIFY 没有 Event 标签,SumNum 是新树大小 1
+        assertTrue(!body.contains("<Event>"), "全量 NOTIFY 不应有 <Event> 标签")
+        assertTrue(body.contains("<SumNum>1</SumNum>"))
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun deletedNodeProducesDelEventInIncrementalNotify() = runTest {
+        val rootId = "34020000001110000001"
+        val largeTree = buildList {
+            add(CatalogNode(rootId, CatalogNodeType.Device, "Dev", rootId))
+            for (i in 1..9) {
+                add(CatalogNode(
+                    "video-$i", CatalogNodeType.VideoChannel,
+                    "通道-$i", rootId
+                ))
+            }
+        }
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(
+            config(catalogTree = largeTree), transport, this,
+            localIp = "192.168.1.50"
+        )
+        registerEngine(transport, engine)
+        runCurrent()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+        transport.sent.clear()
+
+        // 删一个 → 1/10 = 10% < 30%,走增量
+        val newTree = largeTree.filter { it.id != "video-5" }
+        engine.updateCatalogTree(newTree)
+        runCurrent()
+
+        val body = transport.sent.filterIsInstance<SipRequest>()
+            .first { it.method == SipMethod.NOTIFY }.body.decodeToString()
+        assertTrue(body.contains("<Event>DEL</Event>"))
+        assertTrue(body.contains("<DeviceID>video-5</DeviceID>"))
+        // DEL Item 没有 Name(GB §9.3.1.4 标准做法)
+        assertTrue(!body.contains("通道-5"))
+
+        engine.shutdown()
+    }
+
+    @Test
+    fun noChangeProducesNoNotify() = runTest {
+        // P1-3:树没变 → 不发 NOTIFY
+        val rootId = "34020000001110000001"
+        val tree = listOf(
+            CatalogNode(rootId, CatalogNodeType.Device, "Dev", rootId),
+            CatalogNode("v1", CatalogNodeType.VideoChannel, "V1", rootId)
+        )
+        val transport = MockSipTransport()
+        transport.connect()
+        val engine = SimulatorEngine(
+            config(catalogTree = tree), transport, this,
+            localIp = "192.168.1.50"
+        )
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+        val initialNotifies = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+
+        engine.updateCatalogTree(tree)  // 完全相同
+        runCurrent()
+
+        val laterNotifies = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        assertEquals(initialNotifies, laterNotifies, "无变更不应触发 NOTIFY")
+
+        engine.shutdown()
+    }
+
+    @Test
     fun catalogAndMobilePositionCoexist() = runTest {
         val transport = MockSipTransport()
         transport.connect()

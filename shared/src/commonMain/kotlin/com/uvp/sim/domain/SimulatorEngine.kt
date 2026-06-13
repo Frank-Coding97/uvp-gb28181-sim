@@ -1139,15 +1139,25 @@ class SimulatorEngine(
 
     /**
      * 用户在 UI 编辑器修改目录树后,写入引擎当前树,并对所有活跃的
-     * Catalog 订阅推一次完整 NOTIFY(对应 spec Q6 行为)。
+     * Catalog 订阅推一次 NOTIFY(对应 spec Q6 + P1-3 增量行为)。
+     *
+     * P1-3:对比新旧树算出 ChangeEvent,小变更走增量(`<Event>ADD/DEL/UPDATE</Event>`),
+     * 大变更走全量。详见 [CatalogTreeStore.shouldUseIncremental]。
      */
     suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) {
+        val oldTree = _catalogTree.value
         _catalogTree.value = tree
-        pushCatalogNotify()
+        val events = CatalogTreeStore.diff(oldTree, tree)
+        if (events.isEmpty()) return  // 无变更,不发 NOTIFY
+        if (CatalogTreeStore.shouldUseIncremental(events, oldSize = oldTree.size)) {
+            pushCatalogIncremental(events)
+        } else {
+            pushCatalogNotify()
+        }
     }
 
     /**
-     * 主动给所有活跃 Catalog 订阅推一次完整 NOTIFY。
+     * 主动给所有活跃 Catalog 订阅推一次完整 NOTIFY(全量树)。
      * 调用时不要持 mutex,自身会 bumpNotify 维护计数。
      */
     suspend fun pushCatalogNotify() {
@@ -1155,6 +1165,54 @@ class SimulatorEngine(
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
             sendCatalogNotify(updated)
+        }
+    }
+
+    /**
+     * P1-3: 主动给所有活跃 Catalog 订阅推一次增量 NOTIFY,body 含
+     * `<Event>ADD/DEL/UPDATE</Event>` Item 列表,WVP 只更新差异部分。
+     */
+    suspend fun pushCatalogIncremental(events: List<com.uvp.sim.config.CatalogChangeEvent>) {
+        if (events.isEmpty()) return
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogIncrementalNotify(updated, events)
+        }
+    }
+
+    private suspend fun sendCatalogIncrementalNotify(
+        dialog: SubscriptionDialog,
+        events: List<com.uvp.sim.config.CatalogChangeEvent>
+    ) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildIncremental(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            events = events
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
 

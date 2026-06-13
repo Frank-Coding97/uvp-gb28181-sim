@@ -1,5 +1,6 @@
 package com.uvp.sim.gb28181
 
+import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
 
@@ -28,6 +29,62 @@ object CatalogNotifyBuilder {
         sn = sn.toString(),
         tree = tree
     )
+
+    /**
+     * P1-3 GB §9.3.1.4 增量 NOTIFY:body 顶层仍是 `<Notify><CmdType>Catalog</CmdType>`,
+     * 但每个 Item 多一个 `<Event>ADD|DEL|UPDATE</Event>` 子标签。
+     *
+     * - Add:Item 含完整字段(跟全量 NOTIFY Item 相同) + `<Event>ADD</Event>`
+     * - Update:Item 含完整新字段 + `<Event>UPDATE</Event>`
+     * - Del:Item 只有 `<DeviceID>` + `<Event>DEL</Event>`(其它字段省略)
+     */
+    fun buildIncremental(
+        deviceId: String,
+        sn: Int,
+        events: List<CatalogChangeEvent>
+    ): String {
+        val items = events.joinToString(separator = "\n") { renderEventItem(it) }
+        val sumNum = events.size
+
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<Notify>\n")
+        sb.append("<CmdType>Catalog</CmdType>\n")
+        sb.append("<SN>").append(sn).append("</SN>\n")
+        sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
+        sb.append("<SumNum>").append(sumNum).append("</SumNum>\n")
+        if (events.isEmpty()) {
+            sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
+        } else {
+            sb.append("<DeviceList Num=\"").append(sumNum).append("\">\n")
+            sb.append(items).append("\n")
+            sb.append("</DeviceList>\n")
+        }
+        sb.append("</Notify>\n")
+        return sb.toString().replace("\n", "\r\n")
+    }
+
+    private fun renderEventItem(event: CatalogChangeEvent): String {
+        return when (event) {
+            is CatalogChangeEvent.Add -> renderItemWithEvent(event.node, "ADD")
+            is CatalogChangeEvent.Update -> renderItemWithEvent(event.node, "UPDATE")
+            is CatalogChangeEvent.Del -> {
+                val sb = StringBuilder()
+                sb.append("<Item>\n")
+                sb.append("<DeviceID>").append(event.id).append("</DeviceID>\n")
+                sb.append("<Event>DEL</Event>")
+                sb.append("\n</Item>")
+                sb.toString()
+            }
+        }
+    }
+
+    private fun renderItemWithEvent(node: CatalogNode, eventTag: String): String {
+        val full = renderItem(node)
+        // 在 </Item> 之前插入 <Event>...</Event>
+        val eventLine = "<Event>$eventTag</Event>\n"
+        return full.replace("</Item>", "${eventLine}</Item>")
+    }
 
     /**
      * 给 [CatalogResponse.buildFromTree] 用 — 同样的 DFS 序列化,
