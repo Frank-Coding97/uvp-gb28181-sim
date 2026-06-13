@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Save
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -102,6 +104,8 @@ fun CatalogManagementScreen(
     var showTemplate by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
     var showExport by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     val isDirty = draft != initial
     val toast = com.uvp.sim.ui.LocalToastHost.current
     val catalogActive =
@@ -137,12 +141,26 @@ fun CatalogManagementScreen(
             onResetDefault = { showResetConfirm = true },
             onApplyTemplate = { showTemplate = true },
             onImportJson = { showImport = true },
-            onExportJson = { showExport = true }
+            onExportJson = { showExport = true },
+            onToggleSearch = {
+                showSearch = !showSearch
+                if (!showSearch) searchQuery = ""
+            }
         )
 
+        if (showSearch) {
+            SearchBar(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                onClose = { showSearch = false; searchQuery = "" }
+            )
+        }
+
         Box(modifier = Modifier.weight(1f)) {
+            val visibleTree = if (searchQuery.isBlank()) draft
+                else filterTreeByQuery(draft, searchQuery)
             TreeList(
-                tree = draft,
+                tree = visibleTree,
                 onNodeClick = { editingId = it },
                 onNodeMenu = { menuFor = it }
             )
@@ -326,7 +344,8 @@ private fun Toolbar(
     onResetDefault: () -> Unit,
     onApplyTemplate: () -> Unit,
     onImportJson: () -> Unit,
-    onExportJson: () -> Unit
+    onExportJson: () -> Unit,
+    onToggleSearch: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     Surface(color = UvpColor.Surface) {
@@ -347,6 +366,10 @@ private fun Toolbar(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f).padding(start = 4.dp)
             )
+            IconButton(onClick = onToggleSearch, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Search, "搜索",
+                    tint = UvpColor.TextSecondary, modifier = Modifier.size(20.dp))
+            }
             IconButton(onClick = onAddRoot, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.Outlined.Add, "新增子节点",
                     tint = UvpColor.Primary, modifier = Modifier.size(20.dp))
@@ -880,6 +903,53 @@ private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
 internal fun nextSeqId(domain: String, tree: List<CatalogNode>, type: CatalogNodeType): String {
     val seq = nextSeq(tree.map { it.id }.toSet(), type)
     return com.uvp.sim.gb28181.IdEncoder.genChildId(domain, type, seq)
+}
+
+@Composable
+private fun SearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClose: () -> Unit
+) {
+    Surface(color = UvpColor.Surface) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                placeholder = { Text("搜索名字或 ID", fontSize = 12.sp) },
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                modifier = Modifier.weight(1f).height(48.dp)
+            )
+            IconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Close, "关闭搜索",
+                    tint = UvpColor.TextSecondary, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+internal fun filterTreeByQuery(tree: List<CatalogNode>, query: String): List<CatalogNode> {
+    if (query.isBlank()) return tree
+    val q = query.trim().lowercase()
+    val byId = tree.associateBy { it.id }
+    val matched = tree.filter {
+        q in it.name.lowercase() || q in it.id.lowercase()
+    }
+    if (matched.isEmpty()) return emptyList()
+    val visible = mutableSetOf<String>()
+    for (node in matched) {
+        var cur: CatalogNode? = node
+        while (cur != null && cur.id !in visible) {
+            visible += cur.id
+            if (cur.parentId == cur.id) break
+            cur = byId[cur.parentId] ?: break
+        }
+    }
+    return tree.filter { it.id in visible }
 }
 
 private fun humanizedAgo(epochMs: Long): String {
