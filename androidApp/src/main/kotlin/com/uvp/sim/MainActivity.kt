@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
             val videoVersion by viewModel.videoConfigVersion.collectAsStateWithLifecycle()
             val sysLogs by systemEvents.collectAsState()
             val rawSubs by viewModel.subscriptions.collectAsStateWithLifecycle()
+            val catalogTree by viewModel.catalogTree.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -106,7 +107,8 @@ class MainActivity : ComponentActivity() {
                 events = events,
                 systemEvents = sysLogs,
                 sessionMarker = SessionTracker.current,
-                subscriptions = subscriptions
+                subscriptions = subscriptions,
+                catalogTree = catalogTree
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -131,6 +133,13 @@ class MainActivity : ComponentActivity() {
                         "配置已更新 device=${updated.device.deviceId} server=${updated.server.ip}:${updated.server.port}"
                     )
                     viewModel.updateConfig(updated)
+                }
+                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "保存目录树 节点数=${tree.size}"
+                    )
+                    viewModel.saveCatalogTree(tree)
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

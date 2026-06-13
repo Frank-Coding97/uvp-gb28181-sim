@@ -1,5 +1,6 @@
 package com.uvp.sim.ui
 
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.observability.SessionMarker
@@ -23,7 +24,12 @@ data class AppUiState(
      * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 SimulatorEngine 推。
      * 主屏「位置订阅」「目录订阅」状态卡读这个 map 做活/灰判定。
      */
-    val subscriptions: Map<SubscriptionKind, SubscriptionStatus> = emptyMap()
+    val subscriptions: Map<SubscriptionKind, SubscriptionStatus> = emptyMap(),
+    /**
+     * 当前生效的目录树。SimulatorEngine.catalogTree 投影,
+     * 「能力」Tab 的目录管理界面读这个 list 做编辑入口的初始 draft。
+     */
+    val catalogTree: List<CatalogNode> = emptyList()
 )
 
 /**
@@ -57,11 +63,17 @@ interface AppActions {
     fun onDisconnect()
     fun onSnapshot()
     fun onConfigSave(updated: SimConfig)
+    /**
+     * 用户在目录管理界面点保存,把新树写回 engine + 持久化。
+     * 若有活跃 Catalog 订阅,engine 会立即推一次完整 NOTIFY(spec Q6)。
+     */
+    fun onCatalogTreeSave(tree: List<CatalogNode>) {}
 }
 
 enum class AppTab(val label: String) {
     Home("主页"),
-    Settings("设置"),
+    Capability("能力"),
     Recording("录像"),
-    Log("日志");
+    Log("日志"),
+    Settings("设置");
 }

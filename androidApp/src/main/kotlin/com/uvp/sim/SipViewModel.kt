@@ -7,6 +7,7 @@ import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
@@ -65,6 +66,13 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
 
+    /**
+     * 当前生效目录树。SimulatorEngine 是真源,这里作为 UI 投影。
+     * 未连接时返回 SimConfig.catalogTree,连接后被 engine 流覆盖。
+     */
+    private val _catalogTree = MutableStateFlow<List<CatalogNode>>(emptyList())
+    val catalogTree: StateFlow<List<CatalogNode>> = _catalogTree.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -74,6 +82,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 _config.value = stored
                 _videoConfigVersion.value += 1
             }
+            // 即便 stored == default,catalogTree 投影也要初始化
+            _catalogTree.value = com.uvp.sim.domain.CatalogTreeStore.effectiveTree(stored)
         }
     }
 
@@ -142,6 +152,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
+        engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
 
         engineScope.launch {
             try {
@@ -199,6 +210,29 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 engine = null
                 transport = null
                 connect()
+            }
+        }
+    }
+
+    /**
+     * 用户保存目录树:
+     *  - 写回 SimConfig.catalogTree 并持久化(下次冷启动恢复)
+     *  - 通知 engine,触发 pushCatalogNotify(若有活跃订阅)
+     */
+    fun saveCatalogTree(tree: List<CatalogNode>) {
+        val newCfg = _config.value.copy(catalogTree = tree)
+        _config.value = newCfg
+        _catalogTree.value = tree
+        viewModelScope.launch { runCatching { configStore.save(newCfg) } }
+        val eng = engine ?: return
+        engineScope.launch {
+            try {
+                eng.updateCatalogTree(tree)
+            } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("save catalog: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
             }
         }
     }
