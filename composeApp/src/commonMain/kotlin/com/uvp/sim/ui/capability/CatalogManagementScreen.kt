@@ -1,15 +1,22 @@
 package com.uvp.sim.ui.capability
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,7 +30,10 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DriveFileMove
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Videocam
@@ -32,12 +42,15 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,19 +74,15 @@ import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
 
 /**
- * 目录管理详情页 — 树形可视化编辑器(M2)。
+ * 目录管理详情页(M2,A 方案 — 主屏树 + 底部 Sheet 编辑)。
  *
- * 提供能力(对应 spec 验收项):
- *  - 展示当前树(递归缩进 + 节点类型图标)
- *  - 选中节点编辑字段(Name + 常用字段)
- *  - 新增子节点(选类型 + 自动生成 ID,IdEncoder)
- *  - 删除选中节点(连带后代),设备根不可删
- *  - 选「移到 ... 之下」按钮,把当前节点挂到目标父节点(对应拖拽,带 spec §Q4 校验)
- *  - 预览即将推送给平台的 Catalog NOTIFY XML(只读弹层)
- *  - 保存 → engine.updateCatalogTree → 自动推一次 NOTIFY(若 Catalog 订阅 active)
- *
- * 拖拽 UX 在 M2 范围内简化为按钮选择父节点;真正的 drag-and-drop M3 升级。
+ * 交互:
+ *  - 整屏给树,字段编辑通过底部 Sheet 弹起
+ *  - 工具栏 3 个动作:新增 / 预览 / 保存
+ *  - 节点行右侧 ⋮ 菜单:编辑字段、移到、删除(根节点只能编辑)
+ *  - spec §Q4 校验:[canMove] 完整保留
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CatalogManagementScreen(
     state: AppUiState,
@@ -82,13 +91,20 @@ fun CatalogManagementScreen(
 ) {
     val initial = state.catalogTree
     var draft by remember(initial) { mutableStateOf(initial) }
-    var selectedId by remember(initial) {
-        mutableStateOf(initial.firstOrNull { it.type == CatalogNodeType.Device }?.id)
-    }
-    var showAdd by remember { mutableStateOf(false) }
+    var menuFor by remember { mutableStateOf<String?>(null) }
+    var editingId by remember { mutableStateOf<String?>(null) }
+    var movingId by remember { mutableStateOf<String?>(null) }
+    var showAdd by remember { mutableStateOf<String?>(null) }   // 父节点 id
     var showPreview by remember { mutableStateOf(false) }
-    var showMove by remember { mutableStateOf(false) }
+    var showLeaveConfirm by remember { mutableStateOf(false) }
     val isDirty = draft != initial
+    val toast = com.uvp.sim.ui.LocalToastHost.current
+    val catalogActive =
+        state.subscriptions[com.uvp.sim.ui.SubscriptionKind.Catalog]?.active == true
+
+    val tryLeave: () -> Unit = {
+        if (isDirty) showLeaveConfirm = true else onBack()
+    }
 
     Column(
         modifier = Modifier
@@ -97,57 +113,111 @@ fun CatalogManagementScreen(
     ) {
         Toolbar(
             isDirty = isDirty,
-            onBack = onBack,
-            onAdd = { showAdd = true },
-            onMove = { showMove = true },
+            onBack = tryLeave,
+            onAddRoot = {
+                val rootId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
+                showAdd = rootId
+            },
             onPreview = { showPreview = true },
             onSave = {
                 actions.onCatalogTreeSave(draft)
-            },
-            canModify = selectedId != null && draft.find { it.id == selectedId }?.type != CatalogNodeType.Device
-        )
-
-        Row(modifier = Modifier.fillMaxSize()) {
-            // 左:树
-            Box(modifier = Modifier.weight(1.2f)) {
-                TreeList(
-                    tree = draft,
-                    selectedId = selectedId,
-                    onSelect = { selectedId = it },
-                    onDelete = { id ->
-                        val ids = collectDescendants(id, draft) + id
-                        draft = draft.filterNot { it.id in ids }
-                        if (selectedId in ids) selectedId = draft.firstOrNull()?.id
-                    }
-                )
-            }
-            // 右:字段编辑
-            Box(modifier = Modifier.weight(1f).padding(start = 6.dp)) {
-                val sel = draft.firstOrNull { it.id == selectedId }
-                if (sel != null) {
-                    NodeEditor(
-                        node = sel,
-                        onChange = { updated ->
-                            draft = draft.map { if (it.id == sel.id) updated else it }
-                        }
-                    )
+                if (catalogActive) {
+                    toast.success("已保存,推送 ${draft.size} 节点到平台")
                 } else {
-                    EmptyEditor()
+                    toast.success("已保存(${draft.size} 节点)")
                 }
             }
+        )
+
+        Box(modifier = Modifier.weight(1f)) {
+            TreeList(
+                tree = draft,
+                onNodeClick = { editingId = it },
+                onNodeMenu = { menuFor = it }
+            )
         }
     }
 
-    if (showAdd) {
+    if (showLeaveConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLeaveConfirm = false },
+            title = { Text("放弃未保存的修改?") },
+            text = {
+                Text("当前有未保存的目录树修改,返回后会丢失。",
+                    color = UvpColor.TextSecondary, fontSize = 13.sp)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showLeaveConfirm = false
+                    onBack()
+                }) { Text("放弃修改", color = UvpColor.Danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeaveConfirm = false }) {
+                    Text("继续编辑", color = UvpColor.Primary)
+                }
+            }
+        )
+    }
+
+    // 节点菜单(每个节点右上角 ⋮)
+    val menuNode = draft.firstOrNull { it.id == menuFor }
+    if (menuNode != null) {
+        NodeActionsSheet(
+            node = menuNode,
+            onDismiss = { menuFor = null },
+            onEdit = { editingId = menuNode.id; menuFor = null },
+            onAddChild = { showAdd = menuNode.id; menuFor = null },
+            onMove = { movingId = menuNode.id; menuFor = null },
+            onDelete = {
+                val ids = collectDescendants(menuNode.id, draft) + menuNode.id
+                draft = draft.filterNot { it.id in ids }
+                menuFor = null
+            }
+        )
+    }
+
+    // 字段编辑 sheet
+    val editingNode = draft.firstOrNull { it.id == editingId }
+    if (editingNode != null) {
+        NodeEditorSheet(
+            node = editingNode,
+            onDismiss = { editingId = null },
+            onChange = { updated ->
+                draft = draft.map { if (it.id == updated.id) updated else it }
+            }
+        )
+    }
+
+    // 新增子节点
+    val addParentId = showAdd
+    if (addParentId != null) {
+        val parentNode = draft.firstOrNull { it.id == addParentId }
         AddChildDialog(
             domain = state.config.server.domain,
             existingIds = draft.map { it.id }.toSet(),
-            parentNode = draft.firstOrNull { it.id == selectedId },
-            onCancel = { showAdd = false },
+            parentNode = parentNode,
+            onCancel = { showAdd = null },
             onConfirm = { newNode ->
                 draft = draft + newNode
-                selectedId = newNode.id
-                showAdd = false
+                showAdd = null
+                editingId = newNode.id  // 添加后直接进编辑
+            }
+        )
+    }
+
+    // 移动节点
+    val movingNode = draft.firstOrNull { it.id == movingId }
+    if (movingNode != null) {
+        MoveDialog(
+            node = movingNode,
+            tree = draft,
+            onCancel = { movingId = null },
+            onConfirm = { newParentId ->
+                draft = draft.map {
+                    if (it.id == movingNode.id) it.copy(parentId = newParentId) else it
+                }
+                movingId = null
             }
         )
     }
@@ -159,23 +229,6 @@ fun CatalogManagementScreen(
             xml = CatalogNotifyBuilder.build(deviceId, sn = 0, tree = draft),
             onDismiss = { showPreview = false }
         )
-    }
-
-    if (showMove) {
-        val current = draft.firstOrNull { it.id == selectedId }
-        if (current != null) {
-            MoveDialog(
-                node = current,
-                tree = draft,
-                onCancel = { showMove = false },
-                onConfirm = { newParentId ->
-                    draft = draft.map {
-                        if (it.id == current.id) it.copy(parentId = newParentId) else it
-                    }
-                    showMove = false
-                }
-            )
-        } else showMove = false
     }
 }
 
@@ -191,7 +244,6 @@ internal fun canMove(
         target.type == CatalogNodeType.AlarmChannel
     ) return false
     if (targetId == dragged.id) return false
-    // 不能放进自己的子树
     val descendants = collectDescendants(dragged.id, tree)
     if (targetId in descendants) return false
     return true
@@ -207,126 +259,160 @@ internal fun collectDescendants(id: String, tree: List<CatalogNode>): Set<String
 private fun Toolbar(
     isDirty: Boolean,
     onBack: () -> Unit,
-    onAdd: () -> Unit,
-    onMove: () -> Unit,
+    onAddRoot: () -> Unit,
     onPreview: () -> Unit,
-    onSave: () -> Unit,
-    canModify: Boolean
+    onSave: () -> Unit
 ) {
     Surface(color = UvpColor.Surface) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 6.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Outlined.ArrowBack, contentDescription = "返回",
+            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.ArrowBack, "返回",
                     tint = UvpColor.Text, modifier = Modifier.size(20.dp))
             }
             Text(
                 "目录管理",
                 color = UvpColor.Text,
-                fontSize = 14.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f).padding(start = 4.dp)
             )
-            ToolbarBtn("新增", Icons.Outlined.Add, enabled = true, onClick = onAdd)
-            ToolbarBtn("移到", Icons.Outlined.AccountTree, enabled = canModify, onClick = onMove)
-            ToolbarBtn("预览", Icons.Outlined.Code, enabled = true, onClick = onPreview)
+            IconButton(onClick = onAddRoot, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Add, "新增子节点",
+                    tint = UvpColor.Primary, modifier = Modifier.size(20.dp))
+            }
+            IconButton(onClick = onPreview, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.Code, "预览 NOTIFY",
+                    tint = UvpColor.Primary, modifier = Modifier.size(20.dp))
+            }
             Button(
                 onClick = onSave,
                 enabled = isDirty,
                 colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 modifier = Modifier.height(32.dp).padding(start = 4.dp)
             ) {
                 Icon(Icons.Outlined.Save, null, tint = Color.White, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(4.dp))
-                Text(if (isDirty) "保存*" else "保存", color = Color.White, fontSize = 12.sp)
+                Text(if (isDirty) "保存*" else "保存",
+                    color = Color.White, fontSize = 12.sp)
             }
         }
-    }
-}
-
-@Composable
-private fun ToolbarBtn(label: String, icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
-    TextButton(
-        onClick = onClick,
-        enabled = enabled
-    ) {
-        Icon(icon, null, modifier = Modifier.size(14.dp),
-            tint = if (enabled) UvpColor.Primary else UvpColor.TextHint)
-        Spacer(Modifier.width(2.dp))
-        Text(label, fontSize = 12.sp,
-            color = if (enabled) UvpColor.Primary else UvpColor.TextHint)
     }
 }
 
 @Composable
 private fun TreeList(
     tree: List<CatalogNode>,
-    selectedId: String?,
-    onSelect: (String) -> Unit,
-    onDelete: (String) -> Unit
+    onNodeClick: (String) -> Unit,
+    onNodeMenu: (String) -> Unit
 ) {
     val ordered = remember(tree) { dfsOrder(tree) }
     val depthMap = remember(tree) { buildDepthMap(tree) }
     LazyColumn(
-        modifier = Modifier.fillMaxSize().background(UvpColor.Surface).padding(4.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        modifier = Modifier.fillMaxSize().background(UvpColor.Surface),
+        contentPadding = PaddingValues(vertical = 4.dp)
     ) {
         items(ordered, key = { it.id }) { node ->
             val depth = depthMap[node.id] ?: 0
             NodeRow(
                 node = node,
                 depth = depth,
-                isSelected = node.id == selectedId,
-                canDelete = node.type != CatalogNodeType.Device,
-                onSelect = { onSelect(node.id) },
-                onDelete = { onDelete(node.id) }
+                onClick = { onNodeClick(node.id) },
+                onMenu = { onNodeMenu(node.id) }
             )
         }
     }
 }
 
+private val GuideColor = Color(0xFFE5E7EB)
+private const val INDENT_DP = 22
+
 @Composable
 private fun NodeRow(
     node: CatalogNode,
     depth: Int,
-    isSelected: Boolean,
-    canDelete: Boolean,
-    onSelect: () -> Unit,
-    onDelete: () -> Unit
+    onClick: () -> Unit,
+    onMenu: () -> Unit
 ) {
-    val bg = if (isSelected) UvpColor.PrimaryLight else Color.Transparent
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(4.dp))
-            .background(bg)
-            .clickable { onSelect() }
-            .padding(horizontal = 6.dp, vertical = 6.dp),
+            .height(32.dp)
+            .clickable { onClick() },
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Spacer(Modifier.width((depth * 14).dp))
-        Icon(node.type.icon(), null, tint = node.type.color(), modifier = Modifier.size(14.dp))
-        Spacer(Modifier.width(6.dp))
-        Column(Modifier.weight(1f)) {
-            Text(node.name, color = UvpColor.Text, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            Text(
-                node.id,
-                color = UvpColor.TextHint,
-                fontSize = 9.sp,
-                fontFamily = FontFamily.Monospace
-            )
-        }
-        if (canDelete) {
-            IconButton(onClick = onDelete, modifier = Modifier.size(22.dp)) {
-                Icon(Icons.Outlined.Delete, "删除",
-                    tint = UvpColor.Danger, modifier = Modifier.size(14.dp))
+        // 缩进竖线区域:每一层画一根淡灰色竖线
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width((6 + depth * INDENT_DP).dp)
+        ) {
+            for (i in 0 until depth) {
+                Box(
+                    modifier = Modifier
+                        .padding(start = (6 + i * INDENT_DP).dp)
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(GuideColor)
+                )
             }
         }
+        Icon(node.type.icon(), null, tint = node.type.color(), modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            node.name,
+            color = UvpColor.Text,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+        Spacer(Modifier.width(6.dp))
+        TypeChip(node.type)
+        Spacer(Modifier.width(6.dp))
+        Text(
+            text = node.id,
+            color = UvpColor.TextHint,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1
+        )
+        Spacer(Modifier.weight(1f))
+        IconButton(onClick = onMenu, modifier = Modifier.size(28.dp)) {
+            Icon(Icons.Outlined.MoreVert, "操作",
+                tint = UvpColor.TextSecondary, modifier = Modifier.size(16.dp))
+        }
     }
+}
+
+@Composable
+private fun TypeChip(type: CatalogNodeType) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(3.dp))
+            .background(type.color().copy(alpha = 0.12f))
+            .padding(horizontal = 5.dp, vertical = 1.dp)
+    ) {
+        Text(
+            text = type.shortLabel(),
+            color = type.color(),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+private fun CatalogNodeType.shortLabel(): String = when (this) {
+    CatalogNodeType.Device -> "设备"
+    CatalogNodeType.BusinessGroup -> "分组"
+    CatalogNodeType.VirtualOrg -> "区划"
+    CatalogNodeType.VideoChannel -> "视频"
+    CatalogNodeType.AlarmChannel -> "报警"
 }
 
 private fun CatalogNodeType.icon(): ImageVector = when (this) {
@@ -385,79 +471,163 @@ private fun buildDepthMap(tree: List<CatalogNode>): Map<String, Int> {
     return cache
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NodeEditor(node: CatalogNode, onChange: (CatalogNode) -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(UvpColor.Surface)
-            .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+private fun NodeActionsSheet(
+    node: CatalogNode,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onAddChild: () -> Unit,
+    onMove: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = UvpColor.Surface
     ) {
-        Text(
-            text = node.type.displayName(),
-            color = node.type.color(),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            text = "ID: ${node.id}",
-            color = UvpColor.TextHint,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace
-        )
-        OutlinedTextField(
-            value = node.name,
-            onValueChange = { onChange(node.copy(name = it)) },
-            label = { Text("名称", fontSize = 10.sp) },
-            singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
-            modifier = Modifier.fillMaxWidth()
-        )
+        Column(modifier = Modifier.padding(bottom = 12.dp)) {
+            // 头部:节点信息
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(node.type.icon(), null, tint = node.type.color(),
+                    modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(node.name, color = UvpColor.Text,
+                        fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(node.type.displayName(), color = node.type.color(), fontSize = 11.sp)
+                }
+            }
 
-        // 视频/报警通道,常用字段:Manufacturer / Model / Status
-        if (node.type == CatalogNodeType.VideoChannel ||
-            node.type == CatalogNodeType.AlarmChannel ||
-            node.type == CatalogNodeType.Device
-        ) {
-            FieldRow("Manufacturer", node.fields["Manufacturer"] ?: "") {
-                onChange(node.copy(fields = node.fields + ("Manufacturer" to it)))
+            ActionRow(Icons.Outlined.Edit, "编辑字段", UvpColor.Primary, onEdit)
+            // 只有 Device / BusinessGroup / VirtualOrg 能加子节点
+            if (node.type == CatalogNodeType.Device ||
+                node.type == CatalogNodeType.BusinessGroup ||
+                node.type == CatalogNodeType.VirtualOrg
+            ) {
+                ActionRow(Icons.Outlined.Add, "新增子节点", UvpColor.Primary, onAddChild)
             }
-            FieldRow("Model", node.fields["Model"] ?: "") {
-                onChange(node.copy(fields = node.fields + ("Model" to it)))
-            }
-            FieldRow("Status", node.fields["Status"] ?: "ON") {
-                onChange(node.copy(fields = node.fields + ("Status" to it)))
-            }
-        }
-        if (node.type == CatalogNodeType.VirtualOrg) {
-            FieldRow("CivilCode", node.fields["CivilCode"] ?: "") {
-                onChange(node.copy(fields = node.fields + ("CivilCode" to it)))
+            // Device 不能移动
+            if (node.type != CatalogNodeType.Device) {
+                ActionRow(Icons.Outlined.DriveFileMove, "移到其它父节点", UvpColor.Info, onMove)
+                ActionRow(Icons.Outlined.Delete, "删除(连同子节点)", UvpColor.Danger, onDelete)
             }
         }
     }
 }
 
 @Composable
-private fun FieldRow(label: String, value: String, onChange: (String) -> Unit) {
+private fun ActionRow(icon: ImageVector, label: String, tint: Color, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = tint, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(12.dp))
+        Text(label, color = UvpColor.Text, fontSize = 14.sp)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun NodeEditorSheet(
+    node: CatalogNode,
+    onDismiss: () -> Unit,
+    onChange: (CatalogNode) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = UvpColor.Surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .padding(bottom = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(node.type.icon(), null, tint = node.type.color(),
+                    modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(node.type.displayName(), color = node.type.color(),
+                    fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Text(
+                "ID: ${node.id}",
+                color = UvpColor.TextHint,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            OutlinedTextField(
+                value = node.name,
+                onValueChange = { onChange(node.copy(name = it)) },
+                label = { Text("名称") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (node.type == CatalogNodeType.VideoChannel ||
+                node.type == CatalogNodeType.AlarmChannel ||
+                node.type == CatalogNodeType.Device
+            ) {
+                FieldInput("Manufacturer", node.fields["Manufacturer"] ?: "") {
+                    onChange(node.copy(fields = node.fields + ("Manufacturer" to it)))
+                }
+                FieldInput("Model", node.fields["Model"] ?: "") {
+                    onChange(node.copy(fields = node.fields + ("Model" to it)))
+                }
+                FieldInput("Status (ON/OFF)", node.fields["Status"] ?: "ON") {
+                    onChange(node.copy(fields = node.fields + ("Status" to it)))
+                }
+            }
+            if (node.type == CatalogNodeType.VirtualOrg) {
+                FieldInput(
+                    label = "CivilCode",
+                    value = node.fields["CivilCode"] ?: "",
+                    helper = "行政区划码 6 位,如 340200=芜湖、110000=北京"
+                ) {
+                    onChange(node.copy(fields = node.fields + ("CivilCode" to it)))
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("完成", color = UvpColor.Primary, fontSize = 14.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FieldInput(
+    label: String,
+    value: String,
+    helper: String? = null,
+    onChange: (String) -> Unit
+) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
-        label = { Text(label, fontSize = 10.sp) },
+        label = { Text(label) },
+        supportingText = helper?.let {
+            { Text(it, color = UvpColor.TextHint, fontSize = 10.sp) }
+        },
         singleLine = true,
-        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
         modifier = Modifier.fillMaxWidth()
     )
-}
-
-@Composable
-private fun EmptyEditor() {
-    Box(
-        modifier = Modifier.fillMaxSize().background(UvpColor.Surface),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("点击节点选中后编辑", color = UvpColor.TextHint, fontSize = 11.sp)
-    }
 }
 
 @Composable
@@ -468,45 +638,49 @@ private fun AddChildDialog(
     onCancel: () -> Unit,
     onConfirm: (CatalogNode) -> Unit
 ) {
-    var typeMenu by remember { mutableStateOf(false) }
     var selectedType by remember { mutableStateOf(CatalogNodeType.VideoChannel) }
     var name by remember { mutableStateOf("新节点") }
+    val typeOptions = listOf(
+        CatalogNodeType.BusinessGroup,
+        CatalogNodeType.VirtualOrg,
+        CatalogNodeType.VideoChannel,
+        CatalogNodeType.AlarmChannel
+    )
 
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("新增子节点", fontSize = 13.sp) },
+        title = { Text("新增子节点") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("父节点:${parentNode?.name ?: "(根节点)"}",
-                    color = UvpColor.TextSecondary, fontSize = 11.sp)
-                Box {
-                    OutlinedTextField(
-                        value = selectedType.displayName(),
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("类型", fontSize = 10.sp) },
-                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
-                        modifier = Modifier.fillMaxWidth().clickable { typeMenu = true }
-                    )
-                    DropdownMenu(typeMenu, onDismissRequest = { typeMenu = false }) {
-                        // 只允许新增四种(根 Device 不可手动新增)
-                        listOf(
-                            CatalogNodeType.BusinessGroup,
-                            CatalogNodeType.VirtualOrg,
-                            CatalogNodeType.VideoChannel,
-                            CatalogNodeType.AlarmChannel
-                        ).forEach { t ->
-                            DropdownMenuItem(
-                                text = { Text(t.displayName(), fontSize = 12.sp) },
-                                onClick = { selectedType = t; typeMenu = false }
+                    color = UvpColor.TextSecondary, fontSize = 12.sp)
+                Text("类型", color = UvpColor.TextSecondary, fontSize = 11.sp)
+                // 4 个分段按钮平铺(2x2)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        typeOptions.take(2).forEach { t ->
+                            TypeOptionButton(
+                                type = t,
+                                selected = selectedType == t,
+                                modifier = Modifier.weight(1f),
+                                onClick = { selectedType = t }
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        typeOptions.drop(2).forEach { t ->
+                            TypeOptionButton(
+                                type = t,
+                                selected = selectedType == t,
+                                modifier = Modifier.weight(1f),
+                                onClick = { selectedType = t }
                             )
                         }
                     }
                 }
                 OutlinedTextField(
                     value = name, onValueChange = { name = it },
-                    label = { Text("名称", fontSize = 10.sp) }, singleLine = true,
-                    textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp),
+                    label = { Text("名称") }, singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -532,6 +706,42 @@ private fun AddChildDialog(
     )
 }
 
+@Composable
+private fun TypeOptionButton(
+    type: CatalogNodeType,
+    selected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    val tint = type.color()
+    val bg = if (selected) tint.copy(alpha = 0.15f) else UvpColor.Bg
+    val border = if (selected) tint else Color(0xFFE5E7EB)
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .border(
+                width = if (selected) 1.5.dp else 1.dp,
+                color = border,
+                shape = RoundedCornerShape(6.dp)
+            )
+            .clickable { onClick() }
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Icon(type.icon(), null, tint = tint, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            type.displayName(),
+            color = if (selected) tint else UvpColor.Text,
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1
+        )
+    }
+}
+
 private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
     val typeCode = type.typeCode
     val maxSeq = existing
@@ -543,21 +753,39 @@ private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
 
 @Composable
 private fun PreviewDialog(xml: String, onDismiss: () -> Unit) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Catalog NOTIFY 预览", fontSize = 13.sp) },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Catalog NOTIFY 预览", modifier = Modifier.weight(1f))
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(xml))
+                    copied = true
+                }) {
+                    Text(if (copied) "已复制 ✓" else "复制",
+                        color = if (copied) UvpColor.Success else UvpColor.Primary,
+                        fontSize = 12.sp)
+                }
+            }
+        },
         text = {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = 360.dp)
                     .background(UvpColor.CodeBg)
+                    .horizontalScroll(rememberScrollState())
+                    .verticalScroll(rememberScrollState())
                     .padding(8.dp)
             ) {
                 Text(
                     text = xml,
-                    fontSize = 9.sp,
+                    fontSize = 10.sp,
                     fontFamily = FontFamily.Monospace,
-                    color = UvpColor.Text
+                    color = UvpColor.Text,
+                    softWrap = false
                 )
             }
         },
@@ -577,11 +805,11 @@ private fun MoveDialog(
     }
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("移动 ${node.name}", fontSize = 13.sp) },
+        title = { Text("移动 ${node.name}") },
         text = {
             if (candidates.isEmpty()) {
                 Text("没有合法目标(只能移到 Device/137/138 节点,且不能移到自身子树)",
-                    color = UvpColor.TextSecondary, fontSize = 11.sp)
+                    color = UvpColor.TextSecondary, fontSize = 12.sp)
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().wrapContentHeight(),
@@ -591,14 +819,15 @@ private fun MoveDialog(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .clip(RoundedCornerShape(4.dp))
                                 .clickable { onConfirm(c.id) }
-                                .padding(8.dp),
+                                .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(c.type.icon(), null, tint = c.type.color(),
-                                modifier = Modifier.size(14.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text(c.name, color = UvpColor.Text, fontSize = 12.sp)
+                                modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(c.name, color = UvpColor.Text, fontSize = 13.sp)
                         }
                     }
                 }
