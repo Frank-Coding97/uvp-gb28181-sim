@@ -44,6 +44,12 @@ interface Mp4DemuxSource {
     suspend fun open(): Result<Unit>
     fun frames(): Flow<MediaFrame>
     suspend fun close()
+
+    /**
+     * Seek 到目标 PTS,返回实际落点(SEEK_TO_PREVIOUS_SYNC 语义,可能 ≤ target)。
+     * M3 §B 拖动跨段 seek 用,默认实现 = no-op(向后兼容,fake demux 可覆盖)。
+     */
+    suspend fun seekTo(targetUs: Long): Long = firstFramePtsUs
 }
 
 /** 工厂签名,SimulatorEngine / PlaybackEngine 通过这个解耦平台实现。 */
