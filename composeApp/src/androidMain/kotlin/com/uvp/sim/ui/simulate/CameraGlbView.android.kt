@@ -84,25 +84,25 @@ private class GlbSceneState {
 
         val viewer = ModelViewer(surfaceView)
         modelViewer = viewer
-        surfaceView.setOnTouchListener { _, event ->
-            viewer.onTouchEvent(event); true
-        }
+        // 老板要求禁止用户拖动 — 吃掉所有 touch 事件不传给 ModelViewer
+        surfaceView.setOnTouchListener { _, _ -> true }
 
         val buf = readAsset(context, "security_camera.glb")
         viewer.loadModelGlb(buf)
         viewer.transformToUnitCube()
 
+        // 老板要求加强对比 — 暖米黄背景让深灰金属摄像头跳出来
         viewer.scene.skybox = Skybox.Builder()
-            .color(0.94f, 0.95f, 0.98f, 1.0f)
+            .color(0.97f, 0.93f, 0.85f, 1.0f)  // 米黄棚拍风
             .build(viewer.engine)
         viewer.scene.indirectLight = IndirectLight.Builder()
-            .intensity(40_000f)
-            .irradiance(1, floatArrayOf(0.85f, 0.85f, 0.88f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f))
+            .intensity(45_000f)
+            .irradiance(1, floatArrayOf(0.95f, 0.90f, 0.78f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f))
             .build(viewer.engine)
 
         light = EntityManager.get().create()
         LightManager.Builder(LightManager.Type.DIRECTIONAL)
-            .color(1f, 0.97f, 0.92f).intensity(50_000f)
+            .color(1f, 0.95f, 0.88f).intensity(75_000f)  // 提强 50k → 75k,加强金属高光
             .direction(0.3f, -0.8f, -0.5f).castShadows(false)
             .build(viewer.engine, light)
         viewer.scene.addEntity(light)
