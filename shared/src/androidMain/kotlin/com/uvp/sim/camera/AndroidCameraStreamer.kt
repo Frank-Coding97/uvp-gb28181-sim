@@ -6,11 +6,12 @@ import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import android.util.Size
 import android.view.Surface
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -89,37 +90,110 @@ class AndroidCameraStreamer(
 
     private var encoder: MediaCodec? = null
     private var encoderInputSurface: Surface? = null
-    private var osdRenderer: OsdRenderer? = null
 
-    @Volatile private var screenPreview: Preview? = null
-    @Volatile private var encoderPreview: Preview? = null
+    /**
+     * OSD 渲染器引用 — streamer 持有的 holder 引用,在第一次 stream 或 attachPreviewView
+     * 时通过 OsdRendererHolder.acquire 获取。生命周期跟 streamer 绑定,release() 时归还。
+     *
+     * 摄像头 Preview UseCase 持续输出到 [persistentOsdRenderer.cameraInputSurface],
+     * 跟 stream/record 解耦 — 任何消费者(直播/录像/屏幕)都从这一份画面源拿。
+     */
+    private var persistentOsdRenderer: OsdRenderer? = null
+    private var persistentOsdHeld = false
+
+    @Volatile private var screenPreview: Preview? = null  // 老 PreviewView 路径已弃用,字段保留过渡期
+    @Volatile private var encoderPreview: Preview? = null  // OSD 关时直连 encoder surface 的 fallback Preview UseCase
+    @Volatile private var cameraToOsdPreview: Preview? = null  // 持续输出到 OsdRenderer.cameraInputSurface 的 Preview UseCase
 
     @Volatile private var provider: ProcessCameraProvider? = null
 
-    /** Bind a screen-side PreviewView so the user can see live camera frames. */
-    fun attachPreviewView(view: PreviewView) {
+    /**
+     * 绑定屏幕预览 SurfaceView(P0-PREVIEW,2026-06-14)。
+     *
+     * 跟工业 IPC 同构:屏幕看到的画面来自 OsdRendererHolder 单一画面源,跟直播/录像同源。
+     * 流程:
+     * 1. 第一次 attach → ensurePersistentOsd() 启 OsdRendererHolder + bind 摄像头到 cameraInputSurface
+     * 2. 监听 SurfaceHolder.Callback,surface 创建/尺寸变 → renderer.setScreenSurface
+     * 3. surface destroyed → renderer.setScreenSurface(null)
+     */
+    fun attachPreviewView(view: SurfaceView) {
         runOnMain {
-            val prov = provider ?: run {
-                // Lazily acquire provider on a background path; rebind once ready.
-                CoroutineScope(Dispatchers.Main).launch {
-                    val p = withContext(Dispatchers.IO) { awaitCameraProvider(context) }
-                    provider = p
-                    bindScreenPreview(view)
-                    rebind()
-                }
+            ensurePersistentOsd()
+            val renderer = persistentOsdRenderer ?: run {
+                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "屏幕预览失败:OsdRenderer 未启动")
                 return@runOnMain
             }
-            bindScreenPreview(view)
-            rebind()
+            // 注册 SurfaceHolder.Callback,surface 生命周期反映到 renderer
+            view.holder.addCallback(object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    renderer.setScreenSurface(holder.surface, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))
+                }
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    renderer.setScreenSurface(holder.surface, width, height)
+                }
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    renderer.setScreenSurface(null, 0, 0)
+                }
+            })
+            // 如果 surface 已经存在(view 已 attached 到 window),直接通知一次
+            val existing = view.holder.surface
+            if (existing != null && existing.isValid) {
+                renderer.setScreenSurface(existing, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))
+            }
         }
     }
 
-    /** Detach screen preview (e.g. activity stopped); encoder feed is unaffected. */
+    /** 解绑屏幕预览。OsdRendererHolder 引用通过 release() 路径归还。 */
     fun detachPreviewView() {
         runOnMain {
-            screenPreview = null
-            rebind()
+            persistentOsdRenderer?.setScreenSurface(null, 0, 0)
         }
+    }
+
+    /**
+     * 确保 OsdRendererHolder 启动并 bind 摄像头 Preview UseCase 到 cameraInputSurface。
+     *
+     * 这是工业 IPC "sensor → ISP region 常驻" 的软件等价。多次调用幂等:已启动则跳过。
+     *
+     * 失败 fallback:OSD 启动不了时持久 renderer = null,后续 attachPreviewView 会
+     * emit OSD 屏幕预览失败,但 stream() / record 仍能走老路径(虽然现在 stream 也依赖 OSD,
+     * 失败的话 stream 也得 fallback)。
+     */
+    private fun ensurePersistentOsd() {
+        if (persistentOsdRenderer != null) return
+        val osdFlow = osdConfigFlow ?: return  // OSD 关掉,屏幕预览也不走这条路
+        val renderer = OsdRendererHolder.acquire(
+            context = context,
+            configFlow = osdFlow,
+            targetWidth = config.widthPx,
+            targetHeight = config.heightPx
+        ) ?: return
+        persistentOsdRenderer = renderer
+        persistentOsdHeld = true
+        // 让摄像头 Preview UseCase 持续输出到 OsdRenderer.cameraInputSurface
+        runOnMain {
+            try {
+                if (provider == null) provider = awaitCameraProviderBlocking(context)
+                bindCameraToOsdInput(renderer)
+                rebind()
+            } catch (t: Throwable) {
+                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD 持久 Preview UseCase bind 失败: ${t.message}")
+            }
+        }
+    }
+
+    private fun bindCameraToOsdInput(renderer: OsdRenderer) {
+        val target = renderer.cameraInputSurface ?: return
+        val targetSize = Size(config.widthPx, config.heightPx)
+        val preview = Preview.Builder()
+            .setTargetResolution(targetSize)
+            .build()
+            .also { p ->
+                p.setSurfaceProvider { request ->
+                    request.provideSurface(target, mainExecutor) { /* released on streamer.release */ }
+                }
+            }
+        cameraToOsdPreview = preview
     }
 
     /** Hot Flow of encoded H.264 frames. Cancelling the collection stops encoding. */
@@ -157,32 +231,22 @@ class AndroidCameraStreamer(
         encoder = codec
         encoderInputSurface = surface
 
-        // OSD: 通过 OsdRendererHolder 拿单例,把直播 encoder surface 注册为消费者,
-        // CameraX Preview 改输出到 OsdRenderer.cameraInputSurface(SurfaceTexture)。
-        // 失败 fallback 到原直连路径(emit OSD_INIT_FAILED 已在 OsdRenderer.start 内部)。
+        // OSD: 通过 OsdRendererHolder 注册 encoder surface,持久 Preview UseCase 已经在
+        // ensurePersistentOsd() 时 bind 给 cameraInputSurface,这里不再独立创 Preview。
+        // 失败 fallback:回退到老路径(独立 Preview UseCase 直连 encoder surface,无 OSD)。
         val osdFlow = osdConfigFlow
-        val cameraTargetSurface: Surface = if (osdFlow != null) {
-            val renderer = OsdRendererHolder.acquire(
-                context = context,
-                configFlow = osdFlow,
-                targetWidth = config.widthPx,
-                targetHeight = config.heightPx
-            )
+        val osdEnabled: Boolean = if (osdFlow != null) {
+            ensurePersistentOsd()  // 幂等,已启动则跳过
+            val renderer = persistentOsdRenderer
             if (renderer != null) {
                 renderer.addEncoderSurface(OSD_ENCODER_TAG_LIVE, surface, config.widthPx, config.heightPx)
-                osdRenderer = renderer
-                renderer.cameraInputSurface ?: surface
-            } else {
-                // OsdRendererHolder 自报 OSD_INIT_FAILED,这里继续走老路径
-                surface
-            }
-        } else {
-            surface
-        }
+                true
+            } else false
+        } else false
 
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "打开摄像头 ${config.widthPx}x${config.heightPx}@${config.frameRate}fps · ${config.videoCodec} ${config.bitrateBps / 1000}kbps · OSD ${if (osdRenderer != null) "ON" else "OFF"}"
+            "打开摄像头 ${config.widthPx}x${config.heightPx}@${config.frameRate}fps · ${config.videoCodec} ${config.bitrateBps / 1000}kbps · OSD ${if (osdEnabled) "ON" else "OFF"}"
         )
 
         // Parameter sets to prepend to every key frame. For H.264 these are
@@ -263,7 +327,11 @@ class AndroidCameraStreamer(
                 if (provider == null) {
                     provider = awaitCameraProviderBlocking(context)
                 }
-                bindEncoderPreview(cameraTargetSurface)
+                // OSD on: cameraToOsdPreview 已在 ensurePersistentOsd 时 bind,这里只 rebind 触发统一刷新
+                // OSD off (fallback): 走老路径 bindEncoderPreview 把 encoder surface 直连 Preview UseCase
+                if (!osdEnabled) {
+                    bindEncoderPreview(surface)
+                }
                 rebind()
             } catch (e: Throwable) {
                 SystemLogger.emit(
@@ -276,15 +344,15 @@ class AndroidCameraStreamer(
 
         awaitClose {
             runOnMain {
-                encoderPreview = null
-                rebind()
+                if (!osdEnabled) {
+                    encoderPreview = null
+                    rebind()
+                }
             }
-            // 解注册自己的 surface,如果是最后一个消费者 holder 自动 tear down
-            if (osdRenderer != null) {
-                osdRenderer?.removeEncoderSurface(OSD_ENCODER_TAG_LIVE)
-                OsdRendererHolder.release()
+            // OSD on:解注册 encoder surface,持久 cameraToOsdPreview 不动(屏幕预览还要看)
+            if (osdEnabled) {
+                persistentOsdRenderer?.removeEncoderSurface(OSD_ENCODER_TAG_LIVE)
             }
-            osdRenderer = null
             runCatching { codec.stop() }
             runCatching { codec.release() }
             runCatching { surface.release() }
@@ -316,13 +384,6 @@ class AndroidCameraStreamer(
 
     // ============= internal binding =============
 
-    private fun bindScreenPreview(view: PreviewView) {
-        val preview = Preview.Builder().build().also {
-            it.setSurfaceProvider(view.surfaceProvider)
-        }
-        screenPreview = preview
-    }
-
     private fun bindEncoderPreview(surface: Surface) {
         val targetSize = Size(config.widthPx, config.heightPx)
         val preview = Preview.Builder()
@@ -351,7 +412,7 @@ class AndroidCameraStreamer(
             CameraFacing.BACK -> CameraSelector.DEFAULT_BACK_CAMERA
         }
         val nextCases = mutableListOf<UseCase>()
-        screenPreview?.let { nextCases += it }
+        cameraToOsdPreview?.let { nextCases += it }
         encoderPreview?.let { nextCases += it }
         try {
             if (boundCases.isNotEmpty()) {
@@ -375,6 +436,14 @@ class AndroidCameraStreamer(
                     boundCases.clear()
                 }
             } catch (_: Throwable) { }
+            // 归还 OsdRendererHolder 引用,可能触发 GL pipeline tear down
+            if (persistentOsdHeld) {
+                persistentOsdRenderer?.setScreenSurface(null, 0, 0)
+                OsdRendererHolder.release()
+                persistentOsdRenderer = null
+                persistentOsdHeld = false
+            }
+            cameraToOsdPreview = null
             lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         }
     }

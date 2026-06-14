@@ -1,25 +1,23 @@
 package com.uvp.sim.ui
 
-import androidx.camera.view.PreviewView
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 
 /**
- * Process-wide bridge between the Activity-owned camera streamer and the
- * commonMain Compose UI. The Activity registers a binder once it has built
- * an [com.uvp.sim.camera.AndroidCameraStreamer]; the Compose layer calls
- * [attach] / [detach] from a `DisposableEffect` around the PreviewView.
+ * 进程级桥 — Activity 持有的 streamer 跟 commonMain Compose UI 解耦。
  *
- * Single-Activity assumption holds for this app — there's exactly one
- * MainActivity and at most one streamer alive at a time.
+ * 屏幕预览改 SurfaceView(P0-PREVIEW,2026-06-14)以接 OsdRendererHolder.setScreenSurface,
+ * 让屏幕看到的画面跟直播/录像同源(都带 OSD)。
  */
 object CameraPreviewBinder {
     @Volatile
-    private var binder: ((PreviewView?) -> Unit)? = null
+    private var binder: ((SurfaceView?) -> Unit)? = null
 
-    fun setBinder(b: ((PreviewView?) -> Unit)?) {
+    fun setBinder(b: ((SurfaceView?) -> Unit)?) {
         binder = b
     }
 
-    fun attach(view: PreviewView) {
+    fun attach(view: SurfaceView) {
         binder?.invoke(view)
     }
 
