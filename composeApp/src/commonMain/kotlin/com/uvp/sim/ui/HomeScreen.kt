@@ -534,14 +534,19 @@ private fun ActionTile(
     recordingActive: Boolean = false,
     onClick: () -> Unit
 ) {
-    val accent = if (recordingActive) UvpColor.Danger else UvpColor.Primary
+    val accent = when {
+        recordingActive -> UvpColor.Danger
+        enabled -> UvpColor.Primary
+        else -> UvpColor.TextHint
+    }
+    val borderColor = if (!enabled && !recordingActive) UvpColor.Border else accent
     Box(modifier = modifier) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
                 .background(if (recordingActive) UvpColor.DangerBg else UvpColor.Surface)
-                .border(1.dp, accent, RoundedCornerShape(8.dp))
+                .border(1.dp, borderColor, RoundedCornerShape(8.dp))
                 .clickable(enabled = enabled) { onClick() }
                 .padding(vertical = 5.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -558,7 +563,11 @@ private fun ActionTile(
                 color = accent
             )
             Text(
-                if (recordingActive) "录像中" else "可触发",
+                when {
+                    recordingActive -> "录像中"
+                    enabled -> "可触发"
+                    else -> "未就绪"
+                },
                 fontSize = 8.5.sp,
                 color = accent.copy(alpha = 0.7f),
                 fontFamily = FontFamily.Monospace
