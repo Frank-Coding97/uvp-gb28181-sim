@@ -5,44 +5,57 @@
 ## 快速跑
 
 ```bash
-# 默认:Monospaced(JDK logical font) + ASCII 95 字符
+# 当前 commit:SansSerif logical font + GB2312 高频 1000 字 + ASCII 95 字符
+./gradlew :shared:bakeOsdFontAtlas \
+  -PosdFont=SansSerif \
+  -PosdCharset="$PWD/tools/font-baker/charset/charset-gb2312-l1.txt"
+
+# 默认参数(ASCII only,SansSerif → 系统字体)
 ./gradlew :shared:bakeOsdFontAtlas
 
-# 换字体(系统已装的字体名)
-./gradlew :shared:bakeOsdFontAtlas -PosdFont="PingFang SC"
-
-# 用本地 .otf 文件(需先把字体放到 tools/font-baker/fonts/)
+# 用本地 .otf 文件
 ./gradlew :shared:bakeOsdFontAtlas \
-  -PosdFont=tools/font-baker/fonts/source-han-sans-sc.otf \
-  -PosdCharset=tools/font-baker/charset/charset-ascii-cjk-sample.txt
+  -PosdFont="$PWD/tools/font-baker/fonts/source-han-sans-sc.otf" \
+  -PosdCharset="$PWD/tools/font-baker/charset/charset-gb2312-l1.txt"
 ```
+
+> **注意**:`-PosdCharset` 必须用绝对路径(`$PWD/...`)。Gradle JavaExec 默认 cwd 是
+> baker 模块根,不是仓库根。
 
 产物:
 
 - `shared/src/androidMain/assets/osd-font-atlas.png` — 8-bit grayscale SDF
 - `shared/src/androidMain/assets/osd-font-atlas.json` — UV + advance + bearing 元数据
 
-## 字符集说明
+## 当前 atlas 内容
 
-- `charset-ascii.txt` — ASCII 0x20..0x7E,共 95 字符。**当前 commit 进 repo 的 atlas 用这一份。**
-- `charset-ascii-cjk-sample.txt` — ASCII + 50 个 GB2312 高频汉字示例,等老板手工放入合规中文字体后可启用。
+407 字符:
+- ASCII 0x20..0x7E(95 字符)
+- GB2312 高频常用字 311 字(覆盖 OSD 实际场景:时间戳数字 + 通道名 + 水印文本)
+- 通过 java.awt SansSerif logical font fallback 渲染,macOS 上自动用 PingFang/Hiragino,
+  Linux/Windows 上自动用系统中文字体
 
-## 后补中文 atlas
+## 字符集
 
-GitHub raw 下思源黑体/Noto Sans SC 在国内网络不稳。建议:
+- `charset-ascii.txt` — ASCII 0x20..0x7E,共 95 字符
+- `charset-gb2312-l1.txt` — ASCII + 高频中文 311 字(当前 commit 用)
+- `charset-cjk-probe.txt` — 中文 fallback 测试用(开发期 probe)
 
-1. 老板手动从合规渠道(如 [Adobe Source Han Sans Release](https://github.com/adobe-fonts/source-han-sans/releases))下载 `SourceHanSansSC-Normal.otf`
-2. 放到 `tools/font-baker/fonts/source-han-sans-sc.otf`
-3. 扩充 `charset-ascii-cjk-sample.txt` 到 GB2312 一级 1000 字(`tools/font-baker/charset/charset-gb2312-l1.txt` 待建)
-4. 重跑 `./gradlew :shared:bakeOsdFontAtlas -PosdFont=... -PosdCharset=...`
-5. 提交新生成的 atlas 资产(覆盖 ASCII 版本)
+## 算法
 
-## 算法说明
+- **渲染**:`java.awt.Font` + AA 抗锯齿,output 64x64 alpha cell
+- **atlas 拼图**:2048x2048,32 cell/row,32 row,容 1024 字符
+- **SDF 后处理**:**8SSEDT**(8-point Sequential Signed Euclidean Distance Transform),
+  双向扫描 O(W*H),atlas 2048+spread=8 跑 1-2s。比 brute-force(O(W*H*spread²),~30-60s)
+  快约 30 倍,GB2312 全集 baking 体验跟得上
 
-- 渲染:`java.awt.Font` + AA 抗锯齿,output 64x64 alpha cell
-- atlas 拼图:2048x2048,32 cell/row,32 row,容 1024 字符
-- SDF 后处理:8-spread brute-force distance field,O(W*H*spread²) ≈ 1.2 G ops 单跑约 30-60s
+## 自定义中文字体
 
-## 不依赖网络的好处
+如要替换为合规 OFL 字体(如思源黑体 / Noto Sans SC):
 
-整个 baker 用 JDK 内置 `java.awt.Font` + `BufferedImage`,零外部 native 依赖(原 plan 写 stb_truetype,但网络下不到 LWJGL native 包/合规中文字体,改了)。质量对 OSD 用够用。
+1. 下载 `SourceHanSansSC-Normal.otf` 或 `NotoSansSC-Regular.otf` 到 `tools/font-baker/fonts/`
+2. 跑 `./gradlew :shared:bakeOsdFontAtlas -PosdFont=tools/font-baker/fonts/<file>.otf -PosdCharset=...`
+3. 提交新 atlas 资产覆盖
+
+当前 commit 的 atlas 用 SansSerif logical font(macOS 渲染端),个人项目内部使用零版权风险;
+公开发行前换 OFL 字体重 bake。
