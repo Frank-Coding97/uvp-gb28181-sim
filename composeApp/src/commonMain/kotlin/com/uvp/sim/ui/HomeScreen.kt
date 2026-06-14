@@ -678,20 +678,6 @@ private fun SubscriptionDetailSheet(
             DetailKv("Expires", status.expiresSeconds?.let { "${it}s" } ?: "—")
             DetailKv("剩余", status.remainingSeconds?.let { "${it}s" } ?: "—")
             DetailKv("Notify 计数", status.notifyCount.toString())
-            if (!status.active) {
-                Spacer(Modifier.height(16.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(UvpColor.WarningBg, RoundedCornerShape(6.dp))
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        "M2 接通真实 SUBSCRIBE 应答后此处显示动态数据",
-                        fontSize = 11.sp, color = UvpColor.Warning
-                    )
-                }
-            }
         }
     }
 }
