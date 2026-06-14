@@ -479,6 +479,56 @@ class SimulatorEngine(
         return if (end < 0) rest else rest.substring(0, end)
     }
 
+    /** Extract user-part from a `sip:user@host` URI; falls back to the platform serverId. */
+    private fun parseUriUser(uri: String): String {
+        val s = uri.substringAfter("sip:", uri).substringBefore('@', "")
+        return s.ifEmpty { config.server.serverId }
+    }
+
+    /**
+     * 用当前 [config.video] 构造 GB28181 § C.2 `f=` 媒体描述符。
+     * EasyCVR / LiveGBS 等平台会读这个字段挑解码器。
+     */
+    private fun buildSdpMediaSpec(): com.uvp.sim.sip.SdpAnswer.MediaSpec {
+        val v = config.video
+        val videoCodec = when (v.videoCodec) {
+            com.uvp.sim.media.VideoCodec.H264 -> 2
+            com.uvp.sim.media.VideoCodec.H265 -> 5
+        }
+        val resolution = when (v.resolution) {
+            com.uvp.sim.config.VideoResolution.SD_480P -> 4   // D1
+            com.uvp.sim.config.VideoResolution.HD_720P -> 5
+            com.uvp.sim.config.VideoResolution.FHD_1080P -> 6
+        }
+        val audioCodec = when (v.audioCodec) {
+            com.uvp.sim.media.AudioCodec.G711A -> 1
+            com.uvp.sim.media.AudioCodec.G711U -> 2
+            com.uvp.sim.media.AudioCodec.AAC -> 11
+        }
+        val audioBitrateKbps = when (v.audioCodec) {
+            com.uvp.sim.media.AudioCodec.G711A,
+            com.uvp.sim.media.AudioCodec.G711U -> 64
+            com.uvp.sim.media.AudioCodec.AAC -> 32
+        }
+        val audioSampleRate = when (v.effectiveAudioSampleRateHz) {
+            8_000 -> 1
+            14_000 -> 2
+            16_000 -> 3
+            32_000 -> 4
+            else -> 3
+        }
+        return com.uvp.sim.sip.SdpAnswer.MediaSpec(
+            videoCodec = videoCodec,
+            resolution = resolution,
+            frameRate = v.frameRate,
+            rateType = 2,
+            videoBitrateKbps = v.bitrateKbps,
+            audioCodec = audioCodec,
+            audioBitrateKbps = audioBitrateKbps,
+            audioSampleRate = audioSampleRate
+        )
+    }
+
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {
@@ -626,7 +676,7 @@ class SimulatorEngine(
      */
     private suspend fun handleCancel(cancel: SipRequest) {
         try {
-            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(cancel)
+            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(cancel, userAgent = config.userAgent)
             transport.send(ok)
             _events.emit(SimEvent.MessageSent(ok))
         } catch (e: Throwable) {
@@ -647,7 +697,8 @@ class SimulatorEngine(
         // Always 200-OK first so the SIP transaction completes promptly.
         try {
             val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(
-                message, toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+                message, toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                userAgent = config.userAgent
             )
             transport.send(ok)
             _events.emit(SimEvent.MessageSent(ok))
@@ -1109,15 +1160,23 @@ class SimulatorEngine(
             ssrc = ssrc,
             sessionName = "Play",
             transport = offer.transport,
-            tcpSetup = offer.tcpSetup
+            tcpSetup = offer.tcpSetup,
+            mediaSpec = buildSdpMediaSpec()
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
         val localToTag = com.uvp.sim.sip.SipBuilders.randomTag()
+        val inviteFromUser = parseUriUser(parseUri(invite.fromHeader() ?: ""))
         val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
             toTag = localToTag,
-            sdpBody = sdpAnswer
+            sdpBody = sdpAnswer,
+            userAgent = config.userAgent,
+            subject = com.uvp.sim.sip.SipBuilders.subject(
+                senderId = config.device.deviceId,
+                ssrc = ssrc,
+                receiverId = inviteFromUser
+            )
         )
         // Capture dialog routing for later device-initiated BYE
         val inviteFromHeader = invite.fromHeader() ?: ""
@@ -1174,19 +1233,19 @@ class SimulatorEngine(
                     val packets = packer.packFrame(ps, timestamp90k)
                     rtpMutex.withLock {
                         for (p in packets) {
-                            try {
-                                rtp.send(p)
-                                activeStream?.let { it.packetCount += 1 }
-                            } catch (e: Throwable) {
-                                _events.emit(SimEvent.TransportError("RTP send: ${e.message}"))
-                                return@withLock
-                            }
+                            // 单次 send 失败即整路终止 — TCP broken pipe 等不可恢复错误
+                            // 必须停掉,否则下一帧再写再抛,日志风暴 + 抢锁拖垮 audio 线程
+                            rtp.send(p)
+                            activeStream?.let { it.packetCount += 1 }
                         }
                     }
                     activeStream?.let { it.frameCount += 1 }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                _events.emit(SimEvent.TransportError("camera flow: ${e.message}"))
+                _events.emit(SimEvent.TransportError("RTP video send: ${e.message}"))
+                scope.launch { stopActiveStream(cid, "video send failed: ${e.message}") }
             }
         }
 
@@ -1199,18 +1258,16 @@ class SimulatorEngine(
                         val packets = packer.packFrame(ps, timestamp90k)
                         rtpMutex.withLock {
                             for (p in packets) {
-                                try {
-                                    rtp.send(p)
-                                    activeStream?.let { it.packetCount += 1 }
-                                } catch (e: Throwable) {
-                                    _events.emit(SimEvent.TransportError("RTP audio send: ${e.message}"))
-                                    return@withLock
-                                }
+                                rtp.send(p)
+                                activeStream?.let { it.packetCount += 1 }
                             }
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Throwable) {
-                    _events.emit(SimEvent.TransportError("audio flow: ${e.message}"))
+                    _events.emit(SimEvent.TransportError("RTP audio send: ${e.message}"))
+                    scope.launch { stopActiveStream(cid, "audio send failed: ${e.message}") }
                 }
             }
         }
@@ -1249,7 +1306,7 @@ class SimulatorEngine(
     private suspend fun handleBye(bye: SipRequest) {
         // Send 200 OK back so platform marks call terminated cleanly.
         try {
-            val ack = com.uvp.sim.sip.SipBuilders.buildSimple200(bye)
+            val ack = com.uvp.sim.sip.SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
             transport.send(ack)
             _events.emit(SimEvent.MessageSent(ack))
         } catch (e: Throwable) {
@@ -1320,14 +1377,22 @@ class SimulatorEngine(
             localIp = localIp,
             localRtpPort = playback.localRtpPort,
             ssrc = ssrc,
-            sessionName = "Playback"
+            sessionName = "Playback",
+            mediaSpec = buildSdpMediaSpec()
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
+        val pbInviteFromUser = parseUriUser(parseUri(invite.fromHeader() ?: ""))
         val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
             toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
-            sdpBody = sdpAnswer
+            sdpBody = sdpAnswer,
+            userAgent = config.userAgent,
+            subject = com.uvp.sim.sip.SipBuilders.subject(
+                senderId = config.device.deviceId,
+                ssrc = ssrc,
+                receiverId = pbInviteFromUser
+            )
         )
         try {
             transport.send(response)
@@ -1378,7 +1443,8 @@ class SimulatorEngine(
         runCatching {
             val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
                 req, statusCode = 486, reasonPhrase = "Busy Here",
-                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                userAgent = config.userAgent
             )
             transport.send(resp)
             _events.emit(SimEvent.MessageSent(resp))
@@ -1390,7 +1456,8 @@ class SimulatorEngine(
         runCatching {
             val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
                 req, statusCode = 487, reasonPhrase = "Request Terminated",
-                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                userAgent = config.userAgent
             )
             transport.send(resp)
             _events.emit(SimEvent.MessageSent(resp))
@@ -1421,7 +1488,8 @@ class SimulatorEngine(
                     com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CSEQ, "$cseq BYE"),
                     com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CONTACT, deviceContact),
                     com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.MAX_FORWARDS, "70"),
-                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.USER_AGENT, config.userAgent)
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.USER_AGENT, config.userAgent),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.DATE, com.uvp.sim.sip.SipBuilders.rfc1123Date())
                 ),
                 body = ByteArray(0)
             )
@@ -1461,7 +1529,7 @@ class SimulatorEngine(
         when (intent) {
             is SubscribeIntent.NewSubscription -> {
                 val toTag = SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds)
+                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds, userAgent = config.userAgent)
                 transport.send(ok)
                 _events.emit(SimEvent.MessageSent(ok))
 
@@ -1494,7 +1562,7 @@ class SimulatorEngine(
             is SubscribeIntent.Refresh -> {
                 val toTag = subscriptionRegistry.currentDialog(intent.callId)?.toTag
                     ?: SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds)
+                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
                 transport.send(ok)
                 _events.emit(SimEvent.MessageSent(ok))
                 subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
@@ -1513,7 +1581,7 @@ class SimulatorEngine(
             is SubscribeIntent.Cancel -> {
                 val d = subscriptionRegistry.currentDialog(intent.callId)
                 val toTag = d?.toTag ?: SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true)
+                val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
                 transport.send(ok)
                 _events.emit(SimEvent.MessageSent(ok))
                 subscriptionRegistry.cancel(intent.callId)
@@ -1571,7 +1639,8 @@ class SimulatorEngine(
             xmlBody = xml,
             localIp = localIp,
             localPort = localPortProvider(),
-            transport = config.transport.name
+            transport = config.transport.name,
+            userAgent = config.userAgent
         )
         try {
             transport.send(notify)

@@ -104,6 +104,38 @@ object SdpParser {
 object SdpAnswer {
 
     /**
+     * GB28181 § C.2 媒体编码描述符 `f=`(非标但 EasyCVR / LiveGBS 等需要)。
+     *
+     * 完整格式: `f=v/<编码格式>/<分辨率>/<帧率>/<码率类型>/<码率大小>a/<编码格式>/<码率大小>/<采样率>`
+     *
+     * 视频编码: 1=MPEG-4 / 2=H.264 / 3=SVAC / 4=3GP / 5=H.265
+     * 分辨率: 1=QCIF / 2=CIF / 3=4CIF / 4=D1 / 5=720p / 6=1080p
+     * 码率类型: 1=CBR / 2=VBR
+     * 音频编码: 1=G.711A / 2=G.711U / 3=G.722.1 / 4=G.723.1 / 5=G.729 / 6=G.726 / 11=AAC
+     * 采样率: 1=8kHz / 2=14kHz / 3=16kHz / 4=32kHz
+     *
+     * 视频段必填,音频段任一字段缺失整段填 0。
+     */
+    data class MediaSpec(
+        val videoCodec: Int,
+        val resolution: Int,
+        val frameRate: Int,
+        val rateType: Int = 2,
+        val videoBitrateKbps: Int,
+        val audioCodec: Int? = null,
+        val audioBitrateKbps: Int? = null,
+        val audioSampleRate: Int? = null
+    ) {
+        fun toFLine(): String {
+            val v = "v/$videoCodec/$resolution/$frameRate/$rateType/$videoBitrateKbps"
+            val a = if (audioCodec != null && audioBitrateKbps != null && audioSampleRate != null) {
+                "a/$audioCodec/$audioBitrateKbps/$audioSampleRate"
+            } else "a///"
+            return "f=$v$a"
+        }
+    }
+
+    /**
      * Build a GB28181-compliant SDP answer for a "Play" INVITE.
      *
      * The answer is `sendonly` (we send, the platform receives), preserves the
@@ -112,6 +144,8 @@ object SdpAnswer {
      *
      * @param ssrc 10-digit decimal SSRC string. Pass through from offer if present;
      *             if offer omitted y= (2016 minimal), pass a generated value.
+     * @param mediaSpec when non-null, append the GB28181 § C.2 `f=` media descriptor
+     *                  for EasyCVR / LiveGBS compatibility.
      */
     fun buildPlayAnswer(
         deviceId: String,
@@ -120,7 +154,8 @@ object SdpAnswer {
         ssrc: String,
         sessionName: String = "Play",
         transport: SdpTransport = SdpTransport.UDP,
-        tcpSetup: SdpTcpSetup = SdpTcpSetup.PASSIVE
+        tcpSetup: SdpTcpSetup = SdpTcpSetup.PASSIVE,
+        mediaSpec: MediaSpec? = null
     ): String {
         require(ssrc.length == 10) { "GB28181 SSRC must be 10 decimal digits, got '$ssrc'" }
         require(ssrc.all { it.isDigit() }) { "SSRC must be all digits: '$ssrc'" }
@@ -147,6 +182,9 @@ object SdpAnswer {
                 append("a=connection:new\r\n")
             }
             append("y=").append(ssrc).append("\r\n")
+            if (mediaSpec != null) {
+                append(mediaSpec.toFLine()).append("\r\n")
+            }
         }
     }
 }
