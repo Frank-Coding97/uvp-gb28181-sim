@@ -31,6 +31,8 @@ internal class OsdFontAtlas {
         private set
     var atlasHeight: Int = 0
         private set
+    var cellSize: Int = 0
+        private set
     var sdfSpread: Int = 0
         private set
     var ascent: Float = 0f
@@ -53,6 +55,7 @@ internal class OsdFontAtlas {
             require(meta.version == 1) { "unsupported atlas version: ${meta.version}" }
             atlasWidth = meta.atlasWidth
             atlasHeight = meta.atlasHeight
+            cellSize = meta.cellSize
             sdfSpread = meta.sdfSpread
             ascent = meta.ascent
             charMap = meta.chars.entries.associate { (k, v) ->

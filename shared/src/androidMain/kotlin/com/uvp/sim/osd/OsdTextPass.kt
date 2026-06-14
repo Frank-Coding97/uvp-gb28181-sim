@@ -77,8 +77,9 @@ internal class OsdTextPass(private val atlas: OsdFontAtlas) {
         if (atlas.glTexId == 0) return
 
         val targetPixel = pixelSizeForSize(size, viewportHeight)
-        val cellPixel = atlas.atlasHeight / (atlas.atlasHeight / 64).coerceAtLeast(1) // = cellSize from atlas
-        val scale = targetPixel.toFloat() / 64f  // baker 默认 cell=64,这里不读 meta 简化
+        // 字号 scale 基于 atlas cellSize,不写死 64 — 换 atlas 字号自动算对
+        val cellSize = if (atlas.cellSize > 0) atlas.cellSize.toFloat() else 64f
+        val scale = targetPixel.toFloat() / cellSize
 
         // 1. 算文本总宽 + 高(像素)
         var pixelWidth = 0f
