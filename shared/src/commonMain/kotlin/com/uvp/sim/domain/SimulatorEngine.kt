@@ -1093,7 +1093,12 @@ class SimulatorEngine(
         val localRtpPort = try {
             rtp.bindLocalPort()
         } catch (e: Throwable) {
-            _events.emit(SimEvent.TransportError("RTP bind: ${e.message}"))
+            val cls = e::class.simpleName ?: "?"
+            val msg = e.message ?: "<null>"
+            val cause = e.cause?.let { "${it::class.simpleName}: ${it.message}" } ?: "<no cause>"
+            _events.emit(SimEvent.TransportError(
+                "RTP bind: mode=$rtpMode → ${offer.remoteIp}:${offer.remotePort}  $cls/$msg  cause=$cause"
+            ))
             return
         }
 
