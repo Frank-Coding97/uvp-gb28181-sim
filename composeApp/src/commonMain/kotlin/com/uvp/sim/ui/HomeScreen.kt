@@ -381,7 +381,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
             .border(1.dp, UvpColor.Border, RoundedCornerShape(8.dp))
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 7.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
@@ -422,7 +422,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
 
         Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp)
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp)
         ) {
             // 编辑态:可改;只读态:同样的行,但 enabled = false 就显灰且不响应点击
             // 复用同一组组件,避免两种布局割裂
@@ -907,7 +907,7 @@ internal fun InlineEditableRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 6.dp),
+                .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -985,7 +985,7 @@ internal fun InlineSegmentedRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 5.dp),
+                .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
