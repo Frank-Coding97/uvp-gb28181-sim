@@ -88,12 +88,20 @@ class MainActivity : ComponentActivity() {
         if (recordingServiceRef == null) {
             recordingServiceRef = com.uvp.sim.recording.AndroidRecordingService(
                 context = applicationContext,
-                streamerSupplier = {
-                    sStreamer ?: error("streamer must be initialized before recording")
-                },
                 executor = ContextCompat.getMainExecutor(applicationContext),
                 deviceId = viewModel.config.value.device.deviceId,
                 scope = AppScope.scope,
+                osdConfigSupplier = { viewModel.osdConfig },
+                encoderConfigSupplier = {
+                    val v = viewModel.config.value.video
+                    com.uvp.sim.recording.AndroidRecordingService.EncoderConfig(
+                        widthPx = v.resolution.widthPx,
+                        heightPx = v.resolution.heightPx,
+                        frameRate = v.frameRate,
+                        bitrateBps = v.bitrateKbps * 1000,
+                        keyframeIntervalSeconds = v.keyframeIntervalSeconds
+                    )
+                },
                 profile = viewModel.config.value.recording
             )
             viewModel.bindRecordingService(recordingServiceRef!!)
