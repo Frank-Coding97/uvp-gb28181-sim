@@ -62,19 +62,8 @@ internal object GlUtil {
 internal class GlException(message: String) : RuntimeException(message)
 
 /**
- * "#RRGGBB" 或 "#AARRGGBB" → ARGB int。
+ * "#RRGGBB" 或 "#AARRGGBB" → ARGB int。委托 commonMain [parseHexColorArgb]。
  *
- * 解析失败默认返回不透明白色,渲染层不会因为颜色字段崩。
+ * 保留这个名字给现有 OsdRenderer / OsdTextPass 调用,避免大批改。
  */
-internal fun parseColor(hex: String): Int {
-    val s = hex.trim().removePrefix("#")
-    return try {
-        when (s.length) {
-            6 -> 0xFF000000.toInt() or s.toInt(16)
-            8 -> s.toLong(16).toInt()
-            else -> 0xFFFFFFFF.toInt()
-        }
-    } catch (_: NumberFormatException) {
-        0xFFFFFFFF.toInt()
-    }
-}
+internal fun parseColor(hex: String): Int = parseHexColorArgb(hex)
