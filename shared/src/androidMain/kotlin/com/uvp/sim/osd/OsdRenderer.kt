@@ -380,10 +380,38 @@ internal class OsdRenderer(
     private fun blitToConsumer(core: EglCore, consumer: Consumer, srcTex: Int, presentationNs: Long) {
         try {
             core.makeCurrent(consumer.eglSurface)
+
+            // letterbox:fbo aspect 跟 consumer aspect 不同时,调小 viewport 居中显示,余下黑边
+            val srcAspect = fboWidth.toFloat() / fboHeight
+            val dstAspect = consumer.width.toFloat() / consumer.height
+            val vpX: Int
+            val vpY: Int
+            val vpW: Int
+            val vpH: Int
+            if (srcAspect > dstAspect) {
+                // 源更宽 → 顶满宽,上下黑边
+                vpW = consumer.width
+                vpH = (consumer.width / srcAspect).toInt()
+                vpX = 0
+                vpY = (consumer.height - vpH) / 2
+            } else if (srcAspect < dstAspect) {
+                // 源更高 → 顶满高,左右黑边
+                vpW = (consumer.height * srcAspect).toInt()
+                vpH = consumer.height
+                vpX = (consumer.width - vpW) / 2
+                vpY = 0
+            } else {
+                vpX = 0; vpY = 0
+                vpW = consumer.width; vpH = consumer.height
+            }
+
+            // 先 clear 整个 surface 为黑(letterbox 黑边),再画到居中 viewport
             GLES30.glViewport(0, 0, consumer.width, consumer.height)
             GLES30.glDisable(GLES30.GL_BLEND)
             GLES30.glClearColor(0f, 0f, 0f, 1f)
             GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+
+            GLES30.glViewport(vpX, vpY, vpW, vpH)
 
             GLES30.glUseProgram(blitProgram)
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
