@@ -543,9 +543,9 @@ private fun ActionTile(
                 .background(if (recordingActive) UvpColor.DangerBg else UvpColor.Surface)
                 .border(1.dp, accent, RoundedCornerShape(8.dp))
                 .clickable(enabled = enabled) { onClick() }
-                .padding(vertical = 7.dp),
+                .padding(vertical = 5.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+            verticalArrangement = Arrangement.spacedBy(1.dp)
         ) {
             Icon(
                 icon, contentDescription = null,
@@ -611,9 +611,9 @@ private fun SubscriptionTile(
             .background(bg)
             .border(1.dp, border, RoundedCornerShape(8.dp))
             .clickable { onClick() }
-            .padding(vertical = 7.dp),
+            .padding(vertical = 5.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(2.dp)
+        verticalArrangement = Arrangement.spacedBy(1.dp)
     ) {
         Icon(
             icon, contentDescription = null,
