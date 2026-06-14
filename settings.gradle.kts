@@ -27,3 +27,4 @@ rootProject.name = "uvp-gb28181-sim"
 include(":shared")
 include(":composeApp")
 include(":androidApp")
+include(":tools:font-baker")
