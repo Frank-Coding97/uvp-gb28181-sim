@@ -29,6 +29,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * TCP-based SIP transport (RFC 3261 § 18.2.2).
@@ -62,42 +63,47 @@ class TcpSipTransport(
 
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return
-        val sm = SelectorManager(Dispatchers.Default)
-        val sk = try {
-            aSocket(sm)
-                .tcp()
-                .connect(InetSocketAddress(remote.host, remote.port))
-        } catch (e: Throwable) {
-            sm.close()
+        // Android 主线程会触发 NetworkOnMainThreadException(ktor tcp().connect() 内部
+        // 有同步 socket 检测,即便挂 suspend),切到 IO 线程跑。
+        // ba7d597 已为 RTP TCP 修过同款问题,现在 SIP TCP 同步治理。
+        withContext(Dispatchers.IO) {
+            val sm = SelectorManager(Dispatchers.Default)
+            val sk = try {
+                aSocket(sm)
+                    .tcp()
+                    .connect(InetSocketAddress(remote.host, remote.port))
+            } catch (e: Throwable) {
+                sm.close()
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Network,
+                    "TCP connect ${remote.host}:${remote.port} 失败: ${e::class.simpleName}: ${e.message}"
+                )
+                throw e
+            }
+            selector = sm
+            socket = sk
+            readChannel = sk.openReadChannel()
+            writeChannel = sk.openWriteChannel(autoFlush = true)
             SystemLogger.emit(
-                LogLevel.Error, LogTag.Network,
-                "TCP connect ${remote.host}:${remote.port} 失败: ${e::class.simpleName}: ${e.message}"
+                LogLevel.Info, LogTag.Network,
+                "TCP connected → ${remote.host}:${remote.port}"
             )
-            throw e
-        }
-        selector = sm
-        socket = sk
-        readChannel = sk.openReadChannel()
-        writeChannel = sk.openWriteChannel(autoFlush = true)
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Network,
-            "TCP connected → ${remote.host}:${remote.port}"
-        )
-        receiveJob = ownedScope.launch {
-            val rc = readChannel ?: return@launch
-            while (isActive) {
-                try {
-                    val msg = readSipMessage(rc) ?: break
-                    _incoming.emit(msg)
-                } catch (e: SipParseException) {
-                    continue
-                } catch (e: Throwable) {
-                    if (!isActive) break
-                    SystemLogger.emit(
-                        LogLevel.Warning, LogTag.Network,
-                        "TCP read error: ${e::class.simpleName}: ${e.message}"
-                    )
-                    break
+            receiveJob = ownedScope.launch {
+                val rc = readChannel ?: return@launch
+                while (isActive) {
+                    try {
+                        val msg = readSipMessage(rc) ?: break
+                        _incoming.emit(msg)
+                    } catch (e: SipParseException) {
+                        continue
+                    } catch (e: Throwable) {
+                        if (!isActive) break
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Network,
+                            "TCP read error: ${e::class.simpleName}: ${e.message}"
+                        )
+                        break
+                    }
                 }
             }
         }
@@ -106,14 +112,17 @@ class TcpSipTransport(
     override suspend fun send(message: SipMessage) {
         val wc = writeChannel ?: error("Transport not connected — call connect() first")
         val payload = message.toBytes()
-        try {
-            wc.writeByteArray(payload)
-        } catch (e: Throwable) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Network,
-                "TCP send 失败: ${e::class.simpleName}: ${e.message}"
-            )
-            throw e
+        // write 在主线程也会撞 NetworkOnMainThreadException,统一在 IO 跑。
+        withContext(Dispatchers.IO) {
+            try {
+                wc.writeByteArray(payload)
+            } catch (e: Throwable) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Network,
+                    "TCP send 失败: ${e::class.simpleName}: ${e.message}"
+                )
+                throw e
+            }
         }
     }
 
@@ -122,10 +131,14 @@ class TcpSipTransport(
         receiveJob = null
         readChannel = null
         writeChannel = null
-        socket?.close()
-        socket = null
-        selector?.close()
-        selector = null
+        // socket.close() / selector.close() 都涉及 fd 释放,在主线程上 strict
+        // mode 同样会发火,统一到 IO。
+        withContext(Dispatchers.IO) {
+            socket?.close()
+            socket = null
+            selector?.close()
+            selector = null
+        }
         if (parentScope == null) {
             ownedScope.cancel()
         }

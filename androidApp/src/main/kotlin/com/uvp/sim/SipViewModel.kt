@@ -50,7 +50,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val engineScope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob())
     private val configStore = ConfigStore(application)
 
-    private var transport: UdpSipTransport? = null
+    private var transport: com.uvp.sim.network.SipTransport? = null
     private var engine: SimulatorEngine? = null
     private var camera: CameraCapture? = null
     private var audio: AudioCapture? = null
@@ -186,7 +186,13 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 SipState.Registering, SipState.Registered, SipState.InCall -> return
                 SipState.Disconnected, SipState.Failed -> {
                     engineScope.launch {
-                        try { existing.register() } catch (e: Throwable) {
+                        try {
+                            // TCP transport 的 socket 可能已经被对端 close / VPN 抖断,
+                            // 重连时必须先把底层 socket 也重建一遍。connect() 自身
+                            // 已经 idempotent(socket != null 时 noop),所以无脑调安全。
+                            transport?.connect()
+                            existing.register()
+                        } catch (e: Throwable) {
                             _events.update { current ->
                                 (listOf(SimEvent.TransportError("register retry: ${e.message}")) + current)
                                     .take(MAX_EVENT_LOG)
