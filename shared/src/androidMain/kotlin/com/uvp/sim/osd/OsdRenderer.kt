@@ -260,6 +260,100 @@ internal class OsdRenderer(
         } catch (t: Throwable) {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD_FRAME_FAIL",
                 detail = "${t::class.simpleName}: ${t.message}")
+            // 探测是否 GL context 丢失(横竖屏 / 后台恢复 / GPU 驱动重置等)
+            val core = eglCore
+            if (core != null && core.isContextLost()) {
+                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD_CONTEXT_LOST",
+                    detail = "GL context 丢失,尝试 GL 内重建")
+                // 先尝试 GL 内重建(EGL + atlas + passes 层),保留消费者注册
+                handler?.post { recreateGl() }
+            }
+        }
+    }
+
+    /**
+     * GL context 丢失后重建整条 pipeline。
+     *
+     * 在 GL thread 上调,顺序:
+     * 1. 释放当前 EGL 资源(已失效)
+     * 2. 暂存所有消费者引用(encoder + screen surface 物理 surface 还在,只是 EGL surface 失效了)
+     * 3. 重新跑 start() 内部初始化(EglCore + atlas + passes + fbo)
+     * 4. 用暂存的 surface 重新创建 EGL surface 注册回去
+     */
+    private fun recreateGl() {
+        if (released.get()) return
+        val context = this.context
+        val configFlow = this.configFlow
+
+        // 暂存消费者
+        val savedEncoders = encoderConsumers.map { Triple(it.tag, it.surface, it.width to it.height) }
+        val savedScreen: Triple<Surface, Int, Int>? = screenConsumer?.let {
+            Triple(it.surface, it.width, it.height)
+        }
+
+        // 释放当前(失败的)资源
+        runCatching { surfaceTexture?.release() }
+        runCatching { _cameraInputSurface?.release() }
+        runCatching { textPass?.release() }
+        runCatching { cameraPass?.release() }
+        runCatching { atlas.release() }
+        runCatching { eglCore?.release() }
+
+        encoderConsumers.clear()
+        screenConsumer = null
+        eglCore = null
+        cameraPass = null
+        textPass = null
+        surfaceTexture = null
+        _cameraInputSurface = null
+        fboId = 0
+        fboTexId = 0
+        blitProgram = 0
+        blitVbo = 0
+
+        try {
+            eglCore = EglCore().apply {
+                setupDisplay()
+                createConfig()
+                createContext()
+            }
+            val tmpPbuffer = eglCore!!.createPbufferSurface(1, 1)
+            eglCore!!.makeCurrent(tmpPbuffer)
+
+            if (!atlas.load(context)) throw RuntimeException("OsdFontAtlas.load failed in recreate")
+            cameraPass = CameraTexturePass().apply { init() }
+            textPass = OsdTextPass(atlas).apply { init() }
+            createFbo(fboWidth, fboHeight)
+            createBlitProgram()
+
+            surfaceTexture = SurfaceTexture(cameraPass!!.cameraTextureId).apply {
+                setDefaultBufferSize(targetWidth, targetHeight)
+                setOnFrameAvailableListener { handler?.post { onFrameAvailable() } }
+            }
+            _cameraInputSurface = Surface(surfaceTexture)
+
+            eglCore!!.destroySurface(tmpPbuffer)
+
+            // 恢复消费者
+            for ((tag, surface, wh) in savedEncoders) {
+                runCatching {
+                    val eglSurface = eglCore!!.createWindowSurface(surface)
+                    encoderConsumers.add(Consumer(tag, surface, eglSurface, wh.first, wh.second))
+                }
+            }
+            savedScreen?.let { (surface, w, h) ->
+                runCatching {
+                    val eglSurface = eglCore!!.createWindowSurface(surface)
+                    screenConsumer = Consumer("screen", surface, eglSurface, w, h)
+                }
+            }
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "OSD_CONTEXT_RECOVERED",
+                detail = "encoder=${savedEncoders.size} screen=${if (savedScreen != null) 1 else 0}")
+        } catch (t: Throwable) {
+            SystemLogger.emit(LogLevel.Error, LogTag.Media, "OSD_RECREATE_FAILED",
+                detail = "${t::class.simpleName}: ${t.message}")
+            // 重建失败时只能让上层 fallback,不再尝试
+            release()
         }
     }
 

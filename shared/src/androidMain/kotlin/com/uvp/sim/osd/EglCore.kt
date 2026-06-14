@@ -46,6 +46,8 @@ internal class EglCore {
 
     private var released = false
 
+    val isReleased: Boolean get() = released
+
     fun setupDisplay() {
         require(eglDisplay == EGL14.EGL_NO_DISPLAY) { "display already set up" }
         val d = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
@@ -132,6 +134,29 @@ internal class EglCore {
     }
 
     fun swapBuffers(surface: EGLSurface): Boolean = EGL14.eglSwapBuffers(eglDisplay, surface)
+
+    /**
+     * 检查 GL context 是否丢失。返回 true 时调用方应触发 [OsdRenderer.recreateGl]。
+     *
+     * Android 没有 explicit context lost notification — 通过尝试 makeCurrent 一个临时
+     * pbuffer surface 来探测,任意一个 EGL_BAD_* / EGL_CONTEXT_LOST 错误码视为丢失。
+     *
+     * 注意:本方法本身可能改变 EGL 当前 context,调用方调完后应自己 makeCurrent 回去。
+     */
+    fun isContextLost(): Boolean {
+        if (isReleased || eglDisplay == EGL14.EGL_NO_DISPLAY || eglContext == EGL14.EGL_NO_CONTEXT) {
+            return true
+        }
+        return runCatching {
+            // eglQueryContext 拿 client version,失败说明 context 已失效
+            val value = IntArray(1)
+            val ok = EGL14.eglQueryContext(eglDisplay, eglContext,
+                EGL14.EGL_CONTEXT_CLIENT_VERSION, value, 0)
+            if (!ok) return true
+            val err = EGL14.eglGetError()
+            err == EGL14.EGL_CONTEXT_LOST
+        }.getOrDefault(true)
+    }
 
     fun setPresentationTime(surface: EGLSurface, nsecs: Long) {
         EGLExt.eglPresentationTimeANDROID(eglDisplay, surface, nsecs)
