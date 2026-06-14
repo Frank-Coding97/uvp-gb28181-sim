@@ -60,3 +60,21 @@ internal object GlUtil {
 }
 
 internal class GlException(message: String) : RuntimeException(message)
+
+/**
+ * "#RRGGBB" 或 "#AARRGGBB" → ARGB int。
+ *
+ * 解析失败默认返回不透明白色,渲染层不会因为颜色字段崩。
+ */
+internal fun parseColor(hex: String): Int {
+    val s = hex.trim().removePrefix("#")
+    return try {
+        when (s.length) {
+            6 -> 0xFF000000.toInt() or s.toInt(16)
+            8 -> s.toLong(16).toInt()
+            else -> 0xFFFFFFFF.toInt()
+        }
+    } catch (_: NumberFormatException) {
+        0xFFFFFFFF.toInt()
+    }
+}
