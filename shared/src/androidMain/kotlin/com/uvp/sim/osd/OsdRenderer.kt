@@ -88,6 +88,10 @@ internal class OsdRenderer(
 
     private val transformMatrix = FloatArray(16)
 
+    /** 帧渲染时长统计 — 超过 [FRAME_BUDGET_MS] 计入掉帧,达到 [DROP_REPORT_THRESHOLD] 触发一次告警。 */
+    private var droppedFrames: Int = 0
+    private var lastDropReportNs: Long = 0L
+
     fun start(): Boolean {
         if (started.get()) return true
         val t = HandlerThread("osd-renderer-gl").apply { start() }
@@ -206,6 +210,7 @@ internal class OsdRenderer(
         val cam = cameraPass ?: return
         val text = textPass ?: return
 
+        val frameStartNs = System.nanoTime()
         try {
             // === Step 1: 渲染到 fbo(单一画面源,所有消费者共享) ===
             // 任意 EGL surface 上 makeCurrent 都能渲染到 fbo,这里用第一个消费者的 surface,
@@ -236,6 +241,21 @@ internal class OsdRenderer(
             }
             screenConsumer?.let {
                 blitToConsumer(core, it, fboTexId, 0L)  // 屏幕走系统时序
+            }
+
+            // 帧时长检查 — 超过预算计入掉帧,batched 触发一次告警避免日志风暴
+            val elapsedMs = (System.nanoTime() - frameStartNs) / 1_000_000
+            if (elapsedMs > FRAME_BUDGET_MS) {
+                droppedFrames++
+                if (droppedFrames % DROP_REPORT_THRESHOLD == 0) {
+                    val lastNs = lastDropReportNs
+                    val nowNs = System.nanoTime()
+                    if (nowNs - lastNs > DROP_REPORT_COOLDOWN_NS) {
+                        lastDropReportNs = nowNs
+                        SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD_FRAME_DROPPED",
+                            detail = "累计 $droppedFrames 帧渲染超过 ${FRAME_BUDGET_MS}ms 预算,本帧 ${elapsedMs}ms")
+                    }
+                }
             }
         } catch (t: Throwable) {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD_FRAME_FAIL",
@@ -410,5 +430,16 @@ void main() {
             blitVbo = 0
             eglCore = null
         }
+    }
+
+    companion object {
+        /** 单帧渲染预算 — 30fps 下每帧 33.3ms,留 33ms 给 OSD pipeline 整体处理。 */
+        const val FRAME_BUDGET_MS = 33L
+
+        /** 累计掉帧数达到这个数才触发一次告警(避免日志风暴)。 */
+        const val DROP_REPORT_THRESHOLD = 30
+
+        /** 同类告警冷却 — 相邻两次 OSD_FRAME_DROPPED 至少隔 10s。 */
+        const val DROP_REPORT_COOLDOWN_NS = 10_000_000_000L
     }
 }

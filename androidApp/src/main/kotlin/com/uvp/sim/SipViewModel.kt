@@ -72,6 +72,29 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         .map { it.osd }
         .stateIn(viewModelScope, SharingStarted.Eagerly, _config.value.osd)
 
+    init {
+        // OSD 配置变更日志(plan §9 OSD_CONFIG_CHANGED 事件)
+        viewModelScope.launch {
+            var prev: com.uvp.sim.config.OsdConfig? = null
+            osdConfig.collect { now ->
+                val before = prev
+                if (before != null && before != now) {
+                    val parts = mutableListOf<String>()
+                    if (before.timestamp != now.timestamp) parts += "timestamp(${before.timestamp.enabled}→${now.timestamp.enabled})"
+                    if (before.channelName != now.channelName) parts += "channelName(${before.channelName.enabled}→${now.channelName.enabled},text='${now.channelName.text}')"
+                    if (before.watermark != now.watermark) parts += "watermark(${before.watermark.enabled}→${now.watermark.enabled},text='${now.watermark.text}')"
+                    com.uvp.sim.observability.SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Info,
+                        com.uvp.sim.observability.LogTag.User,
+                        "OSD_CONFIG_CHANGED",
+                        detail = parts.joinToString(", ")
+                    )
+                }
+                prev = now
+            }
+        }
+    }
+
     /** 录像状态(M2 D 块)。Activity 把它桥接到 AppUiState.recording。 */
     private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)
     val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
