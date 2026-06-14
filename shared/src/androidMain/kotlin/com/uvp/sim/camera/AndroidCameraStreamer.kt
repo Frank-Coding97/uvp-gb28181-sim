@@ -23,6 +23,7 @@ import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.osd.OsdRenderer
+import com.uvp.sim.osd.OsdRendererHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -156,23 +157,23 @@ class AndroidCameraStreamer(
         encoder = codec
         encoderInputSurface = surface
 
-        // OSD: 试图启动 OsdRenderer,把 encoder surface 接到 GL 输出端,
+        // OSD: 通过 OsdRendererHolder 拿单例,把直播 encoder surface 注册为消费者,
         // CameraX Preview 改输出到 OsdRenderer.cameraInputSurface(SurfaceTexture)。
         // 失败 fallback 到原直连路径(emit OSD_INIT_FAILED 已在 OsdRenderer.start 内部)。
         val osdFlow = osdConfigFlow
         val cameraTargetSurface: Surface = if (osdFlow != null) {
-            val renderer = OsdRenderer(
+            val renderer = OsdRendererHolder.acquire(
                 context = context,
                 configFlow = osdFlow,
                 targetWidth = config.widthPx,
                 targetHeight = config.heightPx
             )
-            if (renderer.start()) {
-                renderer.setEncoderSurface(surface)
+            if (renderer != null) {
+                renderer.addEncoderSurface(OSD_ENCODER_TAG_LIVE, surface, config.widthPx, config.heightPx)
                 osdRenderer = renderer
                 renderer.cameraInputSurface ?: surface
             } else {
-                // OsdRenderer 自报 OSD_INIT_FAILED,这里继续走老路径
+                // OsdRendererHolder 自报 OSD_INIT_FAILED,这里继续走老路径
                 surface
             }
         } else {
@@ -278,7 +279,11 @@ class AndroidCameraStreamer(
                 encoderPreview = null
                 rebind()
             }
-            runCatching { osdRenderer?.release() }
+            // 解注册自己的 surface,如果是最后一个消费者 holder 自动 tear down
+            if (osdRenderer != null) {
+                osdRenderer?.removeEncoderSurface(OSD_ENCODER_TAG_LIVE)
+                OsdRendererHolder.release()
+            }
             osdRenderer = null
             runCatching { codec.stop() }
             runCatching { codec.release() }
@@ -397,6 +402,8 @@ class AndroidCameraStreamer(
     }
 
     companion object {
+        const val OSD_ENCODER_TAG_LIVE = "live"
+
         private suspend fun awaitCameraProvider(context: Context): ProcessCameraProvider =
             suspendCancellableCoroutine { cont ->
                 val future = ProcessCameraProvider.getInstance(context)
