@@ -201,10 +201,16 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val ctx = getApplication<Application>()
         val localIp = AndroidNetwork.activeIpv4(ctx) ?: "0.0.0.0"
 
-        val tx = UdpSipTransport(
-            remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.UDP),
-            parentScope = engineScope
-        )
+        val tx: com.uvp.sim.network.SipTransport = when (cfg.transport) {
+            TransportType.TCP -> com.uvp.sim.network.TcpSipTransport(
+                remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.TCP),
+                parentScope = engineScope
+            )
+            TransportType.UDP -> UdpSipTransport(
+                remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.UDP),
+                parentScope = engineScope
+            )
+        }
         transport = tx
 
         val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->

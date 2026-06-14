@@ -19,6 +19,7 @@ class MockSipTransport(
     private var connected = false
     private val _incoming = MutableSharedFlow<SipMessage>(replay = 0, extraBufferCapacity = 64)
     override val incoming: Flow<SipMessage> = _incoming.asSharedFlow()
+    override val localPort: Int = 5060
 
     override suspend fun connect() { connected = true }
     override suspend fun close() { connected = false }

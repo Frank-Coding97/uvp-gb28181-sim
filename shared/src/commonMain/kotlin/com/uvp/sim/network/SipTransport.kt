@@ -20,6 +20,13 @@ interface SipTransport {
     suspend fun send(message: SipMessage)
     val incoming: Flow<SipMessage>
     suspend fun close()
+
+    /**
+     * Local port the underlying socket is bound to.
+     * Returns `-1` if not yet connected. Used by the engine to fill Via /
+     * Contact headers so the platform can reach back at the right port.
+     */
+    val localPort: Int
 }
 
 /** Information about the remote SIP server. */
