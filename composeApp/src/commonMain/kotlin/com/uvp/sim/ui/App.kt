@@ -19,13 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.Receipt
-import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.Videocam
-import androidx.compose.material.icons.outlined.ViewInAr
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -62,7 +61,6 @@ fun App(state: AppUiState, actions: AppActions) {
                     when (currentTab) {
                         AppTab.Home -> HomeScreen(state, actions)
                         AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(state, actions)
-                        AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(state)
                         AppTab.Settings -> SettingsScreen(state, actions)
                         AppTab.Recording -> RecordingScreen(state, actions)
                         AppTab.Log -> LogScreen(state)
@@ -166,9 +164,8 @@ private fun BottomTabItem(
 @Composable
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
-    AppTab.Capability -> Icons.Outlined.Apps
-    AppTab.Simulate -> Icons.Outlined.ViewInAr
-    AppTab.Settings -> Icons.Outlined.Tune
-    AppTab.Recording -> Icons.Outlined.Videocam
-    AppTab.Log -> Icons.Outlined.Receipt
+    AppTab.Capability -> Icons.Outlined.Extension
+    AppTab.Log -> Icons.Outlined.Description
+    AppTab.Recording -> Icons.Outlined.Movie
+    AppTab.Settings -> Icons.Outlined.Settings
 }

@@ -12,11 +12,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.ArrowForward
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.VideoLibrary
+import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,6 +33,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -34,16 +42,22 @@ import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.simulate.SimulateScreen
 
 /**
- * 「能力」Tab 主屏 — 卡片化展示已实现的国标扩展能力。
+ * 「能力」Tab 主屏 — 2 列网格,卡片化展示已实现的国标扩展能力。
  *
- * M2 范围内只放 1 张卡片:目录管理。后续可扩录像 Query / 报警订阅 / 设备控制
- * 子模块入口等。点卡片进入 [CatalogManagementScreen]。
+ * 当前卡片:
+ *  - 目录管理(§9.3.1, 已实现)
+ *  - 模拟控制(§4, 已实现)
+ *  - 录像查询(§9.10, 待开发占位)
+ *  - 报警订阅(§9.4, 待开发占位)
  */
 @Composable
 fun CapabilityScreen(state: AppUiState, actions: AppActions) {
     var showCatalog by remember { mutableStateOf(false) }
+    var showSimulate by remember { mutableStateOf(false) }
+
     if (showCatalog) {
         CatalogManagementScreen(
             state = state,
@@ -52,6 +66,13 @@ fun CapabilityScreen(state: AppUiState, actions: AppActions) {
         )
         return
     }
+    if (showSimulate) {
+        SimulateSubScreen(state = state, onBack = { showSimulate = false })
+        return
+    }
+
+    val catalogSub = state.subscriptions[SubscriptionKind.Catalog]
+    val catalogActive = catalogSub?.active == true
 
     Column(
         modifier = Modifier
@@ -67,82 +88,170 @@ fun CapabilityScreen(state: AppUiState, actions: AppActions) {
             fontWeight = FontWeight.SemiBold
         )
 
-        CatalogManagementCard(
-            nodeCount = state.catalogTree.size,
-            subscribed = state.subscriptions[SubscriptionKind.Catalog]?.active == true,
-            remaining = state.subscriptions[SubscriptionKind.Catalog]?.remainingSeconds,
-            notifyCount = state.subscriptions[SubscriptionKind.Catalog]?.notifyCount ?: 0,
-            onClick = { showCatalog = true }
-        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CapabilityTile(
+                icon = Icons.Outlined.AccountTree,
+                title = "目录管理",
+                metric = "${state.catalogTree.size} 节点",
+                status = if (catalogActive) {
+                    TileStatus.Active(
+                        text = buildString {
+                            append("已订阅")
+                            catalogSub?.remainingSeconds?.let { append(" · 剩 ${it}s") }
+                        }
+                    )
+                } else {
+                    TileStatus.Idle("未订阅")
+                },
+                onClick = { showCatalog = true },
+                modifier = Modifier.weight(1f)
+            )
+            CapabilityTile(
+                icon = Icons.Outlined.ViewInAr,
+                title = "模拟控制",
+                metric = "PTZ + 3D HUD",
+                status = TileStatus.Active("实时就绪"),
+                onClick = { showSimulate = true },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CapabilityTile(
+                icon = Icons.Outlined.VideoLibrary,
+                title = "录像查询",
+                metric = "待开发",
+                status = TileStatus.Pending("M3 规划中"),
+                onClick = null,
+                modifier = Modifier.weight(1f)
+            )
+            CapabilityTile(
+                icon = Icons.Outlined.NotificationsActive,
+                title = "报警订阅",
+                metric = "待开发",
+                status = TileStatus.Pending("M3 规划中"),
+                onClick = null,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+private sealed interface TileStatus {
+    val text: String
+    data class Active(override val text: String) : TileStatus
+    data class Idle(override val text: String) : TileStatus
+    data class Pending(override val text: String) : TileStatus
+}
+
+@Composable
+private fun CapabilityTile(
+    icon: ImageVector,
+    title: String,
+    metric: String,
+    status: TileStatus,
+    onClick: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    val enabled = onClick != null
+    val contentAlpha = if (enabled) 1f else 0.55f
+
+    val (dotColor, statusTextColor) = when (status) {
+        is TileStatus.Active -> UvpColor.Success to UvpColor.Success
+        is TileStatus.Idle -> UvpColor.TextHint to UvpColor.TextSecondary
+        is TileStatus.Pending -> UvpColor.Warning to UvpColor.Warning
+    }
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .let { if (enabled) it.clickable(onClick = onClick!!) else it },
+        color = UvpColor.Surface
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        UvpColor.Primary.copy(alpha = if (enabled) 0.12f else 0.06f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = UvpColor.Primary.copy(alpha = contentAlpha),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                title,
+                color = UvpColor.Text.copy(alpha = contentAlpha),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                metric,
+                color = UvpColor.Text.copy(alpha = contentAlpha * 0.85f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(dotColor)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    status.text,
+                    color = statusTextColor,
+                    fontSize = 10.sp
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun CatalogManagementCard(
-    nodeCount: Int,
-    subscribed: Boolean,
-    remaining: Int?,
-    notifyCount: Int,
-    onClick: () -> Unit
-) {
-    Surface(
+private fun SimulateSubScreen(state: AppUiState, onBack: () -> Unit) {
+    Column(
         modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .clickable { onClick() },
-        color = UvpColor.Surface
+            .fillMaxSize()
+            .background(UvpColor.Bg)
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
+        Surface(color = UvpColor.Surface) {
+            Row(
                 modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(UvpColor.Primary.copy(alpha = 0.12f)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Outlined.AccountTree,
-                    contentDescription = null,
-                    tint = UvpColor.Primary,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-            Spacer(Modifier.size(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "目录管理",
-                    color = UvpColor.Text,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "§9.3.1 设备目录订阅 · $nodeCount 个节点",
-                    color = UvpColor.TextSecondary,
-                    fontSize = 11.sp
-                )
-                if (subscribed) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = buildString {
-                            append("已订阅")
-                            if (remaining != null) append(" · 剩 ${remaining}s")
-                            append(" · 推送 ${notifyCount}")
-                        },
-                        color = UvpColor.Success,
-                        fontSize = 11.sp
+                IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Outlined.ArrowBack,
+                        contentDescription = "返回",
+                        tint = UvpColor.Text,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
+                Text(
+                    "模拟控制",
+                    color = UvpColor.Text,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
             }
-            Icon(
-                Icons.Outlined.ArrowForward,
-                contentDescription = null,
-                tint = UvpColor.TextSecondary,
-                modifier = Modifier.size(18.dp)
-            )
         }
+        SimulateScreen(state = state, modifier = Modifier.weight(1f))
     }
 }

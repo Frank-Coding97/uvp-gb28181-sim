@@ -134,8 +134,7 @@ interface AppActions {
 enum class AppTab(val label: String) {
     Home("主页"),
     Capability("能力"),
-    Simulate("模拟"),
-    Recording("录像"),
     Log("日志"),
+    Recording("录像"),
     Settings("设置");
 }
