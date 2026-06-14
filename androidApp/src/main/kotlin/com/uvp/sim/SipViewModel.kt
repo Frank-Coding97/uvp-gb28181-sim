@@ -31,9 +31,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -63,6 +66,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _config = MutableStateFlow(defaultConfig())
     val config: StateFlow<SimConfig> = _config.asStateFlow()
+
+    /** OSD 视频叠加层配置 — 跟 SimConfig.osd 同步,Streamer 订阅这个 flow 反映 UI 改动。 */
+    val osdConfig: StateFlow<com.uvp.sim.config.OsdConfig> = _config
+        .map { it.osd }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, _config.value.osd)
 
     /** 录像状态(M2 D 块)。Activity 把它桥接到 AppUiState.recording。 */
     private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)

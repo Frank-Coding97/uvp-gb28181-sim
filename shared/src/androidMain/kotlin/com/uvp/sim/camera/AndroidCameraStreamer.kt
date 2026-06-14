@@ -14,6 +14,7 @@ import androidx.camera.view.PreviewView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
+import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.media.H265NalType
@@ -21,6 +22,7 @@ import com.uvp.sim.media.NalType
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.osd.OsdRenderer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -62,7 +64,15 @@ import kotlin.coroutines.resumeWithException
 class AndroidCameraStreamer(
     private val context: Context,
     private val mainExecutor: Executor,
-    private val config: CaptureConfig
+    private val config: CaptureConfig,
+    /**
+     * OSD 视频叠加层配置 — null 关闭 OSD(走原 CameraX 直连 MediaCodec 路径)。
+     *
+     * 当前 scope:OSD 仅作用于直播推流(stream() 路径),录像(VideoCapture)和回放
+     * (PlaybackEngine)不烧戳。屏幕预览也保留独立 CameraX Preview(无 OSD),仅 WVP
+     * 端能看到 OSD。详见 specs/osd-overlay.md scope 调整说明。
+     */
+    private val osdConfigFlow: kotlinx.coroutines.flow.StateFlow<OsdConfig>? = null
 ) {
     /**
      * Self-driven lifecycle pinned to STARTED. Avoids being torn down by Activity
@@ -78,6 +88,7 @@ class AndroidCameraStreamer(
 
     private var encoder: MediaCodec? = null
     private var encoderInputSurface: Surface? = null
+    private var osdRenderer: OsdRenderer? = null
 
     @Volatile private var screenPreview: Preview? = null
     @Volatile private var encoderPreview: Preview? = null
@@ -144,9 +155,33 @@ class AndroidCameraStreamer(
         val surface = codec.createInputSurface()
         encoder = codec
         encoderInputSurface = surface
+
+        // OSD: 试图启动 OsdRenderer,把 encoder surface 接到 GL 输出端,
+        // CameraX Preview 改输出到 OsdRenderer.cameraInputSurface(SurfaceTexture)。
+        // 失败 fallback 到原直连路径(emit OSD_INIT_FAILED 已在 OsdRenderer.start 内部)。
+        val osdFlow = osdConfigFlow
+        val cameraTargetSurface: Surface = if (osdFlow != null) {
+            val renderer = OsdRenderer(
+                context = context,
+                configFlow = osdFlow,
+                targetWidth = config.widthPx,
+                targetHeight = config.heightPx
+            )
+            if (renderer.start()) {
+                renderer.setEncoderSurface(surface)
+                osdRenderer = renderer
+                renderer.cameraInputSurface ?: surface
+            } else {
+                // OsdRenderer 自报 OSD_INIT_FAILED,这里继续走老路径
+                surface
+            }
+        } else {
+            surface
+        }
+
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "打开摄像头 ${config.widthPx}x${config.heightPx}@${config.frameRate}fps · ${config.videoCodec} ${config.bitrateBps / 1000}kbps"
+            "打开摄像头 ${config.widthPx}x${config.heightPx}@${config.frameRate}fps · ${config.videoCodec} ${config.bitrateBps / 1000}kbps · OSD ${if (osdRenderer != null) "ON" else "OFF"}"
         )
 
         // Parameter sets to prepend to every key frame. For H.264 these are
@@ -227,7 +262,7 @@ class AndroidCameraStreamer(
                 if (provider == null) {
                     provider = awaitCameraProviderBlocking(context)
                 }
-                bindEncoderPreview(surface)
+                bindEncoderPreview(cameraTargetSurface)
                 rebind()
             } catch (e: Throwable) {
                 SystemLogger.emit(
@@ -243,6 +278,8 @@ class AndroidCameraStreamer(
                 encoderPreview = null
                 rebind()
             }
+            runCatching { osdRenderer?.release() }
+            osdRenderer = null
             runCatching { codec.stop() }
             runCatching { codec.release() }
             runCatching { surface.release() }

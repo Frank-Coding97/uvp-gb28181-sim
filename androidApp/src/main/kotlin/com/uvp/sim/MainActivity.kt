@@ -255,7 +255,8 @@ class MainActivity : ComponentActivity() {
         val s = streamerRef ?: AndroidCameraStreamer(
             context = applicationContext,
             mainExecutor = ContextCompat.getMainExecutor(applicationContext),
-            config = viewModel.newCaptureConfig()
+            config = viewModel.newCaptureConfig(),
+            osdConfigFlow = viewModel.osdConfig
         ).also { streamerRef = it }
         cameraCapture.setStreamer(s)
         CameraPreviewBinder.setBinder { view ->
