@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Receipt
@@ -56,6 +57,7 @@ fun App(state: AppUiState, actions: AppActions) {
                 ) {
                     when (currentTab) {
                         AppTab.Home -> HomeScreen(state, actions)
+                        AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(state, actions)
                         AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(state)
                         AppTab.Settings -> SettingsScreen(state, actions)
                         AppTab.Recording -> RecordingScreen(state, actions)
@@ -160,6 +162,7 @@ private fun BottomTabItem(
 @Composable
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
+    AppTab.Capability -> Icons.Outlined.Apps
     AppTab.Simulate -> Icons.Outlined.ViewInAr
     AppTab.Settings -> Icons.Outlined.Tune
     AppTab.Recording -> Icons.Outlined.Videocam

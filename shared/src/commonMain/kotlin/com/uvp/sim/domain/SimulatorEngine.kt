@@ -144,6 +144,14 @@ class SimulatorEngine(
     private val subscriptionRegistry = SubscriptionRegistry(scope)
     private val mockGps = MockGpsSource(config.mockPosition)
     private var notifySn = 0
+    private var catalogNotifySn = 0
+
+    /**
+     * 当前生效的目录树。初始从 SimConfig.catalogTree 取(为空时用默认),
+     * 用户在 UI 编辑器修改后通过 [updateCatalogTree] 写回。
+     */
+    private val _catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(config))
+    val catalogTree: StateFlow<List<com.uvp.sim.config.CatalogNode>> = _catalogTree.asStateFlow()
 
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
@@ -529,6 +537,53 @@ class SimulatorEngine(
         )
     }
 
+    /**
+     * 从 INVITE 提取被叫 channelId(国标 20 位编码)。
+     * 优先从 Request-URI(`sip:<channelId>@host:port`)取 user part,
+     * 退化到 To 头。提不出来返回空串。
+     */
+    private fun extractInviteTarget(invite: SipRequest): String {
+        // requestUri 形如 "sip:34020000001320000001@192.168.10.50:5060"
+        val ru = invite.requestUri
+        val sipBody = ru.substringAfter("sip:", "").substringAfter("sips:", ru.substringAfter("sip:", ""))
+        val userHost = if (sipBody.isNotEmpty()) sipBody else ""
+        val user = userHost.substringBefore('@', "").substringBefore(';').trim()
+        if (user.isNotEmpty()) return user
+
+        val to = invite.toHeader() ?: return ""
+        return parseUri(to).substringAfter("sip:", "")
+            .substringBefore('@', "")
+            .substringBefore(';')
+            .trim()
+    }
+
+    /**
+     * P1-2: 按 channelId 类型决定是否拒绝 INVITE。
+     * 返回 null 表示放行,非 null 是 (statusCode, reasonPhrase) 拒绝原因。
+     *
+     * 判定规则:
+     *  - 在当前 _catalogTree 找该 channelId 的节点
+     *  - 视频通道 (132): 放行(走原 INVITE 链路)
+     *  - 报警通道 (134): 488 — 报警通道不应用于 RTP 流(GB §10)
+     *  - 容器节点 Device/137/138: 488 — 不可对设备根/分组/虚组织发起 INVITE
+     *  - 找不到的 channelId: 放行(向后兼容,保留 SimConfig.device.videoChannelId 等)
+     */
+    private fun classifyInviteTarget(channelId: String): Pair<Int, String>? {
+        if (channelId.isBlank()) return null
+        val node = _catalogTree.value.firstOrNull { it.id == channelId } ?: return null
+        return when (node.type) {
+            com.uvp.sim.config.CatalogNodeType.VideoChannel -> null
+            com.uvp.sim.config.CatalogNodeType.AlarmChannel ->
+                488 to "Not Acceptable Here (alarm channel does not stream)"
+            com.uvp.sim.config.CatalogNodeType.Device ->
+                488 to "Not Acceptable Here (cannot invite device root)"
+            com.uvp.sim.config.CatalogNodeType.BusinessGroup ->
+                488 to "Not Acceptable Here (cannot invite business group)"
+            com.uvp.sim.config.CatalogNodeType.VirtualOrg ->
+                488 to "Not Acceptable Here (cannot invite virtual org)"
+        }
+    }
+
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {
@@ -887,7 +942,12 @@ class SimulatorEngine(
             val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
             val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
             val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
-            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.build(config, sn)
+            // M2: Query 响应跟 NOTIFY 共用同一棵 catalog tree,保证 WVP 看到的总数一致
+            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.buildFromTree(
+                config = config,
+                sn = sn,
+                tree = _catalogTree.value
+            )
             val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
                 config = config,
                 cseq = cseq,
@@ -1089,6 +1149,30 @@ class SimulatorEngine(
     }
 
     private suspend fun handleInvite(invite: SipRequest) {
+        // M2 P1-2: 按 INVITE 目标 channelId 类型路由 — 不支持的类型立即 488
+        // 放在最前 — 报警/目录节点的 INVITE 不应走任何后续路径(Play 或 Playback)
+        val channelId = extractInviteTarget(invite)
+        val rejection = classifyInviteTarget(channelId)
+        if (rejection != null) {
+            try {
+                val resp = SipBuilders.buildSimpleError(
+                    request = invite,
+                    statusCode = rejection.first,
+                    reasonPhrase = rejection.second,
+                    toTag = SipBuilders.randomTag()
+                )
+                transport.send(resp)
+                _events.emit(SimEvent.MessageSent(resp))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "拒绝 INVITE: channelId=$channelId → ${rejection.first} ${rejection.second}"
+                )
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("send INVITE reject: ${e.message}"))
+            }
+            return
+        }
+
         // Probe SDP s= line to decide Play vs Playback path
         val isPlayback = try {
             val offer = com.uvp.sim.sip.SdpPlaybackParser.parse(invite.body)
@@ -1543,9 +1627,20 @@ class SimulatorEngine(
                     expiresSeconds = intent.expiresSeconds,
                     remainingSeconds = intent.expiresSeconds
                 )
-                subscriptionRegistry.activate(dialog) { d -> sendPositionNotify(d) }
+                // Catalog: SubscriptionRegistry 不会启 Heartbeat,但仍 activate 以维护 expiry
+                // MobilePosition: SubscriptionRegistry 启 Heartbeat 周期推
+                subscriptionRegistry.activate(dialog) { d ->
+                    when (d.kind) {
+                        "Catalog" -> sendCatalogNotify(d)
+                        else -> sendPositionNotify(d)
+                    }
+                }
 
-                sendPositionNotify(dialog)
+                // initial NOTIFY:两种 kind 都立即推一次
+                when (intent.kind) {
+                    "Catalog" -> sendCatalogNotify(dialog)
+                    else -> sendPositionNotify(dialog)
+                }
 
                 _events.emit(SimEvent.SubscribeReceived(
                     subscriber = intent.subscriberUri,
@@ -1555,7 +1650,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "收到位置订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
+                    "收到${if (intent.kind == "Catalog") "目录" else "位置"}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
                 )
             }
 
@@ -1574,7 +1669,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "位置订阅已刷新: expires=${intent.newExpiresSeconds}s"
+                    "${if (d?.kind == "Catalog") "目录" else "位置"}订阅已刷新: expires=${intent.newExpiresSeconds}s"
                 )
             }
 
@@ -1592,7 +1687,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "位置订阅已取消: ${d?.subscriberUri}"
+                    "${if (d?.kind == "Catalog") "目录" else "位置"}订阅已取消: ${d?.subscriberUri}"
                 )
             }
 
@@ -1611,6 +1706,117 @@ class SimulatorEngine(
             }
 
             is SubscribeIntent.Ignored -> Unit
+        }
+    }
+
+    private suspend fun sendCatalogNotify(dialog: SubscriptionDialog) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.build(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            tree = _catalogTree.value
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
+    /**
+     * 用户在 UI 编辑器修改目录树后,写入引擎当前树,并对所有活跃的
+     * Catalog 订阅推一次 NOTIFY(对应 spec Q6 + P1-3 增量行为)。
+     *
+     * P1-3:对比新旧树算出 ChangeEvent,小变更走增量(`<Event>ADD/DEL/UPDATE</Event>`),
+     * 大变更走全量。详见 [CatalogTreeStore.shouldUseIncremental]。
+     */
+    suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) {
+        val oldTree = _catalogTree.value
+        _catalogTree.value = tree
+        val events = CatalogTreeStore.diff(oldTree, tree)
+        if (events.isEmpty()) return  // 无变更,不发 NOTIFY
+        if (CatalogTreeStore.shouldUseIncremental(events, oldSize = oldTree.size)) {
+            pushCatalogIncremental(events)
+        } else {
+            pushCatalogNotify()
+        }
+    }
+
+    /**
+     * 主动给所有活跃 Catalog 订阅推一次完整 NOTIFY(全量树)。
+     * 调用时不要持 mutex,自身会 bumpNotify 维护计数。
+     */
+    suspend fun pushCatalogNotify() {
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogNotify(updated)
+        }
+    }
+
+    /**
+     * P1-3: 主动给所有活跃 Catalog 订阅推一次增量 NOTIFY,body 含
+     * `<Event>ADD/DEL/UPDATE</Event>` Item 列表,WVP 只更新差异部分。
+     */
+    suspend fun pushCatalogIncremental(events: List<com.uvp.sim.config.CatalogChangeEvent>) {
+        if (events.isEmpty()) return
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogIncrementalNotify(updated, events)
+        }
+    }
+
+    private suspend fun sendCatalogIncrementalNotify(
+        dialog: SubscriptionDialog,
+        events: List<com.uvp.sim.config.CatalogChangeEvent>
+    ) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildIncremental(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            events = events
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
 

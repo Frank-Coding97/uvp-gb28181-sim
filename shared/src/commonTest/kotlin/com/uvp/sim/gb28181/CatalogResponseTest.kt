@@ -108,9 +108,11 @@ class CatalogResponseTest {
         assertTrue(xml.contains("<Model>DS-IPC-Mock</Model>"))
     }
 
-    @Test fun build_xmlEncoding_isGB2312_andCrlf() {
+    @Test fun build_xmlEncoding_isUtf8_andCrlf() {
+        // UTF-8: 真机联调发现声明 GB2312 但实际发 UTF-8 字节 → WVP 中文乱码
+        // 统一改 UTF-8 跟实际字节一致(GB §C.4 允许)
         val xml = CatalogResponse.build(cfg(), sn = "1")
-        assertTrue(xml.startsWith("<?xml version=\"1.0\" encoding=\"GB2312\"?>"))
+        assertTrue(xml.startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
         assertTrue(xml.contains("\r\n"))
     }
 }

@@ -329,6 +329,11 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         "平台 ACK 未到达 · ${ev.callId.take(20)}",
         highlight = true, category = "INVITE"
     )
+    is SimEvent.DeviceControlReceived -> LogRowSpec(
+        "", "←", false, "CTRL", UvpColor.Info,
+        "设备控制 · ${ev.commandType} · ${ev.detail.take(30)}",
+        category = "CONTROL"
+    )
 }
 
 private fun msgMethodShort(m: SipMessage): String = when (m) {

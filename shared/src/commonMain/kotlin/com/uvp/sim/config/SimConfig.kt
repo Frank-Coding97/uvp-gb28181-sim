@@ -29,7 +29,12 @@ data class SimConfig(
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
     val userAgent: String = "UVP-Sim/0.1",
-    val mockPosition: GeoPoint = GeoPoint()
+    val mockPosition: GeoPoint = GeoPoint(),
+    /**
+     * GB §9.3.1 设备目录树。空 list 表示由 CatalogTreeStore 从 device 字段
+     * 自动生成默认 3 节点扁平树(老 SimConfig 升级路径)。
+     */
+    val catalogTree: List<CatalogNode> = emptyList()
 )
 
 /**

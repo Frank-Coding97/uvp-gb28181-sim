@@ -37,7 +37,7 @@ object AlarmNotify {
         val device = config.device
         // Compose YYYY-MM-DDTHH:MM:SS without bringing in kotlinx-datetime.
         val timestamp = nowTimestamp()
-        return """<?xml version="1.0" encoding="GB2312"?>
+        return """<?xml version="1.0" encoding="UTF-8"?>
 <Notify>
 <CmdType>Alarm</CmdType>
 <SN>$sn</SN>

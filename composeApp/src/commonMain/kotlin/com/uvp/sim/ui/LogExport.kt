@@ -143,6 +143,7 @@ object LogExport {
         is SimEvent.AutoReregisterTriggered -> "↻ RE-REG   自动重注册 · ${ev.reason}"
         is SimEvent.RegistrationRetryScheduled -> "↻ RETRY    第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后"
         is SimEvent.InviteAckTimeout -> "⚠ ACK-TO   平台 ACK 未到达 · ${ev.callId}"
+        is SimEvent.DeviceControlReceived -> "← CTRL     ${ev.commandType} · ${ev.detail}"
     }
 
     private fun msgShort(m: SipMessage): String = when (m) {

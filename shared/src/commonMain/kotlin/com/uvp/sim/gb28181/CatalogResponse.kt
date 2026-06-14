@@ -1,5 +1,6 @@
 package com.uvp.sim.gb28181
 
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 
@@ -19,8 +20,11 @@ import com.uvp.sim.config.SimConfig
  *             IPAddress / Port / PTZType / PositionType / RoomType / UseType /
  *             SupplyLightType / DirectionType / Resolution / BusinessGroupID
  *
- * 实现策略:按 [SimConfig.gbVersion] 分支输出,GB-2016 模式下不发新字段。
- * 通道高级属性来源 [com.uvp.sim.config.ChannelProfile]。
+ * 两个 builder:
+ *   - [build]: legacy 单通道响应,M1 范围 — 按 [SimConfig.gbVersion] 分支输出
+ *     GB-2022 模式下追加 10 个新字段;通道高级属性来源 [com.uvp.sim.config.ChannelProfile]
+ *   - [buildFromTree]: M2 范围 — 用动态目录树整棵推过去,跟
+ *     [CatalogNotifyBuilder] 用同一份 Item 序列化逻辑保证一致
  */
 object CatalogResponse {
 
@@ -34,7 +38,7 @@ object CatalogResponse {
         // CivilCode 取行政区划前 6 位(domain 前 6 位即可,GB28181 ID 前 6 位也是行政区划)
         val civilCode = server.domain.take(6).padEnd(6, '0')
         val itemBody = buildItem(config, channelName, civilCode)
-        return """<?xml version="1.0" encoding="GB2312"?>
+        return """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
 <CmdType>Catalog</CmdType>
 <SN>$sn</SN>
@@ -94,4 +98,18 @@ $itemBody</DeviceList>
 <BusinessGroupID>${ch.businessGroupId}</BusinessGroupID>
 """
     }
+
+    /**
+     * 按当前生效目录树构造 Catalog Response,DFS 序列化跟 NOTIFY 一致。
+     * 推荐 M2 之后的 Query 响应路径都走这条。
+     */
+    fun buildFromTree(
+        config: SimConfig,
+        sn: String,
+        tree: List<CatalogNode>
+    ): String = CatalogNotifyBuilder.renderResponse(
+        deviceId = config.device.deviceId,
+        sn = sn,
+        tree = tree
+    )
 }

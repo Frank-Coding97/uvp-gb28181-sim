@@ -1,5 +1,6 @@
 package com.uvp.sim.ui
 
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
@@ -41,7 +42,14 @@ data class AppUiState(
     /**
      * 平台 PLAYBACK 回放状态。M2 D 块接通后实时刷,M2 默认空。
      */
-    val playback: PlaybackStatus = PlaybackStatus()
+    val playback: PlaybackStatus = PlaybackStatus(),
+    /**
+     * 当前生效的目录树。SimulatorEngine.catalogTree 投影,
+     * 「能力」Tab 的目录管理界面读这个 list 做编辑入口的初始 draft。
+     */
+    val catalogTree: List<CatalogNode> = emptyList(),
+    /** 上一次保存目录树的 epoch ms,UI 显示「X 分钟前已保存」。 */
+    val lastCatalogSavedAt: Long? = null
 )
 
 /**
@@ -100,7 +108,7 @@ data class PlaybackStatus(
  * Actions the UI can request. The platform shell binds these to the engine
  * + ViewModel; commonMain stays platform-free.
  *
- * 录像 4 个动作全部带默认空实现,别的 worktree 拿 main 后零改动编译过。
+ * 录像 4 个动作 + Catalog 保存动作全部带默认空实现,别的 worktree 拿 main 后零改动编译过。
  */
 interface AppActions {
     fun onConnect()
@@ -113,13 +121,21 @@ interface AppActions {
     fun onRecordingStop() {}
     fun onRecordingDelete(id: String) {}
     fun onRecordingFilterApply(filter: RecordingFilter) {}
+
+    /**
+     * 用户在目录管理界面点保存,把新树写回 engine + 持久化。
+     * 若有活跃 Catalog 订阅,engine 会立即推一次完整 NOTIFY(spec Q6)。
+     *
+     * 返回值:null 表示成功;非 null 是校验失败的错误消息(用 \n 分隔多行)。
+     */
+    fun onCatalogTreeSave(tree: List<CatalogNode>): String? = null
 }
 
 enum class AppTab(val label: String) {
     Home("主页"),
+    Capability("能力"),
     Simulate("模拟"),
-    Settings("设置"),
     Recording("录像"),
-    Log("日志");
+    Log("日志"),
+    Settings("设置");
 }
-

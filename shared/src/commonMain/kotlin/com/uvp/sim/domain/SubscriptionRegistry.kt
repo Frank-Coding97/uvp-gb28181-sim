@@ -49,25 +49,49 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         _dialogs.update { it + (dialog.callId to dialog) }
         rebuildSnapshot()
 
-        val heartbeat = Heartbeat(
-            intervalMillis = dialog.intervalSeconds * 1000L,
-            scope = scope
-        ) {
-            val current = _dialogs.value[dialog.callId] ?: return@Heartbeat
-            val updated = current.copy(
-                notifyCount = current.notifyCount + 1,
-                cseqNotify = current.cseqNotify + 1
-            )
-            _dialogs.update { it + (dialog.callId to updated) }
-            rebuildSnapshot()
-            onNotify(updated)
+        // Catalog 不周期推送 — initial NOTIFY 由调用方在 activate 后单独发,
+        // 后续靠用户编辑事件触发(SimulatorEngine.pushCatalogNotify)
+        if (dialog.kind != "Catalog") {
+            val heartbeat = Heartbeat(
+                intervalMillis = dialog.intervalSeconds * 1000L,
+                scope = scope
+            ) {
+                val current = _dialogs.value[dialog.callId] ?: return@Heartbeat
+                val updated = current.copy(
+                    notifyCount = current.notifyCount + 1,
+                    cseqNotify = current.cseqNotify + 1
+                )
+                _dialogs.update { it + (dialog.callId to updated) }
+                rebuildSnapshot()
+                onNotify(updated)
+            }
+            notifyJobs[dialog.callId]?.stop()
+            notifyJobs[dialog.callId] = heartbeat
+            heartbeat.start()
         }
-        notifyJobs[dialog.callId]?.stop()
-        notifyJobs[dialog.callId] = heartbeat
-        heartbeat.start()
 
         startExpiryCountdown(dialog.callId, dialog.expiresSeconds)
     }
+
+    /**
+     * 给调用方在事件驱动场景(Catalog 用户编辑后)主动推送 NOTIFY 用。
+     * 自增 notifyCount + cseqNotify,返回更新后的 dialog。返回 null 表示
+     * 该 callId 已不在订阅集中。
+     */
+    fun bumpNotify(callId: String): SubscriptionDialog? {
+        val current = _dialogs.value[callId] ?: return null
+        val updated = current.copy(
+            notifyCount = current.notifyCount + 1,
+            cseqNotify = current.cseqNotify + 1
+        )
+        _dialogs.update { it + (callId to updated) }
+        rebuildSnapshot()
+        return updated
+    }
+
+    /** 拿到所有指定 kind 的 dialog 副本(用于 SimulatorEngine 主动推送)。 */
+    fun dialogsByKind(kind: String): List<SubscriptionDialog> =
+        _dialogs.value.values.filter { it.kind == kind }
 
     fun refresh(callId: String, newExpires: Int) {
         _dialogs.update { map ->

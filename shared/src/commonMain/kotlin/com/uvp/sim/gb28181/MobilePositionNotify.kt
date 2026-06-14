@@ -21,7 +21,7 @@ object MobilePositionNotify {
         val spdStr = "%.1f".format(speed)
         val dirStr = "%.1f".format(direction)
         val altStr = "%.1f".format(altitude)
-        return """<?xml version="1.0" encoding="GB2312"?>
+        return """<?xml version="1.0" encoding="UTF-8"?>
 <Notify>
 <CmdType>MobilePosition</CmdType>
 <SN>$sn</SN>

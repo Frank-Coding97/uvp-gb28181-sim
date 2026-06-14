@@ -118,6 +118,8 @@ class MainActivity : ComponentActivity() {
             val sysLogs by systemEvents.collectAsState()
             val rawSubs by viewModel.subscriptions.collectAsStateWithLifecycle()
             val deviceControl by viewModel.deviceControl.collectAsStateWithLifecycle()
+            val catalogTree by viewModel.catalogTree.collectAsStateWithLifecycle()
+            val lastCatalogSavedAt by viewModel.lastCatalogSavedAt.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -151,7 +153,9 @@ class MainActivity : ComponentActivity() {
                 sessionMarker = SessionTracker.current,
                 subscriptions = subscriptions,
                 deviceControl = deviceControl,
-                recording = recordingStatus
+                recording = recordingStatus,
+                catalogTree = catalogTree,
+                lastCatalogSavedAt = lastCatalogSavedAt
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -188,6 +192,16 @@ class MainActivity : ComponentActivity() {
                 override fun onRecordingDelete(id: String) {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户删除录像 $id")
                     viewModel.deleteRecording(id)
+                }
+                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>): String? {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "保存目录树 节点数=${tree.size}"
+                    )
+                    val result = viewModel.saveCatalogTree(tree)
+                    return if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
+                        result.message
+                    } else null
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

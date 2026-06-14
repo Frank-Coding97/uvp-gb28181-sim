@@ -290,6 +290,35 @@ object SipBuilders {
     }
 
     /**
+     * 通用 4xx/5xx 错误响应构造器 — 跟 [buildSimple200] 套路一致,只换 status/reason。
+     * 用于拒绝 INVITE 等场景:488 Not Acceptable Here、404 Not Found 等。
+     */
+    fun buildSimpleError(
+        request: SipRequest,
+        statusCode: Int,
+        reasonPhrase: String,
+        toTag: String? = null
+    ): SipResponse {
+        val newHeaders = mutableListOf<SipMessage.Header>()
+        for (h in request.headers) {
+            val canonical = SipHeader.canonicalize(h.name)
+            when (canonical) {
+                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ -> {
+                    newHeaders += h
+                }
+                SipHeader.TO -> {
+                    val v = if (toTag != null && !h.value.contains(";tag=")) {
+                        "${h.value};tag=$toTag"
+                    } else h.value
+                    newHeaders += SipMessage.Header(SipHeader.TO, v)
+                }
+                else -> { /* drop */ }
+            }
+        }
+        return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
+    }
+
+    /**
      * Build a 200 OK for SUBSCRIBE with Subscription-State and Expires.
      * Per RFC 6665 § 4.2.1.
      */

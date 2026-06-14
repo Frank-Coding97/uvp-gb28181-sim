@@ -7,6 +7,7 @@ import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
@@ -90,6 +91,17 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _deviceControl = MutableStateFlow(DeviceControlState())
     val deviceControl: StateFlow<DeviceControlState> = _deviceControl.asStateFlow()
 
+    /**
+     * 当前生效目录树。SimulatorEngine 是真源,这里作为 UI 投影。
+     * 未连接时返回 SimConfig.catalogTree,连接后被 engine 流覆盖。
+     */
+    private val _catalogTree = MutableStateFlow<List<CatalogNode>>(emptyList())
+    val catalogTree: StateFlow<List<CatalogNode>> = _catalogTree.asStateFlow()
+
+    /** 最后一次成功保存目录树的 epoch 毫秒,UI 显示"X 分钟前已保存"。 */
+    private val _lastCatalogSavedAt = MutableStateFlow<Long?>(null)
+    val lastCatalogSavedAt: StateFlow<Long?> = _lastCatalogSavedAt.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -99,6 +111,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 _config.value = stored
                 _videoConfigVersion.value += 1
             }
+            // 即便 stored == default,catalogTree 投影也要初始化
+            _catalogTree.value = com.uvp.sim.domain.CatalogTreeStore.effectiveTree(stored)
         }
     }
 
@@ -226,6 +240,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
         engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
         engineScope.launch { eng.deviceControlState.collect { _deviceControl.value = it } }
+        engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
 
         engineScope.launch {
             try {
@@ -285,6 +300,38 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 connect()
             }
         }
+    }
+
+    /**
+     * 用户保存目录树:
+     *  - 先校验:不合法直接返回 Invalid 含错误清单,UI 显示并不持久化
+     *  - 通过校验:写回 SimConfig.catalogTree 并持久化(下次冷启动恢复)
+     *  - 通知 engine,触发 pushCatalogNotify(若有活跃订阅)
+     *
+     * 返回值供 UI 显示 toast:Ok 显示成功,Invalid 显示错误。
+     */
+    fun saveCatalogTree(tree: List<CatalogNode>): com.uvp.sim.domain.ValidationResult {
+        val result = com.uvp.sim.domain.CatalogTreeStore.validate(tree)
+        if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
+            return result
+        }
+        val newCfg = _config.value.copy(catalogTree = tree)
+        _config.value = newCfg
+        _catalogTree.value = tree
+        _lastCatalogSavedAt.value = System.currentTimeMillis()
+        viewModelScope.launch { runCatching { configStore.save(newCfg) } }
+        val eng = engine ?: return result
+        engineScope.launch {
+            try {
+                eng.updateCatalogTree(tree)
+            } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("save catalog: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
+            }
+        }
+        return result
     }
 
     /** Trigger a snapshot upload (T15). Engine handles the rest. */
