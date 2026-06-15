@@ -122,6 +122,7 @@ class MainActivity : ComponentActivity() {
             val deviceControl by viewModel.deviceControl.collectAsStateWithLifecycle()
             val catalogTree by viewModel.catalogTree.collectAsStateWithLifecycle()
             val lastCatalogSavedAt by viewModel.lastCatalogSavedAt.collectAsStateWithLifecycle()
+            val alarmHistory by viewModel.alarmHistory.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -157,7 +158,8 @@ class MainActivity : ComponentActivity() {
                 deviceControl = deviceControl,
                 recording = recordingStatus,
                 catalogTree = catalogTree,
-                lastCatalogSavedAt = lastCatalogSavedAt
+                lastCatalogSavedAt = lastCatalogSavedAt,
+                alarmHistory = alarmHistory
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -204,6 +206,17 @@ class MainActivity : ComponentActivity() {
                     return if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
                         result.message
                     } else null
+                }
+                override fun onAlarmFire(payload: com.uvp.sim.gb28181.AlarmPayload) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "用户发送报警 type=${payload.type.label} priority=${payload.priority.label}"
+                    )
+                    viewModel.fireAlarm(payload)
+                }
+                override fun onAlarmReset() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户本地复位报警")
+                    viewModel.resetAlarm()
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

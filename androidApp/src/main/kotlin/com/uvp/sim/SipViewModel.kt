@@ -102,6 +102,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _lastCatalogSavedAt = MutableStateFlow<Long?>(null)
     val lastCatalogSavedAt: StateFlow<Long?> = _lastCatalogSavedAt.asStateFlow()
 
+    /** 本会话报警历史(engine 投影,未连接时为空)。 */
+    private val _alarmHistory = MutableStateFlow<List<com.uvp.sim.domain.AlarmRecord>>(emptyList())
+    val alarmHistory: StateFlow<List<com.uvp.sim.domain.AlarmRecord>> = _alarmHistory.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -253,6 +257,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
         engineScope.launch { eng.deviceControlState.collect { _deviceControl.value = it } }
         engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
+        engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
 
         engineScope.launch {
             try {
@@ -356,6 +361,30 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                         .take(MAX_EVENT_LOG)
                 }
             }
+        }
+    }
+
+    /** M2 Alarm — 主动报警(主屏一键 / 能力页详细)。engine 走 reportAlarm fan-out。 */
+    fun fireAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) {
+        val eng = engine ?: run {
+            _toasts.tryEmit("未注册,无法发送报警")
+            return
+        }
+        engineScope.launch {
+            try { eng.reportAlarm(payload) } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("alarm fire: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
+            }
+        }
+    }
+
+    /** M2 Alarm — 本地复位(不走 SIP)。 */
+    fun resetAlarm() {
+        val eng = engine ?: return
+        engineScope.launch {
+            try { eng.localResetAlarm() } catch (_: Throwable) { }
         }
     }
 
