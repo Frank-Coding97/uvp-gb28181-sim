@@ -601,6 +601,7 @@ private val SubscriptionKind.title: String
     get() = when (this) {
         SubscriptionKind.MobilePosition -> "位置订阅"
         SubscriptionKind.Catalog -> "目录订阅"
+        SubscriptionKind.Alarm -> "报警订阅"
     }
 
 @Composable

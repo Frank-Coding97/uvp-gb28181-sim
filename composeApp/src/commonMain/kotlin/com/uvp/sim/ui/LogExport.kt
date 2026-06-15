@@ -144,6 +144,14 @@ object LogExport {
         is SimEvent.RegistrationRetryScheduled -> "↻ RETRY    第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后"
         is SimEvent.InviteAckTimeout -> "⚠ ACK-TO   平台 ACK 未到达 · ${ev.callId}"
         is SimEvent.DeviceControlReceived -> "← CTRL     ${ev.commandType} · ${ev.detail}"
+        is SimEvent.AlarmFired -> "→ ALARM    ${ev.type.label}/${ev.priority.label} · ${ev.description}"
+        is SimEvent.AlarmReset -> "· RESET    报警复位 · " + when (val b = ev.by) {
+            is SimEvent.ResetSource.Local -> "本地"
+            is SimEvent.ResetSource.Remote -> "平台 ${b.subscriber}"
+        }
+        is SimEvent.AlarmSubscribed -> "← SUB      报警订阅 from=${ev.subscriber} expires=${ev.expires}s"
+        is SimEvent.AlarmNotifySent -> "→ NOTIFY   报警 SN=${ev.sn} → ${ev.subscriber}"
+        is SimEvent.AlarmSubscriptionExpired -> "· EXPIRED  报警订阅 ${ev.subscriber}"
     }
 
     private fun msgShort(m: SipMessage): String = when (m) {

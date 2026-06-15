@@ -4,6 +4,7 @@ import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
+import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
@@ -49,7 +50,12 @@ data class AppUiState(
      */
     val catalogTree: List<CatalogNode> = emptyList(),
     /** 上一次保存目录树的 epoch ms,UI 显示「X 分钟前已保存」。 */
-    val lastCatalogSavedAt: Long? = null
+    val lastCatalogSavedAt: Long? = null,
+    /**
+     * 本会话已发报警历史(最近若干条,不持久化,重启清空)。
+     * 能力页报警卡角标读 size 显示报警次数,子页历史折叠区读列表。
+     */
+    val alarmHistory: List<AlarmRecord> = emptyList()
 )
 
 /**
@@ -59,8 +65,23 @@ enum class SubscriptionKind {
     /** MobilePosition — 平台 SUBSCRIBE 后设备周期 NOTIFY GPS. */
     MobilePosition,
     /** Catalog — 平台 SUBSCRIBE 后设备 NOTIFY 目录变更. */
-    Catalog
+    Catalog,
+    /** Alarm — 平台 SUBSCRIBE Event:Alarm 后设备在每次报警时 NOTIFY. */
+    Alarm
 }
+
+/**
+ * 一条已发报警的历史记录(本会话内存,不持久化)。
+ *
+ * - [payload] 当时发出的完整报警载荷
+ * - [firedAtMs] 发送时刻 epoch ms
+ * - [notifiedSubscribers] 当时活跃的 Alarm 订阅人数(各收到一条 NOTIFY)
+ */
+data class AlarmRecord(
+    val payload: AlarmPayload,
+    val firedAtMs: Long,
+    val notifiedSubscribers: Int
+)
 
 /**
  * 订阅快照。所有字段都可空,M1 mock 全 false / null。
@@ -129,6 +150,18 @@ interface AppActions {
      * 返回值:null 表示成功;非 null 是校验失败的错误消息(用 \n 分隔多行)。
      */
     fun onCatalogTreeSave(tree: List<CatalogNode>): String? = null
+
+    /**
+     * 主屏 tile 一键 / 能力页子页详细编辑后发送报警。
+     * engine 走 reportAlarm:MESSAGE 给注册中心 + NOTIFY 给 Alarm 订阅人。
+     */
+    fun onAlarmFire(payload: AlarmPayload) {}
+
+    /**
+     * 用户本地复位报警(主屏报警中 tile 点击确认 / 子页复位按钮)。
+     * 仅翻 isAlarming=false + emit AlarmReset(local),**不走 SIP**(spec S4)。
+     */
+    fun onAlarmReset() {}
 }
 
 enum class AppTab(val label: String) {
