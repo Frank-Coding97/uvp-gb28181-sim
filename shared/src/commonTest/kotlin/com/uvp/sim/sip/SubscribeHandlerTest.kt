@@ -170,4 +170,29 @@ class SubscribeHandlerTest {
         val intent = SubscribeHandler.parse(req, emptySet())
         assertIs<SubscribeIntent.NewSubscription>(intent)
     }
+
+    @Test
+    fun alarmEventReturnsNewSubscriptionWithKindAlarm() {
+        // Event: Alarm 走 Event 头直接判定,body 可不含标准 CmdType
+        val req = subscribeRequest(event = "Alarm", expires = null, body = "<Query><SN>1</SN></Query>")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+    }
+
+    @Test
+    fun alarmEventWithIdParameterAccepted() {
+        val req = subscribeRequest(event = "Alarm;id=42", expires = null, body = "<Query><SN>1</SN></Query>")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+    }
+
+    @Test
+    fun alarmDefaultExpiresIs3600() {
+        val req = subscribeRequest(event = "Alarm", expires = null, body = "<Query><SN>1</SN></Query>")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals(3600, intent.expiresSeconds)
+    }
 }

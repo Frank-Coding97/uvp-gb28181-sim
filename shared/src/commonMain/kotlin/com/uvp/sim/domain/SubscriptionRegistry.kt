@@ -49,9 +49,11 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         _dialogs.update { it + (dialog.callId to dialog) }
         rebuildSnapshot()
 
-        // Catalog 不周期推送 — initial NOTIFY 由调用方在 activate 后单独发,
-        // 后续靠用户编辑事件触发(SimulatorEngine.pushCatalogNotify)
-        if (dialog.kind != "Catalog") {
+        // Catalog / Alarm 不周期推送 — 事件驱动:
+        //   Catalog initial NOTIFY 由调用方在 activate 后单独发,后续靠用户编辑触发
+        //   Alarm 无 initial NOTIFY(报警是事件流),后续靠 reportAlarm 触发
+        // 只有 MobilePosition 走 Heartbeat 周期推。
+        if (dialog.kind != "Catalog" && dialog.kind != "Alarm") {
             val heartbeat = Heartbeat(
                 intervalMillis = dialog.intervalSeconds * 1000L,
                 scope = scope

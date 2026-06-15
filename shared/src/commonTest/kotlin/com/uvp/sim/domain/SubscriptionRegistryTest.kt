@@ -165,4 +165,32 @@ class SubscriptionRegistryTest {
 
         registry.cancelAll()
     }
+
+    @Test
+    fun alarmActivateDoesNotStartHeartbeat() = runTest {
+        val registry = SubscriptionRegistry(this)
+        var notifyCount = 0
+        val alarm = dialog(callId = "alm-call").copy(
+            kind = "Alarm", intervalSeconds = 0, expiresSeconds = 3600, remainingSeconds = 3600
+        )
+        registry.activate(alarm) { notifyCount++ }
+        // Alarm 事件驱动,即使 advanceTimeBy 也不应触发周期 onNotify
+        advanceTimeBy(120_000)
+        assertEquals(0, notifyCount)
+        val snap = registry.subscriptions.value["Alarm"]
+        assertTrue(snap != null && snap.active)
+    }
+
+    @Test
+    fun dialogsByKindReturnsAllActiveAlarmDialogs() = runTest {
+        val registry = SubscriptionRegistry(this)
+        val a1 = dialog(callId = "alm1").copy(kind = "Alarm", intervalSeconds = 0)
+        val a2 = dialog(callId = "alm2").copy(
+            kind = "Alarm", intervalSeconds = 0, subscriberUri = "sip:other@host"
+        )
+        registry.activate(a1) {}
+        registry.activate(a2) {}
+        assertEquals(2, registry.dialogsByKind("Alarm").size)
+        registry.cancelAll()
+    }
 }
