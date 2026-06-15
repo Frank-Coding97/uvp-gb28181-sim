@@ -2,6 +2,7 @@ package com.uvp.sim.ui
 
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
@@ -69,19 +70,6 @@ enum class SubscriptionKind {
     /** Alarm — 平台 SUBSCRIBE Event:Alarm 后设备在每次报警时 NOTIFY. */
     Alarm
 }
-
-/**
- * 一条已发报警的历史记录(本会话内存,不持久化)。
- *
- * - [payload] 当时发出的完整报警载荷
- * - [firedAtMs] 发送时刻 epoch ms
- * - [notifiedSubscribers] 当时活跃的 Alarm 订阅人数(各收到一条 NOTIFY)
- */
-data class AlarmRecord(
-    val payload: AlarmPayload,
-    val firedAtMs: Long,
-    val notifiedSubscribers: Int
-)
 
 /**
  * 订阅快照。所有字段都可空,M1 mock 全 false / null。

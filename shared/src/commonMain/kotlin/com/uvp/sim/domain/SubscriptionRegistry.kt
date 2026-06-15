@@ -38,15 +38,19 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
 
     private val notifyJobs = mutableMapOf<String, Heartbeat>()
     private val expiryJobs = mutableMapOf<String, Job>()
+    /** 自然过期回调,按 callId 存,倒计时归零时(cancel 前)调用一次。 */
+    private val expiryCallbacks = mutableMapOf<String, suspend (SubscriptionDialog) -> Unit>()
 
     private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
 
     fun activate(
         dialog: SubscriptionDialog,
+        onExpire: (suspend (SubscriptionDialog) -> Unit)? = null,
         onNotify: suspend (SubscriptionDialog) -> Unit
     ) {
         _dialogs.update { it + (dialog.callId to dialog) }
+        if (onExpire != null) expiryCallbacks[dialog.callId] = onExpire
         rebuildSnapshot()
 
         // Catalog / Alarm 不周期推送 — 事件驱动:
@@ -113,6 +117,7 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         notifyJobs.remove(callId)
         expiryJobs[callId]?.cancel()
         expiryJobs.remove(callId)
+        expiryCallbacks.remove(callId)
         _dialogs.update { it - callId }
         rebuildSnapshot()
     }
@@ -122,6 +127,7 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         notifyJobs.clear()
         expiryJobs.values.forEach { it.cancel() }
         expiryJobs.clear()
+        expiryCallbacks.clear()
         _dialogs.value = emptyMap()
         rebuildSnapshot()
     }
@@ -144,6 +150,9 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
                 rebuildSnapshot()
             }
             if (isActive) {
+                val expiring = _dialogs.value[callId]
+                val cb = expiryCallbacks[callId]
+                if (expiring != null && cb != null) cb(expiring)
                 cancel(callId)
             }
         }

@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.SipTransport
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -145,6 +147,11 @@ class SimulatorEngine(
     private val mockGps = MockGpsSource(config.mockPosition)
     private var notifySn = 0
     private var catalogNotifySn = 0
+    private var alarmNotifySn = 0
+
+    // M2 Alarm: 本会话报警历史(最近 10 条,不持久化)
+    private val alarmHistoryStore = AlarmHistoryStore()
+    val alarmHistory: StateFlow<List<AlarmRecord>> = alarmHistoryStore.history
 
     /**
      * 当前生效的目录树。初始从 SimConfig.catalogTree 取(为空时用默认),
@@ -427,6 +434,135 @@ class SimulatorEngine(
                 _events.emit(SimEvent.TransportError("snapshot send: ${e.message}"))
             }
         }
+    }
+
+    /**
+     * M2 Alarm — 主动发起报警(主屏一键 / 能力页详细编辑后)。
+     *
+     * fan-out 两路,body 完全相同(都是 [com.uvp.sim.gb28181.AlarmNotify.buildAlarm]):
+     *   路 A — MESSAGE 给注册中心(跟 reportSnapshot 同 SN 池 = cseq)
+     *   路 B — NOTIFY 给每个活跃 Alarm 订阅人(失败不中断其他订阅人)
+     *
+     * 完成后:append 历史 + 翻 isAlarming=true + emit AlarmFired(+每条 NOTIFY emit AlarmNotifySent)。
+     */
+    suspend fun reportAlarm(payload: AlarmPayload) {
+        val dialogs: List<SubscriptionDialog>
+        val sn: String
+        mutex.withLock {
+            if (_state.value != SipState.Registered && _state.value != SipState.InCall) {
+                _events.emit(SimEvent.TransportError("alarm: not registered"))
+                return
+            }
+            cseq += 1
+            sn = cseq.toString()
+            val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, payload)
+
+            // 路 A — MESSAGE 给注册中心
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = body
+            )
+            try {
+                transport.send(msg)
+                _events.emit(SimEvent.MessageSent(msg))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("alarm MESSAGE send: ${e.message}"))
+            }
+
+            // 路 B — NOTIFY 给每个活跃 Alarm 订阅人(在锁内拿 dialog 快照,锁外发)
+            dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+            for (d in dialogs) {
+                val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+                sendAlarmNotify(updated, body, sn)
+            }
+        }
+
+        alarmHistoryStore.append(
+            AlarmRecord(payload = payload, firedAtMs = nowMs(), notifiedSubscribers = dialogs.size)
+        )
+        _deviceControlState.update { it.copy(isAlarming = true) }
+        _events.emit(SimEvent.AlarmFired(payload.type, payload.priority, payload.description))
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "主动报警 → MESSAGE + ${dialogs.size} 订阅 NOTIFY · ${payload.type.label}/${payload.priority.label}"
+        )
+    }
+
+    /**
+     * M2 Alarm — 用户本地复位(主屏报警中 tile 确认 / 子页复位按钮)。
+     * 仅翻 isAlarming=false + emit AlarmReset(Local),**不走 SIP**(spec S4),
+     * 也不推 NOTIFY(本地操作不通知订阅人)。
+     */
+    suspend fun localResetAlarm() {
+        _deviceControlState.update { it.copy(isAlarming = false) }
+        _events.emit(SimEvent.AlarmReset(SimEvent.ResetSource.Local))
+        SystemLogger.emit(LogLevel.Info, LogTag.Network, "本地复位报警(不走 SIP)")
+    }
+
+    /** 给单个 Alarm 订阅 dialog 发一条 NOTIFY(body 跟 MESSAGE 一致)。 */
+    private suspend fun sendAlarmNotify(dialog: SubscriptionDialog, body: String, sn: String) {
+        alarmNotifySn++
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "Alarm",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = body,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name,
+            userAgent = config.userAgent
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.AlarmNotifySent(sn = sn, subscriber = dialog.subscriberUri))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Alarm NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
+    /**
+     * M2 Alarm 反向闭环 — 平台 AlarmCmd 复位后,给每个活跃 Alarm 订阅人推一条
+     * 「报警已复位」NOTIFY(spec Q2:复位也是报警状态变化的一种)。
+     */
+    private suspend fun pushAlarmResetNotify(by: String?) {
+        val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+        if (dialogs.isEmpty()) return
+        cseq += 1
+        val sn = cseq.toString()
+        val resetPayload = AlarmPayload(
+            deviceId = config.device.alarmChannelId,
+            description = "报警已复位 (AlarmCmd by ${by ?: "platform"})"
+        )
+        val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, resetPayload)
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendAlarmNotify(updated, body, sn)
+        }
+    }
+
+    private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
+
+    private fun subscriptionLabel(kind: String?): String = when (kind) {
+        "Catalog" -> "目录"
+        "Alarm" -> "报警"
+        else -> "位置"
     }
 
     /**
@@ -791,7 +927,7 @@ class SimulatorEngine(
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 sendMobilePositionResponse(sn)
             }
-            "DeviceControl" -> handleDeviceControl(xml)
+            "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
             "RecordInfo" -> handleRecordInfoQuery(xml)
             // 其它 CmdType(SVAC*、AlarmStatusQuery 等)暂不处理。
             else -> Unit
@@ -807,9 +943,9 @@ class SimulatorEngine(
      * 2. 同时单独处理 RecordCmd(dispatcher 只更新 UI 标志,这里调 recordingService
      *    真启停录像 + 回 MANSCDP Response,GB28181 §9.3 要求)
      */
-    private suspend fun handleDeviceControl(xml: String) {
-        // 路径 1:dispatcher 更新 UI / 3D 层状态
-        deviceControlDispatcher.dispatch(xml)
+    private suspend fun handleDeviceControl(xml: String, fromUri: String? = null) {
+        // 路径 1:dispatcher 更新 UI / 3D 层状态,返回 ack
+        val ack = deviceControlDispatcher.dispatch(xml, fromUri = fromUri)
         val lastCmd = _deviceControlState.value.lastCommand
         if (lastCmd != null) {
             _events.emit(
@@ -818,6 +954,15 @@ class SimulatorEngine(
                     detail = lastCmd.rawHex
                 )
             )
+        }
+        // M2 Alarm 反向闭环:AlarmCmd 复位 → emit AlarmReset(Remote) + 推「报警已复位」NOTIFY
+        if (ack.alarmReset) {
+            _events.emit(SimEvent.AlarmReset(SimEvent.ResetSource.Remote(ack.by ?: "platform")))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台 AlarmCmd 复位报警 by=${ack.by ?: "platform"}"
+            )
+            pushAlarmResetNotify(ack.by)
         }
         // 路径 2:RecordCmd 真启停录像
         val recordCmd = com.uvp.sim.gb28181.ManscdpParser.recordCmd(xml) ?: return
@@ -1627,30 +1772,50 @@ class SimulatorEngine(
                     expiresSeconds = intent.expiresSeconds,
                     remainingSeconds = intent.expiresSeconds
                 )
-                // Catalog: SubscriptionRegistry 不会启 Heartbeat,但仍 activate 以维护 expiry
+                // Catalog / Alarm: SubscriptionRegistry 不会启 Heartbeat,但仍 activate 以维护 expiry
                 // MobilePosition: SubscriptionRegistry 启 Heartbeat 周期推
-                subscriptionRegistry.activate(dialog) { d ->
+                subscriptionRegistry.activate(
+                    dialog,
+                    onExpire = { d ->
+                        if (d.kind == "Alarm") {
+                            _events.emit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
+                            SystemLogger.emit(
+                                LogLevel.Info, LogTag.Subscription,
+                                "报警订阅自然过期: ${d.subscriberUri}"
+                            )
+                        }
+                    }
+                ) { d ->
                     when (d.kind) {
                         "Catalog" -> sendCatalogNotify(d)
+                        "Alarm" -> Unit  // Alarm 事件驱动,无周期 NOTIFY(reportAlarm 时才推)
                         else -> sendPositionNotify(d)
                     }
                 }
 
-                // initial NOTIFY:两种 kind 都立即推一次
+                // initial NOTIFY:Catalog/Position 立即推一次,Alarm 不发(报警是事件流,无全集)
                 when (intent.kind) {
                     "Catalog" -> sendCatalogNotify(dialog)
+                    "Alarm" -> Unit
                     else -> sendPositionNotify(dialog)
                 }
 
-                _events.emit(SimEvent.SubscribeReceived(
-                    subscriber = intent.subscriberUri,
-                    kind = intent.kind,
-                    expiresSeconds = intent.expiresSeconds,
-                    intervalSeconds = intent.intervalSeconds
-                ))
+                if (intent.kind == "Alarm") {
+                    _events.emit(SimEvent.AlarmSubscribed(
+                        subscriber = intent.subscriberUri,
+                        expires = intent.expiresSeconds
+                    ))
+                } else {
+                    _events.emit(SimEvent.SubscribeReceived(
+                        subscriber = intent.subscriberUri,
+                        kind = intent.kind,
+                        expiresSeconds = intent.expiresSeconds,
+                        intervalSeconds = intent.intervalSeconds
+                    ))
+                }
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "收到${if (intent.kind == "Catalog") "目录" else "位置"}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
+                    "收到${subscriptionLabel(intent.kind)}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
                 )
             }
 
@@ -1669,7 +1834,7 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "${if (d?.kind == "Catalog") "目录" else "位置"}订阅已刷新: expires=${intent.newExpiresSeconds}s"
+                    "${subscriptionLabel(d?.kind)}订阅已刷新: expires=${intent.newExpiresSeconds}s"
                 )
             }
 
@@ -1681,13 +1846,17 @@ class SimulatorEngine(
                 _events.emit(SimEvent.MessageSent(ok))
                 subscriptionRegistry.cancel(intent.callId)
 
-                _events.emit(SimEvent.SubscribeExpired(
-                    subscriber = d?.subscriberUri ?: "",
-                    kind = d?.kind ?: "MobilePosition"
-                ))
+                if (d?.kind == "Alarm") {
+                    _events.emit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
+                } else {
+                    _events.emit(SimEvent.SubscribeExpired(
+                        subscriber = d?.subscriberUri ?: "",
+                        kind = d?.kind ?: "MobilePosition"
+                    ))
+                }
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "${if (d?.kind == "Catalog") "目录" else "位置"}订阅已取消: ${d?.subscriberUri}"
+                    "${subscriptionLabel(d?.kind)}订阅已取消: ${d?.subscriberUri}"
                 )
             }
 
