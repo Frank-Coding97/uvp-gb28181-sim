@@ -29,10 +29,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -40,6 +42,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+/**
+ * 跨 Tab 导航跳转能力。主屏报警 tile 长按时,通过它切到「能力」Tab 并
+ * 让 CapabilityScreen 直接打开报警子页。null callback = 默认无操作(测试/预览安全)。
+ */
+class AppNavigator(
+    val navigateToAlarm: () -> Unit = {}
+)
+
+val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
 
 /**
  * App shell — 紧凑顶/底栏 + 3 tab + 全局 UvpToast。
@@ -51,22 +63,36 @@ import androidx.compose.ui.unit.sp
 fun App(state: AppUiState, actions: AppActions) {
     UvpTheme {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
+        // 报警子页跳转目标:主屏长按报警 tile 置 true,CapabilityScreen 消费后清零
+        var alarmTarget by rememberSaveable { mutableStateOf(false) }
+        val navigator = AppNavigator(
+            navigateToAlarm = {
+                alarmTarget = true
+                currentTab = AppTab.Capability
+            }
+        )
         UvpToastHost {
-            Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-                CompactTopBar()
-                Surface(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    color = UvpColor.Bg
-                ) {
-                    when (currentTab) {
-                        AppTab.Home -> HomeScreen(state, actions)
-                        AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(state, actions)
-                        AppTab.Settings -> SettingsScreen(state, actions)
-                        AppTab.Recording -> RecordingScreen(state, actions)
-                        AppTab.Log -> LogScreen(state)
+            CompositionLocalProvider(LocalAppNavigator provides navigator) {
+                Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
+                    CompactTopBar()
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        color = UvpColor.Bg
+                    ) {
+                        when (currentTab) {
+                            AppTab.Home -> HomeScreen(state, actions)
+                            AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
+                                state, actions,
+                                openAlarmTarget = alarmTarget,
+                                onAlarmTargetConsumed = { alarmTarget = false }
+                            )
+                            AppTab.Settings -> SettingsScreen(state, actions)
+                            AppTab.Recording -> RecordingScreen(state, actions)
+                            AppTab.Log -> LogScreen(state)
+                        }
                     }
+                    CompactBottomBar(currentTab) { currentTab = it }
                 }
-                CompactBottomBar(currentTab) { currentTab = it }
             }
         }
     }

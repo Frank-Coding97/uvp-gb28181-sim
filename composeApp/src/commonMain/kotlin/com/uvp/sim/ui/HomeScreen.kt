@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +35,8 @@ import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -59,6 +63,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.AudioTransportType
+import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.sip.SipState
 
 /**
@@ -472,7 +477,9 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
 private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     val canFire = state.sip == SipState.Registered || state.sip == SipState.InCall
     val toast = LocalToastHost.current
+    val navigator = LocalAppNavigator.current
     var detailFor by remember { mutableStateOf<SubscriptionKind?>(null) }
+    var showAlarmResetConfirm by remember { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -494,12 +501,22 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
                 }
             }
         )
+        val isAlarming = state.deviceControl.isAlarming
         ActionTile(
             icon = Icons.Outlined.Warning,
             label = "报警",
-            enabled = canFire,
+            enabled = canFire || isAlarming,
             modifier = Modifier.weight(1f),
-            onClick = { toast.info("报警 — M2 上线") }
+            alarmActive = isAlarming,
+            onClick = {
+                if (isAlarming) {
+                    showAlarmResetConfirm = true
+                } else {
+                    actions.onAlarmFire(AlarmPayload.quickDefault(state.config))
+                    toast.info("已发送报警")
+                }
+            },
+            onLongClick = { navigator.navigateToAlarm() }
         )
         SubscriptionTile(
             icon = Icons.Outlined.LocationOn,
@@ -516,6 +533,23 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
             onClick = { detailFor = SubscriptionKind.Catalog }
         )
     }
+    if (showAlarmResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showAlarmResetConfirm = false },
+            title = { Text("复位报警?") },
+            text = { Text("当前处于报警中状态。复位为本地操作,不会向平台发送 SIP。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    actions.onAlarmReset()
+                    showAlarmResetConfirm = false
+                    toast.info("已复位报警")
+                }) { Text("复位") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAlarmResetConfirm = false }) { Text("取消") }
+            }
+        )
+    }
     detailFor?.let { kind ->
         SubscriptionDetailSheet(
             kind = kind,
@@ -525,6 +559,7 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ActionTile(
     icon: ImageVector,
@@ -532,22 +567,36 @@ private fun ActionTile(
     enabled: Boolean,
     modifier: Modifier = Modifier,
     recordingActive: Boolean = false,
+    alarmActive: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val accent = when {
         recordingActive -> UvpColor.Danger
+        alarmActive -> UvpColor.Warning
         enabled -> UvpColor.Primary
         else -> UvpColor.TextHint
     }
-    val borderColor = if (!enabled && !recordingActive) UvpColor.Border else accent
+    val borderColor = if (!enabled && !recordingActive && !alarmActive) UvpColor.Border else accent
+    val bg = when {
+        recordingActive -> UvpColor.DangerBg
+        alarmActive -> UvpColor.WarningBg
+        else -> UvpColor.Surface
+    }
+    val pulsing = recordingActive || alarmActive
+    val pulseColor = if (recordingActive) UvpColor.Danger else UvpColor.Warning
     Box(modifier = modifier) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
-                .background(if (recordingActive) UvpColor.DangerBg else UvpColor.Surface)
+                .background(bg)
                 .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-                .clickable(enabled = enabled) { onClick() }
+                .combinedClickable(
+                    enabled = enabled,
+                    onClick = onClick,
+                    onLongClick = onLongClick
+                )
                 .padding(vertical = 5.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(1.dp)
@@ -565,6 +614,7 @@ private fun ActionTile(
             Text(
                 when {
                     recordingActive -> "录像中"
+                    alarmActive -> "报警中"
                     enabled -> "可触发"
                     else -> "未就绪"
                 },
@@ -573,8 +623,8 @@ private fun ActionTile(
                 fontFamily = FontFamily.Monospace
             )
         }
-        if (recordingActive) {
-            // 右上角脉动红点 — 跟视频区红点呼应,主屏一眼可见
+        if (pulsing) {
+            // 右上角脉动点 — 录像红 / 报警橙,主屏一眼可见
             val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "tile-pulse")
             val alpha by transition.animateFloat(
                 initialValue = 1f,
@@ -591,7 +641,7 @@ private fun ActionTile(
                     .padding(6.dp)
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(UvpColor.Danger.copy(alpha = alpha))
+                    .background(pulseColor.copy(alpha = alpha))
             )
         }
     }

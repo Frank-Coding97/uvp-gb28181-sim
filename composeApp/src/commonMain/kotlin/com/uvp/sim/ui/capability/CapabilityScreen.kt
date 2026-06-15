@@ -54,9 +54,23 @@ import com.uvp.sim.ui.simulate.SimulateScreen
  *  - 报警订阅(§9.4, 待开发占位)
  */
 @Composable
-fun CapabilityScreen(state: AppUiState, actions: AppActions) {
+fun CapabilityScreen(
+    state: AppUiState,
+    actions: AppActions,
+    openAlarmTarget: Boolean = false,
+    onAlarmTargetConsumed: () -> Unit = {}
+) {
     var showCatalog by remember { mutableStateOf(false) }
     var showSimulate by remember { mutableStateOf(false) }
+    var showAlarm by remember { mutableStateOf(false) }
+
+    // 主屏长按报警 tile 携带 target → 自动打开报警子页
+    androidx.compose.runtime.LaunchedEffect(openAlarmTarget) {
+        if (openAlarmTarget) {
+            showAlarm = true
+            onAlarmTargetConsumed()
+        }
+    }
 
     if (showCatalog) {
         CatalogManagementScreen(
@@ -70,9 +84,15 @@ fun CapabilityScreen(state: AppUiState, actions: AppActions) {
         SimulateSubScreen(state = state, onBack = { showSimulate = false })
         return
     }
+    if (showAlarm) {
+        AlarmManagementScreen(state = state, actions = actions, onBack = { showAlarm = false })
+        return
+    }
 
     val catalogSub = state.subscriptions[SubscriptionKind.Catalog]
     val catalogActive = catalogSub?.active == true
+    val alarmSub = state.subscriptions[SubscriptionKind.Alarm]
+    val isAlarming = state.deviceControl.isAlarming
 
     Column(
         modifier = Modifier
@@ -126,10 +146,20 @@ fun CapabilityScreen(state: AppUiState, actions: AppActions) {
             )
             CapabilityTile(
                 icon = Icons.Outlined.NotificationsActive,
-                title = "报警订阅",
-                metric = "待开发",
-                status = TileStatus.Pending("M3 规划中"),
-                onClick = null,
+                title = "报警",
+                metric = "§9.5 报警事件",
+                status = when {
+                    isAlarming -> TileStatus.Warning("报警中")
+                    alarmSub?.active == true -> TileStatus.Active(
+                        buildString {
+                            append("已订阅")
+                            alarmSub.remainingSeconds?.let { append(" · ${it}s") }
+                            append(" · ${alarmSub.notifyCount} 推")
+                        }
+                    )
+                    else -> TileStatus.Idle("未订阅 · ${state.alarmHistory.size} 次")
+                },
+                onClick = { showAlarm = true },
                 modifier = Modifier.weight(1f)
             )
         }
@@ -141,6 +171,7 @@ private sealed interface TileStatus {
     data class Active(override val text: String) : TileStatus
     data class Idle(override val text: String) : TileStatus
     data class Pending(override val text: String) : TileStatus
+    data class Warning(override val text: String) : TileStatus
 }
 
 @Composable
@@ -159,6 +190,7 @@ private fun CapabilityTile(
         is TileStatus.Active -> UvpColor.Success to UvpColor.Success
         is TileStatus.Idle -> UvpColor.TextHint to UvpColor.TextSecondary
         is TileStatus.Pending -> UvpColor.Warning to UvpColor.Warning
+        is TileStatus.Warning -> UvpColor.Warning to UvpColor.Warning
     }
 
     Surface(
