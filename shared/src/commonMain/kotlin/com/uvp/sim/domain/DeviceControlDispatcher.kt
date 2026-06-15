@@ -29,6 +29,20 @@ interface DeviceControlActions {
 }
 
 /**
+ * Dispatcher 处理 DeviceControl 后返回给 SimulatorEngine 的应答指引。
+ *
+ * - [needSipResponse] 是否需要回 SIP 200 OK(DeviceControl 一律 true,即使解析失败,
+ *   避免平台重试)
+ * - [alarmReset] 本次命令是否触发了报警复位(AlarmCmd 0/2/ResetAlarm)
+ * - [by] 复位来源(平台 fromUri),供 emit AlarmReset(Remote) 用
+ */
+data class DeviceControlAck(
+    val needSipResponse: Boolean = true,
+    val alarmReset: Boolean = false,
+    val by: String? = null
+)
+
+/**
  * GB/T 28181-2022 §F.3 DeviceControl 命令分发器.
  *
  * 输入:平台 SIP MESSAGE 中的 MANSCDP XML 体.
@@ -40,7 +54,7 @@ interface DeviceControlActions {
  * 3. TeleBoot      — 重启设备 + LED 重启动画
  * 4. RecordCmd     — 切换录像状态
  * 5. GuardCmd      — 切换布防状态
- * 6. AlarmCmd      — 复位报警灯
+ * 6. AlarmCmd      — 复位报警灯 + 返回 alarmReset ack
  * 7. DragZoomIn/Out — 平台拉框聚焦,记录矩形
  * 8. HomePosition  — 预置位 set/recall
  * 9. BasicParam    — DeviceConfig 在线修改
@@ -60,21 +74,25 @@ class DeviceControlDispatcher(
      * 主入口.根据 XML 中第一个匹配的子命令标签分发.
      * 一个 DeviceControl 体里通常只含一个子命令,这里按已知顺序逐个尝试,
      * 命中即停;避免一次处理多个语义冲突的命令.
+     *
+     * 返回 [DeviceControlAck] 让 engine 决定是否回 200 OK / 是否联动报警复位。
+     * [fromUri] 是平台 MESSAGE 的 From URI,仅 AlarmCmd 复位时透传给 ack.by。
      */
-    fun dispatch(xml: String) {
-        if (xml.isBlank()) return
+    fun dispatch(xml: String, fromUri: String? = null): DeviceControlAck {
+        if (xml.isBlank()) return DeviceControlAck(needSipResponse = false)
 
-        when {
-            ManscdpParser.tagValue(xml, "PTZCmd") != null -> handlePtz(xml)
-            ManscdpParser.tagValue(xml, "IFameCmd") != null -> handleIFrame(xml)
-            ManscdpParser.tagValue(xml, "TeleBoot") != null -> handleTeleBoot(xml)
-            ManscdpParser.tagValue(xml, "RecordCmd") != null -> handleRecord(xml)
-            ManscdpParser.tagValue(xml, "GuardCmd") != null -> handleGuard(xml)
-            ManscdpParser.tagValue(xml, "AlarmCmd") != null -> handleAlarm(xml)
-            xml.contains("<DragZoomIn>") || xml.contains("<DragZoomOut>") -> handleDragZoom(xml)
-            xml.contains("<HomePosition>") -> handleHomePosition(xml)
-            xml.contains("<BasicParam>") -> handleDeviceConfig(xml)
-            ManscdpParser.tagValue(xml, "SnapShotCmd") != null -> handleSnapshot(xml)
+        return when {
+            ManscdpParser.tagValue(xml, "PTZCmd") != null -> { handlePtz(xml); DeviceControlAck() }
+            ManscdpParser.tagValue(xml, "IFameCmd") != null -> { handleIFrame(xml); DeviceControlAck() }
+            ManscdpParser.tagValue(xml, "TeleBoot") != null -> { handleTeleBoot(xml); DeviceControlAck() }
+            ManscdpParser.tagValue(xml, "RecordCmd") != null -> { handleRecord(xml); DeviceControlAck() }
+            ManscdpParser.tagValue(xml, "GuardCmd") != null -> { handleGuard(xml); DeviceControlAck() }
+            ManscdpParser.tagValue(xml, "AlarmCmd") != null -> handleAlarm(xml, fromUri)
+            xml.contains("<DragZoomIn>") || xml.contains("<DragZoomOut>") -> { handleDragZoom(xml); DeviceControlAck() }
+            xml.contains("<HomePosition>") -> { handleHomePosition(xml); DeviceControlAck() }
+            xml.contains("<BasicParam>") -> { handleDeviceConfig(xml); DeviceControlAck() }
+            ManscdpParser.tagValue(xml, "SnapShotCmd") != null -> { handleSnapshot(xml); DeviceControlAck() }
+            else -> DeviceControlAck(needSipResponse = false)
         }
     }
 
@@ -168,13 +186,34 @@ class DeviceControlDispatcher(
 
     // ---------- Alarm ----------
 
-    private fun handleAlarm(xml: String) {
-        val v = ManscdpParser.tagValue(xml, "AlarmCmd") ?: return
-        state.update {
-            it.copy(
-                isAlarming = false,
-                lastCommand = LastDeviceCommand("AlarmCmd", v, nowMs())
-            )
+    /**
+     * GB §9.3.4 AlarmCmd 反向控制。取值兼容两种平台风格:
+     *   - 数值 0(复位) / 1(布防) / 2(撤防)
+     *   - 字符串 "ResetAlarm"(部分平台用文字)
+     *
+     * 0 / 2 / ResetAlarm → 复位(isAlarming=false + alarmReset ack)
+     * 1                  → 布防,仅记录,不切 isAlarming(布防归 GuardCmd,spec 非目标)
+     * 其他未知值         → 不切 isAlarming,仍回 200(避免平台重试)
+     */
+    private fun handleAlarm(xml: String, fromUri: String?): DeviceControlAck {
+        val raw = ManscdpParser.tagValue(xml, "AlarmCmd")
+            ?: return DeviceControlAck(needSipResponse = true)
+        val numeric = raw.toIntOrNull()
+        val isReset = numeric == 0 || numeric == 2 || raw.equals("ResetAlarm", ignoreCase = true)
+        return if (isReset) {
+            state.update {
+                it.copy(
+                    isAlarming = false,
+                    lastCommand = LastDeviceCommand("AlarmCmd", raw, nowMs())
+                )
+            }
+            DeviceControlAck(needSipResponse = true, alarmReset = true, by = fromUri)
+        } else {
+            // 布防(1)或未知值:记录命令但不切 isAlarming
+            state.update {
+                it.copy(lastCommand = LastDeviceCommand("AlarmCmd", raw, nowMs()))
+            }
+            DeviceControlAck(needSipResponse = true, alarmReset = false, by = fromUri)
         }
     }
 

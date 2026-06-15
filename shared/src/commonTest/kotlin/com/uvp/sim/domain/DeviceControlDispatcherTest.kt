@@ -143,6 +143,47 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
+    fun `case 9a — AlarmCmd 0 复位 → alarmReset ack + isAlarming false`() {
+        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val d = newDispatcher(state)
+        val ack = d.dispatch("<C><AlarmCmd>0</AlarmCmd></C>", fromUri = "sip:plat@host")
+        assertTrue(ack.alarmReset)
+        assertTrue(ack.needSipResponse)
+        assertEquals("sip:plat@host", ack.by)
+        assertFalse(state.value.isAlarming)
+    }
+
+    @Test
+    fun `case 9b — AlarmCmd 1 布防 → 不切 isAlarming 不 reset`() {
+        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val d = newDispatcher(state)
+        val ack = d.dispatch("<C><AlarmCmd>1</AlarmCmd></C>")
+        assertFalse(ack.alarmReset)
+        assertTrue(ack.needSipResponse)
+        // isAlarming 不变(仍为 true)
+        assertTrue(state.value.isAlarming)
+    }
+
+    @Test
+    fun `case 9c — AlarmCmd 2 撤防 → alarmReset + isAlarming false`() {
+        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val d = newDispatcher(state)
+        val ack = d.dispatch("<C><AlarmCmd>2</AlarmCmd></C>")
+        assertTrue(ack.alarmReset)
+        assertFalse(state.value.isAlarming)
+    }
+
+    @Test
+    fun `case 9d — AlarmCmd 99 未知值 → 回 200 不 reset 不切 isAlarming`() {
+        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val d = newDispatcher(state)
+        val ack = d.dispatch("<C><AlarmCmd>99</AlarmCmd></C>")
+        assertTrue(ack.needSipResponse)
+        assertFalse(ack.alarmReset)
+        assertTrue(state.value.isAlarming)
+    }
+
+    @Test
     fun `case 10 — DragZoomIn 解析 4 元组矩形`() {
         val state = newState()
         val d = newDispatcher(state)
