@@ -29,6 +29,8 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Videocam
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -902,6 +904,7 @@ internal fun InlineEditableRow(
 ) {
     val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
+    var revealed by remember { mutableStateOf(false) }
 
     Column {
         Row(
@@ -930,10 +933,23 @@ internal fun InlineEditableRow(
                     color = if (enabled) UvpColor.Text else UvpColor.TextHint
                 ),
                 keyboardOptions = KeyboardOptions(keyboardType = keyboard),
-                visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
+                visualTransformation = if (masked && !revealed) PasswordVisualTransformation()
+                else VisualTransformation.None,
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(UvpColor.Primary),
                 modifier = Modifier.weight(1f)
             )
+            if (masked) {
+                Icon(
+                    imageVector = if (revealed) Icons.Outlined.VisibilityOff
+                    else Icons.Outlined.Visibility,
+                    contentDescription = if (revealed) "隐藏密码" else "显示密码",
+                    tint = if (enabled) UvpColor.TextSecondary else UvpColor.TextHint,
+                    modifier = Modifier
+                        .padding(start = 4.dp)
+                        .size(18.dp)
+                        .clickable(enabled = enabled) { revealed = !revealed }
+                )
+            }
             trailing?.invoke()
         }
         Box(
