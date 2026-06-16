@@ -81,7 +81,7 @@ fun main(args: Array<String>) {
             break
         }
 
-        val (alphaCell, advance, bearingX, bearingY) = renderGlyph(font, ch, cellSize, ascent)
+        val (alphaCell, advance, bearingX, bearingY, inkBox) = renderGlyph(font, ch, cellSize, ascent)
         // blit cell → atlas
         for (y in 0 until cellSize) {
             System.arraycopy(
@@ -91,16 +91,27 @@ fun main(args: Array<String>) {
             )
         }
 
+        // ink 包围盒外扩 sdfSpread:SDF 距离场在字形边缘外 spread 像素内有过渡值(描边 + AA 都靠它),
+        // 紧 UV 必须把过渡带一起圈进来,否则边缘被裁、描边消失。clamp 在 cell 内避免越界到邻字。
+        val boxLeft = (inkBox.left - sdfSpread).coerceAtLeast(0)
+        val boxTop = (inkBox.top - sdfSpread).coerceAtLeast(0)
+        val boxRight = (inkBox.left + inkBox.width + sdfSpread).coerceAtMost(cellSize)
+        val boxBottom = (inkBox.top + inkBox.height + sdfSpread).coerceAtMost(cellSize)
+        val boxW = boxRight - boxLeft
+        val boxH = boxBottom - boxTop
+
         glyphMap[ch.toString()] = GlyphInfo(
-            u = cellX.toFloat() / atlasSize,
-            v = cellY.toFloat() / atlasSize,
-            w = cellSize.toFloat() / atlasSize,
-            h = cellSize.toFloat() / atlasSize,
-            pixelW = cellSize,
-            pixelH = cellSize,
+            // UV 指向 atlas 内紧包围盒(含 spread 过渡带)的实际区域,不再是整 cell。
+            u = (cellX + boxLeft).toFloat() / atlasSize,
+            v = (cellY + boxTop).toFloat() / atlasSize,
+            w = boxW.toFloat() / atlasSize,
+            h = boxH.toFloat() / atlasSize,
+            pixelW = boxW,
+            pixelH = boxH,
             advance = advance,
-            bearingX = bearingX,
-            bearingY = bearingY
+            // quad 从过渡带左/顶开始画,bearing 相应回退 spread(box 比 ink 多了 spread 边距)。
+            bearingX = bearingX - sdfSpread,
+            bearingY = bearingY - sdfSpread,
         )
         pen++
     }
@@ -149,6 +160,7 @@ private fun renderGlyph(
     g.font = font
     val metrics = g.fontMetrics
     val advance = metrics.charWidth(ch).toFloat()
+    // 字形先居中画进 cell(留白足够容纳 ink + SDF spread),随后扫出紧包围盒裁掉留白。
     val padX = ((cellSize - advance.toInt()).coerceAtLeast(0)) / 2
     val padY = ((cellSize - metrics.ascent - metrics.descent).coerceAtLeast(0)) / 2
     val baselineY = padY + metrics.ascent
@@ -156,26 +168,52 @@ private fun renderGlyph(
     g.dispose()
 
     val cell = ByteArray(cellSize * cellSize)
+    // 扫描 alpha,同时记录 ink 包围盒(有不透明像素的最小矩形)。
+    var minX = cellSize; var minY = cellSize; var maxX = -1; var maxY = -1
     for (y in 0 until cellSize) {
         for (x in 0 until cellSize) {
             val argb = img.getRGB(x, y)
             val a = (argb ushr 24) and 0xFF
             cell[y * cellSize + x] = a.toByte()
+            if (a >= INK_ALPHA_THRESHOLD) {
+                if (x < minX) minX = x
+                if (x > maxX) maxX = x
+                if (y < minY) minY = y
+                if (y > maxY) maxY = y
+            }
         }
     }
+
+    // 空白字形(空格等)没有 ink:用 advance 当宽、0 高,box 退化到一个安全占位。
+    val inkBox = if (maxX < minX || maxY < minY) {
+        InkBox(left = padX, top = baselineY.toInt(), width = advance.toInt().coerceAtLeast(1), height = 1)
+    } else {
+        InkBox(left = minX, top = minY, width = maxX - minX + 1, height = maxY - minY + 1)
+    }
+
     return GlyphRender(
         alpha = cell,
         advance = advance,
-        bearingX = padX.toFloat(),
-        bearingY = baselineY.toFloat() - ascent
+        // bearingX:字形 ink 左边相对 cursor 的偏移(减掉居中留白,得到真实左轴承)。
+        bearingX = (inkBox.left - padX).toFloat(),
+        // bearingY:字形 ink 顶边相对基线 ascent 的偏移(renderer 按顶边 + bearingY 摆放)。
+        bearingY = inkBox.top - ascent,
+        inkBox = inkBox
     )
 }
+
+private data class InkBox(val left: Int, val top: Int, val width: Int, val height: Int)
+
+/** ink 包围盒扫描的 alpha 阈值 — 高于此值视为字形像素(过滤 AA 极淡边缘噪声)。 */
+private const val INK_ALPHA_THRESHOLD = 16
+
 
 private data class GlyphRender(
     val alpha: ByteArray,
     val advance: Float,
     val bearingX: Float,
-    val bearingY: Float
+    val bearingY: Float,
+    val inkBox: InkBox
 )
 
 /**

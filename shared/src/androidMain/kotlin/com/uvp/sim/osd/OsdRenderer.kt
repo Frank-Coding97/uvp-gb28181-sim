@@ -73,7 +73,12 @@ internal class OsdRenderer(
         val surface: Surface,
         var eglSurface: EGLSurface,
         var width: Int,
-        var height: Int
+        var height: Int,
+        /**
+         * true = CENTER_CROP(放大顶满、裁掉超出,无黑边);false = letterbox(保持比例、留黑边)。
+         * 屏幕预览给人看用 crop 填满,encoder(录像/直播)用 letterbox 保证所录=所见的完整画面。
+         */
+        val cropToFill: Boolean = false
     )
     private val encoderConsumers: MutableList<Consumer> = mutableListOf()
     private var screenConsumer: Consumer? = null
@@ -192,7 +197,7 @@ internal class OsdRenderer(
             if (surface != null) {
                 try {
                     val eglSurface = core.createWindowSurface(surface)
-                    screenConsumer = Consumer("screen", surface, eglSurface, width, height)
+                    screenConsumer = Consumer("screen", surface, eglSurface, width, height, cropToFill = true)
                     SystemLogger.emit(LogLevel.Info, LogTag.Media, "OSD_SCREEN_SET",
                         detail = "${width}x${height}")
                 } catch (t: Throwable) {
@@ -344,7 +349,7 @@ internal class OsdRenderer(
             savedScreen?.let { (surface, w, h) ->
                 runCatching {
                     val eglSurface = eglCore!!.createWindowSurface(surface)
-                    screenConsumer = Consumer("screen", surface, eglSurface, w, h)
+                    screenConsumer = Consumer("screen", surface, eglSurface, w, h, cropToFill = true)
                 }
             }
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "OSD_CONTEXT_RECOVERED",
@@ -381,21 +386,37 @@ internal class OsdRenderer(
         try {
             core.makeCurrent(consumer.eglSurface)
 
-            // letterbox:fbo aspect 跟 consumer aspect 不同时,调小 viewport 居中显示,余下黑边
+            // viewport 适配:letterbox(留黑边)或 CENTER_CROP(放大裁切填满)。
+            // GL viewport 允许负起点 / 超出尺寸,crop 时画面溢出 view 被自动裁掉。
             val srcAspect = fboWidth.toFloat() / fboHeight
             val dstAspect = consumer.width.toFloat() / consumer.height
             val vpX: Int
             val vpY: Int
             val vpW: Int
             val vpH: Int
-            if (srcAspect > dstAspect) {
-                // 源更宽 → 顶满宽,上下黑边
+            if (consumer.cropToFill) {
+                // CENTER_CROP:顶满较短边,较长边溢出居中裁掉,无黑边
+                if (srcAspect > dstAspect) {
+                    // 源更宽 → 顶满高,左右溢出
+                    vpH = consumer.height
+                    vpW = (consumer.height * srcAspect).toInt()
+                    vpX = (consumer.width - vpW) / 2
+                    vpY = 0
+                } else {
+                    // 源更高 → 顶满宽,上下溢出
+                    vpW = consumer.width
+                    vpH = (consumer.width / srcAspect).toInt()
+                    vpX = 0
+                    vpY = (consumer.height - vpH) / 2
+                }
+            } else if (srcAspect > dstAspect) {
+                // letterbox:源更宽 → 顶满宽,上下黑边
                 vpW = consumer.width
                 vpH = (consumer.width / srcAspect).toInt()
                 vpX = 0
                 vpY = (consumer.height - vpH) / 2
             } else if (srcAspect < dstAspect) {
-                // 源更高 → 顶满高,左右黑边
+                // letterbox:源更高 → 顶满高,左右黑边
                 vpW = (consumer.height * srcAspect).toInt()
                 vpH = consumer.height
                 vpX = (consumer.width - vpW) / 2

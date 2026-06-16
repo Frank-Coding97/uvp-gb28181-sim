@@ -96,9 +96,12 @@ internal class OsdTextPass(private val atlas: OsdFontAtlas) {
             OsdPosition.TOP_RIGHT, OsdPosition.BOTTOM_RIGHT -> viewportWidth - marginPx - pixelWidth
             OsdPosition.CENTER -> (viewportWidth - pixelWidth) / 2f
         }
+        // fbo 内容会被 OsdRenderer 的 blit pass 做一次垂直翻转(为让相机画面正立)。
+        // 字形 quad 已通过 UV 交叉补偿了这次翻转,锚点也必须按"翻转后"的目标反算:
+        // 屏幕 TOP 对应 fbo 底部、屏幕 BOTTOM 对应 fbo 顶部,blit 翻转后落到正确的屏幕角。
         val anchorY = when (anchor) {
-            OsdPosition.TOP_LEFT, OsdPosition.TOP_RIGHT -> marginPx
-            OsdPosition.BOTTOM_LEFT, OsdPosition.BOTTOM_RIGHT -> viewportHeight - marginPx - pixelHeight
+            OsdPosition.TOP_LEFT, OsdPosition.TOP_RIGHT -> viewportHeight - marginPx - pixelHeight
+            OsdPosition.BOTTOM_LEFT, OsdPosition.BOTTOM_RIGHT -> marginPx
             OsdPosition.CENTER -> (viewportHeight - pixelHeight) / 2f
         }
 

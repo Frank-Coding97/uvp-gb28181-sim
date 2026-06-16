@@ -18,8 +18,8 @@ data class OsdConfig(
         text = "",
         position = OsdPosition.TOP_RIGHT,
         size = OsdSize.MEDIUM,
-        fillColor = "#FFFF00",
-        outlineColor = "#FFFFFF"
+        fillColor = "#FFFFFF",
+        outlineColor = "#000000"
     ),
     val channelName: OsdLayer = OsdLayer(
         enabled = false,

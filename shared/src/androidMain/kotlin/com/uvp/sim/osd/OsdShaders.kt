@@ -92,9 +92,12 @@ in vec2 vUv;
 out vec4 fragColor;
 void main() {
     float dist = texture(uAtlas, vUv).r;
-    float fillAlpha = smoothstep(0.5 - 0.05, 0.5 + 0.05, dist);
-    float outlineAlpha = smoothstep(0.5 - uOutlineWidth - 0.05,
-                                    0.5 - uOutlineWidth + 0.05, dist);
+    // 抗锯齿宽度用屏幕空间导数自适应:一个屏幕像素在距离场里跨多少,
+    // smoothstep 就软化多少。固定阈值在字号缩放后会糊,fwidth 在任意字号都得到 ~1px 锐利边缘。
+    float aa = fwidth(dist);
+    float fillAlpha = smoothstep(0.5 - aa, 0.5 + aa, dist);
+    float outlineAlpha = smoothstep(0.5 - uOutlineWidth - aa,
+                                    0.5 - uOutlineWidth + aa, dist);
     vec4 color = mix(uOutlineColor, uFillColor, fillAlpha);
     color.a *= outlineAlpha;
     if (color.a < 0.001) discard;
