@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
@@ -63,6 +64,7 @@ class MainActivity : ComponentActivity() {
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         // observability 接线 — 必须在任何业务 emit 之前
@@ -126,6 +128,11 @@ class MainActivity : ComponentActivity() {
             val sysLogs by systemEvents.collectAsState()
             val rawSubs by viewModel.subscriptions.collectAsStateWithLifecycle()
             val deviceControl by viewModel.deviceControl.collectAsStateWithLifecycle()
+            val catalogTree by viewModel.catalogTree.collectAsStateWithLifecycle()
+            val lastCatalogSavedAt by viewModel.lastCatalogSavedAt.collectAsStateWithLifecycle()
+            val alarmHistory by viewModel.alarmHistory.collectAsStateWithLifecycle()
+            val alarmFireMode by viewModel.alarmFireMode.collectAsStateWithLifecycle()
+            val fixedAlarm by viewModel.fixedAlarm.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -159,7 +166,12 @@ class MainActivity : ComponentActivity() {
                 sessionMarker = SessionTracker.current,
                 subscriptions = subscriptions,
                 deviceControl = deviceControl,
-                recording = recordingStatus
+                recording = recordingStatus,
+                catalogTree = catalogTree,
+                lastCatalogSavedAt = lastCatalogSavedAt,
+                alarmHistory = alarmHistory,
+                alarmFireMode = alarmFireMode,
+                fixedAlarmTemplate = fixedAlarm
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -196,6 +208,39 @@ class MainActivity : ComponentActivity() {
                 override fun onRecordingDelete(id: String) {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户删除录像 $id")
                     viewModel.deleteRecording(id)
+                }
+                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>): String? {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "保存目录树 节点数=${tree.size}"
+                    )
+                    val result = viewModel.saveCatalogTree(tree)
+                    return if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
+                        result.message
+                    } else null
+                }
+                override fun onAlarmFire(payload: com.uvp.sim.gb28181.AlarmPayload) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "用户发送报警 type=${payload.type.label} priority=${payload.priority.label}"
+                    )
+                    viewModel.fireAlarm(payload)
+                }
+                override fun onAlarmReset() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户本地复位报警")
+                    viewModel.resetAlarm()
+                }
+                override fun onAlarmFireDefault() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "主页一键报警(模式驱动)")
+                    viewModel.fireAlarmDefault()
+                }
+                override fun onSetAlarmFireMode(mode: com.uvp.sim.ui.AlarmFireMode) {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "切换报警模式 → $mode")
+                    viewModel.setAlarmFireMode(mode)
+                }
+                override fun onSaveFixedAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "保存固定报警单 type=${payload.type.label}")
+                    viewModel.saveFixedAlarm(payload)
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

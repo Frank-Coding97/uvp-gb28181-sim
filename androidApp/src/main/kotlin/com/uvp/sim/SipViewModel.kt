@@ -7,6 +7,7 @@ import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
@@ -52,7 +53,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val engineScope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob())
     private val configStore = ConfigStore(application)
 
-    private var transport: UdpSipTransport? = null
+    private var transport: com.uvp.sim.network.SipTransport? = null
     private var engine: SimulatorEngine? = null
     private var camera: CameraCapture? = null
     private var audio: AudioCapture? = null
@@ -121,6 +122,28 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _deviceControl = MutableStateFlow(DeviceControlState())
     val deviceControl: StateFlow<DeviceControlState> = _deviceControl.asStateFlow()
 
+    /**
+     * 当前生效目录树。SimulatorEngine 是真源,这里作为 UI 投影。
+     * 未连接时返回 SimConfig.catalogTree,连接后被 engine 流覆盖。
+     */
+    private val _catalogTree = MutableStateFlow<List<CatalogNode>>(emptyList())
+    val catalogTree: StateFlow<List<CatalogNode>> = _catalogTree.asStateFlow()
+
+    /** 最后一次成功保存目录树的 epoch 毫秒,UI 显示"X 分钟前已保存"。 */
+    private val _lastCatalogSavedAt = MutableStateFlow<Long?>(null)
+    val lastCatalogSavedAt: StateFlow<Long?> = _lastCatalogSavedAt.asStateFlow()
+
+    /** 本会话报警历史(engine 投影,未连接时为空)。 */
+    private val _alarmHistory = MutableStateFlow<List<com.uvp.sim.domain.AlarmRecord>>(emptyList())
+    val alarmHistory: StateFlow<List<com.uvp.sim.domain.AlarmRecord>> = _alarmHistory.asStateFlow()
+
+    /** 报警发送模式 + 固定单(本会话内存,spec G2)。 */
+    private val _alarmFireMode = MutableStateFlow(com.uvp.sim.ui.AlarmFireMode.Random)
+    val alarmFireMode: StateFlow<com.uvp.sim.ui.AlarmFireMode> = _alarmFireMode.asStateFlow()
+
+    private val _fixedAlarm = MutableStateFlow<com.uvp.sim.gb28181.AlarmPayload?>(null)
+    val fixedAlarm: StateFlow<com.uvp.sim.gb28181.AlarmPayload?> = _fixedAlarm.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -130,6 +153,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 _config.value = stored
                 _videoConfigVersion.value += 1
             }
+            // 即便 stored == default,catalogTree 投影也要初始化
+            _catalogTree.value = com.uvp.sim.domain.CatalogTreeStore.effectiveTree(stored)
         }
     }
 
@@ -203,7 +228,13 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 SipState.Registering, SipState.Registered, SipState.InCall -> return
                 SipState.Disconnected, SipState.Failed -> {
                     engineScope.launch {
-                        try { existing.register() } catch (e: Throwable) {
+                        try {
+                            // TCP transport 的 socket 可能已经被对端 close / VPN 抖断,
+                            // 重连时必须先把底层 socket 也重建一遍。connect() 自身
+                            // 已经 idempotent(socket != null 时 noop),所以无脑调安全。
+                            transport?.connect()
+                            existing.register()
+                        } catch (e: Throwable) {
                             _events.update { current ->
                                 (listOf(SimEvent.TransportError("register retry: ${e.message}")) + current)
                                     .take(MAX_EVENT_LOG)
@@ -218,10 +249,16 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val ctx = getApplication<Application>()
         val localIp = AndroidNetwork.activeIpv4(ctx) ?: "0.0.0.0"
 
-        val tx = UdpSipTransport(
-            remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.UDP),
-            parentScope = engineScope
-        )
+        val tx: com.uvp.sim.network.SipTransport = when (cfg.transport) {
+            TransportType.TCP -> com.uvp.sim.network.TcpSipTransport(
+                remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.TCP),
+                parentScope = engineScope
+            )
+            TransportType.UDP -> UdpSipTransport(
+                remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.UDP),
+                parentScope = engineScope
+            )
+        }
         transport = tx
 
         val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->
@@ -257,6 +294,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
         engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
         engineScope.launch { eng.deviceControlState.collect { _deviceControl.value = it } }
+        engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
+        engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
 
         engineScope.launch {
             try {
@@ -318,6 +357,38 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * 用户保存目录树:
+     *  - 先校验:不合法直接返回 Invalid 含错误清单,UI 显示并不持久化
+     *  - 通过校验:写回 SimConfig.catalogTree 并持久化(下次冷启动恢复)
+     *  - 通知 engine,触发 pushCatalogNotify(若有活跃订阅)
+     *
+     * 返回值供 UI 显示 toast:Ok 显示成功,Invalid 显示错误。
+     */
+    fun saveCatalogTree(tree: List<CatalogNode>): com.uvp.sim.domain.ValidationResult {
+        val result = com.uvp.sim.domain.CatalogTreeStore.validate(tree)
+        if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
+            return result
+        }
+        val newCfg = _config.value.copy(catalogTree = tree)
+        _config.value = newCfg
+        _catalogTree.value = tree
+        _lastCatalogSavedAt.value = System.currentTimeMillis()
+        viewModelScope.launch { runCatching { configStore.save(newCfg) } }
+        val eng = engine ?: return result
+        engineScope.launch {
+            try {
+                eng.updateCatalogTree(tree)
+            } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("save catalog: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
+            }
+        }
+        return result
+    }
+
     /** Trigger a snapshot upload (T15). Engine handles the rest. */
     fun reportSnapshot() {
         val eng = engine ?: return
@@ -329,6 +400,52 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /** M2 Alarm — 主动报警(主屏一键 / 能力页详细)。engine 走 reportAlarm fan-out。 */
+    fun fireAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) {
+        val eng = engine ?: run {
+            _toasts.tryEmit("未注册,无法发送报警")
+            return
+        }
+        engineScope.launch {
+            try { eng.reportAlarm(payload) } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("alarm fire: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
+            }
+        }
+    }
+
+    /** M2 Alarm — 本地复位(不走 SIP)。 */
+    fun resetAlarm() {
+        val eng = engine ?: return
+        engineScope.launch {
+            try { eng.localResetAlarm() } catch (_: Throwable) { }
+        }
+    }
+
+    /** M2+ — 主页一点即发,按当前模式选 payload(spec G1/G2)。 */
+    fun fireAlarmDefault() {
+        val cfg = _config.value
+        val payload = when (_alarmFireMode.value) {
+            com.uvp.sim.ui.AlarmFireMode.Fixed ->
+                _fixedAlarm.value
+                    ?: com.uvp.sim.gb28181.AlarmTemplates.random().toPayload(cfg)
+            com.uvp.sim.ui.AlarmFireMode.Random ->
+                com.uvp.sim.gb28181.AlarmTemplates.random().toPayload(cfg)
+        }
+        fireAlarm(payload)
+    }
+
+    fun setAlarmFireMode(mode: com.uvp.sim.ui.AlarmFireMode) {
+        _alarmFireMode.value = mode
+    }
+
+    fun saveFixedAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) {
+        _fixedAlarm.value = payload
+        _alarmFireMode.value = com.uvp.sim.ui.AlarmFireMode.Fixed
     }
 
     override fun onCleared() {

@@ -7,28 +7,34 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.Receipt
-import androidx.compose.material.icons.outlined.Tune
-import androidx.compose.material.icons.outlined.Videocam
-import androidx.compose.material.icons.outlined.ViewInAr
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -36,6 +42,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+/**
+ * 跨 Tab 导航跳转能力。主屏报警 tile 长按时,通过它切到「能力」Tab 并
+ * 让 CapabilityScreen 直接打开报警子页。null callback = 默认无操作(测试/预览安全)。
+ */
+class AppNavigator(
+    val navigateToAlarm: () -> Unit = {}
+)
+
+val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
 
 /**
  * App shell — 紧凑顶/底栏 + 3 tab + 全局 UvpToast。
@@ -47,22 +63,36 @@ import androidx.compose.ui.unit.sp
 fun App(state: AppUiState, actions: AppActions) {
     UvpTheme {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
+        // 报警子页跳转目标:主屏长按报警 tile 置 true,CapabilityScreen 消费后清零
+        var alarmTarget by rememberSaveable { mutableStateOf(false) }
+        val navigator = AppNavigator(
+            navigateToAlarm = {
+                alarmTarget = true
+                currentTab = AppTab.Capability
+            }
+        )
         UvpToastHost {
-            Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-                CompactTopBar()
-                Surface(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    color = UvpColor.Bg
-                ) {
-                    when (currentTab) {
-                        AppTab.Home -> HomeScreen(state, actions)
-                        AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(state)
-                        AppTab.Settings -> SettingsScreen(state, actions)
-                        AppTab.Recording -> RecordingScreen(state, actions)
-                        AppTab.Log -> LogScreen(state)
+            CompositionLocalProvider(LocalAppNavigator provides navigator) {
+                Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
+                    CompactTopBar()
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        color = UvpColor.Bg
+                    ) {
+                        when (currentTab) {
+                            AppTab.Home -> HomeScreen(state, actions)
+                            AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
+                                state, actions,
+                                openAlarmTarget = alarmTarget,
+                                onAlarmTargetConsumed = { alarmTarget = false }
+                            )
+                            AppTab.Settings -> SettingsScreen(state, actions)
+                            AppTab.Recording -> RecordingScreen(state, actions)
+                            AppTab.Log -> LogScreen(state)
+                        }
                     }
+                    CompactBottomBar(currentTab) { currentTab = it }
                 }
-                CompactBottomBar(currentTab) { currentTab = it }
             }
         }
     }
@@ -70,7 +100,7 @@ fun App(state: AppUiState, actions: AppActions) {
 
 @Composable
 private fun CompactTopBar() {
-    Column {
+    Column(modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -107,7 +137,7 @@ private fun CompactTopBar() {
 
 @Composable
 private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
-    Column {
+    Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
         Row(
             modifier = Modifier
@@ -160,8 +190,8 @@ private fun BottomTabItem(
 @Composable
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
-    AppTab.Simulate -> Icons.Outlined.ViewInAr
-    AppTab.Settings -> Icons.Outlined.Tune
-    AppTab.Recording -> Icons.Outlined.Videocam
-    AppTab.Log -> Icons.Outlined.Receipt
+    AppTab.Capability -> Icons.Outlined.Extension
+    AppTab.Log -> Icons.Outlined.Description
+    AppTab.Recording -> Icons.Outlined.Movie
+    AppTab.Settings -> Icons.Outlined.Settings
 }

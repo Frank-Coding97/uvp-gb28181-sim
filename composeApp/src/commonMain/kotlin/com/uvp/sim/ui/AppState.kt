@@ -1,8 +1,11 @@
 package com.uvp.sim.ui
 
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
+import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
@@ -41,8 +44,35 @@ data class AppUiState(
     /**
      * 平台 PLAYBACK 回放状态。M2 D 块接通后实时刷,M2 默认空。
      */
-    val playback: PlaybackStatus = PlaybackStatus()
+    val playback: PlaybackStatus = PlaybackStatus(),
+    /**
+     * 当前生效的目录树。SimulatorEngine.catalogTree 投影,
+     * 「能力」Tab 的目录管理界面读这个 list 做编辑入口的初始 draft。
+     */
+    val catalogTree: List<CatalogNode> = emptyList(),
+    /** 上一次保存目录树的 epoch ms,UI 显示「X 分钟前已保存」。 */
+    val lastCatalogSavedAt: Long? = null,
+    /**
+     * 本会话已发报警历史(最近若干条,不持久化,重启清空)。
+     * 能力页报警卡角标读 size 显示报警次数,子页历史折叠区读列表。
+     */
+    val alarmHistory: List<AlarmRecord> = emptyList(),
+    /**
+     * 报警发送模式(spec G2)。主页"一点即发"按此模式走。本会话内存。
+     */
+    val alarmFireMode: AlarmFireMode = AlarmFireMode.Random,
+    /**
+     * 指定模式下用户保存的固定报警单(null = 还没存,退化随机)。本会话内存。
+     */
+    val fixedAlarmTemplate: AlarmPayload? = null
 )
+
+/**
+ * 报警发送模式(spec G2)。
+ * - Random:每次从预置模板池随机抽一个
+ * - Fixed:固定发用户编好的 [AppUiState.fixedAlarmTemplate]
+ */
+enum class AlarmFireMode { Random, Fixed }
 
 /**
  * GB/T 28181 上级订阅类型。M1 列出 UI 关心的两种,M2 接信令时按需扩展。
@@ -51,7 +81,9 @@ enum class SubscriptionKind {
     /** MobilePosition — 平台 SUBSCRIBE 后设备周期 NOTIFY GPS. */
     MobilePosition,
     /** Catalog — 平台 SUBSCRIBE 后设备 NOTIFY 目录变更. */
-    Catalog
+    Catalog,
+    /** Alarm — 平台 SUBSCRIBE Event:Alarm 后设备在每次报警时 NOTIFY. */
+    Alarm
 }
 
 /**
@@ -100,7 +132,7 @@ data class PlaybackStatus(
  * Actions the UI can request. The platform shell binds these to the engine
  * + ViewModel; commonMain stays platform-free.
  *
- * 录像 4 个动作全部带默认空实现,别的 worktree 拿 main 后零改动编译过。
+ * 录像 4 个动作 + Catalog 保存动作全部带默认空实现,别的 worktree 拿 main 后零改动编译过。
  */
 interface AppActions {
     fun onConnect()
@@ -113,13 +145,44 @@ interface AppActions {
     fun onRecordingStop() {}
     fun onRecordingDelete(id: String) {}
     fun onRecordingFilterApply(filter: RecordingFilter) {}
+
+    /**
+     * 用户在目录管理界面点保存,把新树写回 engine + 持久化。
+     * 若有活跃 Catalog 订阅,engine 会立即推一次完整 NOTIFY(spec Q6)。
+     *
+     * 返回值:null 表示成功;非 null 是校验失败的错误消息(用 \n 分隔多行)。
+     */
+    fun onCatalogTreeSave(tree: List<CatalogNode>): String? = null
+
+    /**
+     * 主屏 tile 一键 / 能力页子页详细编辑后发送报警。
+     * engine 走 reportAlarm:MESSAGE 给注册中心 + NOTIFY 给 Alarm 订阅人。
+     */
+    fun onAlarmFire(payload: AlarmPayload) {}
+
+    /**
+     * 用户本地复位报警(主屏报警中 tile 点击确认 / 子页复位按钮)。
+     * 仅翻 isAlarming=false + emit AlarmReset(local),**不走 SIP**(spec S4)。
+     */
+    fun onAlarmReset() {}
+
+    /**
+     * 主页报警 tile「一点即发」(spec G1)。按当前 alarmFireMode 发:
+     * Random → 抽模板;Fixed → 发 fixedAlarmTemplate(空则退化随机)。
+     */
+    fun onAlarmFireDefault() {}
+
+    /** 设置报警发送模式(能力页报警卡)。 */
+    fun onSetAlarmFireMode(mode: AlarmFireMode) {}
+
+    /** 保存固定报警单(指定模式),主页一点即发此单。 */
+    fun onSaveFixedAlarm(payload: AlarmPayload) {}
 }
 
 enum class AppTab(val label: String) {
     Home("主页"),
-    Simulate("模拟"),
-    Settings("设置"),
+    Capability("能力"),
+    Log("日志"),
     Recording("录像"),
-    Log("日志");
+    Settings("设置");
 }
-

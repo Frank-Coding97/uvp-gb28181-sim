@@ -58,7 +58,7 @@ class SubscribeHandlerTest {
 
     @Test
     fun wrongEventRejects489() {
-        val req = subscribeRequest(event = "catalog")
+        val req = subscribeRequest(event = "dialog")
         val intent = SubscribeHandler.parse(req, emptySet())
         assertIs<SubscribeIntent.Reject>(intent)
         assertEquals(489, intent.statusCode)
@@ -91,13 +91,59 @@ class SubscribeHandlerTest {
     }
 
     @Test
-    fun catalogCmdTypeReturnsIgnored() {
+    fun catalogCmdTypeReturnsNewSubscriptionWithKindCatalog() {
         val body = """<?xml version="1.0"?>
 <Query><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>dev1</DeviceID></Query>"""
+        val req = subscribeRequest(body = body, expires = null)
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Catalog", intent.kind)
+        // Catalog 默认 Expires 86400(24h)
+        assertEquals(86400, intent.expiresSeconds)
+        // Catalog 不周期推送,interval=0
+        assertEquals(0, intent.intervalSeconds)
+    }
+
+    @Test
+    fun catalogSubscribeAcceptsEventCatalog() {
+        // GB §9.3.1.2: 目录订阅 Event 头是 "Catalog",不是 presence
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>Catalog</CmdType><SN>1</SN><DeviceID>dev1</DeviceID></Query>"""
+        val req = subscribeRequest(event = "Catalog", body = body, expires = "86400")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Catalog", intent.kind)
+    }
+
+    @Test
+    fun catalogSubscribeAcceptsEventCatalogWithIdParameter() {
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>Catalog</CmdType><SN>1</SN></Query>"""
+        val req = subscribeRequest(event = "Catalog;id=abc", body = body, expires = "86400")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Catalog", intent.kind)
+    }
+
+    @Test
+    fun catalogWithExplicitExpiresUsesHeader() {
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>Catalog</CmdType><SN>1</SN></Query>"""
+        val req = subscribeRequest(body = body, expires = "7200")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Catalog", intent.kind)
+        assertEquals(7200, intent.expiresSeconds)
+    }
+
+    @Test
+    fun unsupportedCmdTypeReturnsIgnored() {
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>RecordInfo</CmdType><SN>1</SN></Query>"""
         val req = subscribeRequest(body = body)
         val intent = SubscribeHandler.parse(req, emptySet())
         assertIs<SubscribeIntent.Ignored>(intent)
-        assertEquals("Catalog", intent.cmdType)
+        assertEquals("RecordInfo", intent.cmdType)
     }
 
     @Test
@@ -123,5 +169,48 @@ class SubscribeHandlerTest {
         val req = subscribeRequest(event = "presence;id=abc123")
         val intent = SubscribeHandler.parse(req, emptySet())
         assertIs<SubscribeIntent.NewSubscription>(intent)
+    }
+
+    @Test
+    fun alarmEventReturnsNewSubscriptionWithKindAlarm() {
+        // Event: Alarm 走 Event 头直接判定,body 可不含标准 CmdType
+        val req = subscribeRequest(event = "Alarm", expires = null, body = "<Query><SN>1</SN></Query>")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+    }
+
+    @Test
+    fun alarmEventWithIdParameterAccepted() {
+        val req = subscribeRequest(event = "Alarm;id=42", expires = null, body = "<Query><SN>1</SN></Query>")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+    }
+
+    @Test
+    fun alarmDefaultExpiresIs3600() {
+        val req = subscribeRequest(event = "Alarm", expires = null, body = "<Query><SN>1</SN></Query>")
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals(3600, intent.expiresSeconds)
+    }
+
+    @Test
+    fun wvpAlarmSubscribeViaPresenceEventAndBodyCmdType() {
+        // WVP-Pro 实测:报警订阅用 Event: presence;id=xxx + body <CmdType>Alarm</CmdType>,
+        // 不是裸 Event: Alarm。必须靠 body CmdType 识别成 kind=Alarm,否则 Ignored → 超时。
+        val body = """<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>Alarm</CmdType>
+<SN>916329</SN>
+<DeviceID>35020000001310000001</DeviceID>
+</Query>"""
+        val req = subscribeRequest(event = "presence;id=8052", expires = "60", body = body)
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+        assertEquals(60, intent.expiresSeconds)
+        assertEquals(0, intent.intervalSeconds)
     }
 }

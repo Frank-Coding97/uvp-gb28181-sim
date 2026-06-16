@@ -140,4 +140,46 @@ sealed class SimEvent {
         val newExpiresSeconds: Int,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+
+    // ---------- M2 Alarm (主动 + 反向 + 订阅) ----------
+
+    /** 报警复位来源:本地用户操作 / 平台 AlarmCmd 远程下发。 */
+    sealed class ResetSource {
+        data object Local : ResetSource()
+        data class Remote(val subscriber: String) : ResetSource()
+    }
+
+    /** 设备主动发起报警(reportAlarm)。 */
+    data class AlarmFired(
+        val type: com.uvp.sim.gb28181.AlarmType,
+        val priority: com.uvp.sim.gb28181.AlarmPriority,
+        val description: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 报警复位(本地确认 或 平台 AlarmCmd)。 */
+    data class AlarmReset(
+        val by: ResetSource,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 平台 SUBSCRIBE Event:Alarm 成功建立订阅。 */
+    data class AlarmSubscribed(
+        val subscriber: String,
+        val expires: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 每条报警 NOTIFY 推给某个订阅人。 */
+    data class AlarmNotifySent(
+        val sn: String,
+        val subscriber: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** Alarm 订阅取消 / 自然过期。 */
+    data class AlarmSubscriptionExpired(
+        val subscriber: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
 }

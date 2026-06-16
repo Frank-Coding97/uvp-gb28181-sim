@@ -52,7 +52,7 @@ class UdpSipTransport(
     override val incoming: Flow<SipMessage> = _incoming.asSharedFlow()
 
     /** Public for testing / logs. The actual local port we ended up bound to. */
-    val localPort: Int get() = (socket?.localAddress as? InetSocketAddress)?.port ?: -1
+    override val localPort: Int get() = (socket?.localAddress as? InetSocketAddress)?.port ?: -1
 
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return

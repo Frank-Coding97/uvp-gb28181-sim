@@ -38,36 +38,66 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
 
     private val notifyJobs = mutableMapOf<String, Heartbeat>()
     private val expiryJobs = mutableMapOf<String, Job>()
+    /** 自然过期回调,按 callId 存,倒计时归零时(cancel 前)调用一次。 */
+    private val expiryCallbacks = mutableMapOf<String, suspend (SubscriptionDialog) -> Unit>()
 
     private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
 
     fun activate(
         dialog: SubscriptionDialog,
+        onExpire: (suspend (SubscriptionDialog) -> Unit)? = null,
         onNotify: suspend (SubscriptionDialog) -> Unit
     ) {
         _dialogs.update { it + (dialog.callId to dialog) }
+        if (onExpire != null) expiryCallbacks[dialog.callId] = onExpire
         rebuildSnapshot()
 
-        val heartbeat = Heartbeat(
-            intervalMillis = dialog.intervalSeconds * 1000L,
-            scope = scope
-        ) {
-            val current = _dialogs.value[dialog.callId] ?: return@Heartbeat
-            val updated = current.copy(
-                notifyCount = current.notifyCount + 1,
-                cseqNotify = current.cseqNotify + 1
-            )
-            _dialogs.update { it + (dialog.callId to updated) }
-            rebuildSnapshot()
-            onNotify(updated)
+        // Catalog / Alarm 不周期推送 — 事件驱动:
+        //   Catalog initial NOTIFY 由调用方在 activate 后单独发,后续靠用户编辑触发
+        //   Alarm 无 initial NOTIFY(报警是事件流),后续靠 reportAlarm 触发
+        // 只有 MobilePosition 走 Heartbeat 周期推。
+        if (dialog.kind != "Catalog" && dialog.kind != "Alarm") {
+            val heartbeat = Heartbeat(
+                intervalMillis = dialog.intervalSeconds * 1000L,
+                scope = scope
+            ) {
+                val current = _dialogs.value[dialog.callId] ?: return@Heartbeat
+                val updated = current.copy(
+                    notifyCount = current.notifyCount + 1,
+                    cseqNotify = current.cseqNotify + 1
+                )
+                _dialogs.update { it + (dialog.callId to updated) }
+                rebuildSnapshot()
+                onNotify(updated)
+            }
+            notifyJobs[dialog.callId]?.stop()
+            notifyJobs[dialog.callId] = heartbeat
+            heartbeat.start()
         }
-        notifyJobs[dialog.callId]?.stop()
-        notifyJobs[dialog.callId] = heartbeat
-        heartbeat.start()
 
         startExpiryCountdown(dialog.callId, dialog.expiresSeconds)
     }
+
+    /**
+     * 给调用方在事件驱动场景(Catalog 用户编辑后)主动推送 NOTIFY 用。
+     * 自增 notifyCount + cseqNotify,返回更新后的 dialog。返回 null 表示
+     * 该 callId 已不在订阅集中。
+     */
+    fun bumpNotify(callId: String): SubscriptionDialog? {
+        val current = _dialogs.value[callId] ?: return null
+        val updated = current.copy(
+            notifyCount = current.notifyCount + 1,
+            cseqNotify = current.cseqNotify + 1
+        )
+        _dialogs.update { it + (callId to updated) }
+        rebuildSnapshot()
+        return updated
+    }
+
+    /** 拿到所有指定 kind 的 dialog 副本(用于 SimulatorEngine 主动推送)。 */
+    fun dialogsByKind(kind: String): List<SubscriptionDialog> =
+        _dialogs.value.values.filter { it.kind == kind }
 
     fun refresh(callId: String, newExpires: Int) {
         _dialogs.update { map ->
@@ -87,6 +117,7 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         notifyJobs.remove(callId)
         expiryJobs[callId]?.cancel()
         expiryJobs.remove(callId)
+        expiryCallbacks.remove(callId)
         _dialogs.update { it - callId }
         rebuildSnapshot()
     }
@@ -96,6 +127,7 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         notifyJobs.clear()
         expiryJobs.values.forEach { it.cancel() }
         expiryJobs.clear()
+        expiryCallbacks.clear()
         _dialogs.value = emptyMap()
         rebuildSnapshot()
     }
@@ -118,6 +150,9 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
                 rebuildSnapshot()
             }
             if (isActive) {
+                val expiring = _dialogs.value[callId]
+                val cb = expiryCallbacks[callId]
+                if (expiring != null && cb != null) cb(expiring)
                 cancel(callId)
             }
         }

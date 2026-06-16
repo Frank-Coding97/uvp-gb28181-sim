@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.SipTransport
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -144,6 +146,19 @@ class SimulatorEngine(
     private val subscriptionRegistry = SubscriptionRegistry(scope)
     private val mockGps = MockGpsSource(config.mockPosition)
     private var notifySn = 0
+    private var catalogNotifySn = 0
+    private var alarmNotifySn = 0
+
+    // M2 Alarm: 本会话报警历史(最近 10 条,不持久化)
+    private val alarmHistoryStore = AlarmHistoryStore()
+    val alarmHistory: StateFlow<List<AlarmRecord>> = alarmHistoryStore.history
+
+    /**
+     * 当前生效的目录树。初始从 SimConfig.catalogTree 取(为空时用默认),
+     * 用户在 UI 编辑器修改后通过 [updateCatalogTree] 写回。
+     */
+    private val _catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(config))
+    val catalogTree: StateFlow<List<com.uvp.sim.config.CatalogNode>> = _catalogTree.asStateFlow()
 
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
@@ -427,6 +442,135 @@ class SimulatorEngine(
     }
 
     /**
+     * M2 Alarm — 主动发起报警(主屏一键 / 能力页详细编辑后)。
+     *
+     * fan-out 两路,body 完全相同(都是 [com.uvp.sim.gb28181.AlarmNotify.buildAlarm]):
+     *   路 A — MESSAGE 给注册中心(跟 reportSnapshot 同 SN 池 = cseq)
+     *   路 B — NOTIFY 给每个活跃 Alarm 订阅人(失败不中断其他订阅人)
+     *
+     * 完成后:append 历史 + 翻 isAlarming=true + emit AlarmFired(+每条 NOTIFY emit AlarmNotifySent)。
+     */
+    suspend fun reportAlarm(payload: AlarmPayload) {
+        val dialogs: List<SubscriptionDialog>
+        val sn: String
+        mutex.withLock {
+            if (_state.value != SipState.Registered && _state.value != SipState.InCall) {
+                _events.emit(SimEvent.TransportError("alarm: not registered"))
+                return
+            }
+            cseq += 1
+            sn = cseq.toString()
+            val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, payload)
+
+            // 路 A — MESSAGE 给注册中心
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = body
+            )
+            try {
+                transport.send(msg)
+                _events.emit(SimEvent.MessageSent(msg))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("alarm MESSAGE send: ${e.message}"))
+            }
+
+            // 路 B — NOTIFY 给每个活跃 Alarm 订阅人(在锁内拿 dialog 快照,锁外发)
+            dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+            for (d in dialogs) {
+                val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+                sendAlarmNotify(updated, body, sn)
+            }
+        }
+
+        alarmHistoryStore.append(
+            AlarmRecord(payload = payload, firedAtMs = nowMs(), notifiedSubscribers = dialogs.size)
+        )
+        _deviceControlState.update { it.copy(isAlarming = true) }
+        _events.emit(SimEvent.AlarmFired(payload.type, payload.priority, payload.description))
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "主动报警 → MESSAGE + ${dialogs.size} 订阅 NOTIFY · ${payload.type.label}/${payload.priority.label}"
+        )
+    }
+
+    /**
+     * M2 Alarm — 用户本地复位(主屏报警中 tile 确认 / 子页复位按钮)。
+     * 仅翻 isAlarming=false + emit AlarmReset(Local),**不走 SIP**(spec S4),
+     * 也不推 NOTIFY(本地操作不通知订阅人)。
+     */
+    suspend fun localResetAlarm() {
+        _deviceControlState.update { it.copy(isAlarming = false) }
+        _events.emit(SimEvent.AlarmReset(SimEvent.ResetSource.Local))
+        SystemLogger.emit(LogLevel.Info, LogTag.Network, "本地复位报警(不走 SIP)")
+    }
+
+    /** 给单个 Alarm 订阅 dialog 发一条 NOTIFY(body 跟 MESSAGE 一致)。 */
+    private suspend fun sendAlarmNotify(dialog: SubscriptionDialog, body: String, sn: String) {
+        alarmNotifySn++
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",  // WVP 报警订阅走 Event: presence(同 Catalog),NOTIFY 须匹配
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = body,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name,
+            userAgent = config.userAgent
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.AlarmNotifySent(sn = sn, subscriber = dialog.subscriberUri))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Alarm NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
+    /**
+     * M2 Alarm 反向闭环 — 平台 AlarmCmd 复位后,给每个活跃 Alarm 订阅人推一条
+     * 「报警已复位」NOTIFY(spec Q2:复位也是报警状态变化的一种)。
+     */
+    private suspend fun pushAlarmResetNotify(by: String?) {
+        val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+        if (dialogs.isEmpty()) return
+        cseq += 1
+        val sn = cseq.toString()
+        val resetPayload = AlarmPayload(
+            deviceId = config.device.alarmChannelId,
+            description = "报警已复位 (AlarmCmd by ${by ?: "platform"})"
+        )
+        val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, resetPayload)
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendAlarmNotify(updated, body, sn)
+        }
+    }
+
+    private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
+
+    private fun subscriptionLabel(kind: String?): String = when (kind) {
+        "Catalog" -> "目录"
+        "Alarm" -> "报警"
+        else -> "位置"
+    }
+
+    /**
      * 5.5: Device-initiated BYE for an active stream.
      * Sends BYE to the platform, awaits no response (200 OK arrives async via
      * handleResponse), then tears down the local pipeline.
@@ -482,6 +626,103 @@ class SimulatorEngine(
         val rest = headerValue.substring(idx + 5)
         val end = rest.indexOfAny(charArrayOf(';', ' ', '>', '\r', '\n'))
         return if (end < 0) rest else rest.substring(0, end)
+    }
+
+    /** Extract user-part from a `sip:user@host` URI; falls back to the platform serverId. */
+    private fun parseUriUser(uri: String): String {
+        val s = uri.substringAfter("sip:", uri).substringBefore('@', "")
+        return s.ifEmpty { config.server.serverId }
+    }
+
+    /**
+     * 用当前 [config.video] 构造 GB28181 § C.2 `f=` 媒体描述符。
+     * EasyCVR / LiveGBS 等平台会读这个字段挑解码器。
+     */
+    private fun buildSdpMediaSpec(): com.uvp.sim.sip.SdpAnswer.MediaSpec {
+        val v = config.video
+        val videoCodec = when (v.videoCodec) {
+            com.uvp.sim.media.VideoCodec.H264 -> 2
+            com.uvp.sim.media.VideoCodec.H265 -> 5
+        }
+        val resolution = when (v.resolution) {
+            com.uvp.sim.config.VideoResolution.SD_480P -> 4   // D1
+            com.uvp.sim.config.VideoResolution.HD_720P -> 5
+            com.uvp.sim.config.VideoResolution.FHD_1080P -> 6
+        }
+        val audioCodec = when (v.audioCodec) {
+            com.uvp.sim.media.AudioCodec.G711A -> 1
+            com.uvp.sim.media.AudioCodec.G711U -> 2
+            com.uvp.sim.media.AudioCodec.AAC -> 11
+        }
+        val audioBitrateKbps = when (v.audioCodec) {
+            com.uvp.sim.media.AudioCodec.G711A,
+            com.uvp.sim.media.AudioCodec.G711U -> 64
+            com.uvp.sim.media.AudioCodec.AAC -> 32
+        }
+        val audioSampleRate = when (v.effectiveAudioSampleRateHz) {
+            8_000 -> 1
+            14_000 -> 2
+            16_000 -> 3
+            32_000 -> 4
+            else -> 3
+        }
+        return com.uvp.sim.sip.SdpAnswer.MediaSpec(
+            videoCodec = videoCodec,
+            resolution = resolution,
+            frameRate = v.frameRate,
+            rateType = 2,
+            videoBitrateKbps = v.bitrateKbps,
+            audioCodec = audioCodec,
+            audioBitrateKbps = audioBitrateKbps,
+            audioSampleRate = audioSampleRate
+        )
+    }
+
+    /**
+     * 从 INVITE 提取被叫 channelId(国标 20 位编码)。
+     * 优先从 Request-URI(`sip:<channelId>@host:port`)取 user part,
+     * 退化到 To 头。提不出来返回空串。
+     */
+    private fun extractInviteTarget(invite: SipRequest): String {
+        // requestUri 形如 "sip:34020000001320000001@192.168.10.50:5060"
+        val ru = invite.requestUri
+        val sipBody = ru.substringAfter("sip:", "").substringAfter("sips:", ru.substringAfter("sip:", ""))
+        val userHost = if (sipBody.isNotEmpty()) sipBody else ""
+        val user = userHost.substringBefore('@', "").substringBefore(';').trim()
+        if (user.isNotEmpty()) return user
+
+        val to = invite.toHeader() ?: return ""
+        return parseUri(to).substringAfter("sip:", "")
+            .substringBefore('@', "")
+            .substringBefore(';')
+            .trim()
+    }
+
+    /**
+     * P1-2: 按 channelId 类型决定是否拒绝 INVITE。
+     * 返回 null 表示放行,非 null 是 (statusCode, reasonPhrase) 拒绝原因。
+     *
+     * 判定规则:
+     *  - 在当前 _catalogTree 找该 channelId 的节点
+     *  - 视频通道 (132): 放行(走原 INVITE 链路)
+     *  - 报警通道 (134): 488 — 报警通道不应用于 RTP 流(GB §10)
+     *  - 容器节点 Device/137/138: 488 — 不可对设备根/分组/虚组织发起 INVITE
+     *  - 找不到的 channelId: 放行(向后兼容,保留 SimConfig.device.videoChannelId 等)
+     */
+    private fun classifyInviteTarget(channelId: String): Pair<Int, String>? {
+        if (channelId.isBlank()) return null
+        val node = _catalogTree.value.firstOrNull { it.id == channelId } ?: return null
+        return when (node.type) {
+            com.uvp.sim.config.CatalogNodeType.VideoChannel -> null
+            com.uvp.sim.config.CatalogNodeType.AlarmChannel ->
+                488 to "Not Acceptable Here (alarm channel does not stream)"
+            com.uvp.sim.config.CatalogNodeType.Device ->
+                488 to "Not Acceptable Here (cannot invite device root)"
+            com.uvp.sim.config.CatalogNodeType.BusinessGroup ->
+                488 to "Not Acceptable Here (cannot invite business group)"
+            com.uvp.sim.config.CatalogNodeType.VirtualOrg ->
+                488 to "Not Acceptable Here (cannot invite virtual org)"
+        }
     }
 
     private fun startInboundIfNeeded() {
@@ -705,7 +946,7 @@ class SimulatorEngine(
      */
     private suspend fun handleCancel(cancel: SipRequest) {
         try {
-            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(cancel)
+            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(cancel, userAgent = config.userAgent)
             transport.send(ok)
             _events.emit(SimEvent.MessageSent(ok))
         } catch (e: Throwable) {
@@ -726,7 +967,8 @@ class SimulatorEngine(
         // Always 200-OK first so the SIP transaction completes promptly.
         try {
             val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(
-                message, toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+                message, toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                userAgent = config.userAgent
             )
             transport.send(ok)
             _events.emit(SimEvent.MessageSent(ok))
@@ -764,7 +1006,7 @@ class SimulatorEngine(
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 sendMobilePositionResponse(sn)
             }
-            "DeviceControl" -> handleDeviceControl(xml)
+            "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
             "RecordInfo" -> handleRecordInfoQuery(xml)
             // 其它 CmdType(SVAC*、AlarmStatusQuery 等)暂不处理。
             else -> Unit
@@ -780,9 +1022,9 @@ class SimulatorEngine(
      * 2. 同时单独处理 RecordCmd(dispatcher 只更新 UI 标志,这里调 recordingService
      *    真启停录像 + 回 MANSCDP Response,GB28181 §9.3 要求)
      */
-    private suspend fun handleDeviceControl(xml: String) {
-        // 路径 1:dispatcher 更新 UI / 3D 层状态
-        deviceControlDispatcher.dispatch(xml)
+    private suspend fun handleDeviceControl(xml: String, fromUri: String? = null) {
+        // 路径 1:dispatcher 更新 UI / 3D 层状态,返回 ack
+        val ack = deviceControlDispatcher.dispatch(xml, fromUri = fromUri)
         val lastCmd = _deviceControlState.value.lastCommand
         if (lastCmd != null) {
             _events.emit(
@@ -791,6 +1033,15 @@ class SimulatorEngine(
                     detail = lastCmd.rawHex
                 )
             )
+        }
+        // M2 Alarm 反向闭环:AlarmCmd 复位 → emit AlarmReset(Remote) + 推「报警已复位」NOTIFY
+        if (ack.alarmReset) {
+            _events.emit(SimEvent.AlarmReset(SimEvent.ResetSource.Remote(ack.by ?: "platform")))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台 AlarmCmd 复位报警 by=${ack.by ?: "platform"}"
+            )
+            pushAlarmResetNotify(ack.by)
         }
         // 路径 2:RecordCmd 真启停录像
         val recordCmd = com.uvp.sim.gb28181.ManscdpParser.recordCmd(xml) ?: return
@@ -915,7 +1166,12 @@ class SimulatorEngine(
             val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
             val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
             val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
-            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.build(config, sn)
+            // M2: Query 响应跟 NOTIFY 共用同一棵 catalog tree,保证 WVP 看到的总数一致
+            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.buildFromTree(
+                config = config,
+                sn = sn,
+                tree = _catalogTree.value
+            )
             val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
                 config = config,
                 cseq = cseq,
@@ -1117,6 +1373,30 @@ class SimulatorEngine(
     }
 
     private suspend fun handleInvite(invite: SipRequest) {
+        // M2 P1-2: 按 INVITE 目标 channelId 类型路由 — 不支持的类型立即 488
+        // 放在最前 — 报警/目录节点的 INVITE 不应走任何后续路径(Play 或 Playback)
+        val channelId = extractInviteTarget(invite)
+        val rejection = classifyInviteTarget(channelId)
+        if (rejection != null) {
+            try {
+                val resp = SipBuilders.buildSimpleError(
+                    request = invite,
+                    statusCode = rejection.first,
+                    reasonPhrase = rejection.second,
+                    toTag = SipBuilders.randomTag()
+                )
+                transport.send(resp)
+                _events.emit(SimEvent.MessageSent(resp))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "拒绝 INVITE: channelId=$channelId → ${rejection.first} ${rejection.second}"
+                )
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("send INVITE reject: ${e.message}"))
+            }
+            return
+        }
+
         // Probe SDP s= line to decide Play vs Playback path
         val isPlayback = try {
             val offer = com.uvp.sim.sip.SdpPlaybackParser.parse(invite.body)
@@ -1188,15 +1468,23 @@ class SimulatorEngine(
             ssrc = ssrc,
             sessionName = "Play",
             transport = offer.transport,
-            tcpSetup = offer.tcpSetup
+            tcpSetup = offer.tcpSetup,
+            mediaSpec = buildSdpMediaSpec()
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
         val localToTag = com.uvp.sim.sip.SipBuilders.randomTag()
+        val inviteFromUser = parseUriUser(parseUri(invite.fromHeader() ?: ""))
         val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
             toTag = localToTag,
-            sdpBody = sdpAnswer
+            sdpBody = sdpAnswer,
+            userAgent = config.userAgent,
+            subject = com.uvp.sim.sip.SipBuilders.subject(
+                senderId = config.device.deviceId,
+                ssrc = ssrc,
+                receiverId = inviteFromUser
+            )
         )
         // Capture dialog routing for later device-initiated BYE
         val inviteFromHeader = invite.fromHeader() ?: ""
@@ -1253,19 +1541,19 @@ class SimulatorEngine(
                     val packets = packer.packFrame(ps, timestamp90k)
                     rtpMutex.withLock {
                         for (p in packets) {
-                            try {
-                                rtp.send(p)
-                                activeStream?.let { it.packetCount += 1 }
-                            } catch (e: Throwable) {
-                                _events.emit(SimEvent.TransportError("RTP send: ${e.message}"))
-                                return@withLock
-                            }
+                            // 单次 send 失败即整路终止 — TCP broken pipe 等不可恢复错误
+                            // 必须停掉,否则下一帧再写再抛,日志风暴 + 抢锁拖垮 audio 线程
+                            rtp.send(p)
+                            activeStream?.let { it.packetCount += 1 }
                         }
                     }
                     activeStream?.let { it.frameCount += 1 }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Throwable) {
-                _events.emit(SimEvent.TransportError("camera flow: ${e.message}"))
+                _events.emit(SimEvent.TransportError("RTP video send: ${e.message}"))
+                scope.launch { stopActiveStream(cid, "video send failed: ${e.message}") }
             }
         }
 
@@ -1278,18 +1566,16 @@ class SimulatorEngine(
                         val packets = packer.packFrame(ps, timestamp90k)
                         rtpMutex.withLock {
                             for (p in packets) {
-                                try {
-                                    rtp.send(p)
-                                    activeStream?.let { it.packetCount += 1 }
-                                } catch (e: Throwable) {
-                                    _events.emit(SimEvent.TransportError("RTP audio send: ${e.message}"))
-                                    return@withLock
-                                }
+                                rtp.send(p)
+                                activeStream?.let { it.packetCount += 1 }
                             }
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Throwable) {
-                    _events.emit(SimEvent.TransportError("audio flow: ${e.message}"))
+                    _events.emit(SimEvent.TransportError("RTP audio send: ${e.message}"))
+                    scope.launch { stopActiveStream(cid, "audio send failed: ${e.message}") }
                 }
             }
         }
@@ -1328,7 +1614,7 @@ class SimulatorEngine(
     private suspend fun handleBye(bye: SipRequest) {
         // Send 200 OK back so platform marks call terminated cleanly.
         try {
-            val ack = com.uvp.sim.sip.SipBuilders.buildSimple200(bye)
+            val ack = com.uvp.sim.sip.SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
             transport.send(ack)
             _events.emit(SimEvent.MessageSent(ack))
         } catch (e: Throwable) {
@@ -1401,14 +1687,22 @@ class SimulatorEngine(
             localIp = localIp,
             localRtpPort = playback.localRtpPort,
             ssrc = ssrc,
-            sessionName = sessionName
+            sessionName = sessionName,
+            mediaSpec = buildSdpMediaSpec()
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
+        val pbInviteFromUser = parseUriUser(parseUri(invite.fromHeader() ?: ""))
         val response = com.uvp.sim.sip.SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
             toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
-            sdpBody = sdpAnswer
+            sdpBody = sdpAnswer,
+            userAgent = config.userAgent,
+            subject = com.uvp.sim.sip.SipBuilders.subject(
+                senderId = config.device.deviceId,
+                ssrc = ssrc,
+                receiverId = pbInviteFromUser
+            )
         )
         try {
             transport.send(response)
@@ -1503,7 +1797,8 @@ class SimulatorEngine(
         runCatching {
             val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
                 req, statusCode = 486, reasonPhrase = "Busy Here",
-                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                userAgent = config.userAgent
             )
             transport.send(resp)
             _events.emit(SimEvent.MessageSent(resp))
@@ -1515,7 +1810,8 @@ class SimulatorEngine(
         runCatching {
             val resp = com.uvp.sim.sip.SipBuilders.buildSimpleResponse(
                 req, statusCode = 487, reasonPhrase = "Request Terminated",
-                toTag = com.uvp.sim.sip.SipBuilders.randomTag()
+                toTag = com.uvp.sim.sip.SipBuilders.randomTag(),
+                userAgent = config.userAgent
             )
             transport.send(resp)
             _events.emit(SimEvent.MessageSent(resp))
@@ -1546,7 +1842,8 @@ class SimulatorEngine(
                     com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CSEQ, "$cseq BYE"),
                     com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.CONTACT, deviceContact),
                     com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.MAX_FORWARDS, "70"),
-                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.USER_AGENT, config.userAgent)
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.USER_AGENT, config.userAgent),
+                    com.uvp.sim.sip.SipMessage.Header(com.uvp.sim.sip.SipHeader.DATE, com.uvp.sim.sip.SipBuilders.rfc1123Date())
                 ),
                 body = ByteArray(0)
             )
@@ -1586,7 +1883,7 @@ class SimulatorEngine(
         when (intent) {
             is SubscribeIntent.NewSubscription -> {
                 val toTag = SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds)
+                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds, userAgent = config.userAgent)
                 transport.send(ok)
                 _events.emit(SimEvent.MessageSent(ok))
 
@@ -1600,26 +1897,57 @@ class SimulatorEngine(
                     expiresSeconds = intent.expiresSeconds,
                     remainingSeconds = intent.expiresSeconds
                 )
-                subscriptionRegistry.activate(dialog) { d -> sendPositionNotify(d) }
+                // Catalog / Alarm: SubscriptionRegistry 不会启 Heartbeat,但仍 activate 以维护 expiry
+                // MobilePosition: SubscriptionRegistry 启 Heartbeat 周期推
+                subscriptionRegistry.activate(
+                    dialog,
+                    onExpire = { d ->
+                        if (d.kind == "Alarm") {
+                            _events.emit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
+                            SystemLogger.emit(
+                                LogLevel.Info, LogTag.Subscription,
+                                "报警订阅自然过期: ${d.subscriberUri}"
+                            )
+                        }
+                    }
+                ) { d ->
+                    when (d.kind) {
+                        "Catalog" -> sendCatalogNotify(d)
+                        "Alarm" -> Unit  // Alarm 事件驱动,无周期 NOTIFY(reportAlarm 时才推)
+                        else -> sendPositionNotify(d)
+                    }
+                }
 
-                sendPositionNotify(dialog)
+                // initial NOTIFY:Catalog/Position 立即推一次,Alarm 不发(报警是事件流,无全集)
+                when (intent.kind) {
+                    "Catalog" -> sendCatalogNotify(dialog)
+                    "Alarm" -> Unit
+                    else -> sendPositionNotify(dialog)
+                }
 
-                _events.emit(SimEvent.SubscribeReceived(
-                    subscriber = intent.subscriberUri,
-                    kind = intent.kind,
-                    expiresSeconds = intent.expiresSeconds,
-                    intervalSeconds = intent.intervalSeconds
-                ))
+                if (intent.kind == "Alarm") {
+                    _events.emit(SimEvent.AlarmSubscribed(
+                        subscriber = intent.subscriberUri,
+                        expires = intent.expiresSeconds
+                    ))
+                } else {
+                    _events.emit(SimEvent.SubscribeReceived(
+                        subscriber = intent.subscriberUri,
+                        kind = intent.kind,
+                        expiresSeconds = intent.expiresSeconds,
+                        intervalSeconds = intent.intervalSeconds
+                    ))
+                }
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "收到位置订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
+                    "收到${subscriptionLabel(intent.kind)}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s"
                 )
             }
 
             is SubscribeIntent.Refresh -> {
                 val toTag = subscriptionRegistry.currentDialog(intent.callId)?.toTag
                     ?: SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds)
+                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
                 transport.send(ok)
                 _events.emit(SimEvent.MessageSent(ok))
                 subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
@@ -1631,25 +1959,29 @@ class SimulatorEngine(
                 ))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "位置订阅已刷新: expires=${intent.newExpiresSeconds}s"
+                    "${subscriptionLabel(d?.kind)}订阅已刷新: expires=${intent.newExpiresSeconds}s"
                 )
             }
 
             is SubscribeIntent.Cancel -> {
                 val d = subscriptionRegistry.currentDialog(intent.callId)
                 val toTag = d?.toTag ?: SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true)
+                val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
                 transport.send(ok)
                 _events.emit(SimEvent.MessageSent(ok))
                 subscriptionRegistry.cancel(intent.callId)
 
-                _events.emit(SimEvent.SubscribeExpired(
-                    subscriber = d?.subscriberUri ?: "",
-                    kind = d?.kind ?: "MobilePosition"
-                ))
+                if (d?.kind == "Alarm") {
+                    _events.emit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
+                } else {
+                    _events.emit(SimEvent.SubscribeExpired(
+                        subscriber = d?.subscriberUri ?: "",
+                        kind = d?.kind ?: "MobilePosition"
+                    ))
+                }
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Subscription,
-                    "位置订阅已取消: ${d?.subscriberUri}"
+                    "${subscriptionLabel(d?.kind)}订阅已取消: ${d?.subscriberUri}"
                 )
             }
 
@@ -1668,6 +2000,117 @@ class SimulatorEngine(
             }
 
             is SubscribeIntent.Ignored -> Unit
+        }
+    }
+
+    private suspend fun sendCatalogNotify(dialog: SubscriptionDialog) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.build(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            tree = _catalogTree.value
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
+    /**
+     * 用户在 UI 编辑器修改目录树后,写入引擎当前树,并对所有活跃的
+     * Catalog 订阅推一次 NOTIFY(对应 spec Q6 + P1-3 增量行为)。
+     *
+     * P1-3:对比新旧树算出 ChangeEvent,小变更走增量(`<Event>ADD/DEL/UPDATE</Event>`),
+     * 大变更走全量。详见 [CatalogTreeStore.shouldUseIncremental]。
+     */
+    suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) {
+        val oldTree = _catalogTree.value
+        _catalogTree.value = tree
+        val events = CatalogTreeStore.diff(oldTree, tree)
+        if (events.isEmpty()) return  // 无变更,不发 NOTIFY
+        if (CatalogTreeStore.shouldUseIncremental(events, oldSize = oldTree.size)) {
+            pushCatalogIncremental(events)
+        } else {
+            pushCatalogNotify()
+        }
+    }
+
+    /**
+     * 主动给所有活跃 Catalog 订阅推一次完整 NOTIFY(全量树)。
+     * 调用时不要持 mutex,自身会 bumpNotify 维护计数。
+     */
+    suspend fun pushCatalogNotify() {
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogNotify(updated)
+        }
+    }
+
+    /**
+     * P1-3: 主动给所有活跃 Catalog 订阅推一次增量 NOTIFY,body 含
+     * `<Event>ADD/DEL/UPDATE</Event>` Item 列表,WVP 只更新差异部分。
+     */
+    suspend fun pushCatalogIncremental(events: List<com.uvp.sim.config.CatalogChangeEvent>) {
+        if (events.isEmpty()) return
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogIncrementalNotify(updated, events)
+        }
+    }
+
+    private suspend fun sendCatalogIncrementalNotify(
+        dialog: SubscriptionDialog,
+        events: List<com.uvp.sim.config.CatalogChangeEvent>
+    ) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildIncremental(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            events = events
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
 
@@ -1696,7 +2139,8 @@ class SimulatorEngine(
             xmlBody = xml,
             localIp = localIp,
             localPort = localPortProvider(),
-            transport = config.transport.name
+            transport = config.transport.name,
+            userAgent = config.userAgent
         )
         try {
             transport.send(notify)

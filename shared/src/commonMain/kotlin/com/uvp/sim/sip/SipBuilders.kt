@@ -1,6 +1,12 @@
 package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
+import kotlinx.datetime.Clock
+import kotlinx.datetime.DayOfWeek
+import kotlinx.datetime.Instant
+import kotlinx.datetime.Month
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlin.random.Random
 
 /**
@@ -10,6 +16,39 @@ import kotlin.random.Random
  * engine can stay terse.
  */
 object SipBuilders {
+
+    /**
+     * RFC 1123 date string in GMT, e.g. `Sun, 06 Nov 1994 08:49:37 GMT`.
+     * Mandatory for SIP per RFC 3261 § 20.17, and §10.4 of the device matrix.
+     */
+    fun rfc1123Date(instant: Instant = Clock.System.now()): String {
+        val ldt = instant.toLocalDateTime(TimeZone.UTC)
+        val dow = when (ldt.dayOfWeek) {
+            DayOfWeek.MONDAY -> "Mon"
+            DayOfWeek.TUESDAY -> "Tue"
+            DayOfWeek.WEDNESDAY -> "Wed"
+            DayOfWeek.THURSDAY -> "Thu"
+            DayOfWeek.FRIDAY -> "Fri"
+            DayOfWeek.SATURDAY -> "Sat"
+            DayOfWeek.SUNDAY -> "Sun"
+            else -> "Mon"
+        }
+        val mon = when (ldt.month) {
+            Month.JANUARY -> "Jan"; Month.FEBRUARY -> "Feb"; Month.MARCH -> "Mar"
+            Month.APRIL -> "Apr"; Month.MAY -> "May"; Month.JUNE -> "Jun"
+            Month.JULY -> "Jul"; Month.AUGUST -> "Aug"; Month.SEPTEMBER -> "Sep"
+            Month.OCTOBER -> "Oct"; Month.NOVEMBER -> "Nov"; Month.DECEMBER -> "Dec"
+            else -> "Jan"
+        }
+        fun p2(v: Int) = v.toString().padStart(2, '0')
+        return "$dow, ${p2(ldt.dayOfMonth)} $mon ${ldt.year} " +
+            "${p2(ldt.hour)}:${p2(ldt.minute)}:${p2(ldt.second)} GMT"
+    }
+
+    /** GB28181 § 9.2 Subject header for INVITE-side dialogs:
+     *  `<senderId>:<sender_ssrc>,<receiverId>:0` */
+    fun subject(senderId: String, ssrc: String, receiverId: String): String =
+        "$senderId:$ssrc,$receiverId:0"
 
     /** Build a REGISTER (no auth) — the first hop in the registration flow. */
     fun buildRegister(
@@ -40,6 +79,7 @@ object SipBuilders {
                 SipMessage.Header(SipHeader.CONTACT, deviceContact),
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
                 SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
+                SipMessage.Header(SipHeader.DATE, rfc1123Date()),
                 SipMessage.Header(SipHeader.EXPIRES, config.expiresSeconds.toString())
             )
         )
@@ -126,6 +166,7 @@ object SipBuilders {
                 SipMessage.Header(SipHeader.CONTENT_TYPE, "application/MANSCDP+xml"),
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
                 SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
+                SipMessage.Header(SipHeader.DATE, rfc1123Date()),
                 SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
             ),
             body = body
@@ -154,12 +195,19 @@ object SipBuilders {
      * Per RFC 3261 § 8.2.6.2, the response copies Via/From/To/Call-ID/CSeq from
      * the request verbatim, but the To header gets a tag (we generate one).
      * Contact is required for in-dialog routing of the subsequent ACK/BYE.
+     *
+     * GB28181 § 9.2 strongly recommends a `Subject` header in the form
+     * `<deviceId>:<sender_ssrc>,<platformId>:0` so platforms (WVP / EasyCVR /
+     * LiveGBS) can match the SIP dialog with the RTP stream — pass it via
+     * [subject] when building the answer for a Play / Playback INVITE.
      */
     fun buildInvite200WithSdp(
         invite: SipRequest,
         deviceContact: String,
         toTag: String,
-        sdpBody: String
+        sdpBody: String,
+        userAgent: String? = null,
+        subject: String? = null
     ): SipResponse {
         val body = sdpBody.encodeToByteArray()
         val newHeaders = mutableListOf<SipMessage.Header>()
@@ -191,6 +239,13 @@ object SipBuilders {
         if (!sawContact) {
             newHeaders += SipMessage.Header(SipHeader.CONTACT, deviceContact)
         }
+        if (subject != null) {
+            newHeaders += SipMessage.Header(SipHeader.SUBJECT, subject)
+        }
+        if (userAgent != null) {
+            newHeaders += SipMessage.Header(SipHeader.USER_AGENT, userAgent)
+        }
+        newHeaders += SipMessage.Header(SipHeader.DATE, rfc1123Date())
         newHeaders += SipMessage.Header(SipHeader.CONTENT_TYPE, "application/sdp")
         return SipResponse(
             statusCode = 200,
@@ -201,11 +256,49 @@ object SipBuilders {
     }
 
     /** Build a simple 200 OK with no body for non-INVITE requests (MESSAGE, BYE). */
-    fun buildSimple200(request: SipRequest, toTag: String? = null): SipResponse =
-        buildSimpleResponse(request, 200, "OK", toTag)
+    fun buildSimple200(
+        request: SipRequest,
+        toTag: String? = null,
+        userAgent: String? = null
+    ): SipResponse =
+        buildSimpleResponse(request, 200, "OK", toTag, userAgent)
 
     /** Build a simple non-2xx response (no body). Used for 486 Busy / 487 Terminated. */
     fun buildSimpleResponse(
+        request: SipRequest,
+        statusCode: Int,
+        reasonPhrase: String,
+        toTag: String? = null,
+        userAgent: String? = null
+    ): SipResponse {
+        val newHeaders = mutableListOf<SipMessage.Header>()
+        for (h in request.headers) {
+            val canonical = SipHeader.canonicalize(h.name)
+            when (canonical) {
+                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ -> {
+                    newHeaders += h
+                }
+                SipHeader.TO -> {
+                    val v = if (toTag != null && !h.value.contains(";tag=")) {
+                        "${h.value};tag=$toTag"
+                    } else h.value
+                    newHeaders += SipMessage.Header(SipHeader.TO, v)
+                }
+                else -> { /* drop */ }
+            }
+        }
+        if (userAgent != null) {
+            newHeaders += SipMessage.Header(SipHeader.USER_AGENT, userAgent)
+        }
+        newHeaders += SipMessage.Header(SipHeader.DATE, rfc1123Date())
+        return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
+    }
+
+    /**
+     * 通用 4xx/5xx 错误响应构造器 — 跟 [buildSimple200] 套路一致,只换 status/reason。
+     * 用于拒绝 INVITE 等场景:488 Not Acceptable Here、404 Not Found 等。
+     */
+    fun buildSimpleError(
         request: SipRequest,
         statusCode: Int,
         reasonPhrase: String,
@@ -238,7 +331,8 @@ object SipBuilders {
         request: SipRequest,
         toTag: String,
         expires: Int,
-        terminated: Boolean = false
+        terminated: Boolean = false,
+        userAgent: String? = null
     ): SipResponse {
         val newHeaders = mutableListOf<SipMessage.Header>()
         for (h in request.headers) {
@@ -257,6 +351,10 @@ object SipBuilders {
         newHeaders += SipMessage.Header(SipHeader.EXPIRES, expires.toString())
         val ssValue = if (terminated) "terminated;reason=timeout" else "active;expires=$expires"
         newHeaders += SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, ssValue)
+        if (userAgent != null) {
+            newHeaders += SipMessage.Header(SipHeader.USER_AGENT, userAgent)
+        }
+        newHeaders += SipMessage.Header(SipHeader.DATE, rfc1123Date())
         return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders)
     }
 
@@ -275,28 +373,34 @@ object SipBuilders {
         xmlBody: String,
         localIp: String,
         localPort: Int,
-        transport: String = "UDP"
+        transport: String = "UDP",
+        userAgent: String? = null
     ): SipRequest {
         val body = xmlBody.encodeToByteArray()
         val branch = randomBranch()
+        val headers = mutableListOf(
+            SipMessage.Header(SipHeader.VIA,
+                "SIP/2.0/$transport $localIp:$localPort;rport;branch=$branch"),
+            SipMessage.Header(SipHeader.FROM,
+                "<sip:$localIp:$localPort>;tag=$fromTag"),
+            SipMessage.Header(SipHeader.TO,
+                "<$subscriberUri>;tag=$toTag"),
+            SipMessage.Header(SipHeader.CALL_ID, callId),
+            SipMessage.Header(SipHeader.CSEQ, "$cseq NOTIFY"),
+            SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
+            SipMessage.Header(SipHeader.EVENT, event),
+            SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, subscriptionState),
+            SipMessage.Header(SipHeader.CONTENT_TYPE, "Application/MANSCDP+xml")
+        )
+        if (userAgent != null) {
+            headers += SipMessage.Header(SipHeader.USER_AGENT, userAgent)
+        }
+        headers += SipMessage.Header(SipHeader.DATE, rfc1123Date())
+        headers += SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
         return SipRequest(
             method = SipMethod.NOTIFY,
             requestUri = subscriberUri,
-            headers = listOf(
-                SipMessage.Header(SipHeader.VIA,
-                    "SIP/2.0/$transport $localIp:$localPort;rport;branch=$branch"),
-                SipMessage.Header(SipHeader.FROM,
-                    "<sip:$localIp:$localPort>;tag=$fromTag"),
-                SipMessage.Header(SipHeader.TO,
-                    "<$subscriberUri>;tag=$toTag"),
-                SipMessage.Header(SipHeader.CALL_ID, callId),
-                SipMessage.Header(SipHeader.CSEQ, "$cseq NOTIFY"),
-                SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
-                SipMessage.Header(SipHeader.EVENT, event),
-                SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, subscriptionState),
-                SipMessage.Header(SipHeader.CONTENT_TYPE, "Application/MANSCDP+xml"),
-                SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
-            ),
+            headers = headers,
             body = body
         )
     }
@@ -335,7 +439,8 @@ object SipBuilders {
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "$cseq BYE"),
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
-                SipMessage.Header(SipHeader.USER_AGENT, config.userAgent)
+                SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
+                SipMessage.Header(SipHeader.DATE, rfc1123Date())
             )
         )
     }
@@ -374,6 +479,7 @@ object SipBuilders {
                 SipMessage.Header(SipHeader.CONTENT_TYPE, "application/MANSCDP+xml"),
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
                 SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
+                SipMessage.Header(SipHeader.DATE, rfc1123Date()),
                 SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
             ),
             body = body

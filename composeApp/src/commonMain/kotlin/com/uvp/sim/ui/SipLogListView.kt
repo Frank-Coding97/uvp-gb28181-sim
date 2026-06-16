@@ -329,6 +329,37 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         "平台 ACK 未到达 · ${ev.callId.take(20)}",
         highlight = true, category = "INVITE"
     )
+    is SimEvent.DeviceControlReceived -> LogRowSpec(
+        "", "←", false, "CTRL", UvpColor.Info,
+        "设备控制 · ${ev.commandType} · ${ev.detail.take(30)}",
+        category = "CONTROL"
+    )
+    is SimEvent.AlarmFired -> LogRowSpec(
+        "", "→", true, "ALM", UvpColor.Warning,
+        "报警 · ${ev.type.label}/${ev.priority.label} · ${ev.description.take(30)}",
+        highlight = true, category = "ALARM"
+    )
+    is SimEvent.AlarmReset -> LogRowSpec(
+        "", "·", true, "RST", UvpColor.Info,
+        "报警复位 · ${alarmResetBy(ev.by)}", category = "ALARM"
+    )
+    is SimEvent.AlarmSubscribed -> LogRowSpec(
+        "", "←", false, "SUB", UvpColor.Info,
+        "报警订阅 · from=${ev.subscriber} expires=${ev.expires}s", category = "SUBSCRIBE"
+    )
+    is SimEvent.AlarmNotifySent -> LogRowSpec(
+        "", "→", true, "NTF", UvpColor.Primary,
+        "报警 NOTIFY · SN=${ev.sn} → ${ev.subscriber}", category = "NOTIFY"
+    )
+    is SimEvent.AlarmSubscriptionExpired -> LogRowSpec(
+        "", "·", true, "EXP", UvpColor.TextHint,
+        "报警订阅过期 · ${ev.subscriber}", category = "SUBSCRIBE"
+    )
+}
+
+private fun alarmResetBy(by: SimEvent.ResetSource): String = when (by) {
+    is SimEvent.ResetSource.Local -> "本地"
+    is SimEvent.ResetSource.Remote -> "平台 ${by.subscriber}"
 }
 
 private fun msgMethodShort(m: SipMessage): String = when (m) {

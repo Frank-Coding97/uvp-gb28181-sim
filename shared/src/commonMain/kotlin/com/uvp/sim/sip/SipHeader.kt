@@ -20,6 +20,8 @@ object SipHeader {
     const val WWW_AUTHENTICATE = "WWW-Authenticate"
     const val SUBSCRIPTION_STATE = "Subscription-State"
     const val EVENT = "Event"
+    const val SUBJECT = "Subject"
+    const val DATE = "Date"
 
     /** Convert any-case header name to canonical (matching one of the above). */
     fun canonicalize(name: String): String {
@@ -40,6 +42,8 @@ object SipHeader {
             "www-authenticate" -> WWW_AUTHENTICATE
             "subscription-state" -> SUBSCRIPTION_STATE
             "event", "o" -> EVENT
+            "subject", "s" -> SUBJECT
+            "date" -> DATE
             else -> name  // unknown header -> keep as-is
         }
     }
