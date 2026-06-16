@@ -195,4 +195,22 @@ class SubscribeHandlerTest {
         assertIs<SubscribeIntent.NewSubscription>(intent)
         assertEquals(3600, intent.expiresSeconds)
     }
+
+    @Test
+    fun wvpAlarmSubscribeViaPresenceEventAndBodyCmdType() {
+        // WVP-Pro 实测:报警订阅用 Event: presence;id=xxx + body <CmdType>Alarm</CmdType>,
+        // 不是裸 Event: Alarm。必须靠 body CmdType 识别成 kind=Alarm,否则 Ignored → 超时。
+        val body = """<?xml version="1.0" encoding="UTF-8"?>
+<Query>
+<CmdType>Alarm</CmdType>
+<SN>916329</SN>
+<DeviceID>35020000001310000001</DeviceID>
+</Query>"""
+        val req = subscribeRequest(event = "presence;id=8052", expires = "60", body = body)
+        val intent = SubscribeHandler.parse(req, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+        assertEquals(60, intent.expiresSeconds)
+        assertEquals(0, intent.intervalSeconds)
+    }
 }

@@ -519,7 +519,7 @@ class SimulatorEngine(
             callId = dialog.callId,
             fromTag = dialog.toTag,
             toTag = dialog.fromTag,
-            event = "Alarm",
+            event = "presence",  // WVP 报警订阅走 Event: presence(同 Catalog),NOTIFY 须匹配
             subscriptionState = ssValue,
             cseq = notifyCseq,
             xmlBody = body,

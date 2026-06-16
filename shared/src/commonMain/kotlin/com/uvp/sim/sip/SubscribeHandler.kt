@@ -89,22 +89,25 @@ object SubscribeHandler {
         val cmdType = ManscdpParser.cmdType(xml)
             ?: return SubscribeIntent.Reject(400, "Missing CmdType in body")
 
+        // WVP-Pro 报警订阅:Event: presence + body <CmdType>Alarm</CmdType>(不是裸 Event:Alarm)
         val kind = when {
             cmdType.equals("MobilePosition", ignoreCase = true) -> "MobilePosition"
             cmdType.equals("Catalog", ignoreCase = true) -> "Catalog"
+            cmdType.equals("Alarm", ignoreCase = true) -> "Alarm"
             else -> return SubscribeIntent.Ignored(cmdType)
         }
 
         val defaultExpires = when (kind) {
             "Catalog" -> DEFAULT_EXPIRES_CATALOG
+            "Alarm" -> DEFAULT_EXPIRES_ALARM
             else -> DEFAULT_EXPIRES_MOBILE_POSITION
         }
         val expires = expiresHeader ?: defaultExpires
 
-        // Interval 对 Catalog 不适用(不周期推送),仍解析便于日志
+        // Interval 对 Catalog / Alarm 不适用(不周期推送),仍解析便于日志
         val intervalStr = ManscdpParser.tagValue(xml, "Interval")
         val interval = intervalStr?.toIntOrNull() ?: when (kind) {
-            "Catalog" -> 0
+            "Catalog", "Alarm" -> 0
             else -> 30
         }
 
