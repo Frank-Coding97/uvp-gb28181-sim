@@ -73,3 +73,30 @@ android {
 tasks.withType<Test> {
     maxHeapSize = "1536m"
 }
+
+/**
+ * OSD 字体 atlas baking — 运行期资产生成。
+ *
+ * 输入:tools/font-baker/charset/charset-ascii.txt
+ * 输出:shared/src/androidMain/assets/osd-font-atlas.png + .json
+ *
+ * 默认走 ASCII charset + JDK 逻辑字体 Monospaced(零依赖,平台自适配)。
+ * 中文 atlas 需老板手动放思源黑体到 tools/font-baker/fonts/source-han-sans-sc.otf
+ * 后改 charset 重跑。
+ *
+ * 这个 task 不挂在常规构建链上(产物已 commit),仅老板手动触发用。
+ */
+val bakeOsdFontAtlas by tasks.registering(JavaExec::class) {
+    group = "osd"
+    description = "Bake OSD font atlas (PNG + JSON) into androidMain/assets"
+    val baker = project(":tools:font-baker")
+    dependsOn(baker.tasks.named("classes"))
+    classpath = baker.extensions.getByType<SourceSetContainer>().getByName("main").runtimeClasspath
+    mainClass.set("com.uvp.sim.tools.fontbaker.MainKt")
+    val fontSpec = (project.findProperty("osdFont") as String?) ?: "Monospaced"
+    val charsetFile = (project.findProperty("osdCharset") as String?)
+        ?: "${baker.projectDir}/charset/charset-ascii.txt"
+    val outPng = "${projectDir}/src/androidMain/assets/osd-font-atlas.png"
+    val outJson = "${projectDir}/src/androidMain/assets/osd-font-atlas.json"
+    args(fontSpec, charsetFile, outPng, outJson)
+}

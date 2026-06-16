@@ -31,9 +31,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -63,6 +66,34 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _config = MutableStateFlow(defaultConfig())
     val config: StateFlow<SimConfig> = _config.asStateFlow()
+
+    /** OSD 视频叠加层配置 — 跟 SimConfig.osd 同步,Streamer 订阅这个 flow 反映 UI 改动。 */
+    val osdConfig: StateFlow<com.uvp.sim.config.OsdConfig> = _config
+        .map { it.osd }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, _config.value.osd)
+
+    init {
+        // OSD 配置变更日志(plan §9 OSD_CONFIG_CHANGED 事件)
+        viewModelScope.launch {
+            var prev: com.uvp.sim.config.OsdConfig? = null
+            osdConfig.collect { now ->
+                val before = prev
+                if (before != null && before != now) {
+                    val parts = mutableListOf<String>()
+                    if (before.timestamp != now.timestamp) parts += "timestamp(${before.timestamp.enabled}→${now.timestamp.enabled})"
+                    if (before.channelName != now.channelName) parts += "channelName(${before.channelName.enabled}→${now.channelName.enabled},text='${now.channelName.text}')"
+                    if (before.watermark != now.watermark) parts += "watermark(${before.watermark.enabled}→${now.watermark.enabled},text='${now.watermark.text}')"
+                    com.uvp.sim.observability.SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Info,
+                        com.uvp.sim.observability.LogTag.User,
+                        "OSD_CONFIG_CHANGED",
+                        detail = parts.joinToString(", ")
+                    )
+                }
+                prev = now
+            }
+        }
+    }
 
     /** 录像状态(M2 D 块)。Activity 把它桥接到 AppUiState.recording。 */
     private val _recordingState = MutableStateFlow<RecordingState>(RecordingState.Idle)

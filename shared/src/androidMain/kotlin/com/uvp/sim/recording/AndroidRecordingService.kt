@@ -1,16 +1,7 @@
 package com.uvp.sim.recording
 
 import android.content.Context
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.video.FileOutputOptions
-import androidx.camera.video.Quality
-import androidx.camera.video.QualitySelector
-import androidx.camera.video.Recorder
-import androidx.camera.video.Recording
-import androidx.camera.video.VideoCapture
-import androidx.camera.video.VideoRecordEvent
-import androidx.camera.core.CameraSelector
-import androidx.lifecycle.LifecycleOwner
+import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -34,37 +25,51 @@ import java.util.UUID
 import java.util.concurrent.Executor
 
 /**
- * AndroidRecordingService — CameraX VideoCapture<Recorder> 实现。
+ * AndroidRecordingService — OsdRendererHolder + MediaCodec + MediaMuxer 实现。
  *
- * 关键点(plan §4 / §5):
- *   - 文件路径:`<filesDir>/recordings/<deviceId>/<YYYYMMDD>/<HHmmss>.mp4`
- *   - index.json:`<filesDir>/recordings/index.json`,挂在 deviceId 上
- *   - 30 分钟 timer 切片(后续 R04+:目前只做手动起停,timer 留扩展)
- *   - 录像与实时推流互斥(plan §5),由 SimulatorEngine 在 handleInvite 把住
+ * 跟工业 IPC 同构架构(2026-06-14 重构):
+ * - 不再用 CameraX VideoCapture<Recorder>(黑盒,绕过 OsdRenderer,mp4 无 OSD)
+ * - 改用 [OsdRecordingPipeline]:OsdRendererHolder.addEncoderSurface 注册录像 encoder,
+ *   跟直播共享单一画面源,mp4 自带 OSD,WVP 回放天然继承戳
  *
- * Lifecycle / provider 共享(2026-06-13 修):
- *   - [ProcessCameraProvider] 是进程单例 — 录像和 streamer 必须共用
- *   - 通过 [cameraOwnerSupplier] 获取 streamer 自驱的 STARTED LifecycleOwner,
- *     避免 Activity onStop 把录像一起干掉(切后台不录的根因)
- *   - 用 `provider.unbind(videoCapture)` 而非 `unbindAll()`,不影响 streamer 的
- *     Preview / EncoderPreview(预览黑屏的根因)
+ * 保留原有职责:
+ * - 文件路径:`<filesDir>/recordings/<deviceId>/<YYYYMMDD>/<HHmmss>.mp4`
+ * - index.json:`<filesDir>/recordings/index.json`,孤儿文件扫描 + 自愈
+ * - segmentMinutes 切片接力(默认 30 分钟)
+ * - minFreeMb 磁盘检查(默认 200MB)
+ * - 缩略图异步抽取
  *
- * 异常处理:
- *   - bindToLifecycle 失败 → 状态进 Failed,UI toast
- *   - Recorder 抛异常 → 通过 VideoRecordEvent.Finalize.hasError 反馈
+ * 分辨率约束(2026-06-14):
+ * - 录像分辨率 = 直播分辨率(SimConfig.video),由 [encoderConfigSupplier] 提供
+ * - 跟工业 IPC sensor → ISP region → 共享画面源 同构,
+ *   各消费者独立分辨率 P1-D 后续支持(letterbox)
+ * - profile.quality 字段保留为占位,实际不读
  *
- * 缩略图抽取:finalize 后异步走 [ThumbnailExtractor],失败不阻塞。
+ * 依赖:
+ * - [osdConfigSupplier] OSD 实时配置(UI 改字段反映到下一帧)
+ * - [encoderConfigSupplier] (width, height, frameRate, bitrateBps, gopSec)
+ * - 不再依赖 streamerSupplier(VideoCapture 路径已删)
  */
 class AndroidRecordingService(
     private val context: Context,
-    private val streamerSupplier: () -> com.uvp.sim.camera.AndroidCameraStreamer,
     private val executor: Executor,
     private val deviceId: String,
     private val scope: CoroutineScope,
+    private val osdConfigSupplier: () -> StateFlow<OsdConfig>,
+    private val encoderConfigSupplier: () -> EncoderConfig,
     private val profile: com.uvp.sim.config.RecordingProfile = com.uvp.sim.config.RecordingProfile(),
     private val clock: Clock = Clock.System,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault()
 ) : RecordingService {
+
+    /** 录像 encoder 配置 — 跟直播 SimConfig.video 共享。 */
+    data class EncoderConfig(
+        val widthPx: Int,
+        val heightPx: Int,
+        val frameRate: Int,
+        val bitrateBps: Int,
+        val keyframeIntervalSeconds: Int
+    )
 
     private val mutex = Mutex()
 
@@ -74,17 +79,14 @@ class AndroidRecordingService(
     private val _files = MutableStateFlow<List<RecordingFile>>(emptyList())
     override val files: StateFlow<List<RecordingFile>> = _files.asStateFlow()
 
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var activeRecording: Recording? = null
+    private var pipeline: OsdRecordingPipeline? = null
     private var activeOutputFile: File? = null
     private var activeChannelId: String? = null
     private var activeStartMs: Long = 0L
     private var activeSegmentIndex: Int = 0
     private var activeSource: RecordSource = RecordSource.Manual
     private var thumbJob: Job? = null
-    /** 守护协程:30 分钟切片 + 滚动磁盘检查。start 时拉起,stop/finalize 时取消。 */
     private var guardJob: Job? = null
-    /** 切片到来时,handleRecordEvent finalize 后由这个标志驱动接力 start 下一段。 */
     @Volatile private var pendingSegmentSplit: Boolean = false
 
     private val baseDir: File by lazy {
@@ -103,20 +105,12 @@ class AndroidRecordingService(
         }.onFailure {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "录像索引加载失败 → ${it.message}")
         }
-        // 扫孤儿文件:进程被杀 / OOM 后,mp4 还在但 index 漏记。
-        // 把不在 index 里的 mp4 补回(用 MediaMetadataRetriever 拿时长),
-        // size=0 的视为录到一半就崩,直接清掉。
         runCatching { reconcileOrphans() }.onFailure {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "扫孤儿文件失败: ${it.message}")
         }
         Unit
     }
 
-    /**
-     * 启动时一致性检查:
-     *   - mp4 大小为 0 → 录到一半进程死,删文件 + 同名 jpg
-     *   - mp4 不在 index → 用 MediaMetadataRetriever 抽时长,补回 index
-     */
     private suspend fun reconcileOrphans() = withContext(Dispatchers.IO) {
         val deviceDir = File(baseDir, deviceId)
         if (!deviceDir.exists()) return@withContext
@@ -133,7 +127,6 @@ class AndroidRecordingService(
                     cleaned += 1
                     return@forEach
                 }
-                // 用 MediaMetadataRetriever 拿真实时长(避免猜)
                 val durationMs = runCatching {
                     val mmr = android.media.MediaMetadataRetriever()
                     try {
@@ -145,13 +138,11 @@ class AndroidRecordingService(
                     }
                 }.getOrDefault(0L)
                 if (durationMs <= 0L) {
-                    // 文件存在但 demuxer 读不出时长 → 不可恢复,删除
                     runCatching { mp4.delete() }
                     runCatching { File(mp4.absolutePath.removeSuffix(".mp4") + ".jpg").delete() }
                     cleaned += 1
                     return@forEach
                 }
-                // 起始时间用 mtime 倒推:endTimeMs = mtime, startTimeMs = mtime - durationMs
                 val endMs = mp4.lastModified()
                 val startMs = endMs - durationMs
                 val thumb = File(mp4.absolutePath.removeSuffix(".mp4") + ".jpg")
@@ -192,7 +183,6 @@ class AndroidRecordingService(
                 return Result.success(Unit)
             }
         }
-        // 磁盘兜底:可用空间 < 配置阈值不开录(默认 200MB,1080p 4Mbps 一分钟 ≈30MB)
         val minFreeBytes = profile.minFreeMb.toLong() * 1024 * 1024
         val freeBytes = baseDir.usableSpace
         if (freeBytes < minFreeBytes) {
@@ -202,24 +192,28 @@ class AndroidRecordingService(
             return Result.failure(IllegalStateException(msg))
         }
         return runCatching {
-            val capture = rebindFreshVideoCapture()
             val now = clock.now()
             val outputFile = newOutputFile(now)
             outputFile.parentFile?.mkdirs()
-            val recorder = capture.output
-            val pendingRecording = recorder.prepareRecording(
-                context,
-                FileOutputOptions.Builder(outputFile).build()
+            val encCfg = encoderConfigSupplier()
+            val newPipeline = OsdRecordingPipeline(
+                context = context,
+                osdConfigFlow = osdConfigSupplier(),
+                widthPx = encCfg.widthPx,
+                heightPx = encCfg.heightPx,
+                frameRate = encCfg.frameRate,
+                bitrateBps = encCfg.bitrateBps,
+                keyframeIntervalSeconds = encCfg.keyframeIntervalSeconds,
+                outputFile = outputFile
             )
-            val recording = pendingRecording.start(executor) { event ->
-                handleRecordEvent(event)
+            newPipeline.start { finalFile, error ->
+                handlePipelineFinalize(finalFile, error)
             }
-            activeRecording = recording
+            pipeline = newPipeline
             activeOutputFile = outputFile
             activeChannelId = channelId
             activeStartMs = now.toEpochMilliseconds()
             activeSource = source
-            // 切片接力时(pendingSegmentSplit=true)保留 segmentIndex 自增;否则归零。
             if (!pendingSegmentSplit) activeSegmentIndex = 0
             pendingSegmentSplit = false
             _state.value = RecordingState.Recording(
@@ -227,10 +221,8 @@ class AndroidRecordingService(
                 segmentIndex = activeSegmentIndex,
                 source = source
             )
-            // 守护协程:30 分钟切片 + 滚动磁盘检查
             guardJob?.cancel()
             guardJob = scope.launch { runGuard(channelId, source) }
-            // 拉起前台 Service:Android 14+ 后台录视频必须的保活手段
             runCatching { RecordingForegroundService.start(context) }
                 .onFailure {
                     SystemLogger.emit(
@@ -240,7 +232,7 @@ class AndroidRecordingService(
                 }
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
-                "开始录像 → source=$source channel=$channelId path=${outputFile.absolutePath}"
+                "开始录像(OSD pipeline) → source=$source channel=$channelId path=${outputFile.absolutePath}"
             )
         }.recoverCatching {
             _state.value = RecordingState.Failed(it.message ?: "unknown")
@@ -250,55 +242,42 @@ class AndroidRecordingService(
     }
 
     override suspend fun stop(): Result<RecordingFile?> {
-        val recording = activeRecording ?: return Result.success(null)
+        val pipe = pipeline ?: return Result.success(null)
         return runCatching {
             val previous = _state.value as? RecordingState.Recording
             if (previous != null) {
                 _state.value = RecordingState.Stopping(previous, reason = "user_stop")
             }
-            // 用户主动停 → 不再接力切片
             pendingSegmentSplit = false
             guardJob?.cancel()
             guardJob = null
-            recording.stop()
-            null  // 实际 finalize 在 handleRecordEvent 里
+            pipe.stop()
+            null  // finalize 异步走 handlePipelineFinalize
         }
     }
 
-    /**
-     * 录像守护协程 — 跟单段录像同生命周期(由 [start] 拉起,[stop]/finalize 终止)。
-     *
-     * 职责:
-     *   1. 每分钟扫一次磁盘,跌破 [MIN_FREE_BYTES] 主动 stop,避免半截损坏录像
-     *   2. 当前段录到 [SEGMENT_DURATION_MS] 时触发切片(set pendingSegmentSplit + recording.stop)
-     *      finalize 回调里看到 pendingSegmentSplit=true 就接力 start 下一段
-     *
-     * 用 delay(30_000) 粒度即可,30s 误差不影响切片节奏。
-     */
     private suspend fun runGuard(channelId: String, source: RecordSource) {
         val segmentMs = profile.segmentMinutes.toLong() * 60 * 1000
         val minFreeBytes = profile.minFreeMb.toLong() * 1024 * 1024
         try {
             while (true) {
                 kotlinx.coroutines.delay(GUARD_TICK_MS)
-                if (activeRecording == null) return
+                if (pipeline == null) return
                 val started = activeStartMs
                 val nowMs = clock.now().toEpochMilliseconds()
                 val recordedMs = nowMs - started
 
-                // 切片(profile.segmentMinutes <= 0 时关闭切片)
                 if (segmentMs > 0 && recordedMs >= segmentMs) {
                     SystemLogger.emit(
                         LogLevel.Info, LogTag.Media,
                         "录像满 ${profile.segmentMinutes} 分钟,触发切片"
                     )
                     pendingSegmentSplit = true
-                    val rec = activeRecording ?: return
-                    runCatching { rec.stop() }
+                    val pipe = pipeline ?: return
+                    runCatching { pipe.stop() }
                     return
                 }
 
-                // 滚动磁盘检查
                 val free = baseDir.usableSpace
                 if (free < minFreeBytes) {
                     SystemLogger.emit(
@@ -306,8 +285,8 @@ class AndroidRecordingService(
                         "磁盘剩余 ${free / 1024 / 1024}MB < ${profile.minFreeMb}MB,主动停止录像"
                     )
                     pendingSegmentSplit = false
-                    val rec = activeRecording ?: return
-                    runCatching { rec.stop() }
+                    val pipe = pipeline ?: return
+                    runCatching { pipe.stop() }
                     return
                 }
             }
@@ -333,139 +312,94 @@ class AndroidRecordingService(
         }
     }
 
-    private fun handleRecordEvent(event: VideoRecordEvent) {
-        when (event) {
-            is VideoRecordEvent.Start -> Unit
-            is VideoRecordEvent.Status -> Unit
-            is VideoRecordEvent.Finalize -> {
-                val isSplit = pendingSegmentSplit
-                // 切片接力时不停前台 Service — 下一段录像马上接上
-                if (!isSplit) {
-                    runCatching { RecordingForegroundService.stop(context) }
-                    guardJob?.cancel()
-                    guardJob = null
-                }
-                val outputFile = activeOutputFile
-                val started = activeStartMs
-                val channel = activeChannelId
-                val source = activeSource
-                activeRecording = null
-                activeOutputFile = null
-                if (event.hasError() || outputFile == null || channel == null || started == 0L) {
-                    val reason = event.cause?.message ?: "finalize error code=${event.error}"
-                    pendingSegmentSplit = false  // 接力中失败,不接了
-                    scope.launch {
-                        mutex.withLock {
-                            _state.value = RecordingState.Failed(reason)
-                        }
-                        SystemLogger.emit(LogLevel.Error, LogTag.Media, "录像 finalize 失败: $reason")
-                    }
-                } else {
-                    val endMs = clock.now().toEpochMilliseconds()
-                    val durationMs = endMs - started
-                    val sizeBytes = outputFile.length()
-                    val recordingFile = RecordingFile(
-                        id = UUID.randomUUID().toString(),
-                        startTimeMs = started,
-                        endTimeMs = endMs,
-                        durationMs = durationMs,
-                        channelId = channel,
-                        filePath = outputFile.absolutePath,
-                        sizeBytes = sizeBytes,
-                        thumbnailPath = null,
-                        source = source,
-                        type = RecordType.Time,
-                        secrecy = 0
-                    )
-                    scope.launch {
-                        mutex.withLock {
-                            val current = _files.value
-                            val updated = RecordingIndexFile(files = current + recordingFile)
-                            _files.value = updated.files
-                            persistIndex(updated)
-                            // 切片接力:不进 Idle,下一段录像马上启动
-                            if (!isSplit) {
-                                _state.value = RecordingState.Idle
-                            }
-                        }
-                        SystemLogger.emit(
-                            LogLevel.Info, LogTag.Media,
-                            if (isSplit) "切片完成 → 文件=${outputFile.name} 时长=${durationMs}ms,接力下一段"
-                            else "停止录像 → 文件=${outputFile.name} 时长=${durationMs}ms 大小=${sizeBytes}B"
-                        )
-                        thumbJob = scope.launch(Dispatchers.IO) {
-                            val thumbPath = ThumbnailExtractor.extract(outputFile.absolutePath, durationMs)
-                            if (thumbPath != null) {
-                                mutex.withLock {
-                                    val list = _files.value.map {
-                                        if (it.id == recordingFile.id) it.copy(thumbnailPath = thumbPath)
-                                        else it
-                                    }
-                                    _files.value = list
-                                    persistIndex(RecordingIndexFile(files = list))
-                                }
-                            }
-                        }
-                        // 接力启动下一段
-                        if (isSplit) {
-                            activeSegmentIndex += 1
-                            val resumeResult = runCatching { start(source, channel) }
-                            if (resumeResult.isFailure) {
-                                pendingSegmentSplit = false
-                                SystemLogger.emit(
-                                    LogLevel.Error, LogTag.Media,
-                                    "切片接力启动失败: ${resumeResult.exceptionOrNull()?.message}"
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /**
-     * 每次 start() 时调用,重新构造 Recorder + VideoCapture 并 rebind 到 streamer 的
-     * 自驱 LifecycleOwner。
+     * pipeline finalize 回调 — encoder 报 EOS / error 后触发。
      *
-     * CameraX 硬约束(踩过的坑):
-     *   - `Recorder` 实例只能录一次,完成后 prepareRecording().start() 会立刻
-     *     finalize 报 "Recording was stopped before any data could be produced"
-     *   - 解法:每次都建新 Recorder + VideoCapture,**只 unbind 上一个 VideoCapture**
-     *     (不能 unbindAll,会一并干掉 streamer 的 Preview)
-     *
-     * 共享决策:provider 与 lifecycleOwner 都来自 streamer.cameraOwnerSupplier,
-     * 切后台 / Activity 重建时 streamer 的自驱 lifecycle 仍 STARTED,录像不被
-     * 系统自动 unbind。
+     * 跟原 handleRecordEvent.Finalize 等价:
+     * - 成功:加 index + 持久化 + 异步抽缩略图,接力切片(if pendingSegmentSplit)
+     * - 失败:状态进 Failed,emit 错误日志
      */
-    private suspend fun rebindFreshVideoCapture(): VideoCapture<Recorder> {
-        val (provider, lifecycleOwner) = streamerSupplier().awaitCameraOwner()
-        val quality = when (profile.quality.uppercase()) {
-            "SD" -> Quality.SD
-            "HD" -> Quality.HD
-            "FHD" -> Quality.FHD
-            "UHD" -> Quality.UHD
-            else -> Quality.HD
+    private fun handlePipelineFinalize(finalFile: File?, error: Throwable?) {
+        val isSplit = pendingSegmentSplit
+        if (!isSplit) {
+            runCatching { RecordingForegroundService.stop(context) }
+            guardJob?.cancel()
+            guardJob = null
         }
-        val recorder = Recorder.Builder()
-            .setQualitySelector(QualitySelector.from(quality))
-            .build()
-        val capture = VideoCapture.withOutput(recorder)
-        val previous = videoCapture
-        withContext(Dispatchers.Main) {
-            // 精确解绑:只 unbind 自己上一个 VideoCapture,streamer 的 Preview /
-            // EncoderPreview 不受影响,所以预览不会黑屏、推流不会断。
-            if (previous != null) {
-                runCatching { provider.unbind(previous) }
+        val started = activeStartMs
+        val channel = activeChannelId
+        val source = activeSource
+        pipeline = null
+        activeOutputFile = null
+
+        if (error != null || finalFile == null || channel == null || started == 0L) {
+            val reason = error?.message ?: "finalize error: file=$finalFile channel=$channel"
+            pendingSegmentSplit = false
+            scope.launch {
+                mutex.withLock {
+                    _state.value = RecordingState.Failed(reason)
+                }
+                SystemLogger.emit(LogLevel.Error, LogTag.Media, "录像 finalize 失败: $reason")
             }
-            provider.bindToLifecycle(
-                lifecycleOwner,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                capture
-            )
+            return
         }
-        videoCapture = capture
-        return capture
+
+        val endMs = clock.now().toEpochMilliseconds()
+        val durationMs = endMs - started
+        val sizeBytes = finalFile.length()
+        val recordingFile = RecordingFile(
+            id = UUID.randomUUID().toString(),
+            startTimeMs = started,
+            endTimeMs = endMs,
+            durationMs = durationMs,
+            channelId = channel,
+            filePath = finalFile.absolutePath,
+            sizeBytes = sizeBytes,
+            thumbnailPath = null,
+            source = source,
+            type = RecordType.Time,
+            secrecy = 0
+        )
+        scope.launch {
+            mutex.withLock {
+                val current = _files.value
+                val updated = RecordingIndexFile(files = current + recordingFile)
+                _files.value = updated.files
+                persistIndex(updated)
+                if (!isSplit) {
+                    _state.value = RecordingState.Idle
+                }
+            }
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                if (isSplit) "切片完成 → 文件=${finalFile.name} 时长=${durationMs}ms,接力下一段"
+                else "停止录像 → 文件=${finalFile.name} 时长=${durationMs}ms 大小=${sizeBytes}B"
+            )
+            thumbJob = scope.launch(Dispatchers.IO) {
+                val thumbPath = ThumbnailExtractor.extract(finalFile.absolutePath, durationMs)
+                if (thumbPath != null) {
+                    mutex.withLock {
+                        val list = _files.value.map {
+                            if (it.id == recordingFile.id) it.copy(thumbnailPath = thumbPath)
+                            else it
+                        }
+                        _files.value = list
+                        persistIndex(RecordingIndexFile(files = list))
+                    }
+                }
+            }
+            if (isSplit) {
+                activeSegmentIndex += 1
+                val resumeResult = runCatching { start(source, channel) }
+                if (resumeResult.isFailure) {
+                    pendingSegmentSplit = false
+                    SystemLogger.emit(
+                        LogLevel.Error, LogTag.Media,
+                        "切片接力启动失败: ${resumeResult.exceptionOrNull()?.message}"
+                    )
+                }
+            }
+        }
     }
 
     private fun newOutputFile(instant: Instant): File {
@@ -486,15 +420,12 @@ class AndroidRecordingService(
         }
     }
 
-    /** Internal helper(实现注释 plan §6 配套缩略图)。 */
     private fun emitState(update: (RecordingState) -> RecordingState) {
         _state.update(update)
     }
 
     companion object {
-        /** 录像启动最低剩余磁盘字节数 — 默认 200MB,够录约 6 分钟 1080p。可被 [RecordingProfile.minFreeMb] 覆盖。 */
         const val MIN_FREE_BYTES: Long = 200L * 1024 * 1024
-        /** 守护协程扫描间隔 — 30 秒粒度,切片误差 ±30s 可接受。 */
         const val GUARD_TICK_MS: Long = 30L * 1000
     }
 }

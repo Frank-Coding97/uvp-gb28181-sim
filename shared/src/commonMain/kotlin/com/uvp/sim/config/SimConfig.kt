@@ -29,7 +29,8 @@ data class SimConfig(
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
     val userAgent: String = "UVP-Sim/0.1",
-    val mockPosition: GeoPoint = GeoPoint()
+    val mockPosition: GeoPoint = GeoPoint(),
+    val osd: OsdConfig = OsdConfig()
 )
 
 /**

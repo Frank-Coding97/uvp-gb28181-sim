@@ -143,7 +143,7 @@ private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
                 fontSize = 11.sp,
                 color = UvpColor.Text,
                 fontFamily = FontFamily.Monospace,
-                maxLines = 1,
+                maxLines = if (expanded) 8 else 1,
                 modifier = Modifier.weight(1f)
             )
         }

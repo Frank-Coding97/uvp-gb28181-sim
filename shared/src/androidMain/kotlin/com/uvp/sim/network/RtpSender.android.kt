@@ -18,6 +18,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Android implementation. Same code as JVM since both use Ktor on java.nio.
@@ -50,8 +51,10 @@ actual class RtpSender actual constructor(
     actual suspend fun bindLocalPort(): Int = mutex.withLock {
         when (mode) {
             RtpMode.UDP -> bindUdp()
-            RtpMode.TCP_ACTIVE -> bindTcpActive()
-            RtpMode.TCP_PASSIVE -> bindTcpPassive()
+            // TCP 在 Android 主线程会触发 NetworkOnMainThreadException(connect/bind 内部
+            // 有同步检测),切到 IO 线程跑。UDP 走 NIO 不需要切,保持原行为避免回归。
+            RtpMode.TCP_ACTIVE -> withContext(Dispatchers.IO) { bindTcpActive() }
+            RtpMode.TCP_PASSIVE -> withContext(Dispatchers.IO) { bindTcpPassive() }
         }
     }
 
@@ -80,7 +83,7 @@ actual class RtpSender actual constructor(
         val server = aSocket(sm).tcp().bind(InetSocketAddress("0.0.0.0", 0))
         selector = sm
         tcpServer = server
-        ownedScope.launch {
+        ownedScope.launch(Dispatchers.IO) {
             try {
                 val client = server.accept()
                 tcpSocket = client
@@ -101,8 +104,8 @@ actual class RtpSender actual constructor(
                     )
                 )
             }
-            RtpMode.TCP_ACTIVE, RtpMode.TCP_PASSIVE -> {
-                val wc = tcpWrite ?: return
+            RtpMode.TCP_ACTIVE, RtpMode.TCP_PASSIVE -> withContext(Dispatchers.IO) {
+                val wc = tcpWrite ?: return@withContext
                 val len = packet.size
                 val framed = ByteArray(2 + len)
                 framed[0] = ((len ushr 8) and 0xFF).toByte()
