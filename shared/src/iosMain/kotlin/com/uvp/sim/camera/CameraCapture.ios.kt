@@ -30,4 +30,13 @@ actual class CameraCapture actual constructor(@Suppress("unused") private val co
     actual fun requestKeyFrame() {
         streamer?.requestKeyFrame()
     }
+
+    // TODO(dual-camera-channel / iOS 媒体线): IosCameraStreamer 落地后转发切朝向。
+    // 当前 iOS 真机媒体管线半成品(M2 真机为 Android),先留桩记录目标值。
+    @Volatile
+    private var pendingFacing: CameraFacing = config.cameraFacing
+
+    actual fun setFacing(facing: CameraFacing) {
+        pendingFacing = facing
+    }
 }

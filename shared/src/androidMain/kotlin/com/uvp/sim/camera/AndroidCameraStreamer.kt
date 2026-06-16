@@ -108,6 +108,12 @@ class AndroidCameraStreamer(
     @Volatile private var provider: ProcessCameraProvider? = null
 
     /**
+     * 当前摄像头朝向。初值取构造 [config].cameraFacing,运行期可由 [setFacing] 改。
+     * 双真实通道:平台对前置/后置通道发 INVITE 时,引擎据通道映射切朝向。
+     */
+    @Volatile private var currentFacing: CameraFacing = config.cameraFacing
+
+    /**
      * 绑定屏幕预览 SurfaceView(P0-PREVIEW,2026-06-14)。
      *
      * 跟工业 IPC 同构:屏幕看到的画面来自 OsdRendererHolder 单一画面源,跟直播/录像同源。
@@ -407,7 +413,7 @@ class AndroidCameraStreamer(
     private val boundCases = mutableListOf<UseCase>()
     private fun rebind() {
         val prov = provider ?: return
-        val selector = when (config.cameraFacing) {
+        val selector = when (currentFacing) {
             CameraFacing.FRONT -> CameraSelector.DEFAULT_FRONT_CAMERA
             CameraFacing.BACK -> CameraSelector.DEFAULT_BACK_CAMERA
         }
@@ -424,6 +430,17 @@ class AndroidCameraStreamer(
                 boundCases += nextCases
             }
         } catch (_: Throwable) { /* swallow — unbind path */ }
+    }
+
+    /**
+     * 运行期切换摄像头朝向(双真实通道)。值变才 rebind,避免无谓重绑。
+     * 由 CameraCapture.setFacing 转发。必须在引擎"无活跃直播流"时调用
+     * (B 方案保证并发只一路,故切换不打断正在推的流)。
+     */
+    fun setFacing(facing: CameraFacing) {
+        if (currentFacing == facing) return
+        currentFacing = facing
+        runOnMain { rebind() }
     }
 
     /** Release the self-driven lifecycle so CameraX drops our use cases.

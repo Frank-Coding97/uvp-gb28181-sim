@@ -148,7 +148,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
         viewModelScope.launch {
-            val stored = configStore.loadOnce(defaultConfig())
+            // 双真实通道迁移:老持久化配置无 frontChannelId(反序列化取默认空),
+            // 会让 defaultTree 回退为单后置通道。加载时按 domain 补全前置通道 ID,
+            // 让老配置自动升级到前后双通道。
+            val stored = migrateDualChannel(configStore.loadOnce(defaultConfig()))
             if (stored != _config.value) {
                 _config.value = stored
                 _videoConfigVersion.value += 1
@@ -161,6 +164,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     /** Activity calls this after creating CameraCapture + AndroidCameraStreamer. */
     fun bindCamera(cam: CameraCapture) {
         this.camera = cam
+    }
+
+    /**
+     * 双真实通道迁移:老配置 frontChannelId 为空时,按 domain 用 IdEncoder 补全前置通道 ID。
+     * 已有值则原样返回。补全后写回持久化由后续 save 触发,这里只保证内存态正确。
+     */
+    private fun migrateDualChannel(cfg: SimConfig): SimConfig {
+        if (cfg.device.frontChannelId.isNotBlank()) return cfg
+        val frontId = com.uvp.sim.gb28181.IdEncoder.genChildId(
+            cfg.server.domain, com.uvp.sim.config.CatalogNodeType.VideoChannel, 2
+        )
+        return cfg.copy(device = cfg.device.copy(frontChannelId = frontId))
     }
 
     /** Activity calls this after creating AudioCapture + AndroidAudioStreamer. */
@@ -490,6 +505,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         const val DEVICE_ID = "35020000001310000001"
         const val VIDEO_CHANNEL_ID = "35020000001320000001"
         const val ALARM_CHANNEL_ID = "35020000001340000001"
+        // 双真实通道:前置通道 ID 用 IdEncoder 按 domain 生成(VideoChannel, seq=2),
+        // 与后置(seq=1 → ...1320000001)区分。
+        val FRONT_CHANNEL_ID: String = com.uvp.sim.gb28181.IdEncoder.genChildId(
+            WVP_DOMAIN, com.uvp.sim.config.CatalogNodeType.VideoChannel, 2
+        )
 
         const val MAX_EVENT_LOG = 100
 
@@ -504,7 +524,8 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 videoChannelId = VIDEO_CHANNEL_ID,
                 alarmChannelId = ALARM_CHANNEL_ID,
                 username = DEVICE_ID,
-                password = WVP_PASSWORD
+                password = WVP_PASSWORD,
+                frontChannelId = FRONT_CHANNEL_ID
             ),
             transport = TransportType.UDP,
             keepaliveIntervalSeconds = 60

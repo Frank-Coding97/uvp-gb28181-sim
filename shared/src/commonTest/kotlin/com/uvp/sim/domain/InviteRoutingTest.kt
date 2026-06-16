@@ -202,4 +202,61 @@ class InviteRoutingTest {
         assertEquals(0, rejections.size, "兼容旧 SimConfig — 找不到的 channelId 不应被 488")
         engine.shutdown()
     }
+
+    // ---- T4: 双真实通道并发拒绝(B 方案 486) ----
+
+    /** 注入真实 jvm RtpSender + jvm CameraCapture stub,使首路 INVITE 能建出 activeStream。 */
+    private fun mediaEngine(transport: MockSipTransport, scope: kotlinx.coroutines.CoroutineScope) =
+        SimulatorEngine(
+            cfg(fullTree()), transport, scope, localIp = "192.168.10.112",
+            cameraCapture = com.uvp.sim.camera.CameraCapture(com.uvp.sim.camera.CaptureConfig()),
+            rtpSenderFactory = { host, port, mode ->
+                com.uvp.sim.network.RtpSender(host, port, scope, mode)
+            }
+        )
+
+    @Test
+    fun concurrentSecondInviteRejectedWith486() = runTest {
+        val transport = MockSipTransport()
+        val engine = mediaEngine(transport, this)
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        // 第一路:后置视频通道 → 建出 activeStream(cam stub 空 flow,但 activeStream 已置)
+        transport.deliver(inviteFor("35020000001320000001", callId = "call-1@plat"))
+        runCurrent()
+        assertEquals(
+            0,
+            transport.sent.filterIsInstance<SipResponse>().count { it.statusCode == 486 },
+            "第一路不应 486"
+        )
+
+        // 第二路:任意视频通道 → 期望 486 Busy Here
+        transport.deliver(inviteFor("35020000001320000001", callId = "call-2@plat"))
+        runCurrent()
+        val busy = transport.sent.filterIsInstance<SipResponse>().filter { it.statusCode == 486 }
+        assertEquals(1, busy.size, "并发第二路应 486")
+        assertTrue(busy[0].reasonPhrase.contains("Busy", ignoreCase = true))
+        engine.shutdown()
+    }
+
+    @Test
+    fun concurrentBusyDoesNotOverrideTypeRejection488() = runTest {
+        // 已有活跃流时,对报警通道 INVITE 仍应 488(类型路由在并发检查之前)
+        val transport = MockSipTransport()
+        val engine = mediaEngine(transport, this)
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.deliver(inviteFor("35020000001320000001", callId = "call-1@plat"))
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(inviteFor("35020000001340000001", callId = "call-alarm@plat"))  // 报警通道
+        runCurrent()
+        val responses = transport.sent.filterIsInstance<SipResponse>()
+        assertEquals(1, responses.size)
+        assertEquals(488, responses[0].statusCode, "报警通道优先 488,不被 486 覆盖")
+        engine.shutdown()
+    }
 }

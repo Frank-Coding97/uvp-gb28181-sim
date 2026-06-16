@@ -27,6 +27,13 @@ expect class CameraCapture(config: CaptureConfig) {
      * No-op when no encoder is running.
      */
     fun requestKeyFrame()
+
+    /**
+     * 运行期切换摄像头朝向(双真实通道 dual-camera-channel)。
+     * 引擎在收到对前置/后置通道的 INVITE 时,起流前据通道映射调用。
+     * 必须在无活跃直播流时调用(B 方案:并发只一路)。无运行中相机时为空操作。
+     */
+    fun setFacing(facing: CameraFacing)
 }
 
 /**

@@ -161,7 +161,7 @@ data class DeviceConfig(
     val deviceId: String,
     /** 设备显示名称 — Catalog Name + 可选 SIP From display name。WVP 后台显示这个 */
     val name: String = "UVP-Sim",
-    /** 视频通道编码 — used in Catalog response and INVITE matching */
+    /** 视频通道编码 — 后置摄像头通道。used in Catalog response and INVITE matching */
     val videoChannelId: String,
     /** 报警通道编码 — used by alarm Notify */
     val alarmChannelId: String,
@@ -177,8 +177,29 @@ data class DeviceConfig(
     val firmware: String = "0.1.0",
     val hardwareVersion: String = "Mobile",
     /** 通道高级属性 — GB/T 28181-2022 §9.3.1 Catalog 新增字段集合。M2 单通道全部挂这里。 */
-    val channel: ChannelProfile = ChannelProfile()
-)
+    val channel: ChannelProfile = ChannelProfile(),
+    /**
+     * 双真实通道(dual-camera-channel)— 前置摄像头通道编码。
+     * 默认空,运行期由 SipViewModel 用 IdEncoder 按 domain 生成。空时 defaultTree
+     * 回退为单(后置)视频通道,兼容老配置。
+     */
+    val frontChannelId: String = "",
+    /** 前置摄像头通道显示名 */
+    val frontChannelName: String = "前置摄像头",
+    /** 后置摄像头(即 videoChannelId)通道显示名 */
+    val videoChannelName: String = "后置摄像头"
+) {
+    /**
+     * 双真实通道映射:被叫 channelId → 摄像头朝向。
+     * 仅当 channelId 非空且等于 frontChannelId 时为前置;其余(后置 ID / 未知 / 空)兜底后置。
+     * 兜底后置保证老配置(frontChannelId 空)与未知通道行为稳定。
+     */
+    fun facingForChannel(channelId: String): com.uvp.sim.camera.CameraFacing =
+        if (channelId.isNotBlank() && channelId == frontChannelId)
+            com.uvp.sim.camera.CameraFacing.FRONT
+        else
+            com.uvp.sim.camera.CameraFacing.BACK
+}
 
 /**
  * GB/T 28181-2022 Catalog Item 新增字段集合(§9.3.1)。

@@ -36,4 +36,8 @@ actual class CameraCapture actual constructor(@Suppress("unused") private val co
     actual fun requestKeyFrame() {
         streamer?.requestKeyFrame()
     }
+
+    actual fun setFacing(facing: CameraFacing) {
+        streamer?.setFacing(facing)
+    }
 }

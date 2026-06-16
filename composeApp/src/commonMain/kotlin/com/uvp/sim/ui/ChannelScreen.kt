@@ -39,10 +39,11 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.sip.SipState
 
 /**
- * 通道页 — M1 单通道展示 + 通道相关配置编辑。
+ * 通道页 — 双真实通道(前置 / 后置摄像头)展示 + 通道配置编辑。
  *
- * 第一节"真实通道":卡片显示通道名/ID/在线状态(原有)。
- * 第二节"通道配置":视频通道ID / 报警通道ID / 密码 / 心跳间隔(从原 HomeScreen 高级设置迁过来)。
+ * 第一节"真实通道":前置 + 后置两张卡,各显示通道名/ID/在线状态。
+ *   前置仅在 frontChannelId 非空时显示(兼容老单通道配置)。
+ * 第二节"通道配置":前置(名称+ID)/ 后置(名称+ID)/ 报警通道ID / 心跳间隔等。
  */
 @Composable
 fun ChannelScreen(state: AppUiState, actions: AppActions) {
@@ -50,15 +51,24 @@ fun ChannelScreen(state: AppUiState, actions: AppActions) {
     val online = state.sip == SipState.Registered || state.sip == SipState.InCall
     val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
     val scroll = rememberScrollState()
+    val dev = state.config.device
+    val hasFront = dev.frontChannelId.isNotBlank()
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        SectionLabel("真实通道 · 1")
+        SectionLabel(if (hasFront) "真实通道 · 2" else "真实通道 · 1")
+        if (hasFront) {
+            ChannelCard(
+                name = dev.frontChannelName,
+                id = dev.frontChannelId,
+                online = online
+            )
+        }
         ChannelCard(
-            name = "手机摄像头",
-            id = state.config.device.videoChannelId,
+            name = dev.videoChannelName,
+            id = dev.videoChannelId,
             online = online
         )
         Spacer(Modifier.height(4.dp))
@@ -130,6 +140,9 @@ private fun ChannelConfigCard(
     locked: Boolean,
     onSave: (com.uvp.sim.config.SimConfig) -> Unit
 ) {
+    var frontChannelName by remember(state.config) { mutableStateOf(state.config.device.frontChannelName) }
+    var frontChannelId by remember(state.config) { mutableStateOf(state.config.device.frontChannelId) }
+    var videoChannelName by remember(state.config) { mutableStateOf(state.config.device.videoChannelName) }
     var videoChannelId by remember(state.config) { mutableStateOf(state.config.device.videoChannelId) }
     var alarmChannelId by remember(state.config) { mutableStateOf(state.config.device.alarmChannelId) }
 
@@ -141,9 +154,19 @@ private fun ChannelConfigCard(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
+        FieldGroupLabel("前置摄像头通道")
+        InlineField("通道名称", frontChannelName, { frontChannelName = it }, enabled = !locked)
+        InlineField("视频通道 ID", frontChannelId,
+            { frontChannelId = it.filter { c -> c.isDigit() } },
+            enabled = !locked)
+
+        FieldGroupLabel("后置摄像头通道")
+        InlineField("通道名称", videoChannelName, { videoChannelName = it }, enabled = !locked)
         InlineField("视频通道 ID", videoChannelId,
             { videoChannelId = it.filter { c -> c.isDigit() } },
             enabled = !locked)
+
+        FieldGroupLabel("报警通道")
         InlineField("报警通道 ID", alarmChannelId,
             { alarmChannelId = it.filter { c -> c.isDigit() } },
             enabled = !locked)
@@ -154,6 +177,9 @@ private fun ChannelConfigCard(
                 onSave(
                     state.config.copy(
                         device = state.config.device.copy(
+                            frontChannelName = frontChannelName,
+                            frontChannelId = frontChannelId,
+                            videoChannelName = videoChannelName,
                             videoChannelId = videoChannelId,
                             alarmChannelId = alarmChannelId
                         )
@@ -175,4 +201,15 @@ private fun ChannelConfigCard(
             )
         }
     }
+}
+
+@Composable
+private fun FieldGroupLabel(text: String) {
+    Text(
+        text,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = UvpColor.TextSecondary,
+        modifier = Modifier.padding(top = 2.dp)
+    )
 }

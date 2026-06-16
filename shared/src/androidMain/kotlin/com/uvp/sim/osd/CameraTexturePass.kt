@@ -47,14 +47,16 @@ internal class CameraTexturePass {
         uTexMatrixLoc = GLES30.glGetUniformLocation(program, "uTexMatrix")
 
         // 全屏四边形:NDC pos(xy)+ tex coord(xy),共 4 顶点 × 4 float = 16 float。
-        // 顺序按 GL_TRIANGLE_STRIP 排列。SurfaceTexture 自带 Y 翻转,
-        // tex coord 走标准方向,翻转由 transform matrix 处理。
+        // 顺序按 GL_TRIANGLE_STRIP 排列。
+        // v 坐标 Y 翻转(1→0 而非 0→1):FBO 原点在左下,相机画面渲染进 FBO 后
+        // 再经 blit 翻转输出,两次翻转叠加会使画面倒置。在此固定翻转补偿,
+        // 不依赖 SurfaceTexture.transformMatrix 的 Y 方向(部分 ROM 矩阵不含翻转)。
         val verts = floatArrayOf(
             // x,    y,    u,   v
-            -1f, -1f, 0f, 0f,
-             1f, -1f, 1f, 0f,
-            -1f,  1f, 0f, 1f,
-             1f,  1f, 1f, 1f,
+            -1f, -1f, 0f, 1f,
+             1f, -1f, 1f, 1f,
+            -1f,  1f, 0f, 0f,
+             1f,  1f, 1f, 0f,
         )
         val buf = ByteBuffer.allocateDirect(verts.size * 4)
             .order(ByteOrder.nativeOrder())

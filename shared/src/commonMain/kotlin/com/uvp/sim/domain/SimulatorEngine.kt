@@ -1410,6 +1410,14 @@ class SimulatorEngine(
 
         // 回放和直播各自有独立的 RtpSender / 端口 / SSRC,不抢摄像头硬件,可以并行。
 
+        // 双真实通道(B 方案):同一时刻只允许一路真实直播流(手机硬件不支持前后置并发)。
+        // 已有活跃直播流时,对任意视频通道的 INVITE 一律 486 Busy Here,不抢占正在推的流。
+        // 必须在 state transition / early-return 之前,既保证状态机不被第二路扰动,也保证单测可断言。
+        if (activeStream != null) {
+            sendBusyResponse(invite, "已有直播流推送中,拒绝并发第二路")
+            return
+        }
+
         _state.value = SipStateMachine.transition(_state.value, SipEvent.InviteReceived)
         val cid = invite.callId() ?: ""
         _events.emit(SimEvent.IncomingInvite(cid))
@@ -1422,6 +1430,9 @@ class SimulatorEngine(
             // can observe; nothing more to do.
             return
         }
+
+        // 双真实通道:据被叫 channelId 映射切摄像头朝向(前置/后置)。无运行相机时为空操作。
+        cam.setFacing(config.device.facingForChannel(channelId))
 
         val offer = try {
             com.uvp.sim.sip.SdpParser.parseOffer(invite.body)

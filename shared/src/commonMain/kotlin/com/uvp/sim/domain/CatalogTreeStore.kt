@@ -30,16 +30,18 @@ object CatalogTreeStore {
                 "Status" to "ON"
             )
         )
-        val video = CatalogNode(
+        val channelFields = mapOf(
+            "Manufacturer" to "UVP",
+            "Model" to "UVP-Sim",
+            "Status" to "ON"
+        )
+        // 后置(沿用 videoChannelId,老配置兼容)
+        val back = CatalogNode(
             id = config.device.videoChannelId,
             type = CatalogNodeType.VideoChannel,
-            name = "${config.device.name}-视频",
+            name = config.device.videoChannelName,
             parentId = rootId,
-            fields = mapOf(
-                "Manufacturer" to "UVP",
-                "Model" to "UVP-Sim",
-                "Status" to "ON"
-            )
+            fields = channelFields
         )
         val alarm = CatalogNode(
             id = config.device.alarmChannelId,
@@ -48,7 +50,20 @@ object CatalogTreeStore {
             parentId = rootId,
             fields = mapOf("Status" to "ON")
         )
-        return listOf(root, video, alarm)
+        // 前置 — frontChannelId 为空(老配置升级)时回退为单后置通道,绝不生成空 ID 节点。
+        val frontId = config.device.frontChannelId
+        return if (frontId.isBlank()) {
+            listOf(root, back, alarm)
+        } else {
+            val front = CatalogNode(
+                id = frontId,
+                type = CatalogNodeType.VideoChannel,
+                name = config.device.frontChannelName,
+                parentId = rootId,
+                fields = channelFields
+            )
+            listOf(root, front, back, alarm)
+        }
     }
 
     fun effectiveTree(config: SimConfig): List<CatalogNode> =
