@@ -52,16 +52,21 @@ object SipBuilders {
         newCseq: Int,
         newBranch: String
     ): SipRequest {
-        val updatedHeaders = register.headers.map { h ->
-            when (SipHeader.canonicalize(h.name)) {
-                SipHeader.CSEQ -> SipMessage.Header(SipHeader.CSEQ, "$newCseq REGISTER")
-                SipHeader.VIA -> SipMessage.Header(
-                    SipHeader.VIA,
-                    h.value.replace(Regex("branch=[^;]+"), "branch=$newBranch")
-                )
-                else -> h
-            }
-        } + SipMessage.Header(SipHeader.AUTHORIZATION, authorizationHeader)
+        // Drop any stale Authorization first: on a 401 loop the same pending REGISTER
+        // gets re-authed repeatedly, and appending would stack multiple Authorization
+        // headers — a malformed message the platform rejects with yet another 401.
+        val updatedHeaders = register.headers
+            .filter { SipHeader.canonicalize(it.name) != SipHeader.AUTHORIZATION }
+            .map { h ->
+                when (SipHeader.canonicalize(h.name)) {
+                    SipHeader.CSEQ -> SipMessage.Header(SipHeader.CSEQ, "$newCseq REGISTER")
+                    SipHeader.VIA -> SipMessage.Header(
+                        SipHeader.VIA,
+                        h.value.replace(Regex("branch=[^;]+"), "branch=$newBranch")
+                    )
+                    else -> h
+                }
+            } + SipMessage.Header(SipHeader.AUTHORIZATION, authorizationHeader)
         return register.copy(headers = updatedHeaders)
     }
 

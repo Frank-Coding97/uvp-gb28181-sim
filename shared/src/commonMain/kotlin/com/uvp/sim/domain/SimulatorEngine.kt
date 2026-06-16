@@ -566,6 +566,21 @@ class SimulatorEngine(
                     )
                     return
                 }
+                // Break the 401 storm: a single REGISTER can be retransmitted (UDP) and the
+                // platform answers each copy with its own fresh-nonce 401. If we already
+                // responded to a challenge (pending now carries Authorization), re-sending
+                // again would spawn one new REGISTER per 401 → exponential blast → the
+                // platform rate-limits us ("register N times in 3 seconds") and the device
+                // never truly registers. Respond to the *first* challenge only; ignore the
+                // rest of the storm and let the watchdog/retry path handle a genuine failure.
+                val alreadyAuthed = pending.firstHeader(SipHeader.AUTHORIZATION) != null
+                if (alreadyAuthed) {
+                    SystemLogger.emit(
+                        LogLevel.Debug, LogTag.Lifecycle,
+                        "忽略重复 401(已应答挑战,等待 200 或超时)"
+                    )
+                    return
+                }
                 _events.emit(SimEvent.RegistrationChallenged(challenge))
                 _state.value = SipStateMachine.transition(
                     _state.value, SipEvent.Register401Received(challenge)

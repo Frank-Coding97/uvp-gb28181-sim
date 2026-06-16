@@ -95,6 +95,47 @@ class SimulatorEngineTest {
         }
     }
 
+    @Test fun ignoresDuplicate401StormAfterAuthedRegisterSent() = runTest {
+        // Regression: UDP retransmits of one REGISTER make the platform answer several
+        // fresh-nonce 401s. We must respond to the first challenge once and then ignore
+        // the rest — otherwise each 401 spawns a new REGISTER, the platform rate-limits
+        // ("register N times in 3 seconds"), and the device never registers.
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        try {
+            transport.connect()
+            engine.register()
+            testScheduler.runCurrent()
+            val firstReq = transport.sent[0] as SipRequest
+
+            transport.deliver(fakeResponse(firstReq, 401, "Unauthorized",
+                listOf(SipMessage.Header(SipHeader.WWW_AUTHENTICATE,
+                    "Digest realm=\"3402000000\",nonce=\"nonce-A\",algorithm=MD5"))))
+            testScheduler.runCurrent()
+            assertEquals(2, transport.sent.size, "first challenge → one authed REGISTER")
+
+            // Storm: more 401s with different nonces arrive for the retransmitted REGISTER.
+            repeat(5) { i ->
+                val authed = transport.sent[1] as SipRequest
+                transport.deliver(fakeResponse(authed, 401, "Unauthorized",
+                    listOf(SipMessage.Header(SipHeader.WWW_AUTHENTICATE,
+                        "Digest realm=\"3402000000\",nonce=\"nonce-storm-$i\",algorithm=MD5"))))
+                testScheduler.runCurrent()
+            }
+            assertEquals(2, transport.sent.size,
+                "duplicate 401s after auth must NOT spawn more REGISTERs")
+            assertEquals(SipState.Registering, engine.state.value)
+
+            // The single authed REGISTER still completes normally.
+            val authedReq = transport.sent[1] as SipRequest
+            transport.deliver(fakeResponse(authedReq, 200, "OK"))
+            testScheduler.runCurrent()
+            assertEquals(SipState.Registered, engine.state.value)
+        } finally {
+            engine.shutdown()
+        }
+    }
+
     @Test fun registerImmediate200Goes_Registered() = runTest {
         val transport = MockSipTransport()
         val engine = SimulatorEngine(config(), transport, this)
