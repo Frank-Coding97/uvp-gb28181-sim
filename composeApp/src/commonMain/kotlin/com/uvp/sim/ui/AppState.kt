@@ -56,8 +56,23 @@ data class AppUiState(
      * 本会话已发报警历史(最近若干条,不持久化,重启清空)。
      * 能力页报警卡角标读 size 显示报警次数,子页历史折叠区读列表。
      */
-    val alarmHistory: List<AlarmRecord> = emptyList()
+    val alarmHistory: List<AlarmRecord> = emptyList(),
+    /**
+     * 报警发送模式(spec G2)。主页"一点即发"按此模式走。本会话内存。
+     */
+    val alarmFireMode: AlarmFireMode = AlarmFireMode.Random,
+    /**
+     * 指定模式下用户保存的固定报警单(null = 还没存,退化随机)。本会话内存。
+     */
+    val fixedAlarmTemplate: AlarmPayload? = null
 )
+
+/**
+ * 报警发送模式(spec G2)。
+ * - Random:每次从预置模板池随机抽一个
+ * - Fixed:固定发用户编好的 [AppUiState.fixedAlarmTemplate]
+ */
+enum class AlarmFireMode { Random, Fixed }
 
 /**
  * GB/T 28181 上级订阅类型。M1 列出 UI 关心的两种,M2 接信令时按需扩展。
@@ -150,6 +165,18 @@ interface AppActions {
      * 仅翻 isAlarming=false + emit AlarmReset(local),**不走 SIP**(spec S4)。
      */
     fun onAlarmReset() {}
+
+    /**
+     * 主页报警 tile「一点即发」(spec G1)。按当前 alarmFireMode 发:
+     * Random → 抽模板;Fixed → 发 fixedAlarmTemplate(空则退化随机)。
+     */
+    fun onAlarmFireDefault() {}
+
+    /** 设置报警发送模式(能力页报警卡)。 */
+    fun onSetAlarmFireMode(mode: AlarmFireMode) {}
+
+    /** 保存固定报警单(指定模式),主页一点即发此单。 */
+    fun onSaveFixedAlarm(payload: AlarmPayload) {}
 }
 
 enum class AppTab(val label: String) {

@@ -52,7 +52,9 @@ import com.uvp.sim.gb28181.AlarmMethod
 import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.AlarmPriority
+import com.uvp.sim.gb28181.AlarmTemplates
 import com.uvp.sim.gb28181.AlarmType
+import com.uvp.sim.ui.AlarmFireMode
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.LocalToastHost
@@ -134,6 +136,45 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
             modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(scroll).padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // 发送模式(spec G2):随机模板池 / 指定固定单
+            FieldLabel("发送模式")
+            SegmentedPicker(
+                options = listOf(AlarmFireMode.Random, AlarmFireMode.Fixed),
+                selected = state.alarmFireMode,
+                labelOf = { if (it == AlarmFireMode.Random) "随机" else "指定" },
+                onSelect = { actions.onSetAlarmFireMode(it) }
+            )
+
+            if (state.alarmFireMode == AlarmFireMode.Random) {
+                Text(
+                    "随机模式:每次从下列 ${AlarmTemplates.builtin.size} 条预置模板中抽一条发送。主页一点即发。",
+                    fontSize = 11.sp, color = UvpColor.TextSecondary
+                )
+                AlarmTemplates.builtin.forEach { tpl ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(Modifier.size(5.dp).clip(RoundedCornerShape(3.dp)).background(UvpColor.Warning))
+                        Spacer(Modifier.width(8.dp))
+                        Text("${tpl.type.label} · ${tpl.priority.label}", fontSize = 11.sp,
+                            color = UvpColor.Text, fontWeight = FontWeight.Medium,
+                            modifier = Modifier.width(120.dp))
+                        Text(tpl.description, fontSize = 11.sp, color = UvpColor.TextSecondary, maxLines = 1)
+                    }
+                }
+                Button(
+                    onClick = { actions.onAlarmFireDefault(); toast.info("已随机发送报警") },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Warning)
+                ) { Text("随机发一条") }
+
+                // 随机模式下历史折叠区也展示
+                AlarmHistorySection(state, historyExpanded) { historyExpanded = !historyExpanded }
+                return@Column
+            }
+
+            // ===== 指定模式:9 字段编辑表单 =====
             // DeviceID 选择器
             FieldLabel("报警源通道 (DeviceID)")
             SegmentedPicker(
@@ -236,6 +277,13 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                     }
                 }
             }
+            // 指定模式:保存为固定单(主页一点即发此单)
+            if (!isAlarming) {
+                OutlinedButton(
+                    onClick = { actions.onSaveFixedAlarm(buildDraft()); toast.info("已保存固定单,主页一点即发") },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("保存为固定单") }
+            }
 
             // 历史折叠区
             CollapsibleHeader(
@@ -306,6 +354,37 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
 @Composable
 private fun FieldLabel(text: String) {
     Text(text, fontSize = 11.sp, color = UvpColor.TextSecondary, fontWeight = FontWeight.Medium)
+}
+
+/** 历史折叠区(随机模式复用)。 */
+@Composable
+private fun AlarmHistorySection(
+    state: AppUiState,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    CollapsibleHeader(
+        icon = Icons.Outlined.History,
+        title = "最近 10 条",
+        count = state.alarmHistory.size,
+        expanded = expanded,
+        onToggle = onToggle
+    )
+    if (expanded) {
+        if (state.alarmHistory.isEmpty()) {
+            Text("暂无记录", fontSize = 11.sp, color = UvpColor.TextHint,
+                modifier = Modifier.padding(start = 8.dp))
+        } else {
+            state.alarmHistory.asReversed().take(10).forEach { rec ->
+                AlarmHistoryRow(
+                    time = formatClock(rec.firedAtMs),
+                    typeLabel = rec.payload.type.label,
+                    desc = rec.payload.description.take(30),
+                    subs = rec.notifiedSubscribers
+                )
+            }
+        }
+    }
 }
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)

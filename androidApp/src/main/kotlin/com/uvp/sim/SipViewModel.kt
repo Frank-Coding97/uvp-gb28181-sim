@@ -106,6 +106,13 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _alarmHistory = MutableStateFlow<List<com.uvp.sim.domain.AlarmRecord>>(emptyList())
     val alarmHistory: StateFlow<List<com.uvp.sim.domain.AlarmRecord>> = _alarmHistory.asStateFlow()
 
+    /** 报警发送模式 + 固定单(本会话内存,spec G2)。 */
+    private val _alarmFireMode = MutableStateFlow(com.uvp.sim.ui.AlarmFireMode.Random)
+    val alarmFireMode: StateFlow<com.uvp.sim.ui.AlarmFireMode> = _alarmFireMode.asStateFlow()
+
+    private val _fixedAlarm = MutableStateFlow<com.uvp.sim.gb28181.AlarmPayload?>(null)
+    val fixedAlarm: StateFlow<com.uvp.sim.gb28181.AlarmPayload?> = _fixedAlarm.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -386,6 +393,28 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch {
             try { eng.localResetAlarm() } catch (_: Throwable) { }
         }
+    }
+
+    /** M2+ — 主页一点即发,按当前模式选 payload(spec G1/G2)。 */
+    fun fireAlarmDefault() {
+        val cfg = _config.value
+        val payload = when (_alarmFireMode.value) {
+            com.uvp.sim.ui.AlarmFireMode.Fixed ->
+                _fixedAlarm.value
+                    ?: com.uvp.sim.gb28181.AlarmTemplates.random().toPayload(cfg)
+            com.uvp.sim.ui.AlarmFireMode.Random ->
+                com.uvp.sim.gb28181.AlarmTemplates.random().toPayload(cfg)
+        }
+        fireAlarm(payload)
+    }
+
+    fun setAlarmFireMode(mode: com.uvp.sim.ui.AlarmFireMode) {
+        _alarmFireMode.value = mode
+    }
+
+    fun saveFixedAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) {
+        _fixedAlarm.value = payload
+        _alarmFireMode.value = com.uvp.sim.ui.AlarmFireMode.Fixed
     }
 
     override fun onCleared() {

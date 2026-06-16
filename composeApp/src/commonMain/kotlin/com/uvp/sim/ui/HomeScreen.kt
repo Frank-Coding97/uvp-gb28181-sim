@@ -502,17 +502,19 @@ private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (S
             }
         )
         val isAlarming = state.deviceControl.isAlarming
+        val alarmSubscribed = state.subscriptions[SubscriptionKind.Alarm]?.active == true
         ActionTile(
             icon = Icons.Outlined.Warning,
             label = "报警",
             enabled = canFire || isAlarming,
             modifier = Modifier.weight(1f),
             alarmActive = isAlarming,
+            subscribed = alarmSubscribed,
             onClick = {
                 if (isAlarming) {
                     showAlarmResetConfirm = true
                 } else {
-                    actions.onAlarmFire(AlarmPayload.quickDefault(state.config))
+                    actions.onAlarmFireDefault()
                     toast.info("已发送报警")
                 }
             },
@@ -568,6 +570,7 @@ private fun ActionTile(
     modifier: Modifier = Modifier,
     recordingActive: Boolean = false,
     alarmActive: Boolean = false,
+    subscribed: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit
 ) {
@@ -642,6 +645,17 @@ private fun ActionTile(
                     .size(8.dp)
                     .clip(CircleShape)
                     .background(pulseColor.copy(alpha = alpha))
+            )
+        }
+        // 订阅角标:平台 Event:Alarm 订阅活跃且非报警态 → 静态绿点(不脉动,区别于报警橙点)
+        if (subscribed && !pulsing) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(UvpColor.Success)
             )
         }
     }
