@@ -4,14 +4,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -24,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
@@ -34,12 +39,13 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 /**
- * M3 语音对讲浮动方块 —— 挂在 App 根 Box,浮在所有 Tab 之上,可拖拽到任意位置。
+ * M3 语音对讲浮动方块 —— 挂在 App 根 Box,浮在所有 Tab 之上,可拖拽。
  *
- * 仅当 `broadcast.isReceiving` 时显示。内容:📢 来源末四位 · 🔊/🔇 静音切换 · ✕ 停止;
- * 点文字区弹统计 sheet。初始停靠右上,拖拽累加 offset(不做边界限制,MVP)。
+ * 设计:贴右侧边垂直居中初始停靠(悬浮球习惯位,避开状态栏);竖向方块卡片;
+ * 蓝色渐变 + 半透明 + 高光描边 + 投影。内容自上而下:📢 / 对讲中 / 来源末四位 /
+ * 分隔线 / 🔊·✕。点上半区弹统计 sheet。
  *
- * 作为 [BoxScope] 扩展,以便用 [BoxScope.align] 定位。
+ * 作为 [BoxScope] 扩展以便用 [BoxScope.align] 定位。
  */
 @Composable
 fun BoxScope.BroadcastFloatingChip(state: AppUiState, actions: AppActions) {
@@ -50,14 +56,19 @@ fun BoxScope.BroadcastFloatingChip(state: AppUiState, actions: AppActions) {
     var offsetY by remember { mutableStateOf(0f) }
     var showSheet by remember { mutableStateOf(false) }
 
-    Row(
+    // 蓝色系渐变 + ~90% 不透明(留一点透明感)
+    val cardBrush = Brush.verticalGradient(
+        listOf(Color(0xE63B82F6), Color(0xE61D4ED8))
+    )
+
+    Column(
         modifier = Modifier
-            .align(Alignment.TopEnd)
-            .padding(top = 8.dp, end = 8.dp)
+            .align(Alignment.CenterEnd)
+            .padding(end = 8.dp)
             .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
-            .shadow(6.dp, RoundedCornerShape(20.dp))
-            .background(Color(0xFFFFF3E0), RoundedCornerShape(20.dp))
-            .border(1.dp, Color(0xFFFF9800), RoundedCornerShape(20.dp))
+            .shadow(10.dp, RoundedCornerShape(18.dp))
+            .background(cardBrush, RoundedCornerShape(18.dp))
+            .border(1.dp, Color(0x59FFFFFF), RoundedCornerShape(18.dp))
             .pointerInput(Unit) {
                 detectDragGestures { change, drag ->
                     change.consume()
@@ -65,27 +76,41 @@ fun BoxScope.BroadcastFloatingChip(state: AppUiState, actions: AppActions) {
                     offsetY += drag.y
                 }
             }
-            .padding(horizontal = 12.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .widthIn(min = 64.dp)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("📢", fontSize = 14.sp)
-        Spacer(Modifier.width(6.dp))
-        Text(
-            "对讲 ${bc.sourceId?.takeLast(4) ?: "----"}",
-            fontSize = 12.sp, fontWeight = FontWeight.Medium, color = Color(0xFFE65100),
-            fontFamily = FontFamily.Monospace,
+        // 上半区:图标 + 标题 + 末四位(点击弹统计)
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier.clickable { showSheet = true }
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            if (bc.speakerOn) "🔊" else "🔇", fontSize = 14.sp,
-            modifier = Modifier.clickable { actions.onBroadcastToggleSpeaker(!bc.speakerOn) }
-        )
-        Spacer(Modifier.width(10.dp))
-        Text(
-            "✕", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100),
-            modifier = Modifier.clickable { actions.onBroadcastStop() }
-        )
+        ) {
+            Text("📢", fontSize = 19.sp)
+            Spacer(Modifier.height(3.dp))
+            Text("对讲中", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+            Text(
+                bc.sourceId?.takeLast(4) ?: "----",
+                fontSize = 10.sp, color = Color(0xCCFFFFFF), fontFamily = FontFamily.Monospace
+            )
+        }
+
+        Spacer(Modifier.height(9.dp))
+        // 细分隔线
+        Box(Modifier.width(38.dp).height(1.dp).background(Color(0x33FFFFFF)))
+        Spacer(Modifier.height(9.dp))
+
+        // 操作行:静音切换 + 停止
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+            Text(
+                if (bc.speakerOn) "🔊" else "🔇", fontSize = 16.sp,
+                modifier = Modifier.size(22.dp).clickable { actions.onBroadcastToggleSpeaker(!bc.speakerOn) }
+            )
+            Spacer(Modifier.width(14.dp))
+            Text(
+                "✕", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White,
+                modifier = Modifier.size(22.dp).clickable { actions.onBroadcastStop() }
+            )
+        }
     }
 
     if (showSheet) {
