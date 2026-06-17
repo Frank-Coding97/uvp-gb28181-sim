@@ -1130,6 +1130,7 @@ class SimulatorEngine(
             }
             "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
             "RecordInfo" -> handleRecordInfoQuery(xml)
+            "Broadcast" -> handleBroadcast(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
             // 其它 CmdType(SVAC*、AlarmStatusQuery 等)暂不处理。
             else -> Unit
         }
@@ -1236,8 +1237,73 @@ class SimulatorEngine(
         }
     }
 
-    private suspend fun handleRecordInfoQuery(xml: String) {
-        val tz = "Asia/Shanghai"  // M2 默认本地时间(国标多用)
+    /**
+     * GB/T 28181 §9.8 / §F.2.1 语音广播下行(平台喊话设备)。
+     *
+     * 200 OK 已在 [handleMessage] 顶部统一发出。这里:
+     *   1. 解析 SourceID / TargetID / SN
+     *   2. 校验 TargetID == 本机 deviceId(不匹配 → Broadcast Response ERROR)
+     *   3. 匹配 → Broadcast Response OK + emit BroadcastReceived
+     *
+     * T1 阶段到此为止(不发反向 INVITE)。后续 task 在匹配分支末尾接 sendBroadcastInvite。
+     */
+    private suspend fun handleBroadcast(xml: String, fromUri: String? = null) {
+        val query = com.uvp.sim.gb28181.BroadcastQuery.parse(xml)
+        val sn = query.sn ?: "0"
+        val myId = config.device.deviceId
+        val targetId = query.targetId
+        if (targetId != myId) {
+            sendBroadcastResponseMessage(
+                com.uvp.sim.gb28181.BroadcastResponse.build(
+                    deviceId = myId, sn = sn,
+                    result = com.uvp.sim.gb28181.BroadcastResponse.Result.ERROR,
+                    reason = "target mismatch"
+                )
+            )
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Network,
+                "语音广播 TargetID 不匹配: 收到 '$targetId' 期望 '$myId' → ERROR"
+            )
+            return
+        }
+        sendBroadcastResponseMessage(
+            com.uvp.sim.gb28181.BroadcastResponse.build(
+                deviceId = myId, sn = sn,
+                result = com.uvp.sim.gb28181.BroadcastResponse.Result.OK
+            )
+        )
+        _events.emit(SimEvent.BroadcastReceived(sourceId = query.sourceId ?: "", targetId = myId))
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "收到语音广播请求 source=${query.sourceId} → 已回 Broadcast Response OK"
+        )
+    }
+
+    /** 把已构造的 Broadcast Response MANSCDP body 包成 MESSAGE 发给平台(第二条,200 OK 之外)。 */
+    private suspend fun sendBroadcastResponseMessage(xmlBody: String) {
+        runCatching {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+        }.onFailure {
+            _events.emit(SimEvent.TransportError("send Broadcast Response: ${it.message}"))
+        }
+    }
+
+    private suspend fun handleRecordInfoQuery(xml: String) {        val tz = "Asia/Shanghai"  // M2 默认本地时间(国标多用)
         val query = com.uvp.sim.gb28181.RecordInfoQuery.parse(xml, tz) ?: run {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "RecordInfo 查询解析失败")
             return

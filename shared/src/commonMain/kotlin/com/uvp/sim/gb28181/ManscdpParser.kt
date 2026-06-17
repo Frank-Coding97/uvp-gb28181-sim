@@ -32,6 +32,12 @@ object ManscdpParser {
 
     fun deviceId(xml: String): String? = tagValue(xml, "DeviceID")
 
+    /** GB/T 28181 §9.8 语音广播 Notify 的广播源 ID(平台侧)。 */
+    fun sourceId(xml: String): String? = tagValue(xml, "SourceID")
+
+    /** GB/T 28181 §9.8 语音广播 Notify 的目标 ID(设备侧,须匹配本机 deviceId)。 */
+    fun targetId(xml: String): String? = tagValue(xml, "TargetID")
+
     /**
      * GB/T 28181 §9.3 DeviceControl <RecordCmd> 值。标准取值 "Record" / "StopRecord"。
      * 实现侧不做大小写归一,如实返回(交由 [com.uvp.sim.domain.SimulatorEngine] 判断)。

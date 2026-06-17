@@ -203,4 +203,44 @@ sealed class SimEvent {
         val subscriber: String,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+
+    // ---------- M3 Voice Broadcast (语音广播下行 §9.8 / §F.2.1) ----------
+
+    /** 收到平台 Broadcast MESSAGE 且 TargetID 匹配,已回 Broadcast Response OK。 */
+    data class BroadcastReceived(
+        val sourceId: String,
+        val targetId: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 设备已主动 INVITE 平台,等待 200 OK(SDP audio)。 */
+    data class BroadcastInvited(
+        val platformUri: String,
+        val localPort: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 收到第一个 RTP 音频包,广播音频开始播放。 */
+    data class BroadcastStarted(
+        val firstPacketDelayMs: Long,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 每秒节流上报一次接收统计。 */
+    data class BroadcastPacketRx(
+        val rxPackets: Long,
+        val rxBytes: Long,
+        val codec: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 广播结束(本地停止 / 平台 BYE / 编码拒绝 / INVITE 失败 / 错误)。 */
+    data class BroadcastEnded(
+        val reason: BroadcastEndReason,
+        val durationMs: Long,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
 }
+
+/** 语音广播结束原因。 */
+enum class BroadcastEndReason { Local, Remote, Error, InviteFailed, CodecRejected }
