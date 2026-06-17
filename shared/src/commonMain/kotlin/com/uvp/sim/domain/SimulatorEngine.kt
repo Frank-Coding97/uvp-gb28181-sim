@@ -166,6 +166,12 @@ class SimulatorEngine(
     /** Active PLAYBACK session(M2 D 块)。与 activeStream 互斥。 */
     private var activePlayback: ActivePlayback? = null
 
+    // M3 语音广播下行(§9.8)— 单 slot,同时只允许一路 broadcast(spec Q1)
+    private val _currentBroadcast = MutableStateFlow<BroadcastDialog?>(null)
+    val currentBroadcast: StateFlow<BroadcastDialog?> = _currentBroadcast.asStateFlow()
+    /** 本地音频接收端口。T7 接入真实 RtpReceiver 后绑定真实 UDP 端口,在此之前为占位值。 */
+    private var broadcastLocalAudioPort: Int = 0
+
     // M2: Subscription registry + mock GPS
     private val subscriptionRegistry = SubscriptionRegistry(scope)
     private val mockGps = MockGpsSource(config.mockPosition)
@@ -878,6 +884,7 @@ class SimulatorEngine(
 
         when (cseqMethod) {
             SipMethod.REGISTER -> handleRegisterResponse(resp)
+            SipMethod.INVITE -> handleBroadcastInviteResponse(resp)
             SipMethod.MESSAGE -> {
                 if (resp.statusCode in 200..299) {
                     val sn = keepaliveSn
@@ -1251,6 +1258,20 @@ class SimulatorEngine(
         val query = com.uvp.sim.gb28181.BroadcastQuery.parse(xml)
         val sn = query.sn ?: "0"
         val myId = config.device.deviceId
+
+        // 并发拒绝(spec Q1):已持有一路 broadcast → ERROR busy,不发 INVITE
+        if (_currentBroadcast.value != null) {
+            sendBroadcastResponseMessage(
+                com.uvp.sim.gb28181.BroadcastResponse.build(
+                    deviceId = myId, sn = sn,
+                    result = com.uvp.sim.gb28181.BroadcastResponse.Result.ERROR,
+                    reason = "busy"
+                )
+            )
+            SystemLogger.emit(LogLevel.Warning, LogTag.Network, "已有语音广播进行中 → 拒绝第二路(busy)")
+            return
+        }
+
         val targetId = query.targetId
         if (targetId != myId) {
             sendBroadcastResponseMessage(
@@ -1272,11 +1293,221 @@ class SimulatorEngine(
                 result = com.uvp.sim.gb28181.BroadcastResponse.Result.OK
             )
         )
-        _events.emit(SimEvent.BroadcastReceived(sourceId = query.sourceId ?: "", targetId = myId))
+        val sourceId = query.sourceId ?: ""
+        _events.emit(SimEvent.BroadcastReceived(sourceId = sourceId, targetId = myId))
         SystemLogger.emit(
             LogLevel.Info, LogTag.Network,
-            "收到语音广播请求 source=${query.sourceId} → 已回 Broadcast Response OK"
+            "收到语音广播请求 source=$sourceId → 已回 Broadcast Response OK,主动 INVITE 平台"
         )
+        // T3:立即主动 INVITE 平台拉取音频
+        val platformUri = "sip:$sourceId@${config.server.domain}"
+        sendBroadcastInvite(sourceId, platformUri)
+    }
+
+    /**
+     * T3 — 设备主动 INVITE 平台拉取语音广播音频(反向 INVITE)。
+     * localAudioPort 在 T7 接入真实 RtpReceiver 前用占位值,T7 绑定真实 UDP 端口后替换。
+     */
+    private suspend fun sendBroadcastInvite(sourceId: String, platformUri: String) {
+        val localAudioPort = broadcastLocalAudioPort
+        val deviceSsrc = com.uvp.sim.sip.SsrcUtils.generate(
+            realtime = true,
+            domainCode = config.server.domain.takeLast(5).padStart(5, '0'),
+            sequence = (cseq + 1) and 0x0FFF
+        )
+        val sdp = com.uvp.sim.sip.SdpAnswer.buildBroadcastOffer(
+            deviceId = config.device.deviceId,
+            localIp = localIp,
+            localAudioPort = localAudioPort,
+            deviceSsrc = deviceSsrc
+        )
+        val callIdBc = com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+        val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+        val fromTagBc = com.uvp.sim.sip.SipBuilders.randomTag()
+        val inviteCseq = 1  // 新 dialog 独立 CSeq 空间
+        val invite = com.uvp.sim.sip.SipBuilders.buildOutboundInvite(
+            config = config,
+            platformUri = platformUri,
+            sourceId = sourceId,
+            deviceSsrc = deviceSsrc,
+            sdpBody = sdp,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            cseq = inviteCseq,
+            callId = callIdBc,
+            branch = branch,
+            fromTag = fromTagBc
+        )
+        _currentBroadcast.value = BroadcastDialog(
+            callId = callIdBc,
+            localTag = fromTagBc,
+            remoteTag = null,
+            cseq = inviteCseq,
+            sourceId = sourceId,
+            targetId = config.device.deviceId,
+            sourcePlatformUri = platformUri,
+            localAudioPort = localAudioPort,
+            deviceSsrc = deviceSsrc,
+            state = BroadcastDialogState.Inviting,
+            createdAtMs = nowMs()
+        )
+        runCatching {
+            transport.send(invite)
+            _events.emit(SimEvent.MessageSent(invite))
+            _events.emit(SimEvent.BroadcastInvited(platformUri, localAudioPort))
+        }.onFailure {
+            _currentBroadcast.value = null
+            _events.emit(SimEvent.TransportError("send broadcast INVITE: ${it.message}"))
+        }
+    }
+
+    /**
+     * T3 — 处理 broadcast INVITE 的响应。
+     *   1xx → 停在 Inviting
+     *   2xx → 发 ACK;校验 codec ∈ {PCMA, PCMU};不通过则立即 BYE + CodecRejected,通过则 Talking
+     *   4xx/5xx → InviteFailed,清状态
+     */
+    private suspend fun handleBroadcastInviteResponse(resp: SipResponse) {
+        val bc = _currentBroadcast.value ?: return
+        if (resp.callId() != bc.callId) return
+        when (resp.statusCode) {
+            in 100..199 -> return  // provisional,继续等
+            in 200..299 -> {
+                val remoteTag = parseTag(resp.toHeader() ?: "")
+                val contactUri = resp.firstHeader(com.uvp.sim.sip.SipHeader.CONTACT)
+                    ?.let { parseUri(it) } ?: bc.sourcePlatformUri
+                // 先发 ACK(2xx 必须 ACK)
+                sendBroadcastAck(bc, contactUri, remoteTag)
+
+                val answer = runCatching {
+                    com.uvp.sim.sip.SdpParser.parseAnswer(resp.body.decodeToString())
+                }.getOrNull()
+                val codec = answer?.payloadTypes?.firstNotNullOfOrNull { AudioRxCodec.fromPayloadType(it) }
+                if (answer == null || codec == null) {
+                    // 编码不可接受 → 立即 BYE
+                    sendBroadcastBye(bc.copy(remoteTag = remoteTag), remoteTag)
+                    val dur = nowMs() - bc.createdAtMs
+                    teardownBroadcastMedia()
+                    _currentBroadcast.value = null
+                    _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.CodecRejected, dur))
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Media,
+                        "语音广播编码不可接受(payloadTypes=${answer?.payloadTypes}) → BYE"
+                    )
+                    return
+                }
+                _currentBroadcast.value = bc.copy(
+                    state = BroadcastDialogState.Talking,
+                    remoteTag = remoteTag,
+                    remoteAudioHost = answer.remoteIp,
+                    remoteAudioPort = answer.remotePort,
+                    codec = codec
+                )
+                _events.emit(SimEvent.BroadcastInvited(bc.sourcePlatformUri, bc.localAudioPort))
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "语音广播建立(Talking)codec=${codec.name} ← ${answer.remoteIp}:${answer.remotePort}"
+                )
+                // T7:启动 RtpReceiver;T9:启动 AudioPlayback
+                startBroadcastRx()
+            }
+            in 400..699 -> {
+                val dur = nowMs() - bc.createdAtMs
+                teardownBroadcastMedia()
+                _currentBroadcast.value = null
+                _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.InviteFailed, dur))
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "语音广播 INVITE 被拒: ${resp.statusCode} ${resp.reasonPhrase}"
+                )
+            }
+        }
+    }
+
+    private suspend fun sendBroadcastAck(bc: BroadcastDialog, contactUri: String, remoteTag: String) {
+        runCatching {
+            val ack = com.uvp.sim.sip.SipBuilders.buildOutboundAck(
+                config = config,
+                requestUri = contactUri,
+                callId = bc.callId,
+                cseq = bc.cseq,
+                branch = com.uvp.sim.sip.SipBuilders.randomBranch(),
+                deviceUri = "sip:${config.device.deviceId}@${config.server.domain}",
+                fromTag = bc.localTag,
+                platformUri = bc.sourcePlatformUri,
+                remoteTag = remoteTag,
+                localIp = localIp,
+                localPort = localPortProvider()
+            )
+            transport.send(ack)
+            _events.emit(SimEvent.MessageSent(ack))
+        }.onFailure {
+            _events.emit(SimEvent.TransportError("send broadcast ACK: ${it.message}"))
+        }
+    }
+
+    private suspend fun sendBroadcastBye(bc: BroadcastDialog, remoteTag: String) {
+        runCatching {
+            val bye = com.uvp.sim.sip.SipBuilders.buildBye(
+                config = config,
+                callId = bc.callId,
+                cseq = bc.cseq + 1,
+                branch = com.uvp.sim.sip.SipBuilders.randomBranch(),
+                localUri = "sip:${config.device.deviceId}@${config.server.domain}",
+                localTag = bc.localTag,
+                remoteUri = bc.sourcePlatformUri,
+                remoteTag = remoteTag,
+                remoteTarget = bc.sourcePlatformUri,
+                localIp = localIp,
+                localPort = localPortProvider()
+            )
+            transport.send(bye)
+            _events.emit(SimEvent.MessageSent(bye))
+        }.onFailure {
+            _events.emit(SimEvent.TransportError("send broadcast BYE: ${it.message}"))
+        }
+    }
+
+    /**
+     * 用户主动停止语音广播(UI ✕)。发 BYE(若已建立 dialog)→ 拆媒体 → 清状态 → emit BroadcastEnded。
+     */
+    suspend fun stopBroadcast(reason: BroadcastEndReason = BroadcastEndReason.Local) {
+        val bc = _currentBroadcast.value ?: return
+        val remoteTag = bc.remoteTag
+        if (remoteTag != null) {
+            sendBroadcastBye(bc, remoteTag)
+        }
+        teardownBroadcastMedia()
+        val dur = nowMs() - bc.createdAtMs
+        _currentBroadcast.value = null
+        _events.emit(SimEvent.BroadcastEnded(reason, dur))
+        SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音广播停止(${reason.name})")
+    }
+
+    /** 平台先发 BYE 关闭语音广播 dialog → 200 OK + 拆媒体 + 清状态。 */
+    private suspend fun handleBroadcastBye(bye: SipRequest, bc: BroadcastDialog) {
+        runCatching {
+            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
+            transport.send(ok)
+            _events.emit(SimEvent.MessageSent(ok))
+        }.onFailure {
+            _events.emit(SimEvent.TransportError("send broadcast BYE 200: ${it.message}"))
+        }
+        teardownBroadcastMedia()
+        val dur = nowMs() - bc.createdAtMs
+        _currentBroadcast.value = null
+        _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.Remote, dur))
+        SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台 BYE 关闭语音广播")
+    }
+
+    /** T7/T9 填充:启动 RTP 接收 + 扬声器播放链路。T3 阶段为空。 */
+    private fun startBroadcastRx() {
+        // T7: rtpReceiver.start { handleRxPacket(it) }; T9: audioPlayback.start() + consumer
+    }
+
+    /** T7/T9 填充:取消 RX/播放协程,关 socket,释放 AudioTrack。T3 阶段为空。 */
+    private suspend fun teardownBroadcastMedia() {
+        // T7/T9 填充
     }
 
     /** 把已构造的 Broadcast Response MANSCDP body 包成 MESSAGE 发给平台(第二条,200 OK 之外)。 */
@@ -1303,7 +1534,8 @@ class SimulatorEngine(
         }
     }
 
-    private suspend fun handleRecordInfoQuery(xml: String) {        val tz = "Asia/Shanghai"  // M2 默认本地时间(国标多用)
+    private suspend fun handleRecordInfoQuery(xml: String) {
+        val tz = "Asia/Shanghai"  // M2 默认本地时间(国标多用)
         val query = com.uvp.sim.gb28181.RecordInfoQuery.parse(xml, tz) ?: run {
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "RecordInfo 查询解析失败")
             return
@@ -1813,6 +2045,15 @@ class SimulatorEngine(
     }
 
     private suspend fun handleBye(bye: SipRequest) {
+        val cid = bye.callId() ?: ""
+
+        // M3 语音广播:平台先发 BYE 关闭 broadcast dialog → 独立路径(自带 200 OK)
+        val bc = _currentBroadcast.value
+        if (bc != null && bc.callId == cid) {
+            handleBroadcastBye(bye, bc)
+            return
+        }
+
         // Send 200 OK back so platform marks call terminated cleanly.
         try {
             val ack = com.uvp.sim.sip.SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
@@ -1821,8 +2062,6 @@ class SimulatorEngine(
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send BYE 200: ${e.message}"))
         }
-
-        val cid = bye.callId() ?: ""
 
         // 区分 BYE 走 activeStream 还是 activePlayback
         val playback = activePlayback

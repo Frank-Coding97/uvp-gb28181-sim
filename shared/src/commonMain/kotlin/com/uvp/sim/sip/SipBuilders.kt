@@ -255,6 +255,87 @@ object SipBuilders {
         )
     }
 
+    /**
+     * Build a device-initiated INVITE to the platform — voice broadcast (§9.8 / §F.2.1).
+     *
+     * Unlike the inbound Play INVITE the device answers, here the device is the UAC:
+     * it offers an `m=audio recvonly` SDP and asks the platform to push G.711 audio.
+     *
+     * Subject header per spec Q2: `{sourceId}:0,{deviceId}:{deviceSsrc}` — the audio
+     * source is the platform (SSRC 0, not advertised), the device is the receiver
+     * (self-generated SSRC).
+     */
+    fun buildOutboundInvite(
+        config: SimConfig,
+        platformUri: String,
+        sourceId: String,
+        deviceSsrc: String,
+        sdpBody: String,
+        localIp: String,
+        localPort: Int,
+        cseq: Int,
+        callId: String,
+        branch: String,
+        fromTag: String
+    ): SipRequest {
+        val device = config.device
+        val server = config.server
+        val body = sdpBody.encodeToByteArray()
+        return SipRequest(
+            method = SipMethod.INVITE,
+            requestUri = platformUri,
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA,
+                    "SIP/2.0/${config.transport.name} $localIp:$localPort;rport;branch=$branch"),
+                SipMessage.Header(SipHeader.FROM,
+                    "<sip:${device.deviceId}@${server.domain}>;tag=$fromTag"),
+                SipMessage.Header(SipHeader.TO, "<$platformUri>"),
+                SipMessage.Header(SipHeader.CALL_ID, callId),
+                SipMessage.Header(SipHeader.CSEQ, "$cseq INVITE"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:${device.deviceId}@$localIp:$localPort>"),
+                SipMessage.Header(SipHeader.SUBJECT, "$sourceId:0,${device.deviceId}:$deviceSsrc"),
+                SipMessage.Header(SipHeader.CONTENT_TYPE, "application/sdp"),
+                SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
+                SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
+                SipMessage.Header(SipHeader.DATE, rfc1123Date()),
+                SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
+            ),
+            body = body
+        )
+    }
+
+    /**
+     * Build the ACK for a 2xx response to our outbound broadcast INVITE
+     * (RFC 3261 § 13.2.2.4). CSeq number equals the INVITE's; method is ACK.
+     * Request-URI is the remote target (platform Contact, falling back to To URI).
+     */
+    fun buildOutboundAck(
+        config: SimConfig,
+        requestUri: String,
+        callId: String,
+        cseq: Int,
+        branch: String,
+        deviceUri: String,
+        fromTag: String,
+        platformUri: String,
+        remoteTag: String,
+        localIp: String,
+        localPort: Int
+    ): SipRequest = SipRequest(
+        method = SipMethod.ACK,
+        requestUri = requestUri,
+        headers = listOf(
+            SipMessage.Header(SipHeader.VIA,
+                "SIP/2.0/${config.transport.name} $localIp:$localPort;rport;branch=$branch"),
+            SipMessage.Header(SipHeader.FROM, "<$deviceUri>;tag=$fromTag"),
+            SipMessage.Header(SipHeader.TO, "<$platformUri>;tag=$remoteTag"),
+            SipMessage.Header(SipHeader.CALL_ID, callId),
+            SipMessage.Header(SipHeader.CSEQ, "$cseq ACK"),
+            SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
+            SipMessage.Header(SipHeader.DATE, rfc1123Date())
+        )
+    )
+
     /** Build a simple 200 OK with no body for non-INVITE requests (MESSAGE, BYE). */
     fun buildSimple200(
         request: SipRequest,
