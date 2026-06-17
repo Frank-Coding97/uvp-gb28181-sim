@@ -92,7 +92,7 @@ class BroadcastRoutingTest {
     @Test
     fun targetIdMatchRepliesOk() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112")
+        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -112,7 +112,7 @@ class BroadcastRoutingTest {
     @Test
     fun targetIdMismatchRepliesError() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112")
+        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -130,7 +130,7 @@ class BroadcastRoutingTest {
     @Test
     fun matchEmitsBroadcastReceived() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112")
+        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
         val received = mutableListOf<SimEvent.BroadcastReceived>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastReceived) received += it } }
         bootRegistered(transport, engine)

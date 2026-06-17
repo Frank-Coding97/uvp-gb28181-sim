@@ -22,7 +22,10 @@ import com.uvp.sim.sip.SubscribeHandler
 import com.uvp.sim.sip.SubscribeIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -70,7 +73,12 @@ class SimulatorEngine(
      * PLAYBACK 推流构造器(M2 D 块)。null 时引擎收 PLAYBACK INVITE 直接 487。
      * 真实场景由 ViewModel 注入: 拼装 Mp4DemuxFactory + RtpSink + clock。
      */
-    private val playbackBuilder: PlaybackBuilder? = null
+    private val playbackBuilder: PlaybackBuilder? = null,
+    /**
+     * M3 语音广播 RX 接收器工厂。null 时用默认 expect class(Android = java.net UDP)。
+     * 测试注入 fake 以避免真实 socket。
+     */
+    private val rtpReceiverFactory: ((CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource)? = null
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -171,6 +179,15 @@ class SimulatorEngine(
     val currentBroadcast: StateFlow<BroadcastDialog?> = _currentBroadcast.asStateFlow()
     /** 本地音频接收端口。T7 接入真实 RtpReceiver 后绑定真实 UDP 端口,在此之前为占位值。 */
     private var broadcastLocalAudioPort: Int = 0
+
+    // M3 语音广播 RX 链路(T7)
+    private var rtpReceiver: com.uvp.sim.network.BroadcastRxSource? = null
+    private var rxJob: Job? = null
+    private var rxStatsJob: Job? = null
+    private val audioChannel = Channel<ShortArray>(capacity = 50, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    /** RtpReceiver 工厂:生产默认走 expect class;测试注入 fake 以避免真 socket + Dispatchers.IO 不确定性。 */
+    private val resolvedRtpReceiverFactory: (CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource =
+        rtpReceiverFactory ?: { sc -> com.uvp.sim.network.realBroadcastRxSource(sc) }
 
     // M2: Subscription registry + mock GPS
     private val subscriptionRegistry = SubscriptionRegistry(scope)
@@ -412,6 +429,11 @@ class SimulatorEngine(
             active.audioJob?.cancel()
             try { active.rtpSender.close() } catch (_: Throwable) { }
             activeStream = null
+        }
+        // M3: 停语音广播媒体(RX 协程 / 统计协程 / socket)
+        if (_currentBroadcast.value != null) {
+            teardownBroadcastMedia()
+            _currentBroadcast.value = null
         }
         mutex.withLock {
             heartbeat?.stop()
@@ -1309,7 +1331,18 @@ class SimulatorEngine(
      * localAudioPort 在 T7 接入真实 RtpReceiver 前用占位值,T7 绑定真实 UDP 端口后替换。
      */
     private suspend fun sendBroadcastInvite(sourceId: String, platformUri: String) {
-        val localAudioPort = broadcastLocalAudioPort
+        // T7:发 INVITE 之前先绑定 RTP 接收端口(平台首包可能在 ACK 前到达,socket 要早开)
+        val receiver = resolvedRtpReceiverFactory(scope)
+        val boundPort = runCatching { receiver.bindLocalPort() }.getOrDefault(-1)
+        if (boundPort <= 0) {
+            runCatching { receiver.close() }
+            _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, 0))
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "语音广播绑定本地端口失败 → 放弃 INVITE")
+            return
+        }
+        rtpReceiver = receiver
+        broadcastLocalAudioPort = boundPort
+        val localAudioPort = boundPort
         val deviceSsrc = com.uvp.sim.sip.SsrcUtils.generate(
             realtime = true,
             domainCode = config.server.domain.takeLast(5).padStart(5, '0'),
@@ -1500,14 +1533,64 @@ class SimulatorEngine(
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台 BYE 关闭语音广播")
     }
 
-    /** T7/T9 填充:启动 RTP 接收 + 扬声器播放链路。T3 阶段为空。 */
+    /** T7:启动 RTP 接收 + 每秒节流统计。T9 在此追加扬声器播放消费协程。 */
     private fun startBroadcastRx() {
-        // T7: rtpReceiver.start { handleRxPacket(it) }; T9: audioPlayback.start() + consumer
+        val receiver = rtpReceiver ?: return
+        rxJob = receiver.start { rtp ->
+            // onPacket 在 IO 线程回调,hop 回 scope 安全地改状态 / emit
+            scope.launch { handleRxPacket(rtp) }
+        }
+        rxStatsJob = scope.launch {
+            while (isActive) {
+                delay(BROADCAST_STATS_INTERVAL_MS)
+                val bc = _currentBroadcast.value ?: break
+                _events.emit(SimEvent.BroadcastPacketRx(bc.rxPackets, bc.rxBytes, bc.codec.name))
+            }
+        }
     }
 
-    /** T7/T9 填充:取消 RX/播放协程,关 socket,释放 AudioTrack。T3 阶段为空。 */
+    /**
+     * T7:处理一个收到的 RTP 包 — PT 校验 → G.711 解码 → 投 audioChannel → 累加统计。
+     * 第一个有效包 emit BroadcastStarted。非 PCMA/PCMU payload 计入 decodeErrors,不入 channel。
+     * internal 供 commonTest 直注(绕过真 socket)。
+     */
+    internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) {
+        val bc = _currentBroadcast.value ?: return
+        val codec = AudioRxCodec.fromPayloadType(rtp.payloadType)
+        if (codec == null) {
+            _currentBroadcast.value = bc.copy(decodeErrors = bc.decodeErrors + 1)
+            return
+        }
+        val first = bc.rxPackets == 0L
+        val now = nowMs()
+        val pcm = if (codec == AudioRxCodec.PCMA) {
+            com.uvp.sim.media.G711.decodeAlaw(rtp.payload)
+        } else {
+            com.uvp.sim.media.G711.decodeUlaw(rtp.payload)
+        }
+        audioChannel.trySend(pcm)
+        _currentBroadcast.value = bc.copy(
+            rxPackets = bc.rxPackets + 1,
+            rxBytes = bc.rxBytes + rtp.payload.size,
+            firstPacketAtMs = if (first) now else bc.firstPacketAtMs
+        )
+        if (first) {
+            _events.emit(SimEvent.BroadcastStarted(now - bc.createdAtMs))
+        }
+    }
+
+    /** 测试可见:RX 协程是否在运行。 */
+    internal fun isRxActive(): Boolean = rxJob?.isActive == true
+
+    /** T7/T9:取消 RX/统计协程,关 RtpReceiver。T9 在此追加停 AudioPlayback。 */
     private suspend fun teardownBroadcastMedia() {
-        // T7/T9 填充
+        rxStatsJob?.cancel()
+        rxStatsJob = null
+        rxJob?.cancel()
+        rxJob = null
+        rtpReceiver?.let { runCatching { it.close() } }
+        rtpReceiver = null
+        broadcastLocalAudioPort = 0
     }
 
     /** 把已构造的 Broadcast Response MANSCDP body 包成 MESSAGE 发给平台(第二条,200 OK 之外)。 */
@@ -2709,5 +2792,7 @@ class SimulatorEngine(
         const val INITIAL_RETRY_DELAY_MS: Long = 2_000L
         /** RFC 3261 § 17.2.1 Timer H = 64*T1 = 32s for ACK reception window. */
         const val ACK_TIMEOUT_MS: Long = 32_000L
+        /** 语音广播接收统计节流间隔。 */
+        const val BROADCAST_STATS_INTERVAL_MS: Long = 1_000L
     }
 }

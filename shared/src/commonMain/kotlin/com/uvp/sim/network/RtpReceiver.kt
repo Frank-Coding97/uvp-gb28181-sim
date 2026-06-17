@@ -22,3 +22,25 @@ expect class RtpReceiver(parentScope: CoroutineScope? = null) {
     fun start(onPacket: (RtpPacket) -> Unit): Job
     suspend fun close()
 }
+
+/**
+ * RX 接收端口抽象 — 让 [com.uvp.sim.domain.SimulatorEngine] 依赖接口而非具体 expect class,
+ * 从而单测可注入 fake(expect class 不可继承)。
+ */
+interface BroadcastRxSource {
+    val localPort: Int
+    suspend fun bindLocalPort(): Int
+    fun start(onPacket: (RtpPacket) -> Unit): Job
+    suspend fun close()
+}
+
+/** 默认实现:包装真实 [RtpReceiver]。 */
+fun realBroadcastRxSource(scope: CoroutineScope): BroadcastRxSource {
+    val r = RtpReceiver(scope)
+    return object : BroadcastRxSource {
+        override val localPort: Int get() = r.localPort
+        override suspend fun bindLocalPort(): Int = r.bindLocalPort()
+        override fun start(onPacket: (RtpPacket) -> Unit): Job = r.start(onPacket)
+        override suspend fun close() = r.close()
+    }
+}
