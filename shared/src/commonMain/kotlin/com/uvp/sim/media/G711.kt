@@ -26,6 +26,41 @@ object G711 {
         return out
     }
 
+    /** A-law decode: one compressed byte → one 16-bit signed PCM sample. */
+    fun decodeAlaw(alaw: ByteArray): ShortArray {
+        val out = ShortArray(alaw.size)
+        for (i in alaw.indices) out[i] = alawToLinear(alaw[i].toInt() and 0xFF).toShort()
+        return out
+    }
+
+    /** μ-law decode: one compressed byte → one 16-bit signed PCM sample. */
+    fun decodeUlaw(ulaw: ByteArray): ShortArray {
+        val out = ShortArray(ulaw.size)
+        for (i in ulaw.indices) out[i] = ulawToLinear(ulaw[i].toInt() and 0xFF).toShort()
+        return out
+    }
+
+    /** Inverse of [linearToAlaw]. ITU-T G.711 reference decode. */
+    private fun alawToLinear(aValIn: Int): Int {
+        val a = aValIn xor 0x55
+        var t = (a and 0x0F) shl 4
+        val seg = (a and 0x70) ushr 4
+        when (seg) {
+            0 -> t += 8
+            1 -> t += 0x108
+            else -> { t += 0x108; t = t shl (seg - 1) }
+        }
+        return if ((a and 0x80) != 0) t else -t
+    }
+
+    /** Inverse of [linearToUlaw]. ITU-T G.711 reference decode. */
+    private fun ulawToLinear(uValIn: Int): Int {
+        val u = uValIn.inv() and 0xFF
+        var t = ((u and 0x0F) shl 3) + BIAS
+        t = t shl ((u and 0x70) ushr 4)
+        return if ((u and 0x80) != 0) (BIAS - t) else (t - BIAS)
+    }
+
     /**
      * A-law encode one 16-bit signed PCM sample.
      *
