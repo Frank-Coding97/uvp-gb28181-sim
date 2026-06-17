@@ -378,10 +378,7 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         "", "♪", false, "RX", UvpColor.Success,
         "对讲音频开始 · 首包 ${ev.firstPacketDelayMs}ms", category = "BROADCAST"
     )
-    is SimEvent.BroadcastPacketRx -> LogRowSpec(
-        "", "♪", false, "RX", UvpColor.TextHint,
-        "${ev.codec} · ${ev.rxPackets}包 / ${ev.rxBytes}字节", category = "BROADCAST"
-    )
+    is SimEvent.BroadcastPacketRx -> null  // 媒体接收统计,不刷 SIP 信令日志(浮动/指示器读 currentBroadcast)
     is SimEvent.BroadcastEnded -> LogRowSpec(
         "", "■", true, "END", UvpColor.TextHint,
         "对讲结束 · ${ev.reason} · ${ev.durationMs}ms", category = "BROADCAST"

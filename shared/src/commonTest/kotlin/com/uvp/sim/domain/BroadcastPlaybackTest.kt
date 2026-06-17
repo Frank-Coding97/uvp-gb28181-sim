@@ -171,7 +171,7 @@ a=sendonly
 
         assertEquals(0, fakeSink.writeCount, "静音时不应写 AudioTrack")
         // 但仍在收包(统计照常累加)
-        assertEquals(2L, engine.currentBroadcast.value?.rxPackets)
+        assertEquals(2L, engine.rxPacketCountForTest())
         engine.stopBroadcast(BroadcastEndReason.Local)
         runCurrent()
         engine.shutdown()

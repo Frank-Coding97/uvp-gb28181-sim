@@ -185,6 +185,12 @@ class SimulatorEngine(
     private var broadcastLocalAudioPort: Int = 0
     /** 当前对讲媒体传输模式(UDP/TCP主动/TCP被动),200 OK 时决定是否需要主动 connect 平台。 */
     private var broadcastMode: com.uvp.sim.network.RtpMode = com.uvp.sim.network.RtpMode.UDP
+    // RX 热计数:每包累加普通字段(不触发 StateFlow recompose),由 rxStatsJob 每秒同步进 currentBroadcast
+    private var rxPackets = 0L
+    private var rxBytes = 0L
+    private var rxSeqLost = 0L
+    private var rxDecodeErrors = 0L
+    private var rxFirstPacketAtMs = 0L
 
     // M3 语音广播 RX 链路(T7)
     private var rtpReceiver: com.uvp.sim.network.BroadcastRxSource? = null
@@ -1374,6 +1380,7 @@ class SimulatorEngine(
         rtpReceiver = receiver
         broadcastLocalAudioPort = boundPort
         _broadcastSpeakerOn.value = true  // 每路新对讲默认开扬声器
+        rxPackets = 0L; rxBytes = 0L; rxSeqLost = 0L; rxDecodeErrors = 0L; rxFirstPacketAtMs = 0L
         val localAudioPort = boundPort
         val deviceSsrc = com.uvp.sim.sip.SsrcUtils.generate(
             realtime = true,
@@ -1631,40 +1638,48 @@ class SimulatorEngine(
             while (isActive) {
                 delay(BROADCAST_STATS_INTERVAL_MS)
                 val bc = _currentBroadcast.value ?: break
-                _events.emit(SimEvent.BroadcastPacketRx(bc.rxPackets, bc.rxBytes, bc.codec.name))
+                // 每秒把热计数同步进 currentBroadcast(UI 每秒最多 recompose 一次,避免 50Hz 卡顿)
+                _currentBroadcast.value = bc.copy(
+                    rxPackets = rxPackets, rxBytes = rxBytes,
+                    seqLost = rxSeqLost, decodeErrors = rxDecodeErrors,
+                    firstPacketAtMs = rxFirstPacketAtMs
+                )
+                _events.emit(SimEvent.BroadcastPacketRx(rxPackets, rxBytes, bc.codec.name))
             }
         }
     }
 
     /**
-     * T7:处理一个收到的 RTP 包 — PT 校验 → G.711 解码 → 投 audioChannel → 累加统计。
+     * 处理一个收到的 RTP 包 — PT 校验 → G.711 解码 → 投 audioChannel → 累加热计数(普通字段)。
      * 第一个有效包 emit BroadcastStarted。非 PCMA/PCMU payload 计入 decodeErrors,不入 channel。
+     * 不在此写 currentBroadcast StateFlow(由 rxStatsJob 每秒同步),避免高频 recompose。
      * internal 供 commonTest 直注(绕过真 socket)。
      */
     internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) {
         val bc = _currentBroadcast.value ?: return
         val codec = AudioRxCodec.fromPayloadType(rtp.payloadType)
         if (codec == null) {
-            _currentBroadcast.value = bc.copy(decodeErrors = bc.decodeErrors + 1)
+            rxDecodeErrors++
             return
         }
-        val first = bc.rxPackets == 0L
-        val now = nowMs()
+        val first = rxPackets == 0L
+        if (first) rxFirstPacketAtMs = nowMs()
         val pcm = if (codec == AudioRxCodec.PCMA) {
             com.uvp.sim.media.G711.decodeAlaw(rtp.payload)
         } else {
             com.uvp.sim.media.G711.decodeUlaw(rtp.payload)
         }
         audioChannel.trySend(pcm)
-        _currentBroadcast.value = bc.copy(
-            rxPackets = bc.rxPackets + 1,
-            rxBytes = bc.rxBytes + rtp.payload.size,
-            firstPacketAtMs = if (first) now else bc.firstPacketAtMs
-        )
+        rxPackets++
+        rxBytes += rtp.payload.size
         if (first) {
-            _events.emit(SimEvent.BroadcastStarted(now - bc.createdAtMs))
+            _events.emit(SimEvent.BroadcastStarted(rxFirstPacketAtMs - bc.createdAtMs))
         }
     }
+
+    /** 测试可见:RX 热计数(绕过每秒节流直接读)。 */
+    internal fun rxPacketCountForTest(): Long = rxPackets
+    internal fun decodeErrorCountForTest(): Long = rxDecodeErrors
 
     /** 测试可见:RX 协程是否在运行。 */
     internal fun isRxActive(): Boolean = rxJob?.isActive == true

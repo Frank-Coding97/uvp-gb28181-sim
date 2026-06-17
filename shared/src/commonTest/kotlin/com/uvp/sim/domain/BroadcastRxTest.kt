@@ -122,7 +122,7 @@ a=sendonly
         runCurrent()
 
         assertEquals(1, started.size, "BroadcastStarted 只在第一包 emit")
-        assertEquals(2L, engine.currentBroadcast.value?.rxPackets)
+        assertEquals(2L, engine.rxPacketCountForTest())
         job.cancel()
         engine.shutdown()
     }
@@ -141,8 +141,8 @@ a=sendonly
         engine.handleRxPacket(rtp(pt = 96, payload = ByteArray(160), seq = 1))
         runCurrent()
 
-        assertEquals(1L, engine.currentBroadcast.value?.decodeErrors)
-        assertEquals(0L, engine.currentBroadcast.value?.rxPackets)
+        assertEquals(1L, engine.decodeErrorCountForTest())
+        assertEquals(0L, engine.rxPacketCountForTest())
         engine.shutdown()
     }
 
