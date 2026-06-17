@@ -1,11 +1,13 @@
 package com.uvp.sim.ui
 
 import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
+import com.uvp.sim.network.NetworkState
 import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
@@ -64,7 +66,17 @@ data class AppUiState(
     /**
      * 指定模式下用户保存的固定报警单(null = 还没存,退化随机)。本会话内存。
      */
-    val fixedAlarmTemplate: AlarmPayload? = null
+    val fixedAlarmTemplate: AlarmPayload? = null,
+    /**
+     * 当前网络运行时状态(NetworkController.state 投影)。
+     * - Android: 反映 ConnectivityManager 实际绑定结果
+     * - iOS / JVM: 永远是 Auto(no-op 实现)
+     *
+     * UI 用途:
+     * - 设置 → 网络子页诊断区显示接口名 / IP
+     * - 主屏顶 banner:Unavailable 时显示红 banner 提示老板
+     */
+    val networkRuntimeState: NetworkState = NetworkState.Auto
 )
 
 /**
@@ -177,6 +189,14 @@ interface AppActions {
 
     /** 保存固定报警单(指定模式),主页一点即发此单。 */
     fun onSaveFixedAlarm(payload: AlarmPayload) {}
+
+    /**
+     * 网络偏好变更(设置 → 网络子页)。
+     * Android: SipViewModel 持久化 config + 调 NetworkController.apply(pref)
+     *          → state flow 自动驱动 SimulatorEngine.handleNetworkChange
+     * iOS / JVM: no-op(子页入口已灰显拦截,这里兜底)
+     */
+    fun onNetworkPreferenceChange(preference: NetworkPreference) {}
 }
 
 enum class AppTab(val label: String) {
