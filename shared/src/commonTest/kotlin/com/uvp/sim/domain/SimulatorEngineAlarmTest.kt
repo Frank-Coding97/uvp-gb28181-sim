@@ -92,7 +92,7 @@ class SimulatorEngineAlarmTest {
     fun reportAlarmWithoutSubscriberSendsOneMessageNoNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.sent.clear()
@@ -116,7 +116,7 @@ class SimulatorEngineAlarmTest {
     fun reportAlarmWithTwoSubscribersSendsMessagePlusTwoNotifies() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
 
@@ -143,7 +143,7 @@ class SimulatorEngineAlarmTest {
     fun reportAlarmEmitsAlarmFired() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
 
@@ -164,7 +164,7 @@ class SimulatorEngineAlarmTest {
     fun reportSnapshotStillUsesOldPathNotAlarmHistory() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.sent.clear()

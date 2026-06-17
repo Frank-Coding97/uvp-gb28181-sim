@@ -303,7 +303,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             config = cfg,
             transport = tx,
             scope = engineScope,
-            localIp = localIp,
+            localIpProvider = { localIp },
             localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
             cameraCapture = camera,
             audioCapture = audio,

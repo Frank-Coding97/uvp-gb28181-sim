@@ -83,7 +83,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeReturns200NoInitialNotifyEmitsSubscribed() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.sent.clear()
@@ -114,7 +114,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeRefreshKeepsSingleDialogNoNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.deliver(alarmSub("ref@plat"))
@@ -136,7 +136,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeExpires0CancelsImmediately() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.deliver(alarmSub("cancel@plat"))
@@ -161,7 +161,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeNaturalExpiryEmitsExpired() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
 

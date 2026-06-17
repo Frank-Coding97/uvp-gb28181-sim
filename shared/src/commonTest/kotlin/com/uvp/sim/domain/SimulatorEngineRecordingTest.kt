@@ -170,7 +170,7 @@ y=0123456789
         val transport = MockSipTransport()
         val rec = FakeRecordingService()
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.1.50",
+            cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec
         )
         try {
@@ -198,7 +198,7 @@ y=0123456789
         val transport = MockSipTransport()
         val rec = FakeRecordingService()
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.1.50",
+            cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec
         )
         try {
@@ -286,7 +286,7 @@ y=0123456789
     @Test fun playbackInvite_noPlaybackBuilder_returns487() = runTest {
         val transport = MockSipTransport()
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.1.50",
+            cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = NoopRecordingService,
             playbackBuilder = null
         )
@@ -314,7 +314,7 @@ y=0123456789
             ): PlaybackSession? { built = true; return null }
         }
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.1.50",
+            cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec,
             playbackBuilder = builder
         )
@@ -358,7 +358,7 @@ y=0123456789
             }
         }
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.1.50",
+            cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec,
             playbackBuilder = builder
         )

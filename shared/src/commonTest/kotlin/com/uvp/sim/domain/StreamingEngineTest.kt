@@ -95,7 +95,7 @@ class StreamingEngineTest {
 
     @Test fun inviteWithoutMediaPlumbingStillTransitionsToInCall() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112")
+        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" })
         try {
             transport.connect()
             engine.register()
@@ -126,7 +126,7 @@ class StreamingEngineTest {
         }
         val engine = SimulatorEngine(
             cfg(), transport, this,
-            localIp = "192.168.10.112",
+            localIpProvider = { "192.168.10.112" },
             cameraCapture = capture,
             rtpSenderFactory = rtpFactory
         )
@@ -164,7 +164,7 @@ class StreamingEngineTest {
         }
         val engine = SimulatorEngine(
             cfg(), transport, this,
-            localIp = "192.168.10.112",
+            localIpProvider = { "192.168.10.112" },
             cameraCapture = capture,
             rtpSenderFactory = rtpFactory
         )

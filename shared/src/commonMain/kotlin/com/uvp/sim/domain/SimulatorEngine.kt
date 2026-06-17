@@ -55,7 +55,7 @@ class SimulatorEngine(
     private val config: SimConfig,
     private val transport: SipTransport,
     private val scope: CoroutineScope,
-    private val localIp: String = "0.0.0.0",
+    private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
     private val audioCapture: com.uvp.sim.camera.AudioCapture? = null,
@@ -74,6 +74,15 @@ class SimulatorEngine(
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
+
+    /**
+     * 本机 IP 的 getter delegate — 委托给 [localIpProvider]。
+     *
+     * T4 改造:旧版本是构造期字符串 `localIp: String = "0.0.0.0"`,新版本改为 lambda
+     * provider 以支持网卡切换后动态返回新接口 IP(plan/network-selection §T4)。
+     * 40+ 处使用点维持原写法 — 这个 getter 让 `localIp` 引用透明地变成"每次访问读最新值"。
+     */
+    private val localIp: String get() = localIpProvider()
 
     private val _events = MutableSharedFlow<SimEvent>(extraBufferCapacity = 64)
     val events: SharedFlow<SimEvent> = _events.asSharedFlow()
