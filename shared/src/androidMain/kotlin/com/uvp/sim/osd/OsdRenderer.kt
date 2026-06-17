@@ -9,6 +9,7 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.view.Surface
 import com.uvp.sim.config.OsdConfig
+import com.uvp.sim.config.OsdPosition
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -430,18 +431,20 @@ internal class OsdRenderer(
     private fun drawOsdLayers(text: OsdTextPass) {
         val snap = tickerSource.snapshot()
         val cfg = configFlow.value
+        // 位置对用户锁死:时间戳恒左上、通道名恒右上。不读持久化 position
+        // (老配置可能存了旧位置,这里用固定常量治本,避免改默认值不生效)。
         snap.timestamp?.let {
-            text.draw(it, cfg.timestamp.position, cfg.timestamp.size,
+            text.draw(it, OsdPosition.TOP_LEFT, cfg.timestamp.size,
                 fboWidth, fboHeight,
                 parseColor(cfg.timestamp.fillColor), parseColor(cfg.timestamp.outlineColor))
         }
         snap.channelName?.let {
-            text.draw(it, cfg.channelName.position, cfg.channelName.size,
+            text.draw(it, OsdPosition.TOP_RIGHT, cfg.channelName.size,
                 fboWidth, fboHeight,
                 parseColor(cfg.channelName.fillColor), parseColor(cfg.channelName.outlineColor))
         }
         snap.watermark?.let {
-            text.draw(it, cfg.watermark.position, cfg.watermark.size,
+            text.drawTiled(it, cfg.watermark.size,
                 fboWidth, fboHeight,
                 parseColor(cfg.watermark.fillColor), parseColor(cfg.watermark.outlineColor))
         }

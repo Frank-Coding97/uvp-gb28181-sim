@@ -199,6 +199,15 @@ data class DeviceConfig(
             com.uvp.sim.camera.CameraFacing.FRONT
         else
             com.uvp.sim.camera.CameraFacing.BACK
+
+    /**
+     * 被叫 channelId → 该通道的显示名(OSD 通道名层烧戳用)。
+     * 前置通道返回 [frontChannelName],其余(后置 / 未知 / 空)返回 [videoChannelName]。
+     * 跟 [facingForChannel] 的兜底语义保持一致。
+     */
+    fun channelNameForChannel(channelId: String): String =
+        if (channelId.isNotBlank() && channelId == frontChannelId) frontChannelName
+        else videoChannelName
 }
 
 /**

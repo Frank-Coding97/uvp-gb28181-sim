@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -68,10 +69,24 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _config = MutableStateFlow(defaultConfig())
     val config: StateFlow<SimConfig> = _config.asStateFlow()
 
-    /** OSD 视频叠加层配置 — 跟 SimConfig.osd 同步,Streamer 订阅这个 flow 反映 UI 改动。 */
-    val osdConfig: StateFlow<com.uvp.sim.config.OsdConfig> = _config
-        .map { it.osd }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, _config.value.osd)
+    /**
+     * 当前推流通道名(engine 投影,未连接时为配置的后置通道名)。
+     * 注入到 [osdConfig] 的 channelName.text,使 OSD 通道名跟随被叫通道。
+     */
+    private val _currentChannelName = MutableStateFlow(_config.value.device.videoChannelName)
+
+    /**
+     * OSD 视频叠加层配置 — 跟 SimConfig.osd 同步,Streamer 订阅这个 flow 反映 UI 改动。
+     * 通道名 text 由运行期 [_currentChannelName] 注入(不再用持久化的 osd.channelName.text),
+     * 使烧戳的通道名跟随当前推流的前置/后置通道。
+     */
+    val osdConfig: StateFlow<com.uvp.sim.config.OsdConfig> =
+        combine(_config, _currentChannelName) { cfg, chName ->
+            cfg.osd.copy(channelName = cfg.osd.channelName.copy(text = chName))
+        }.stateIn(
+            viewModelScope, SharingStarted.Eagerly,
+            _config.value.osd.let { it.copy(channelName = it.channelName.copy(text = _config.value.device.videoChannelName)) }
+        )
 
     init {
         // OSD 配置变更日志(plan §9 OSD_CONFIG_CHANGED 事件)
@@ -311,6 +326,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch { eng.deviceControlState.collect { _deviceControl.value = it } }
         engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
         engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
+        engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
 
         engineScope.launch {
             try {

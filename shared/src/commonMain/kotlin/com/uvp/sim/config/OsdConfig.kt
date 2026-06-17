@@ -5,9 +5,9 @@ import kotlinx.serialization.Serializable
 /**
  * 三层 OSD 视频叠加配置 — 跟海康 / 大华 IPC 行业惯例对齐。
  *
- * - [timestamp]:时间戳层(默认 ON,文本由运行期 OsdTickerSource 实时填)
- * - [channelName]:通道名层(默认 OFF,文本来自 [text])
- * - [watermark]:自定义水印层(默认 OFF,文本来自 [text])
+ * - [timestamp]:时间戳层(默认 ON,位置固定左上角,文本由运行期 OsdTickerSource 实时填)
+ * - [channelName]:通道名层(默认 ON,位置固定右上角,文本来自 [text])
+ * - [watermark]:自定义水印层(默认 OFF,全屏斜向平铺,文本来自 [text],无单一位置)
  *
  * 序列化后挂在 [SimConfig.osd]。详见 specs/osd-overlay.md。
  */
@@ -16,15 +16,15 @@ data class OsdConfig(
     val timestamp: OsdLayer = OsdLayer(
         enabled = true,
         text = "",
-        position = OsdPosition.TOP_RIGHT,
+        position = OsdPosition.TOP_LEFT,
         size = OsdSize.MEDIUM,
         fillColor = "#FFFFFF",
         outlineColor = "#000000"
     ),
     val channelName: OsdLayer = OsdLayer(
-        enabled = false,
+        enabled = true,
         text = "",
-        position = OsdPosition.BOTTOM_LEFT,
+        position = OsdPosition.TOP_RIGHT,
         size = OsdSize.MEDIUM,
         fillColor = "#FFFFFF",
         outlineColor = "#000000"

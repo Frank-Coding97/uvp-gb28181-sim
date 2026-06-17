@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -140,6 +141,17 @@ private fun StatusBanner(state: AppUiState) {
         Spacer(Modifier.width(10.dp))
         Text(spec.text, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = spec.textColor)
         Spacer(Modifier.weight(1f))
+        // 推流状态(原视频框右上角 chip 上移到此):仅注册后显示
+        val streamLabel = when (state.sip) {
+            SipState.InCall -> "1280×720 · 25fps · LIVE"
+            SipState.Registered -> "1280×720 · 预览"
+            else -> null
+        }
+        if (streamLabel != null) {
+            Text(streamLabel, fontSize = 11.sp, color = UvpColor.TextHint,
+                fontFamily = FontFamily.Monospace, maxLines = 1)
+            Spacer(Modifier.width(10.dp))
+        }
         Text(spec.extra, fontSize = 11.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace,
             maxLines = 1)
     }
@@ -154,13 +166,12 @@ private data class BannerSpec(
 
 @Composable
 private fun CameraPreviewBox(state: AppUiState) {
-    val live = state.sip == SipState.InCall
     val showPreview = state.sip == SipState.Registered || state.sip == SipState.InCall
     val isRecording = state.recording.isRecording
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(180.dp)
+            .aspectRatio(16f / 9f)
             .clip(RoundedCornerShape(8.dp))
             .background(
                 if (showPreview) {
@@ -190,28 +201,7 @@ private fun CameraPreviewBox(state: AppUiState) {
                     .padding(8.dp)
             )
         }
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(8.dp)
-                .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                .padding(horizontal = 8.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            if (live) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(UvpColor.Danger))
-                Spacer(Modifier.width(4.dp))
-            }
-            Text(
-                when {
-                    live -> "1280×720 · 25fps · LIVE"
-                    showPreview -> "1280×720 · 预览"
-                    else -> "未推流"
-                },
-                fontSize = 9.sp, color = Color.White.copy(alpha = 0.55f),
-                fontFamily = FontFamily.Monospace
-            )
-        }
+        // 注:分辨率/推流状态 chip 已上移到 StatusBanner,视频框顶部留给烧进流的 OSD
     }
 }
 

@@ -162,6 +162,13 @@ class SimulatorEngine(
 
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
+    /**
+     * 当前推流通道的显示名 — OSD 通道名层烧戳用,跟随被叫通道(前置/后置)。
+     * 初值为后置通道名(默认朝向 BACK),平台 INVITE 前置通道时切前置名。
+     */
+    private val _currentChannelName = MutableStateFlow(config.device.videoChannelName)
+    val currentChannelName: StateFlow<String> = _currentChannelName.asStateFlow()
+
     private data class ActiveStream(
         val callId: String,
         val ssrc: String,
@@ -1433,6 +1440,8 @@ class SimulatorEngine(
 
         // 双真实通道:据被叫 channelId 映射切摄像头朝向(前置/后置)。无运行相机时为空操作。
         cam.setFacing(config.device.facingForChannel(channelId))
+        // OSD 通道名跟随当前推流通道,反映到下一帧渲染。
+        _currentChannelName.value = config.device.channelNameForChannel(channelId)
 
         val offer = try {
             com.uvp.sim.sip.SdpParser.parseOffer(invite.body)

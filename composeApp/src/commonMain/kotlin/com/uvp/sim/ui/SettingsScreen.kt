@@ -14,13 +14,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DevicesOther
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MovieFilter
 import androidx.compose.material.icons.outlined.PhotoCamera
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -31,10 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uvp.sim.config.OsdConfig
 
 /**
  * 设置 — 二级导航,展示"通道""音视频"两张大卡片,点击进入对应配置子页。
@@ -59,10 +66,14 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
             title = "音视频",
             onBack = { page = SettingsPage.Index }
         ) { MediaScreen(state, actions) }
+        SettingsPage.Osd -> SettingsSubPage(
+            title = "OSD 水印",
+            onBack = { page = SettingsPage.Index }
+        ) { OsdSettingsPage(state, actions) }
     }
 }
 
-private enum class SettingsPage { Index, Channel, Device, Media }
+private enum class SettingsPage { Index, Channel, Device, Media, Osd }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
@@ -87,6 +98,12 @@ private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
             title = "音视频",
             description = "画质 · 编码 · 帧率 · 码率 · 采样率",
             onClick = { onPick(SettingsPage.Media) }
+        )
+        SettingsEntry(
+            icon = Icons.Outlined.Layers,
+            title = "OSD 水印",
+            description = "时间戳 · 通道名 · 自定义水印",
+            onClick = { onPick(SettingsPage.Osd) }
         )
     }
 }
@@ -159,5 +176,48 @@ private fun SettingsSubPage(
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
         content()
+    }
+}
+
+/**
+ * OSD 水印独立子页。本地草稿暂存编辑,点"保存"才落 onConfigSave 反映到渲染。
+ * (位置已锁死、字段少,改成显式保存比即时热改更符合用户预期。)
+ */
+@Composable
+private fun OsdSettingsPage(state: AppUiState, actions: AppActions) {
+    val toast = LocalToastHost.current
+    var draft by remember(state.config.osd) { mutableStateOf(state.config.osd) }
+    val dirty = draft != state.config.osd
+
+    Column(
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        OsdConfigCard(
+            osd = draft,
+            enabled = true,
+            onChange = { draft = it }
+        )
+        Button(
+            enabled = dirty,
+            onClick = {
+                actions.onConfigSave(state.config.copy(osd = draft))
+                toast.success("OSD 配置已保存")
+            },
+            modifier = Modifier.fillMaxWidth().height(44.dp),
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = UvpColor.Primary,
+                disabledContainerColor = UvpColor.Border
+            )
+        ) {
+            Text(
+                if (dirty) "保存" else "已保存",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (dirty) Color.White else UvpColor.TextHint,
+                letterSpacing = 2.sp
+            )
+        }
     }
 }

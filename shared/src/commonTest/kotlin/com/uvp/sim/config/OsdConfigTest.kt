@@ -9,21 +9,21 @@ import kotlin.test.assertTrue
 class OsdConfigTest {
 
     @Test
-    fun defaultsTimestampEnabledOthersDisabled() {
+    fun defaultsTimestampAndChannelNameEnabledWatermarkDisabled() {
         val cfg = OsdConfig()
         assertTrue(cfg.timestamp.enabled, "timestamp default ON")
-        assertTrue(!cfg.channelName.enabled, "channelName default OFF")
+        assertTrue(cfg.channelName.enabled, "channelName default ON")
         assertTrue(!cfg.watermark.enabled, "watermark default OFF")
     }
 
     @Test
-    fun defaultTimestampPositionTopRight() {
-        assertEquals(OsdPosition.TOP_RIGHT, OsdConfig().timestamp.position)
+    fun defaultTimestampPositionTopLeft() {
+        assertEquals(OsdPosition.TOP_LEFT, OsdConfig().timestamp.position)
     }
 
     @Test
-    fun defaultChannelNamePositionBottomLeft() {
-        assertEquals(OsdPosition.BOTTOM_LEFT, OsdConfig().channelName.position)
+    fun defaultChannelNamePositionTopRight() {
+        assertEquals(OsdPosition.TOP_RIGHT, OsdConfig().channelName.position)
     }
 
     @Test

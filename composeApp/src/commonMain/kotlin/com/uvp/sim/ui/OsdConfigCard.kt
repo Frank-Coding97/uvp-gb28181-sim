@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,9 +34,9 @@ import com.uvp.sim.config.OsdSize
  * 三层 OSD 视频叠加配置卡片(行业 IPC 标准:时间戳 / 通道名 / 自定义水印)。
  *
  * 三层独立可控:
- * - 时间戳:开关 + 位置 + 字号(文本由运行期 OsdTickerSource 注入)
- * - 通道名:开关 + 文本 + 位置 + 字号
- * - 自定义水印:开关 + 文本 + 位置 + 字号
+ * - 时间戳:开关 + 字号(位置固定左上角,文本由运行期 OsdTickerSource 注入)
+ * - 通道名:开关 + 文本 + 字号(位置固定右上角)
+ * - 自定义水印:开关 + 文本 + 字号(全屏斜向平铺,无单一位置)
  *
  * [enabled]:推流锁定时整个卡片不可改(避免运行中切配置撞 GL pipeline)。
  *
@@ -77,14 +76,17 @@ fun OsdConfigCard(
             layer = osd.timestamp,
             enabled = enabled,
             showText = false,
+            showPosition = false,
+            hint = "位置固定左上角",
             onChange = { onChange(osd.copy(timestamp = it)) }
         )
         OsdLayerRow(
             label = "通道名",
             layer = osd.channelName,
             enabled = enabled,
-            showText = true,
-            textPlaceholder = "如:正门入口",
+            showText = false,
+            showPosition = false,
+            hint = "右上角 · 取设置-通道名",
             onChange = { onChange(osd.copy(channelName = it)) }
         )
         OsdLayerRow(
@@ -92,6 +94,8 @@ fun OsdConfigCard(
             layer = osd.watermark,
             enabled = enabled,
             showText = true,
+            showPosition = false,
+            hint = "全屏斜向平铺",
             textPlaceholder = "如:@DEMO",
             onChange = { onChange(osd.copy(watermark = it)) }
         )
@@ -104,6 +108,8 @@ private fun OsdLayerRow(
     layer: OsdLayer,
     enabled: Boolean,
     showText: Boolean,
+    showPosition: Boolean,
+    hint: String = "",
     textPlaceholder: String = "",
     onChange: (OsdLayer) -> Unit
 ) {
@@ -127,6 +133,10 @@ private fun OsdLayerRow(
                     uncheckedTrackColor = UvpColor.Border
                 )
             )
+            if (hint.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
+                Text(hint, fontSize = 10.sp, color = UvpColor.TextHint)
+            }
         }
 
         if (showText) {
@@ -144,18 +154,20 @@ private fun OsdLayerRow(
                     focusedBorderColor = UvpColor.Primary,
                     unfocusedBorderColor = UvpColor.Border
                 ),
-                modifier = Modifier.fillMaxWidth().height(48.dp)
+                modifier = Modifier.fillMaxWidth()
             )
         }
 
-        InlineSegmented(
-            label = "位置",
-            active = layer.position.label,
-            options = OsdPosition.entries.map { it.label },
-            enabled = enabled && layer.enabled
-        ) { picked ->
-            val pos = OsdPosition.entries.firstOrNull { it.label == picked } ?: layer.position
-            onChange(layer.copy(position = pos))
+        if (showPosition) {
+            InlineSegmented(
+                label = "位置",
+                active = layer.position.label,
+                options = OsdPosition.entries.map { it.label },
+                enabled = enabled && layer.enabled
+            ) { picked ->
+                val pos = OsdPosition.entries.firstOrNull { it.label == picked } ?: layer.position
+                onChange(layer.copy(position = pos))
+            }
         }
 
         InlineSegmented(

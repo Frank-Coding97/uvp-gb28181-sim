@@ -131,15 +131,6 @@ fun MediaScreen(state: AppUiState, actions: AppActions) {
             onBitrate = { bitrate = it },
             onGop = { gop = it }
         )
-        // OSD 卡片 — 不锁定时支持热改;改字段直接 onConfigSave 反映到下一帧渲染。
-        // 这是设备级独立状态,跟分辨率/码率"保存后下次注册生效"不同。
-        OsdConfigCard(
-            osd = state.config.osd,
-            enabled = true,
-            onChange = { newOsd ->
-                actions.onConfigSave(state.config.copy(osd = newOsd))
-            }
-        )
         Spacer(Modifier.height(2.dp))
         Button(
             enabled = !locked,
