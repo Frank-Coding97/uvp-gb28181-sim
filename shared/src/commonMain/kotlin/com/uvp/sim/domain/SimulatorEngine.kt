@@ -1280,10 +1280,8 @@ class SimulatorEngine(
      *
      * 200 OK 已在 [handleMessage] 顶部统一发出。这里:
      *   1. 解析 SourceID / TargetID / SN
-     *   2. 校验 TargetID == 本机 deviceId(不匹配 → Broadcast Response ERROR)
-     *   3. 匹配 → Broadcast Response OK + emit BroadcastReceived
-     *
-     * T1 阶段到此为止(不发反向 INVITE)。后续 task 在匹配分支末尾接 sendBroadcastInvite。
+     *   2. 校验 TargetID 命中本设备拥有的任意 ID(deviceId 或任意通道) —— 平台通常对**通道**发起对讲
+     *   3. 匹配 → Broadcast Response OK + emit BroadcastReceived + 反向 INVITE
      */
     private suspend fun handleBroadcast(xml: String, fromUri: String? = null) {
         val query = com.uvp.sim.gb28181.BroadcastQuery.parse(xml)
@@ -1303,8 +1301,9 @@ class SimulatorEngine(
             return
         }
 
+        // 平台对设备**任意通道**(或设备本身)发起对讲都接受;只有目标完全不属于本设备才拒。
         val targetId = query.targetId
-        if (targetId != myId) {
+        if (targetId.isNullOrBlank() || !isOwnedBroadcastTarget(targetId)) {
             sendBroadcastResponseMessage(
                 com.uvp.sim.gb28181.BroadcastResponse.build(
                     deviceId = myId, sn = sn,
@@ -1314,7 +1313,7 @@ class SimulatorEngine(
             )
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Network,
-                "语音广播 TargetID 不匹配: 收到 '$targetId' 期望 '$myId' → ERROR"
+                "语音广播 TargetID 不属于本设备: 收到 '$targetId'(deviceId=$myId)→ ERROR"
             )
             return
         }
@@ -1325,21 +1324,32 @@ class SimulatorEngine(
             )
         )
         val sourceId = query.sourceId ?: ""
-        _events.emit(SimEvent.BroadcastReceived(sourceId = sourceId, targetId = myId))
+        _events.emit(SimEvent.BroadcastReceived(sourceId = sourceId, targetId = targetId))
         SystemLogger.emit(
             LogLevel.Info, LogTag.Network,
-            "收到语音广播请求 source=$sourceId → 已回 Broadcast Response OK,主动 INVITE 平台"
+            "收到语音广播请求 source=$sourceId target=$targetId → 已回 OK,主动 INVITE 平台"
         )
-        // T3:立即主动 INVITE 平台拉取音频
+        // 立即主动 INVITE 平台拉取音频
         val platformUri = "sip:$sourceId@${config.server.domain}"
-        sendBroadcastInvite(sourceId, platformUri)
+        sendBroadcastInvite(sourceId, platformUri, targetId)
     }
 
     /**
-     * T3 — 设备主动 INVITE 平台拉取语音广播音频(反向 INVITE)。
-     * localAudioPort 在 T7 接入真实 RtpReceiver 前用占位值,T7 绑定真实 UDP 端口后替换。
+     * TargetID 是否属于本设备:命中 deviceId、任一配置通道(视频/前置/报警)、或目录树任意节点。
+     * 平台对哪个通道发起对讲都接受(不专门限制走某条"语音通道")。
      */
-    private suspend fun sendBroadcastInvite(sourceId: String, platformUri: String) {
+    private fun isOwnedBroadcastTarget(targetId: String): Boolean {
+        val d = config.device
+        if (targetId == d.deviceId) return true
+        if (targetId == d.videoChannelId || targetId == d.frontChannelId || targetId == d.alarmChannelId) return true
+        return _catalogTree.value.any { it.id == targetId }
+    }
+
+    /**
+     * 设备主动 INVITE 平台拉取语音广播音频(反向 INVITE)。
+     * [targetId] 是平台指定的对讲目标(设备本身或某通道),记入 dialog 供显示。
+     */
+    private suspend fun sendBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
         // T7:发 INVITE 之前先绑定 RTP 接收端口(平台首包可能在 ACK 前到达,socket 要早开)
         val receiver = resolvedRtpReceiverFactory(scope)
         val boundPort = runCatching { receiver.bindLocalPort() }.getOrDefault(-1)
@@ -1386,7 +1396,7 @@ class SimulatorEngine(
             remoteTag = null,
             cseq = inviteCseq,
             sourceId = sourceId,
-            targetId = config.device.deviceId,
+            targetId = targetId,
             sourcePlatformUri = platformUri,
             localAudioPort = localAudioPort,
             deviceSsrc = deviceSsrc,

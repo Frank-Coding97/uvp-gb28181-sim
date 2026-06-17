@@ -26,7 +26,8 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class BroadcastRoutingTest {
 
-    private val deviceId = "34020000001320000001"
+    private val deviceId = "34020000001310000001"
+    private val videoChannelId = "34020000001320000001"
     private val platformId = "34020000002000000001"
 
     private fun cfg() = SimConfig(
@@ -37,7 +38,7 @@ class BroadcastRoutingTest {
         ),
         device = DeviceConfig(
             deviceId = deviceId,
-            videoChannelId = "34020000001320000001",
+            videoChannelId = videoChannelId,
             alarmChannelId = "34020000001340000001",
             username = deviceId,
             password = "p"
@@ -124,6 +125,29 @@ class BroadcastRoutingTest {
         assertEquals(1, resp.size)
         assertTrue(resp[0].contains("<Result>ERROR</Result>"), "TargetID 不匹配应回 ERROR")
         assertTrue(resp[0].contains("<Reason>target mismatch</Reason>"))
+        engine.shutdown()
+    }
+
+    @Test
+    fun channelIdTargetRepliesOk() = runTest {
+        // 平台对**视频通道**发起对讲(TargetID = videoChannelId,≠ deviceId)→ 也应接受
+        val transport = MockSipTransport()
+        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(broadcastMessage(targetId = videoChannelId))
+        runCurrent()
+
+        val resp = broadcastResponseMessages(transport)
+        assertEquals(1, resp.size)
+        assertTrue(resp[0].contains("<Result>OK</Result>"), "通道 ID 作为 TargetID 也应回 OK")
+        // 且应主动发反向 INVITE
+        assertTrue(
+            transport.sent.filterIsInstance<SipRequest>().any { it.method == SipMethod.INVITE },
+            "通道对讲也应发反向 INVITE"
+        )
         engine.shutdown()
     }
 
