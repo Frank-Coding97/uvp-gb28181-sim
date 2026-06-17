@@ -154,6 +154,9 @@ object LogExport {
         is SimEvent.AlarmSubscribed -> "← SUB      报警订阅 from=${ev.subscriber} expires=${ev.expires}s"
         is SimEvent.AlarmNotifySent -> "→ NOTIFY   报警 SN=${ev.sn} → ${ev.subscriber}"
         is SimEvent.AlarmSubscriptionExpired -> "· EXPIRED  报警订阅 ${ev.subscriber}"
+        is SimEvent.NetworkBound -> "↔ NET-UP   ${ev.preference} · ${ev.interfaceName} · ${ev.localIp}"
+        is SimEvent.NetworkUnavailable -> "⚠ NET-OFF  ${ev.reason}"
+        SimEvent.NetworkAuto -> "↔ NET-AUTO 系统路由"
     }
 
     private fun msgShort(m: SipMessage): String = when (m) {
