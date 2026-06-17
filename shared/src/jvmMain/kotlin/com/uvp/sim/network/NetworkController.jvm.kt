@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * 桌面端不存在"切手机网卡"概念,state 永远是 [NetworkState.Auto]。
  * 主要服务 commonTest 跑 SimulatorEngine 时不需要真切网卡。
  */
-actual class NetworkController {
+actual class NetworkController actual constructor() {
 
     private val _state = MutableStateFlow<NetworkState>(NetworkState.Auto)
     actual val state: StateFlow<NetworkState> = _state.asStateFlow()

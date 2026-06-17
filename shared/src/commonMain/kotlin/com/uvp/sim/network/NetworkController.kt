@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
  *   - 跟 SipViewModel / Activity 同生命周期
  *   - close() 会撤销 networkCallback 并解除进程绑定(回到系统默认)
  */
-expect class NetworkController {
+expect class NetworkController() {
 
     /** 当前网络状态 — UI 和 SimulatorEngine 共同 collect 这个 flow。 */
     val state: StateFlow<NetworkState>

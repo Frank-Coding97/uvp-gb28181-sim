@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * iOS 系统不允许应用强制选网卡(NWParameters 只能表达偏好不能硬绑),
  * 所以这里 apply() 不做任何事。UI 层(SettingsScreen)会拦住 iOS 不进网络子页。
  */
-actual class NetworkController {
+actual class NetworkController actual constructor() {
 
     private val _state = MutableStateFlow<NetworkState>(NetworkState.Auto)
     actual val state: StateFlow<NetworkState> = _state.asStateFlow()
