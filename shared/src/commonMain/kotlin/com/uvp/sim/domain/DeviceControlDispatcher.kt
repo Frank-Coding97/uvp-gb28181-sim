@@ -22,10 +22,12 @@ import kotlinx.datetime.Clock
 interface DeviceControlActions {
     /** TeleBoot — 重启设备(Engine 端会 unregister + delay + register). */
     suspend fun reboot()
-    /** SnapShotCmd — 触发抓拍 + 上报(走已有 reportSnapshot 流程). */
+    /** SnapShotCmd — 触发抓拍 + 上报(走已有 reportSnapshot 流程,7.4 旧路径). */
     suspend fun snapshot()
     /** IFameCmd — 强制下一帧出 IDR. */
     fun requestKeyFrame()
+    /** SnapShotConfig — GB-2022 §9.5 平台下发的图像抓拍配置(7.5 新路径,委托 SnapshotUploadEngine). */
+    suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig)
 }
 
 /**
@@ -91,6 +93,8 @@ class DeviceControlDispatcher(
             xml.contains("<DragZoomIn>") || xml.contains("<DragZoomOut>") -> { handleDragZoom(xml); DeviceControlAck() }
             xml.contains("<HomePosition>") -> { handleHomePosition(xml); DeviceControlAck() }
             xml.contains("<BasicParam>") -> { handleDeviceConfig(xml); DeviceControlAck() }
+            // GB-2022 §9.5 图像抓拍 — 7.5 新路径,优先于 7.4 旧 SnapShotCmd 匹配
+            xml.contains("<SnapShotConfig>") -> { handleSnapShotConfig(xml); DeviceControlAck() }
             ManscdpParser.tagValue(xml, "SnapShotCmd") != null -> { handleSnapshot(xml); DeviceControlAck() }
             else -> DeviceControlAck(needSipResponse = false)
         }
@@ -289,6 +293,23 @@ class DeviceControlDispatcher(
             )
         }
         scope?.launch { actions.snapshot() }
+    }
+
+    // ---------- SnapShotConfig (GB-2022 §9.5 7.5 新路径) ----------
+
+    /**
+     * 解析平台下发的图像抓拍配置,委托 SnapshotUploadEngine 异步执行序列。
+     * 解析失败仍回 200 OK(不让平台重试),但不触发 actions。
+     */
+    private fun handleSnapShotConfig(xml: String) {
+        val cfg = com.uvp.sim.gb28181.SnapShotConfigParser.parse(xml) ?: return
+        state.update {
+            it.copy(
+                pendingEffect = DeviceEffect.SnapshotFlash,
+                lastCommand = LastDeviceCommand("SnapShotConfig", cfg.sessionId, nowMs())
+            )
+        }
+        scope?.launch { actions.triggerSnapshotConfig(cfg) }
     }
 
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()

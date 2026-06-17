@@ -104,6 +104,16 @@ class SimulatorEngine(
                 override fun requestKeyFrame() {
                     cameraCapture?.requestKeyFrame()
                 }
+                override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
+                    // T10 接线:把 cfg 转交给 SnapshotUploadEngine.start(cfg)
+                    // 当前 implement 阶段 T9 仅占位,避免 KMP 编译失败;真实路线在 T10 注入
+                    SystemLogger.emit(
+                        LogLevel.Info,
+                        LogTag.Lifecycle,
+                        "SnapShotConfig 收到: SessionID=${cfg.sessionId} N=${cfg.snapNum} " +
+                            "interval=${cfg.intervalMs}ms url=${cfg.uploadUrl} (T10 接线后真实派发)"
+                    )
+                }
             },
             scope = scope
         )

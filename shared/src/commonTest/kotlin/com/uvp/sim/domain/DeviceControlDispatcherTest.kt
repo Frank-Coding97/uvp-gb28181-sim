@@ -36,9 +36,13 @@ class DeviceControlDispatcherTest {
         var rebootCalled = 0
         var snapshotCalled = 0
         var keyFrameCalled = 0
+        val snapshotConfigsTriggered = mutableListOf<com.uvp.sim.gb28181.SnapShotConfig>()
         override suspend fun reboot() { rebootCalled++ }
         override suspend fun snapshot() { snapshotCalled++ }
         override fun requestKeyFrame() { keyFrameCalled++ }
+        override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
+            snapshotConfigsTriggered.add(cfg)
+        }
     }
 
     /** ((B0+B1+B2+B3+B4+B5+B6) mod 256) hex string */
@@ -259,5 +263,74 @@ class DeviceControlDispatcherTest {
         testScheduler.advanceUntilIdle()
         assertEquals(1, actions.snapshotCalled)
         assertEquals(DeviceEffect.SnapshotFlash, state.value.pendingEffect)
+    }
+
+    // T9 — SnapShotConfig (GB-2022 §9.5 7.5 新路径)
+
+    @Test
+    fun `T9_1 — SnapShotConfig 完整解析 → triggerSnapshotConfig`() = runTest {
+        val state = newState()
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions, this)
+        val xml = "<Control><CmdType>DeviceControl</CmdType>" +
+            "<SnapShotConfig>" +
+            "<SessionID>S001</SessionID>" +
+            "<UploadURL>http://192.168.1.10:8088/snap/</UploadURL>" +
+            "<SnapNum>3</SnapNum>" +
+            "<Interval>2</Interval>" +
+            "</SnapShotConfig></Control>"
+        val ack = d.dispatch(xml)
+        testScheduler.advanceUntilIdle()
+        assertTrue(ack.needSipResponse, "must respond 200 OK")
+        assertEquals(1, actions.snapshotConfigsTriggered.size)
+        val cfg = actions.snapshotConfigsTriggered.first()
+        assertEquals("S001", cfg.sessionId)
+        assertEquals(3, cfg.snapNum)
+        assertEquals(2000L, cfg.intervalMs)
+        // 7.4 旧路径不能被同时激活
+        assertEquals(0, actions.snapshotCalled)
+    }
+
+    @Test
+    fun `T9_2 — SnapShotConfig 缺字段 → 不调 actions 但仍回 200`() = runTest {
+        val state = newState()
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions, this)
+        val xml = "<C><SnapShotConfig>" +
+            "<UploadURL>http://h:8088/snap/</UploadURL>" +
+            "</SnapShotConfig></C>"
+        val ack = d.dispatch(xml)
+        testScheduler.advanceUntilIdle()
+        assertTrue(ack.needSipResponse, "always 200 OK to avoid platform retry")
+        assertEquals(0, actions.snapshotConfigsTriggered.size)
+    }
+
+    @Test
+    fun `T9_3 — SnapShotCmd 旧路径仍走 7_4 reportSnapshot`() = runTest {
+        val state = newState()
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions, this)
+        d.dispatch("<C><SnapShotCmd>1</SnapShotCmd></C>")
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, actions.snapshotCalled, "旧路径走 actions.snapshot")
+        assertEquals(0, actions.snapshotConfigsTriggered.size, "新路径不触发")
+    }
+
+    @Test
+    fun `T9_4 — SnapShotConfig 与 SnapShotCmd 同存优先 SnapShotConfig`() = runTest {
+        val state = newState()
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions, this)
+        val xml = "<C>" +
+            "<SnapShotConfig>" +
+            "<SessionID>S</SessionID>" +
+            "<UploadURL>http://h:8088/snap/</UploadURL>" +
+            "</SnapShotConfig>" +
+            "<SnapShotCmd>1</SnapShotCmd>" +
+            "</C>"
+        d.dispatch(xml)
+        testScheduler.advanceUntilIdle()
+        assertEquals(1, actions.snapshotConfigsTriggered.size, "新路径优先")
+        assertEquals(0, actions.snapshotCalled, "旧路径不应再被触发")
     }
 }
