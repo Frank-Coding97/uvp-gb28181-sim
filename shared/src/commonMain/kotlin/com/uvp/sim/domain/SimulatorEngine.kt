@@ -1872,7 +1872,7 @@ class SimulatorEngine(
             val xmlBody = com.uvp.sim.gb28181.CatalogResponse.buildFromTree(
                 config = config,
                 sn = sn,
-                tree = _catalogTree.value
+                tree = publishableCatalogNodes()
             )
             val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
                 config = config,
@@ -2730,7 +2730,7 @@ class SimulatorEngine(
         val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.build(
             deviceId = config.device.deviceId,
             sn = catalogNotifySn,
-            tree = _catalogTree.value
+            tree = publishableCatalogNodes()
         )
         val notifyCseq = dialog.cseqNotify + 1
         val remaining = dialog.remainingSeconds
@@ -2787,6 +2787,16 @@ class SimulatorEngine(
             sendCatalogNotify(updated)
         }
     }
+
+    /**
+     * 对外推送(Catalog Response / 全量 NOTIFY)用的节点集合。
+     * 跳过设备根节点 — 设备 ID 已在响应顶层 `<DeviceID>` 给出,DeviceList 里再放一份会被
+     * 平台显示成额外通道,跟 UI 配置数量对不上。
+     */
+    private fun publishableCatalogNodes(): List<com.uvp.sim.config.CatalogNode> =
+        _catalogTree.value.filterNot {
+            it.type == com.uvp.sim.config.CatalogNodeType.Device && it.parentId == it.id
+        }
 
     /**
      * P1-3: 主动给所有活跃 Catalog 订阅推一次增量 NOTIFY,body 含

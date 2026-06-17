@@ -107,7 +107,7 @@ class CatalogSubscribeIntegrationTest {
 
         val body = notifies.first().body.decodeToString()
         assertTrue(body.contains("<CmdType>Catalog</CmdType>"))
-        assertTrue(body.contains("<DeviceList Num=\"3\">"), "default tree has 3 nodes")
+        assertTrue(body.contains("<DeviceList Num=\"2\">"), "default tree publishes 2 child nodes (root excluded)")
 
         val snap = engine.subscriptions.value["Catalog"]
         assertTrue(snap != null && snap.active)
@@ -203,7 +203,8 @@ class CatalogSubscribeIntegrationTest {
         val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
         assertEquals(1, notifies.size, "updateCatalogTree should push exactly one NOTIFY")
         val body = notifies.first().body.decodeToString()
-        assertTrue(body.contains("<DeviceList Num=\"3\">"))
+        // 推送 DeviceList 不含设备根 → 3 节点树发出去是 Num=2(分组 + 通道)
+        assertTrue(body.contains("<DeviceList Num=\"2\">"))
         assertTrue(body.contains("<Name>新分组</Name>"))
         assertTrue(body.contains("<Name>新通道</Name>"))
 
@@ -288,9 +289,9 @@ class CatalogSubscribeIntegrationTest {
 
         val body = transport.sent.filterIsInstance<SipRequest>()
             .first { it.method == SipMethod.NOTIFY }.body.decodeToString()
-        // 全量 NOTIFY 没有 Event 标签,SumNum 是新树大小 1
+        // 全量 NOTIFY 没有 Event 标签;新树只剩根,推送过滤掉根后 DeviceList 为空 SumNum=0
         assertTrue(!body.contains("<Event>"), "全量 NOTIFY 不应有 <Event> 标签")
-        assertTrue(body.contains("<SumNum>1</SumNum>"))
+        assertTrue(body.contains("<SumNum>0</SumNum>"))
 
         engine.shutdown()
     }
