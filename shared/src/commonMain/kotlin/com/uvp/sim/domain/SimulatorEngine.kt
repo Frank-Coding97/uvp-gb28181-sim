@@ -183,6 +183,8 @@ class SimulatorEngine(
     val currentBroadcast: StateFlow<BroadcastDialog?> = _currentBroadcast.asStateFlow()
     /** 本地音频接收端口。T7 接入真实 RtpReceiver 后绑定真实 UDP 端口,在此之前为占位值。 */
     private var broadcastLocalAudioPort: Int = 0
+    /** 当前对讲媒体传输模式(UDP/TCP主动/TCP被动),200 OK 时决定是否需要主动 connect 平台。 */
+    private var broadcastMode: com.uvp.sim.network.RtpMode = com.uvp.sim.network.RtpMode.UDP
 
     // M3 语音广播 RX 链路(T7)
     private var rtpReceiver: com.uvp.sim.network.BroadcastRxSource? = null
@@ -1353,10 +1355,17 @@ class SimulatorEngine(
      * [targetId] 是平台指定的对讲目标(设备本身或某通道),记入 dialog 供显示。
      */
     private suspend fun sendBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
-        // T7:发 INVITE 之前先绑定 RTP 接收端口(平台首包可能在 ACK 前到达,socket 要早开)
+        // 媒体传输模式:UDP / TCP 主动(公网主力)/ TCP 被动,由 config.audioTransport 决定
+        val mode = when (config.audioTransport) {
+            com.uvp.sim.config.AudioTransportType.UDP -> com.uvp.sim.network.RtpMode.UDP
+            com.uvp.sim.config.AudioTransportType.TCP_ACTIVE -> com.uvp.sim.network.RtpMode.TCP_ACTIVE
+            com.uvp.sim.config.AudioTransportType.TCP_PASSIVE -> com.uvp.sim.network.RtpMode.TCP_PASSIVE
+        }
+        broadcastMode = mode
+        // 发 INVITE 之前先 bind:UDP/TCP被动拿本地端口写进 offer;TCP主动不监听返回 0(answer 后再 connect)
         val receiver = resolvedRtpReceiverFactory(scope)
-        val boundPort = runCatching { receiver.bindLocalPort() }.getOrDefault(-1)
-        if (boundPort <= 0) {
+        val boundPort = runCatching { receiver.bind(mode) }.getOrDefault(-1)
+        if (boundPort < 0) {  // <0 才是失败;TCP主动返回 0 合法
             runCatching { receiver.close() }
             _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, 0))
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "语音广播绑定本地端口失败 → 放弃 INVITE")
@@ -1371,11 +1380,23 @@ class SimulatorEngine(
             domainCode = config.server.domain.takeLast(5).padStart(5, '0'),
             sequence = (cseq + 1) and 0x0FFF
         )
+        val sdpTransport = if (mode == com.uvp.sim.network.RtpMode.UDP) {
+            com.uvp.sim.sip.SdpTransport.UDP
+        } else {
+            com.uvp.sim.sip.SdpTransport.TCP
+        }
+        val sdpSetup = if (mode == com.uvp.sim.network.RtpMode.TCP_ACTIVE) {
+            com.uvp.sim.sip.SdpTcpSetup.ACTIVE
+        } else {
+            com.uvp.sim.sip.SdpTcpSetup.PASSIVE
+        }
         val sdp = com.uvp.sim.sip.SdpAnswer.buildBroadcastOffer(
             deviceId = targetId,
             localIp = localIp,
             localAudioPort = localAudioPort,
-            deviceSsrc = deviceSsrc
+            deviceSsrc = deviceSsrc,
+            transport = sdpTransport,
+            tcpSetup = sdpSetup
         )
         val callIdBc = com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
         val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
@@ -1458,6 +1479,28 @@ class SimulatorEngine(
                     )
                     return
                 }
+                // TCP 主动:设备拿到平台 answer 的 IP:端口后,主动建 TCP 连接(公网典型流程)
+                if (broadcastMode == com.uvp.sim.network.RtpMode.TCP_ACTIVE) {
+                    val connected = runCatching {
+                        rtpReceiver?.connect(answer.remoteIp, answer.remotePort)
+                    }.isSuccess
+                    if (!connected) {
+                        sendBroadcastBye(bc.copy(remoteTag = remoteTag), remoteTag)
+                        val dur = nowMs() - bc.createdAtMs
+                        teardownBroadcastMedia()
+                        _currentBroadcast.value = null
+                        _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Media,
+                            "语音广播 TCP 主动连接平台失败 ${answer.remoteIp}:${answer.remotePort} → BYE"
+                        )
+                        return
+                    }
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Media,
+                        "语音广播 TCP 主动已连平台 ${answer.remoteIp}:${answer.remotePort}"
+                    )
+                }
                 _currentBroadcast.value = bc.copy(
                     state = BroadcastDialogState.Talking,
                     remoteTag = remoteTag,
@@ -1468,9 +1511,9 @@ class SimulatorEngine(
                 _events.emit(SimEvent.BroadcastInvited(bc.sourcePlatformUri, bc.localAudioPort))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Media,
-                    "语音广播建立(Talking)codec=${codec.name} ← ${answer.remoteIp}:${answer.remotePort}"
+                    "语音广播建立(Talking)codec=${codec.name} mode=${broadcastMode} ← ${answer.remoteIp}:${answer.remotePort}"
                 )
-                // T7:启动 RtpReceiver;T9:启动 AudioPlayback
+                // 启动 RtpReceiver(TCP被动在此 accept 平台连入)+ AudioPlayback
                 startBroadcastRx()
             }
             in 400..699 -> {

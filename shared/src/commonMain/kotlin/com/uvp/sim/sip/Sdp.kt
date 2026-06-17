@@ -217,22 +217,34 @@ object SdpAnswer {
      * The device is the *receiver* of platform audio, so the media line is
      * `recvonly` and advertises both PCMA (8, preferred) and PCMU (0, fallback).
      * No `f=` descriptor — that is a video-only GB28181 §C.2 convention.
+     *
+     * [transport] = TCP 时出 `TCP/RTP/AVP` + `a=setup` + `a=connection:new`(RFC 4145/4571)。
+     * TCP 主动([tcpSetup]=ACTIVE):设备主动连平台,offer port 通常填 0(不监听)。
+     * TCP 被动(PASSIVE):设备监听,[localAudioPort] 为监听端口。
      */
     fun buildBroadcastOffer(
         deviceId: String,
         localIp: String,
         localAudioPort: Int,
-        deviceSsrc: String
+        deviceSsrc: String,
+        transport: SdpTransport = SdpTransport.UDP,
+        tcpSetup: SdpTcpSetup = SdpTcpSetup.ACTIVE
     ): String = buildString {
         append("v=0\r\n")
         append("o=").append(deviceId).append(" 0 0 IN IP4 ").append(localIp).append("\r\n")
         append("s=Broadcast\r\n")
         append("c=IN IP4 ").append(localIp).append("\r\n")
         append("t=0 0\r\n")
-        append("m=audio ").append(localAudioPort).append(" RTP/AVP 8 0\r\n")
+        val proto = if (transport == SdpTransport.TCP) "TCP/RTP/AVP" else "RTP/AVP"
+        append("m=audio ").append(localAudioPort).append(' ').append(proto).append(" 8 0\r\n")
         append("a=rtpmap:8 PCMA/8000\r\n")
         append("a=rtpmap:0 PCMU/8000\r\n")
         append("a=recvonly\r\n")
+        if (transport == SdpTransport.TCP) {
+            val setup = if (tcpSetup == SdpTcpSetup.PASSIVE) "passive" else "active"
+            append("a=setup:").append(setup).append("\r\n")
+            append("a=connection:new\r\n")
+        }
         append("y=").append(deviceSsrc).append("\r\n")
     }
 }

@@ -71,4 +71,54 @@ y=0100000001
         assertEquals(9000, parsed.remotePort)
         assertEquals(listOf(96), parsed.payloadTypes)
     }
+
+    @Test
+    fun buildBroadcastOfferTcpActive() {
+        val sdp = SdpAnswer.buildBroadcastOffer(
+            deviceId = "34020000001320000001",
+            localIp = "192.168.1.10",
+            localAudioPort = 0,                  // TCP 主动:不监听,端口占位 0
+            deviceSsrc = "0123456789",
+            transport = SdpTransport.TCP,
+            tcpSetup = SdpTcpSetup.ACTIVE
+        )
+        assertContains(sdp, "m=audio 0 TCP/RTP/AVP 8 0\r\n")
+        assertContains(sdp, "a=rtpmap:8 PCMA/8000\r\n")
+        assertContains(sdp, "a=recvonly\r\n")
+        assertContains(sdp, "a=setup:active\r\n")
+        assertContains(sdp, "a=connection:new\r\n")
+        assertContains(sdp, "y=0123456789\r\n")
+    }
+
+    @Test
+    fun buildBroadcastOfferTcpPassive() {
+        val sdp = SdpAnswer.buildBroadcastOffer(
+            deviceId = "34020000001320000001",
+            localIp = "192.168.1.10",
+            localAudioPort = 40000,              // TCP 被动:监听端口
+            deviceSsrc = "0123456789",
+            transport = SdpTransport.TCP,
+            tcpSetup = SdpTcpSetup.PASSIVE
+        )
+        assertContains(sdp, "m=audio 40000 TCP/RTP/AVP 8 0\r\n")
+        assertContains(sdp, "a=setup:passive\r\n")
+        assertContains(sdp, "a=connection:new\r\n")
+    }
+
+    @Test
+    fun parseAnswerTcpPassivePlatform() {
+        // 平台 answer:TCP 被动(监听),设备主动连
+        val ans = """v=0
+c=IN IP4 10.0.0.5
+m=audio 30100 TCP/RTP/AVP 8
+a=rtpmap:8 PCMA/8000
+a=sendonly
+a=setup:passive
+""".trimIndent()
+        val parsed = SdpParser.parseAnswer(ans)
+        assertEquals(SdpTransport.TCP, parsed.transport)
+        assertEquals("10.0.0.5", parsed.remoteIp)
+        assertEquals(30100, parsed.remotePort)
+        assertEquals(SdpTcpSetup.PASSIVE, parsed.tcpSetup)
+    }
 }
