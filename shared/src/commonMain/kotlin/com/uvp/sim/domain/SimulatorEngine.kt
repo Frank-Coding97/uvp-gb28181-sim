@@ -105,14 +105,21 @@ class SimulatorEngine(
                     cameraCapture?.requestKeyFrame()
                 }
                 override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
-                    // T10 接线:把 cfg 转交给 SnapshotUploadEngine.start(cfg)
-                    // 当前 implement 阶段 T9 仅占位,避免 KMP 编译失败;真实路线在 T10 注入
+                    val pipeline = snapshotPipeline
+                    if (pipeline == null) {
+                        SystemLogger.emit(
+                            LogLevel.Warning,
+                            LogTag.Lifecycle,
+                            "SnapShotConfig 收到但抓拍管线未挂(平台壳未调 attachSnapshotPipeline);忽略 SessionID=${cfg.sessionId}"
+                        )
+                        return
+                    }
                     SystemLogger.emit(
                         LogLevel.Info,
                         LogTag.Lifecycle,
-                        "SnapShotConfig 收到: SessionID=${cfg.sessionId} N=${cfg.snapNum} " +
-                            "interval=${cfg.intervalMs}ms url=${cfg.uploadUrl} (T10 接线后真实派发)"
+                        "SnapShotConfig 派发 SessionID=${cfg.sessionId} N=${cfg.snapNum} interval=${cfg.intervalMs}ms"
                     )
+                    pipeline.start(cfg)
                 }
             },
             scope = scope
@@ -123,6 +130,13 @@ class SimulatorEngine(
     private var registerJob: Job? = null
     private var inboundJob: Job? = null
     private var heartbeat: Heartbeat? = null
+
+    /**
+     * 7.5 抓拍管线(GB-2022 §9.5)。Android 壳启动时通过 [attachSnapshotPipeline] 注入真实例,
+     * 注入前 [DeviceControlActions.triggerSnapshotConfig] 收到 SnapShotConfig 直接 warn 忽略。
+     */
+    private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
+    private var snapshotCachePipeline: com.uvp.sim.snapshot.JpegLocalCache? = null
 
     // Per-registration session state
     private var cseq: Int = 0
@@ -454,6 +468,97 @@ class SimulatorEngine(
                 _events.emit(SimEvent.SnapshotReported(cseq.toString()))
             } catch (e: Throwable) {
                 _events.emit(SimEvent.TransportError("snapshot send: ${e.message}"))
+            }
+        }
+    }
+
+    /**
+     * T10 (7.5 GB-2022) — Android 壳启动时挂上抓拍管线。注入前 SnapShotConfig 命令会被忽略。
+     *
+     * @param capture 抓帧端口(Android = CameraX ImageCapture, iOS = stub)
+     * @param cache JPEG 落盘端口
+     * @param httpClient ktor HttpClient(Android = CIO engine)
+     */
+    fun attachSnapshotPipeline(
+        capture: com.uvp.sim.snapshot.SnapshotCapture,
+        cache: com.uvp.sim.snapshot.JpegLocalCache,
+        httpClient: io.ktor.client.HttpClient
+    ) {
+        snapshotCachePipeline = cache
+        val uploader = com.uvp.sim.snapshot.SnapshotHttpUploader(httpClient)
+        snapshotPipeline = com.uvp.sim.snapshot.SnapshotUploadEngine(
+            takeJpeg = { capture.takeJpeg() },
+            writeCache = { id, bytes -> cache.write(id, bytes) },
+            uploader = uploader,
+            notifySender = { xml -> sendSnapshotNotify(xml) },
+            scope = scope,
+            deviceId = config.device.deviceId,
+            snAllocator = {
+                cseq += 1
+                cseq.toString()
+            },
+            onProgress = { progress ->
+                scope.launch {
+                    when (progress) {
+                        is com.uvp.sim.snapshot.SnapshotProgress.NotifySent ->
+                            _events.emit(
+                                SimEvent.SnapshotUploaded(
+                                    sessionId = progress.sessionId,
+                                    snapShotId = progress.snapShotId,
+                                    count = progress.count,
+                                    total = progress.total
+                                )
+                            )
+                        is com.uvp.sim.snapshot.SnapshotProgress.UploadFailedFinal ->
+                            _events.emit(
+                                SimEvent.SnapshotUploadFailed(
+                                    sessionId = progress.sessionId,
+                                    snapShotId = progress.snapShotId
+                                )
+                            )
+                        is com.uvp.sim.snapshot.SnapshotProgress.CaptureSkipped -> {
+                            // 仅日志,不发 SimEvent(无信令影响)
+                            SystemLogger.emit(
+                                LogLevel.Warning,
+                                LogTag.Media,
+                                "snapshot capture returned null: SessionID=${progress.sessionId} ID=${progress.snapShotId}"
+                            )
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    /**
+     * T10 (7.5) — 把 SnapShotNotifyBuilder 已构造好的 XML 包裹成 SIP MESSAGE 发出。
+     * 复用 [reportSnapshot] 的出站结构(buildMessage + transport.send)。
+     */
+    private suspend fun sendSnapshotNotify(xml: String) {
+        mutex.withLock {
+            if (_state.value != SipState.Registered && _state.value != SipState.InCall) {
+                _events.emit(SimEvent.TransportError("snapshot notify: not registered"))
+                return
+            }
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xml
+            )
+            try {
+                transport.send(msg)
+                _events.emit(SimEvent.MessageSent(msg))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("snapshot notify send: ${e.message}"))
             }
         }
     }

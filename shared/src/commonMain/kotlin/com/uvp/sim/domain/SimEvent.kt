@@ -80,6 +80,27 @@ sealed class SimEvent {
         val sn: String,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+
+    /**
+     * T10 (7.5 GB-2022) — 平台 SnapShotConfig 触发的抓拍 + 上传成功后,设备发出 SnapShot
+     * Notify 的事件。一次 SnapShotConfig 序列每张图触发一次本事件,最后一张时 [count] == [total]。
+     */
+    data class SnapshotUploaded(
+        val sessionId: String,
+        val snapShotId: String,
+        val count: Int,
+        val total: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /**
+     * T10 (7.5) — 抓拍序列内某张图终态失败(retry 3 次仍失败,跳过 NOTIFY)。
+     */
+    data class SnapshotUploadFailed(
+        val sessionId: String,
+        val snapShotId: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
     /** Raw SIP envelope for the log view. */
     data class MessageSent(
         val message: SipMessage,

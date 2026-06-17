@@ -283,6 +283,17 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
     is SimEvent.SnapshotReported -> LogRowSpec(
         "", "→", true, "ALM", UvpColor.Warning, "抓拍 SN=${ev.sn}", category = "MESSAGE"
     )
+    is SimEvent.SnapshotUploaded -> LogRowSpec(
+        "", "→", true, "SNP", UvpColor.Success,
+        "抓拍上传 ${ev.count}/${ev.total} · ${ev.snapShotId}",
+        category = "MESSAGE"
+    )
+    is SimEvent.SnapshotUploadFailed -> LogRowSpec(
+        "", "⚠", true, "SNP", UvpColor.Danger,
+        "抓拍上传失败 · ${ev.snapShotId}",
+        highlight = true,
+        category = "MESSAGE"
+    )
     is SimEvent.MessageSent -> LogRowSpec(
         "", "→", true, msgMethodShort(ev.message), UvpColor.Primary,
         msgContent(ev.message), category = msgCategory(ev.message)

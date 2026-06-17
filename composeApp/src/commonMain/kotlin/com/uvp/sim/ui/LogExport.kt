@@ -131,6 +131,8 @@ object LogExport {
         is SimEvent.StreamStats -> "· STATS    ${ev.frameCount}f / ${ev.packetCount}p"
         is SimEvent.CallEnded -> "← BYE      ${ev.reason}"
         is SimEvent.SnapshotReported -> "→ ALARM    抓拍 SN=${ev.sn}"
+        is SimEvent.SnapshotUploaded -> "→ SNAP     上传 ${ev.count}/${ev.total} · ${ev.snapShotId}"
+        is SimEvent.SnapshotUploadFailed -> "⚠ SNAP     上传失败 · ${ev.snapShotId}"
         is SimEvent.MessageSent -> "→ ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
         is SimEvent.MessageReceived -> "← ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
         is SimEvent.TransportError -> "⚠ ERROR    ${ev.description}"
