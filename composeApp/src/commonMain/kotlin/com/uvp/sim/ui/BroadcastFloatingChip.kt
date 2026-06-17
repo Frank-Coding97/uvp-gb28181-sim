@@ -10,12 +10,13 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
@@ -27,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -39,11 +41,13 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
 /**
- * M3 语音对讲浮动方块 —— 挂在 App 根 Box,浮在所有 Tab 之上,可拖拽。
+ * M3 语音对讲浮动方块 —— 玻璃拟态(glassmorphism)风格,透明科技蓝。
  *
- * 设计:贴右侧边垂直居中初始停靠(悬浮球习惯位,避开状态栏);竖向方块卡片;
- * 蓝色渐变 + 半透明 + 高光描边 + 投影。内容自上而下:📢 / 对讲中 / 来源末四位 /
- * 分隔线 / 🔊·✕。点上半区弹统计 sheet。
+ * 设计语言:
+ *  - 正方形 squircle(82dp,圆角 24dp),贴右侧边垂直居中初始停靠
+ *  - 半透明科技蓝对角渐变(cyan→blue,~60% 不透明),底层内容隐约透出 → 科技玻璃感
+ *  - 顶部高光反射层 + 高光描边 + 蓝色辉光投影,模拟玻璃质感(非真 backdrop blur)
+ *  - 内容自上而下:📢 / 对讲中 / 末四位 / 🔊·✕;点上半区弹统计 sheet;整体可拖拽
  *
  * 作为 [BoxScope] 扩展以便用 [BoxScope.align] 定位。
  */
@@ -56,19 +60,22 @@ fun BoxScope.BroadcastFloatingChip(state: AppUiState, actions: AppActions) {
     var offsetY by remember { mutableStateOf(0f) }
     var showSheet by remember { mutableStateOf(false) }
 
-    // 蓝色系渐变 + ~90% 不透明(留一点透明感)
-    val cardBrush = Brush.verticalGradient(
-        listOf(Color(0xE63B82F6), Color(0xE61D4ED8))
+    val shape = RoundedCornerShape(24.dp)
+    // 科技蓝对角渐变,半透明(留通透感)
+    val glassBrush = Brush.linearGradient(
+        listOf(Color(0x9922D3EE), Color(0xAA2563EB))  // cyan-400 → blue-600
     )
 
-    Column(
+    Box(
         modifier = Modifier
             .align(Alignment.CenterEnd)
-            .padding(end = 8.dp)
+            .padding(end = 10.dp)
             .offset { IntOffset(offsetX.roundToInt(), offsetY.roundToInt()) }
-            .shadow(10.dp, RoundedCornerShape(18.dp))
-            .background(cardBrush, RoundedCornerShape(18.dp))
-            .border(1.dp, Color(0x59FFFFFF), RoundedCornerShape(18.dp))
+            .size(82.dp)
+            .shadow(16.dp, shape, spotColor = Color(0xFF1E66E0), ambientColor = Color(0xFF1E66E0))
+            .clip(shape)
+            .background(glassBrush)
+            .border(1.dp, Color(0x80FFFFFF), shape)
             .pointerInput(Unit) {
                 detectDragGestures { change, drag ->
                     change.consume()
@@ -76,40 +83,51 @@ fun BoxScope.BroadcastFloatingChip(state: AppUiState, actions: AppActions) {
                     offsetY += drag.y
                 }
             }
-            .widthIn(min = 64.dp)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // 上半区:图标 + 标题 + 末四位(点击弹统计)
+        // 顶部高光反射层(玻璃质感)
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(34.dp)
+                .align(Alignment.TopCenter)
+                .background(Brush.verticalGradient(listOf(Color(0x3DFFFFFF), Color(0x00FFFFFF))))
+        )
+
         Column(
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.clickable { showSheet = true }
+            verticalArrangement = Arrangement.Center
         ) {
-            Text("📢", fontSize = 19.sp)
-            Spacer(Modifier.height(3.dp))
-            Text("对讲中", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-            Text(
-                bc.sourceId?.takeLast(4) ?: "----",
-                fontSize = 10.sp, color = Color(0xCCFFFFFF), fontFamily = FontFamily.Monospace
-            )
-        }
+            // 上半区:图标 + 标题 + 末四位(点击弹统计)
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.clickable { showSheet = true }
+            ) {
+                Text("📢", fontSize = 18.sp)
+                Spacer(Modifier.height(2.dp))
+                Text("对讲中", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+                Text(
+                    bc.sourceId?.takeLast(4) ?: "----",
+                    fontSize = 9.sp, color = Color(0xCCFFFFFF), fontFamily = FontFamily.Monospace
+                )
+            }
 
-        Spacer(Modifier.height(9.dp))
-        // 细分隔线
-        Box(Modifier.width(38.dp).height(1.dp).background(Color(0x33FFFFFF)))
-        Spacer(Modifier.height(9.dp))
+            Spacer(Modifier.height(6.dp))
+            Box(Modifier.width(36.dp).height(1.dp).background(Color(0x33FFFFFF)))
+            Spacer(Modifier.height(6.dp))
 
-        // 操作行:静音切换 + 停止
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-            Text(
-                if (bc.speakerOn) "🔊" else "🔇", fontSize = 16.sp,
-                modifier = Modifier.size(22.dp).clickable { actions.onBroadcastToggleSpeaker(!bc.speakerOn) }
-            )
-            Spacer(Modifier.width(14.dp))
-            Text(
-                "✕", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White,
-                modifier = Modifier.size(22.dp).clickable { actions.onBroadcastStop() }
-            )
+            // 操作行:静音切换 + 停止
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (bc.speakerOn) "🔊" else "🔇", fontSize = 15.sp,
+                    modifier = Modifier.size(20.dp).clickable { actions.onBroadcastToggleSpeaker(!bc.speakerOn) }
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    "✕", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White,
+                    modifier = Modifier.size(20.dp).clickable { actions.onBroadcastStop() }
+                )
+            }
         }
     }
 
