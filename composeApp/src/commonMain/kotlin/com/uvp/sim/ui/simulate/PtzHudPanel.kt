@@ -218,7 +218,7 @@ private fun EmptyRow() {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            "等待平台下发控制指令",
+            "暂无命令记录",
             fontSize = 12.sp,
             color = UvpColor.TextHint
         )

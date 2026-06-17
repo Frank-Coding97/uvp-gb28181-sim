@@ -6,7 +6,6 @@ import android.view.TextureView
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -14,18 +13,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -33,9 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.android.filament.EntityManager
@@ -71,12 +64,6 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
     val sceneState = remember { GlbSceneState() }
     val currentState by rememberUpdatedState(state)
     val thumbnailBitmap = remember(context) { loadAssetImageBitmap(context, "ptz_scene_thumbnail.png") }
-    var inspectionEnabled by remember { mutableStateOf(false) }
-    var inspectionLabel by remember { mutableStateOf<InspectionLabel?>(null) }
-
-    LaunchedEffect(inspectionEnabled) {
-        sceneState.setInspectionEnabled(inspectionEnabled)
-    }
 
     Box(modifier = modifier) {
         AndroidView(
@@ -86,8 +73,7 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
                     sceneState.attach(
                         context = ctx,
                         textureView = textureView,
-                        provider = { currentState },
-                        onInspectionLabelChanged = { inspectionLabel = it }
+                        provider = { currentState }
                     )
                 }
             }
@@ -101,14 +87,6 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
                     .padding(end = 10.dp, bottom = 10.dp)
             )
         }
-        InspectionBadge(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(10.dp),
-            enabled = inspectionEnabled,
-            label = inspectionLabel,
-            onToggle = { inspectionEnabled = !inspectionEnabled }
-        )
     }
     DisposableEffect(Unit) {
         onDispose { sceneState.detach() }
@@ -119,11 +97,8 @@ private class GlbSceneState {
     private var modelViewer: ModelViewer? = null
     private var stateProvider: (() -> DeviceControlState)? = null
     private var light: Int = 0
-    private var inspectionEnabled: Boolean = true
-    private var inspectionStartNanos: Long = 0L
-    private var onInspectionLabelChanged: ((InspectionLabel?) -> Unit)? = null
 
-    /** 巡检模式下要轮流转动的组件. */
+    /** PTZ 网格绑定: Sphere / Sphere.002 / Cylinder / Sphere.001 — 跟随 Yaw/Pitch pivot. */
     private val inspectionTargets = mutableListOf<InspectionTarget>()
     private var yawPivot: PtzPivot? = null
     private var pitchPivot: PtzPivot? = null
@@ -134,6 +109,11 @@ private class GlbSceneState {
     private var tiltAngle = 0f
     private var zoomLevel = 1f
     private var lastFrameNanos = 0L
+
+    /** 开机自检: 进入页面后 6.5s 内由代码驱动 pan/tilt,演示左右+上下,完全覆盖平台积分. */
+    private var selfTestActive: Boolean = true
+    private var selfTestStartNanos: Long = 0L
+
     var pose by mutableStateOf(PtzPose())
         private set
 
@@ -147,19 +127,17 @@ private class GlbSceneState {
     fun attach(
         context: android.content.Context,
         textureView: TextureView,
-        provider: () -> DeviceControlState,
-        onInspectionLabelChanged: (InspectionLabel?) -> Unit
+        provider: () -> DeviceControlState
     ) {
         Utils.init()
         stateProvider = provider
-        this.onInspectionLabelChanged = onInspectionLabelChanged
 
         val viewer = ModelViewer(textureView)
         modelViewer = viewer
         viewer.renderer.setClearOptions(
             Renderer.ClearOptions().apply {
                 clear = true
-                clearColor = doubleArrayOf(0.78, 0.83, 0.82, 1.0)
+                clearColor = doubleArrayOf(0.165, 0.251, 0.408, 1.0)
             }
         )
         // 禁止用户拖动,只展示平台指令驱动的姿态。
@@ -273,57 +251,22 @@ private class GlbSceneState {
         lastFrameNanos = frameTimeNanos
 
         val s = getState()
-        panAngle = (panAngle + s.panSpeed * dt).coerceIn(-180f, 180f)
-        tiltAngle = (tiltAngle + s.tiltSpeed * dt).coerceIn(-90f, 90f)
-        zoomLevel = (zoomLevel + s.zoomSpeed * dt).coerceIn(1f, 16f)
+        if (selfTestActive) {
+            if (selfTestStartNanos == 0L) selfTestStartNanos = frameTimeNanos
+            val tSec = (frameTimeNanos - selfTestStartNanos) / 1e9f
+            val (testPan, testTilt, done) = selfTestSample(tSec)
+            panAngle = testPan
+            tiltAngle = testTilt
+            zoomLevel = 1f
+            if (done) selfTestActive = false
+        } else {
+            panAngle = (panAngle + s.panSpeed * dt).coerceIn(-180f, 180f)
+            tiltAngle = (tiltAngle + s.tiltSpeed * dt).coerceIn(-90f, 90f)
+            zoomLevel = (zoomLevel + s.zoomSpeed * dt).coerceIn(1f, 16f)
+        }
         pose = PtzPose(panAngle, tiltAngle, zoomLevel)
 
         val tm = viewer.engine.transformManager
-        if (inspectionEnabled && inspectionTargets.isNotEmpty()) {
-            if (inspectionStartNanos == 0L) {
-                inspectionStartNanos = frameTimeNanos
-            }
-            val cycleNanos = 2_100_000_000L
-            val elapsed = (frameTimeNanos - inspectionStartNanos).coerceAtLeast(0L)
-            val slot = ((elapsed / cycleNanos).toInt()) % inspectionTargets.size
-            val phase = ((elapsed % cycleNanos).toFloat() / cycleNanos.toFloat())
-            val angle = phase * 360f
-            val target = inspectionTargets[slot]
-
-            onInspectionLabelChanged?.invoke(
-                InspectionLabel(
-                    name = target.name,
-                    friendlyName = target.friendlyName,
-                    index = slot + 1,
-                    total = inspectionTargets.size
-                )
-            )
-
-            yawPivot?.let { pivot -> tm.setTransform(tm.getInstance(pivot.entity), pivot.initialTransform) }
-            pitchPivot?.let { pivot -> tm.setTransform(tm.getInstance(pivot.entity), pivot.initialTransform) }
-
-            for (inspectionTarget in inspectionTargets) {
-                val ti = tm.getInstance(inspectionTarget.entity)
-                if (ti == 0) continue
-                val applied = if (inspectionTarget.entity == target.entity) {
-                    mat4Multiply(
-                        inspectionTarget.initialTransform,
-                        inspectionRotation(inspectionTarget.axis, angle)
-                    )
-                } else {
-                    inspectionTarget.initialTransform
-                }
-                tm.setTransform(ti, applied)
-            }
-
-            viewer.render(frameTimeNanos)
-            for (entity in hiddenEntities) {
-                hideEntity(viewer, entity)
-            }
-            return
-        }
-
-        onInspectionLabelChanged?.invoke(null)
         val panTransform = inspectionRotation(InspectionAxis.YawZ, panAngle)
         val tiltTransform = inspectionRotation(InspectionAxis.PitchX, tiltAngle)
         val currentYawPivot = yawPivot
@@ -389,9 +332,7 @@ private class GlbSceneState {
         inspectionTargets.clear(); hiddenEntities.clear()
         yawPivot = null
         pitchPivot = null
-        onInspectionLabelChanged?.invoke(null)
         lastFrameNanos = 0L
-        inspectionStartNanos = 0L
     }
 
     private fun readAsset(context: android.content.Context, name: String): ByteBuffer {
@@ -409,16 +350,6 @@ private class GlbSceneState {
             rcm.setLayerMask(ri, 0xFF, 0x00)
         }
         viewer.scene.removeEntity(entity)
-    }
-
-    fun setInspectionEnabled(enabled: Boolean) {
-        val changed = inspectionEnabled != enabled
-        inspectionEnabled = enabled
-        if (enabled && changed) {
-            inspectionStartNanos = 0L
-        } else {
-            onInspectionLabelChanged?.invoke(null)
-        }
     }
 
     private fun inspectionRotation(axis: InspectionAxis, angleDeg: Float): FloatArray {
@@ -470,6 +401,47 @@ private enum class InspectionAxis {
     RollY
 }
 
+/**
+ * 开机自检时间线: 左右 → 上下 → 落定. 返回 (pan°, tilt°, done).
+ * 段位 (秒):
+ *   0.0 ~ 0.5  停顿
+ *   0.5 ~ 1.5  pan 0 → -50 (左)
+ *   1.5 ~ 2.5  pan -50 → +50 (右)
+ *   2.5 ~ 3.0  pan +50 → 0
+ *   3.0 ~ 3.5  停顿
+ *   3.5 ~ 4.5  tilt 0 → +25 (上)
+ *   4.5 ~ 5.5  tilt +25 → -25 (下)
+ *   5.5 ~ 6.0  tilt -25 → 0
+ *   ≥ 6.0      done
+ */
+private data class SelfTestSample(val pan: Float, val tilt: Float, val done: Boolean)
+
+private fun selfTestSample(t: Float): SelfTestSample {
+    val panAmp = 50f
+    val tiltAmp = 25f
+    val pan: Float
+    val tilt: Float
+    when {
+        t < 0.5f -> { pan = 0f; tilt = 0f }
+        t < 1.5f -> { pan = lerpEase(0f, -panAmp, (t - 0.5f) / 1.0f); tilt = 0f }
+        t < 2.5f -> { pan = lerpEase(-panAmp, panAmp, (t - 1.5f) / 1.0f); tilt = 0f }
+        t < 3.0f -> { pan = lerpEase(panAmp, 0f, (t - 2.5f) / 0.5f); tilt = 0f }
+        t < 3.5f -> { pan = 0f; tilt = 0f }
+        t < 4.5f -> { pan = 0f; tilt = lerpEase(0f, tiltAmp, (t - 3.5f) / 1.0f) }
+        t < 5.5f -> { pan = 0f; tilt = lerpEase(tiltAmp, -tiltAmp, (t - 4.5f) / 1.0f) }
+        t < 6.0f -> { pan = 0f; tilt = lerpEase(-tiltAmp, 0f, (t - 5.5f) / 0.5f) }
+        else -> return SelfTestSample(0f, 0f, done = true)
+    }
+    return SelfTestSample(pan, tilt, done = false)
+}
+
+/** 余弦缓动 — 起步慢/到位慢,模拟伺服电机. */
+private fun lerpEase(from: Float, to: Float, phase: Float): Float {
+    val p = phase.coerceIn(0f, 1f)
+    val eased = 0.5f - 0.5f * cos(p * PI.toFloat())
+    return from + (to - from) * eased
+}
+
 private data class InspectionTarget(
     val name: String,
     val friendlyName: String,
@@ -488,13 +460,6 @@ private data class PtzPose(
     val pan: Float = 0f,
     val tilt: Float = 0f,
     val zoom: Float = 1f
-)
-
-private data class InspectionLabel(
-    val name: String,
-    val friendlyName: String,
-    val index: Int,
-    val total: Int
 )
 
 @Composable
@@ -547,56 +512,5 @@ private fun PtzThumbnail(
 private fun loadAssetImageBitmap(context: android.content.Context, name: String): ImageBitmap? {
     return context.assets.open(name).use { stream ->
         BitmapFactory.decodeStream(stream)?.asImageBitmap()
-    }
-}
-
-@Composable
-private fun InspectionBadge(
-    modifier: Modifier = Modifier,
-    enabled: Boolean,
-    label: InspectionLabel?,
-    onToggle: () -> Unit
-) {
-    val bg = if (enabled) UvpColor.Primary.copy(alpha = 0.92f) else Color.White.copy(alpha = 0.9f)
-    val fg = if (enabled) Color.White else UvpColor.TextSecondary
-    Surface(
-        modifier = modifier.clickable { onToggle() },
-        shape = RoundedCornerShape(8.dp),
-        color = bg,
-        border = androidx.compose.foundation.BorderStroke(1.dp, UvpColor.BorderLight)
-    ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = if (enabled) "巡检模式 ON" else "巡检模式 OFF",
-                color = fg,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            if (enabled && label != null) {
-                Text(
-                    text = "${label.index}/${label.total}  ${label.name}",
-                    color = fg,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = label.friendlyName,
-                    color = fg.copy(alpha = 0.88f),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            } else if (!enabled) {
-                Text(
-                    text = "点按打开组件轮询",
-                    color = fg,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-        }
     }
 }

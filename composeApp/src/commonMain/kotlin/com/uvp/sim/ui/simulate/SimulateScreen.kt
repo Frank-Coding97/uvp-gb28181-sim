@@ -10,27 +10,31 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CenterFocusWeak
-import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
+import kotlinx.coroutines.delay
 
 /**
  * "模拟"tab 主屏(M2 §4 设备控制 + 3D 模拟中心).
@@ -110,26 +114,8 @@ private fun MonitoringStage(
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Box(
-                    modifier = Modifier
-                        .padding(start = 8.dp)
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(if (hasMotion(state)) UvpColor.Success else UvpColor.Border)
-                )
-                Text(
-                    if (hasMotion(state)) "控制中" else "待命",
-                    modifier = Modifier.padding(start = 5.dp),
-                    color = if (hasMotion(state)) UvpColor.SuccessText else UvpColor.TextHint,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Medium
-                )
                 Box(Modifier.weight(1f))
-                CompactMetric("Pan", formatSignedAngle(state.panAngle))
-                Box(Modifier.width(8.dp))
-                CompactMetric("Tilt", formatSignedAngle(state.tiltAngle))
-                Box(Modifier.width(8.dp))
-                CompactMetric("Zoom", "%.1fx".format(state.zoomLevel))
+                StatusHeadline(state = state)
             }
         }
 
@@ -157,95 +143,73 @@ private fun MonitoringStage(
                 state = state,
                 modifier = Modifier.fillMaxSize()
             )
-            StageOverlay(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(12.dp),
-                state = state
-            )
         }
     }
 }
 
+/**
+ * 顶部状态短句 — "现在平台/设备到底在干什么"维度的文案,
+ * 跟底部 StatusDot(REC/GUARD/ALARM/REBOOT 持续开关状态) 不重叠.
+ *
+ * 优先级: 开机自检中 > PTZ 运动中 > 刚收到平台命令 (3s 内) > 等待中.
+ */
 @Composable
-private fun CompactMetric(label: String, value: String) {
-    Column(horizontalAlignment = Alignment.End) {
-        Text(
-            label,
-            color = UvpColor.TextHint,
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Medium
+private fun StatusHeadline(state: DeviceControlState) {
+    val nowMs = useTickingNow(intervalMs = 500L)
+    val mountMs = remember { currentTimeMs() }
+    val selfTesting = (nowMs - mountMs) in 0..6_500
+    val cmd = state.lastCommand
+    val recentCmd = cmd != null && (nowMs - cmd.timestampMs) in 0..3_000
+
+    val (text, color, dotColor) = when {
+        selfTesting -> Triple("开机自检中", UvpColor.Primary, UvpColor.Primary)
+        hasMotion(state) -> Triple("PTZ 运动中", UvpColor.Primary, UvpColor.Primary)
+        recentCmd -> Triple("刚收到 ${cmd!!.type}", UvpColor.SuccessText, UvpColor.Success)
+        else -> Triple("等待平台下发控制指令", UvpColor.TextHint, UvpColor.Border)
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(dotColor)
         )
         Text(
-            value,
-            color = UvpColor.Text,
-            fontSize = 10.sp,
+            text,
+            modifier = Modifier.padding(start = 6.dp),
+            color = color,
+            fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold
         )
     }
 }
 
+/**
+ * 周期性返回当前墙上时间(ms),让基于"距离命令多久"的 UI 状态随时间自然失效.
+ * 不依赖平台 API,纯 Compose + kotlinx.coroutines.delay.
+ */
 @Composable
-private fun StageOverlay(modifier: Modifier = Modifier, state: DeviceControlState) {
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        OverlayPill(
-            icon = Icons.Outlined.CenterFocusWeak,
-            label = state.lastCommand?.type ?: "NO CMD",
-            active = state.lastCommand != null
-        )
-        Box(Modifier.width(6.dp))
-        OverlayPill(
-            icon = Icons.Outlined.Memory,
-            label = when {
-                state.isRebooting -> "REBOOT"
-                state.isAlarming -> "ALARM"
-                state.isRecording -> "REC"
-                state.isGuarded -> "GUARD"
-                else -> "ONLINE"
-            },
-            active = state.isRebooting || state.isAlarming || state.isRecording || state.isGuarded
-        )
+private fun useTickingNow(intervalMs: Long): Long {
+    var now by remember { mutableStateOf(currentTimeMs()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(intervalMs)
+            now = currentTimeMs()
+        }
     }
+    return now
 }
 
-@Composable
-private fun OverlayPill(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    active: Boolean,
-) {
-    val fg = if (active) UvpColor.PrimaryDark else UvpColor.TextSecondary
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(UvpColor.Surface.copy(alpha = 0.86f))
-            .border(1.dp, UvpColor.BorderLight, RoundedCornerShape(999.dp))
-            .padding(horizontal = 8.dp, vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(icon, contentDescription = null, tint = fg, modifier = Modifier.size(13.dp))
-        Text(
-            label,
-            modifier = Modifier.padding(start = 4.dp),
-            color = fg,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-    }
-}
+private fun currentTimeMs(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
 
-private fun hasMotion(state: DeviceControlState): Boolean {
+internal fun hasMotion(state: DeviceControlState): Boolean {
     return state.panSpeed != 0f || state.tiltSpeed != 0f || state.zoomSpeed != 0f
 }
 
-private fun formatSignedAngle(value: Float): String {
-    val rounded = kotlin.math.round(value).toInt()
-    return if (rounded > 0) "+$rounded°" else "$rounded°"
-}
-
-private val CameraStageTop = androidx.compose.ui.graphics.Color(0xFFF6F9FD)
-private val CameraStageMid = androidx.compose.ui.graphics.Color(0xFFE4ECF7)
-private val CameraStageBottom = androidx.compose.ui.graphics.Color(0xFFD7E2F1)
+private val CameraStageTop = Color(0xFF3D5A85)
+private val CameraStageMid = Color(0xFF2A4068)
+private val CameraStageBottom = Color(0xFF182B49)
 
 /**
  * 加载 .glb 摄像机模型(C 方案 2026-06-13).
