@@ -73,29 +73,25 @@ fun App(state: AppUiState, actions: AppActions) {
         )
         UvpToastHost {
             CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-                        CompactTopBar()
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                            color = UvpColor.Bg
-                        ) {
-                            when (currentTab) {
-                                AppTab.Home -> HomeScreen(state, actions)
-                                AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
-                                    state, actions,
-                                    openAlarmTarget = alarmTarget,
-                                    onAlarmTargetConsumed = { alarmTarget = false }
-                                )
-                                AppTab.Settings -> SettingsScreen(state, actions)
-                                AppTab.Recording -> RecordingScreen(state, actions)
-                                AppTab.Log -> LogScreen(state, actions)
-                            }
+                Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
+                    CompactTopBar()
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().weight(1f),
+                        color = UvpColor.Bg
+                    ) {
+                        when (currentTab) {
+                            AppTab.Home -> HomeScreen(state, actions)
+                            AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
+                                state, actions,
+                                openAlarmTarget = alarmTarget,
+                                onAlarmTargetConsumed = { alarmTarget = false }
+                            )
+                            AppTab.Settings -> SettingsScreen(state, actions)
+                            AppTab.Recording -> RecordingScreen(state, actions)
+                            AppTab.Log -> LogScreen(state, actions)
                         }
-                        CompactBottomBar(currentTab) { currentTab = it }
                     }
-                    // M3 语音对讲浮动方块 —— 浮在所有 Tab 之上,可拖拽
-                    BroadcastFloatingChip(state, actions)
+                    CompactBottomBar(currentTab) { currentTab = it }
                 }
             }
         }
