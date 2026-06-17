@@ -191,6 +191,9 @@ class SimulatorEngine(
     private val audioChannel = Channel<ShortArray>(capacity = 50, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var audioPlayback: com.uvp.sim.media.AudioSink? = null
     private var audioPlayJob: Job? = null
+    /** 扬声器开关:false = 静音(继续收 RTP/统计,只是不往 AudioTrack 写)。每路新对讲重置为 true。 */
+    private val _broadcastSpeakerOn = MutableStateFlow(true)
+    val broadcastSpeakerOn: StateFlow<Boolean> = _broadcastSpeakerOn.asStateFlow()
     /** RtpReceiver 工厂:生产默认走 expect class;测试注入 fake 以避免真 socket + Dispatchers.IO 不确定性。 */
     private val resolvedRtpReceiverFactory: (CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource =
         rtpReceiverFactory ?: { sc -> com.uvp.sim.network.realBroadcastRxSource(sc) }
@@ -1361,6 +1364,7 @@ class SimulatorEngine(
         }
         rtpReceiver = receiver
         broadcastLocalAudioPort = boundPort
+        _broadcastSpeakerOn.value = true  // 每路新对讲默认开扬声器
         val localAudioPort = boundPort
         val deviceSsrc = com.uvp.sim.sip.SsrcUtils.generate(
             realtime = true,
@@ -1526,6 +1530,12 @@ class SimulatorEngine(
         }
     }
 
+    /** 用户切换语音对讲扬声器开关(静音不影响 RTP 接收 / dialog,只 gate 写 AudioTrack)。 */
+    fun setBroadcastSpeaker(on: Boolean) {
+        _broadcastSpeakerOn.value = on
+        SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音对讲扬声器 → ${if (on) "开" else "静音"}")
+    }
+
     /**
      * 用户主动停止语音广播(UI ✕)。发 BYE(若已建立 dialog)→ 拆媒体 → 清状态 → emit BroadcastEnded。
      */
@@ -1571,7 +1581,7 @@ class SimulatorEngine(
         audioPlayback = sink
         audioPlayJob = scope.launch {
             for (pcm in audioChannel) {
-                audioPlayback?.write(pcm)
+                if (_broadcastSpeakerOn.value) audioPlayback?.write(pcm)
             }
         }
         rxStatsJob = scope.launch {

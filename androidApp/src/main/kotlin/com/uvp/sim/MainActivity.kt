@@ -258,6 +258,10 @@ class MainActivity : ComponentActivity() {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户停止语音对讲")
                     viewModel.stopBroadcast()
                 }
+                override fun onBroadcastToggleSpeaker(on: Boolean) {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户${if (on) "开启" else "静音"}对讲扬声器")
+                    viewModel.setBroadcastSpeaker(on)
+                }
             }
             // Rebuild encoder/streamer whenever video profile bumps.
             LaunchedEffect(videoVersion) {

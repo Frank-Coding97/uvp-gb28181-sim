@@ -84,7 +84,9 @@ data class BroadcastState(
     val rxPackets: Long = 0L,
     val rxBytes: Long = 0L,
     val seqLost: Long = 0L,
-    val decodeErrors: Long = 0L
+    val decodeErrors: Long = 0L,
+    /** 扬声器开关(false = 静音)。 */
+    val speakerOn: Boolean = true
 )
 
 /**
@@ -206,6 +208,9 @@ interface AppActions {
 
     /** M3 用户停止语音广播(主屏「对讲中」标签 ✕)。engine.stopBroadcast(Local)。 */
     fun onBroadcastStop() {}
+
+    /** M3 切换对讲扬声器开关(🔊/🔇)。on=true 放音,false 静音。 */
+    fun onBroadcastToggleSpeaker(on: Boolean) {}
 }
 
 enum class AppTab(val label: String) {

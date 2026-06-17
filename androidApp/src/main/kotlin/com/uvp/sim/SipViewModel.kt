@@ -352,24 +352,26 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
         engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
         engineScope.launch {
-            eng.currentBroadcast.collect { bc ->
-                _broadcast.value = if (bc == null) {
-                    com.uvp.sim.ui.BroadcastState()
-                } else {
-                    com.uvp.sim.ui.BroadcastState(
-                        isReceiving = bc.state == com.uvp.sim.domain.BroadcastDialogState.Talking,
-                        sourceId = bc.sourceId,
-                        codec = bc.codec.name,
-                        localAudioPort = bc.localAudioPort,
-                        remoteAudioHost = bc.remoteAudioHost,
-                        remoteAudioPort = bc.remoteAudioPort,
-                        rxPackets = bc.rxPackets,
-                        rxBytes = bc.rxBytes,
-                        seqLost = bc.seqLost,
-                        decodeErrors = bc.decodeErrors
-                    )
+            combine(eng.currentBroadcast, eng.broadcastSpeakerOn) { bc, speakerOn -> bc to speakerOn }
+                .collect { (bc, speakerOn) ->
+                    _broadcast.value = if (bc == null) {
+                        com.uvp.sim.ui.BroadcastState()
+                    } else {
+                        com.uvp.sim.ui.BroadcastState(
+                            isReceiving = bc.state == com.uvp.sim.domain.BroadcastDialogState.Talking,
+                            sourceId = bc.sourceId,
+                            codec = bc.codec.name,
+                            localAudioPort = bc.localAudioPort,
+                            remoteAudioHost = bc.remoteAudioHost,
+                            remoteAudioPort = bc.remoteAudioPort,
+                            rxPackets = bc.rxPackets,
+                            rxBytes = bc.rxBytes,
+                            seqLost = bc.seqLost,
+                            decodeErrors = bc.decodeErrors,
+                            speakerOn = speakerOn
+                        )
+                    }
                 }
-            }
         }
 
         engineScope.launch {
@@ -499,6 +501,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch {
             try { eng.stopBroadcast(com.uvp.sim.domain.BroadcastEndReason.Local) } catch (_: Throwable) { }
         }
+    }
+
+    /** M3 — 切换对讲扬声器开关(静音/放音)。 */
+    fun setBroadcastSpeaker(on: Boolean) {
+        engine?.setBroadcastSpeaker(on)
     }
 
     /** M2 Alarm — 本地复位(不走 SIP)。 */

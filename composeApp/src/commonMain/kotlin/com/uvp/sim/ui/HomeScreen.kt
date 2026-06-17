@@ -191,6 +191,11 @@ private fun BroadcastIndicator(state: AppUiState, actions: AppActions) {
         )
         Spacer(Modifier.width(12.dp))
         Text(
+            if (bc.speakerOn) "🔊" else "🔇", fontSize = 15.sp,
+            modifier = Modifier.clickable { actions.onBroadcastToggleSpeaker(!bc.speakerOn) }
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
             "✕", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100),
             modifier = Modifier.clickable { actions.onBroadcastStop() }
         )

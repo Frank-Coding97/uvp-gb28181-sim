@@ -145,4 +145,35 @@ a=sendonly
         runCurrent()
         engine.shutdown()
     }
+
+    @Test
+    fun mutedSpeakerSkipsWrite() = runTest {
+        val transport = MockSipTransport()
+        val fakeSink = FakeAudioSink()
+        val engine = SimulatorEngine(
+            cfg(), transport, this, localIp = "192.168.10.112",
+            rtpReceiverFactory = { FakeBroadcastRxSource() },
+            audioSinkFactory = { _, _ -> fakeSink }
+        )
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.deliver(broadcastMessage())
+        runCurrent()
+        transport.deliver(ok200(lastInvite(transport), codec = 8))
+        runCurrent()
+
+        engine.setBroadcastSpeaker(false)  // 静音
+        runCurrent()
+        val pcma = G711.encodeAlaw(ShortArray(160) { 0 })
+        engine.handleRxPacket(RtpPacket(2, false, false, 0, false, 8, 1, 160L, 1L, pcma))
+        engine.handleRxPacket(RtpPacket(2, false, false, 0, false, 8, 2, 320L, 1L, pcma))
+        runCurrent()
+
+        assertEquals(0, fakeSink.writeCount, "静音时不应写 AudioTrack")
+        // 但仍在收包(统计照常累加)
+        assertEquals(2L, engine.currentBroadcast.value?.rxPackets)
+        engine.stopBroadcast(BroadcastEndReason.Local)
+        runCurrent()
+        engine.shutdown()
+    }
 }
