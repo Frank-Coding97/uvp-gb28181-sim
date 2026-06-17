@@ -1368,7 +1368,7 @@ class SimulatorEngine(
             sequence = (cseq + 1) and 0x0FFF
         )
         val sdp = com.uvp.sim.sip.SdpAnswer.buildBroadcastOffer(
-            deviceId = config.device.deviceId,
+            deviceId = targetId,
             localIp = localIp,
             localAudioPort = localAudioPort,
             deviceSsrc = deviceSsrc
@@ -1379,6 +1379,7 @@ class SimulatorEngine(
         val inviteCseq = 1  // 新 dialog 独立 CSeq 空间
         val invite = com.uvp.sim.sip.SipBuilders.buildOutboundInvite(
             config = config,
+            localId = targetId,   // 设备侧身份用被对讲的通道 ID(WVP 按 From-user 匹配广播会话)
             platformUri = platformUri,
             sourceId = sourceId,
             deviceSsrc = deviceSsrc,
@@ -1407,6 +1408,11 @@ class SimulatorEngine(
             transport.send(invite)
             _events.emit(SimEvent.MessageSent(invite))
             _events.emit(SimEvent.BroadcastInvited(platformUri, localAudioPort))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "反向 INVITE 已发: From/Contact/Subject 用通道 $targetId → $platformUri, " +
+                    "Subject=$sourceId:0,$targetId:$deviceSsrc, 本地音频端口=$localAudioPort"
+            )
         }.onFailure {
             _currentBroadcast.value = null
             _events.emit(SimEvent.TransportError("send broadcast INVITE: ${it.message}"))
@@ -1484,7 +1490,7 @@ class SimulatorEngine(
                 callId = bc.callId,
                 cseq = bc.cseq,
                 branch = com.uvp.sim.sip.SipBuilders.randomBranch(),
-                deviceUri = "sip:${config.device.deviceId}@${config.server.domain}",
+                deviceUri = "sip:${bc.targetId}@${config.server.domain}",
                 fromTag = bc.localTag,
                 platformUri = bc.sourcePlatformUri,
                 remoteTag = remoteTag,
@@ -1505,7 +1511,7 @@ class SimulatorEngine(
                 callId = bc.callId,
                 cseq = bc.cseq + 1,
                 branch = com.uvp.sim.sip.SipBuilders.randomBranch(),
-                localUri = "sip:${config.device.deviceId}@${config.server.domain}",
+                localUri = "sip:${bc.targetId}@${config.server.domain}",
                 localTag = bc.localTag,
                 remoteUri = bc.sourcePlatformUri,
                 remoteTag = remoteTag,

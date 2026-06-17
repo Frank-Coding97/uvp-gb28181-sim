@@ -261,12 +261,17 @@ object SipBuilders {
      * Unlike the inbound Play INVITE the device answers, here the device is the UAC:
      * it offers an `m=audio recvonly` SDP and asks the platform to push G.711 audio.
      *
-     * Subject header per spec Q2: `{sourceId}:0,{deviceId}:{deviceSsrc}` — the audio
-     * source is the platform (SSRC 0, not advertised), the device is the receiver
-     * (self-generated SSRC).
+     * [localId] is the device-side identity used in From/Contact/Subject/SDP — for a
+     * channel broadcast this MUST be the broadcast **channel id** (the TargetID the
+     * platform sent), NOT the device root id. WVP keys its broadcast session by the
+     * From-header user, so a mismatch yields 403 Forbidden.
+     *
+     * Subject per spec Q2: `{sourceId}:0,{localId}:{deviceSsrc}` — audio source is the
+     * platform (SSRC 0, not advertised), receiver is the device channel.
      */
     fun buildOutboundInvite(
         config: SimConfig,
+        localId: String,
         platformUri: String,
         sourceId: String,
         deviceSsrc: String,
@@ -278,7 +283,6 @@ object SipBuilders {
         branch: String,
         fromTag: String
     ): SipRequest {
-        val device = config.device
         val server = config.server
         val body = sdpBody.encodeToByteArray()
         return SipRequest(
@@ -288,12 +292,12 @@ object SipBuilders {
                 SipMessage.Header(SipHeader.VIA,
                     "SIP/2.0/${config.transport.name} $localIp:$localPort;rport;branch=$branch"),
                 SipMessage.Header(SipHeader.FROM,
-                    "<sip:${device.deviceId}@${server.domain}>;tag=$fromTag"),
+                    "<sip:$localId@${server.domain}>;tag=$fromTag"),
                 SipMessage.Header(SipHeader.TO, "<$platformUri>"),
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "$cseq INVITE"),
-                SipMessage.Header(SipHeader.CONTACT, "<sip:${device.deviceId}@$localIp:$localPort>"),
-                SipMessage.Header(SipHeader.SUBJECT, "$sourceId:0,${device.deviceId}:$deviceSsrc"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:$localId@$localIp:$localPort>"),
+                SipMessage.Header(SipHeader.SUBJECT, "$sourceId:0,$localId:$deviceSsrc"),
                 SipMessage.Header(SipHeader.CONTENT_TYPE, "application/sdp"),
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
                 SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
