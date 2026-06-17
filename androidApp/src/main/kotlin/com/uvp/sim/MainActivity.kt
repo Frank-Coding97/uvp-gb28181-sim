@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity() {
             val alarmFireMode by viewModel.alarmFireMode.collectAsStateWithLifecycle()
             val fixedAlarm by viewModel.fixedAlarm.collectAsStateWithLifecycle()
             val broadcast by viewModel.broadcast.collectAsStateWithLifecycle()
+            val networkState by viewModel.networkState.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -173,7 +174,8 @@ class MainActivity : ComponentActivity() {
                 alarmHistory = alarmHistory,
                 alarmFireMode = alarmFireMode,
                 fixedAlarmTemplate = fixedAlarm,
-                broadcast = broadcast
+                broadcast = broadcast,
+                networkRuntimeState = networkState,
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -261,6 +263,13 @@ class MainActivity : ComponentActivity() {
                 override fun onBroadcastToggleSpeaker(on: Boolean) {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户${if (on) "开启" else "静音"}对讲扬声器")
                     viewModel.setBroadcastSpeaker(on)
+                }
+                override fun onNetworkPreferenceChange(preference: com.uvp.sim.config.NetworkPreference) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "用户切换网络偏好 → ${preference.name}"
+                    )
+                    viewModel.applyNetworkPreference(preference)
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

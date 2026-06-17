@@ -159,6 +159,9 @@ object LogExport {
         is SimEvent.BroadcastStarted -> "♪ RX       对讲音频开始 首包 ${ev.firstPacketDelayMs}ms"
         is SimEvent.BroadcastPacketRx -> "♪ RX       ${ev.codec} ${ev.rxPackets}包 / ${ev.rxBytes}字节"
         is SimEvent.BroadcastEnded -> "■ END      对讲结束 ${ev.reason} ${ev.durationMs}ms"
+        is SimEvent.NetworkBound -> "↔ NET-UP   ${ev.preference} · ${ev.interfaceName} · ${ev.localIp}"
+        is SimEvent.NetworkUnavailable -> "⚠ NET-OFF  ${ev.reason}"
+        SimEvent.NetworkAuto -> "↔ NET-AUTO 系统路由"
     }
 
     private fun msgShort(m: SipMessage): String = when (m) {

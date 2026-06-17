@@ -163,6 +163,42 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _broadcast = MutableStateFlow(com.uvp.sim.ui.BroadcastState())
     val broadcast: StateFlow<com.uvp.sim.ui.BroadcastState> = _broadcast.asStateFlow()
 
+    /**
+     * 网络选择控制器(T10)。
+     * - attach ApplicationContext(避免泄漏 Activity)
+     * - state 暴露给 MainActivity 注入到 AppUiState.networkRuntimeState
+     * - state 变化时驱动 engine?.handleNetworkChange + 刷新 localIpProvider
+     *
+     * 启动期会在第三个 init 块按持久化 config.network.preference apply 一次。
+     */
+    private val networkController = com.uvp.sim.network.NetworkController().apply {
+        attach(application)
+    }
+    val networkState: StateFlow<com.uvp.sim.network.NetworkState> = networkController.state
+
+    init {
+        // 启动期按持久化 preference 应用网络偏好,并 collect state 推给引擎
+        viewModelScope.launch {
+            networkController.apply(_config.value.network.preference)
+        }
+        viewModelScope.launch {
+            networkController.state.collect { netState ->
+                engine?.handleNetworkChange(netState)
+            }
+        }
+    }
+
+    /** 老板在网络设置子页点选偏好时调用:持久化 + 应用。 */
+    fun applyNetworkPreference(preference: com.uvp.sim.config.NetworkPreference) {
+        val updated = _config.value.copy(
+            network = _config.value.network.copy(preference = preference)
+        )
+        updateConfig(updated)
+        viewModelScope.launch {
+            networkController.apply(preference)
+        }
+    }
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -286,7 +322,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
         val cfg = _config.value
         val ctx = getApplication<Application>()
-        val localIp = AndroidNetwork.activeIpv4(ctx) ?: "0.0.0.0"
+        val fallbackLocalIp = AndroidNetwork.activeIpv4(ctx) ?: "0.0.0.0"
 
         val tx: com.uvp.sim.network.SipTransport = when (cfg.transport) {
             TransportType.TCP -> com.uvp.sim.network.TcpSipTransport(
@@ -312,7 +348,13 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             config = cfg,
             transport = tx,
             scope = engineScope,
-            localIp = localIp,
+            localIpProvider = {
+                // 网络选择已绑定时用绑定网卡 IP;否则回落系统默认接口
+                when (val s = networkController.state.value) {
+                    is com.uvp.sim.network.NetworkState.Bound -> s.localIp
+                    else -> fallbackLocalIp
+                }
+            },
             localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
             cameraCapture = camera,
             audioCapture = audio,
@@ -544,6 +586,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 engine?.shutdown()
                 transport?.close()
                 camera?.stop()
+                networkController.close()
             }
         } catch (_: Throwable) { /* ignore */ }
     }

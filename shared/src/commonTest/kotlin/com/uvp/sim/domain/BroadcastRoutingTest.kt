@@ -93,7 +93,7 @@ class BroadcastRoutingTest {
     @Test
     fun targetIdMatchRepliesOk() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -113,7 +113,7 @@ class BroadcastRoutingTest {
     @Test
     fun targetIdMismatchRepliesError() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -132,7 +132,7 @@ class BroadcastRoutingTest {
     fun channelIdTargetRepliesOk() = runTest {
         // 平台对**视频通道**发起对讲(TargetID = videoChannelId,≠ deviceId)→ 也应接受
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -154,7 +154,7 @@ class BroadcastRoutingTest {
     @Test
     fun matchEmitsBroadcastReceived() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         val received = mutableListOf<SimEvent.BroadcastReceived>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastReceived) received += it } }
         bootRegistered(transport, engine)

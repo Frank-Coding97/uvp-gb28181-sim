@@ -105,7 +105,7 @@ a=setup:passive
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
         val engine = SimulatorEngine(
-            cfg(AudioTransportType.TCP_ACTIVE), transport, this, localIp = "192.168.10.112",
+            cfg(AudioTransportType.TCP_ACTIVE), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { fakeRx }
         )
         bootRegistered(transport, engine)
@@ -136,7 +136,7 @@ a=setup:passive
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
         val engine = SimulatorEngine(
-            cfg(AudioTransportType.UDP), transport, this, localIp = "192.168.10.112",
+            cfg(AudioTransportType.UDP), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { fakeRx }
         )
         bootRegistered(transport, engine)
@@ -162,7 +162,7 @@ a=setup:passive
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
         val engine = SimulatorEngine(
-            cfg(AudioTransportType.TCP_PASSIVE), transport, this, localIp = "192.168.10.112",
+            cfg(AudioTransportType.TCP_PASSIVE), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { fakeRx }
         )
         bootRegistered(transport, engine)

@@ -98,7 +98,7 @@ a=sendonly
         val transport = MockSipTransport()
         val fakeSink = FakeAudioSink()
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.10.112",
+            cfg(), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
             audioSinkFactory = { _, _ -> fakeSink }
         )
@@ -123,7 +123,7 @@ a=sendonly
         val transport = MockSipTransport()
         val fakeSink = FakeAudioSink()
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.10.112",
+            cfg(), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
             audioSinkFactory = { _, _ -> fakeSink }
         )
@@ -151,7 +151,7 @@ a=sendonly
         val transport = MockSipTransport()
         val fakeSink = FakeAudioSink()
         val engine = SimulatorEngine(
-            cfg(), transport, this, localIp = "192.168.10.112",
+            cfg(), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
             audioSinkFactory = { _, _ -> fakeSink }
         )

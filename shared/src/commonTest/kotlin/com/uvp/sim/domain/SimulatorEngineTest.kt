@@ -59,7 +59,7 @@ class SimulatorEngineTest {
 
     @Test fun registerSucceedsAfter401Challenge() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -101,7 +101,7 @@ class SimulatorEngineTest {
         // the rest — otherwise each 401 spawns a new REGISTER, the platform rate-limits
         // ("register N times in 3 seconds"), and the device never registers.
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -272,7 +272,7 @@ class SimulatorEngineTest {
 
     @Test fun registerTimeoutResetOn401SoFullAuthFlowFits() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()

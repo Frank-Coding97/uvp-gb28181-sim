@@ -383,6 +383,18 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         "", "■", true, "END", UvpColor.TextHint,
         "对讲结束 · ${ev.reason} · ${ev.durationMs}ms", category = "BROADCAST"
     )
+    is SimEvent.NetworkBound -> LogRowSpec(
+        "", "↔", true, "NET", UvpColor.Info,
+        "网络 → ${ev.preference} · ${ev.interfaceName} · ${ev.localIp}", category = "NETWORK"
+    )
+    is SimEvent.NetworkUnavailable -> LogRowSpec(
+        "", "⚠", true, "NET", UvpColor.Danger,
+        "网络不可用 · ${ev.reason}", category = "NETWORK"
+    )
+    SimEvent.NetworkAuto -> LogRowSpec(
+        "", "↔", true, "NET", UvpColor.TextHint,
+        "网络偏好 → 自动(系统路由)", category = "NETWORK"
+    )
 }
 
 private fun alarmResetBy(by: SimEvent.ResetSource): String = when (by) {

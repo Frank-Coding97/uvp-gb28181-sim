@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DevicesOther
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MovieFilter
+import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -70,10 +71,14 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
             title = "OSD 水印",
             onBack = { page = SettingsPage.Index }
         ) { OsdSettingsPage(state, actions) }
+        SettingsPage.Network -> SettingsSubPage(
+            title = "网络",
+            onBack = { page = SettingsPage.Index }
+        ) { NetworkSettingsPage(state, actions) }
     }
 }
 
-private enum class SettingsPage { Index, Channel, Device, Media, Osd }
+private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
@@ -105,6 +110,16 @@ private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
             description = "时间戳 · 通道名 · 自定义水印",
             onClick = { onPick(SettingsPage.Osd) }
         )
+        SettingsEntry(
+            icon = Icons.Outlined.NetworkCheck,
+            title = "网络",
+            description = if (isNetworkSelectionSupported)
+                "Wi-Fi / 蜂窝 选择"
+            else
+                "仅 Android 支持",
+            enabled = isNetworkSelectionSupported,
+            onClick = { onPick(SettingsPage.Network) }
+        )
     }
 }
 
@@ -113,6 +128,7 @@ private fun SettingsEntry(
     icon: ImageVector,
     title: String,
     description: String,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     Row(
@@ -121,7 +137,7 @@ private fun SettingsEntry(
             .clip(RoundedCornerShape(10.dp))
             .background(UvpColor.Surface)
             .border(1.dp, UvpColor.Border, RoundedCornerShape(10.dp))
-            .clickable { onClick() }
+            .let { if (enabled) it.clickable { onClick() } else it }
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -129,16 +145,18 @@ private fun SettingsEntry(
             modifier = Modifier
                 .size(40.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .background(UvpColor.PrimaryLight),
+                .background(if (enabled) UvpColor.PrimaryLight else UvpColor.BorderLight),
             contentAlignment = Alignment.Center
         ) {
             Icon(icon, contentDescription = null,
-                modifier = Modifier.size(20.dp), tint = UvpColor.Primary)
+                modifier = Modifier.size(20.dp),
+                tint = if (enabled) UvpColor.Primary else UvpColor.TextHint)
         }
         Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(title, fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold, color = UvpColor.Text)
+                fontWeight = FontWeight.SemiBold,
+                color = if (enabled) UvpColor.Text else UvpColor.TextHint)
             Spacer(Modifier.height(2.dp))
             Text(description, fontSize = 11.sp, color = UvpColor.TextSecondary)
         }

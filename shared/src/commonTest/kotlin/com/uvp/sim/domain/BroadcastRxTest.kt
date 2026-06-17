@@ -98,7 +98,7 @@ a=sendonly
     }
 
     private fun engineTo(transport: MockSipTransport, scope: kotlinx.coroutines.CoroutineScope) =
-        SimulatorEngine(cfg(), transport, scope, localIp = "192.168.10.112", rtpReceiverFactory = { FakeBroadcastRxSource() })
+        SimulatorEngine(cfg(), transport, scope, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
 
     private suspend fun lastInvite(transport: MockSipTransport): SipRequest =
         transport.sent.filterIsInstance<SipRequest>().last { it.method == SipMethod.INVITE }

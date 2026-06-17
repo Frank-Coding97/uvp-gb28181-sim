@@ -79,7 +79,7 @@ class EmitLifecycleTest {
     @Test fun registerStartEmitsLifecycleInfo() = runTest {
         SystemLogger.bindScope(this)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIp = "192.168.1.50")
+        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
