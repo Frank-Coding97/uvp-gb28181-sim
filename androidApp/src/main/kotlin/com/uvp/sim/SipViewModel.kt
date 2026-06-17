@@ -159,6 +159,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _fixedAlarm = MutableStateFlow<com.uvp.sim.gb28181.AlarmPayload?>(null)
     val fixedAlarm: StateFlow<com.uvp.sim.gb28181.AlarmPayload?> = _fixedAlarm.asStateFlow()
 
+    /** M3 语音广播下行状态(engine.currentBroadcast 投影)。 */
+    private val _broadcast = MutableStateFlow(com.uvp.sim.ui.BroadcastState())
+    val broadcast: StateFlow<com.uvp.sim.ui.BroadcastState> = _broadcast.asStateFlow()
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.
@@ -347,6 +351,26 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
         engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
         engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
+        engineScope.launch {
+            eng.currentBroadcast.collect { bc ->
+                _broadcast.value = if (bc == null) {
+                    com.uvp.sim.ui.BroadcastState()
+                } else {
+                    com.uvp.sim.ui.BroadcastState(
+                        isReceiving = bc.state == com.uvp.sim.domain.BroadcastDialogState.Talking,
+                        sourceId = bc.sourceId,
+                        codec = bc.codec.name,
+                        localAudioPort = bc.localAudioPort,
+                        remoteAudioHost = bc.remoteAudioHost,
+                        remoteAudioPort = bc.remoteAudioPort,
+                        rxPackets = bc.rxPackets,
+                        rxBytes = bc.rxBytes,
+                        seqLost = bc.seqLost,
+                        decodeErrors = bc.decodeErrors
+                    )
+                }
+            }
+        }
 
         engineScope.launch {
             try {
@@ -469,9 +493,16 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** M2 Alarm — 本地复位(不走 SIP)。 */
-    fun resetAlarm() {
+    /** M3 — 用户停止语音广播(主屏「对讲中」标签 ✕)。 */
+    fun stopBroadcast() {
         val eng = engine ?: return
+        engineScope.launch {
+            try { eng.stopBroadcast(com.uvp.sim.domain.BroadcastEndReason.Local) } catch (_: Throwable) { }
+        }
+    }
+
+    /** M2 Alarm — 本地复位(不走 SIP)。 */
+    fun resetAlarm() {        val eng = engine ?: return
         engineScope.launch {
             try { eng.localResetAlarm() } catch (_: Throwable) { }
         }

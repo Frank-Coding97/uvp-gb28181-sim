@@ -154,6 +154,11 @@ object LogExport {
         is SimEvent.AlarmSubscribed -> "← SUB      报警订阅 from=${ev.subscriber} expires=${ev.expires}s"
         is SimEvent.AlarmNotifySent -> "→ NOTIFY   报警 SN=${ev.sn} → ${ev.subscriber}"
         is SimEvent.AlarmSubscriptionExpired -> "· EXPIRED  报警订阅 ${ev.subscriber}"
+        is SimEvent.BroadcastReceived -> "← BROADCAST 语音广播请求 source=${ev.sourceId}"
+        is SimEvent.BroadcastInvited -> "→ INVITE   反向 INVITE → ${ev.platformUri} 本地端口 ${ev.localPort}"
+        is SimEvent.BroadcastStarted -> "♪ RX       对讲音频开始 首包 ${ev.firstPacketDelayMs}ms"
+        is SimEvent.BroadcastPacketRx -> "♪ RX       ${ev.codec} ${ev.rxPackets}包 / ${ev.rxBytes}字节"
+        is SimEvent.BroadcastEnded -> "■ END      对讲结束 ${ev.reason} ${ev.durationMs}ms"
     }
 
     private fun msgShort(m: SipMessage): String = when (m) {

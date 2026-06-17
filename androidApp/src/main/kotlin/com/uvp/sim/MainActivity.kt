@@ -133,6 +133,7 @@ class MainActivity : ComponentActivity() {
             val alarmHistory by viewModel.alarmHistory.collectAsStateWithLifecycle()
             val alarmFireMode by viewModel.alarmFireMode.collectAsStateWithLifecycle()
             val fixedAlarm by viewModel.fixedAlarm.collectAsStateWithLifecycle()
+            val broadcast by viewModel.broadcast.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -171,7 +172,8 @@ class MainActivity : ComponentActivity() {
                 lastCatalogSavedAt = lastCatalogSavedAt,
                 alarmHistory = alarmHistory,
                 alarmFireMode = alarmFireMode,
-                fixedAlarmTemplate = fixedAlarm
+                fixedAlarmTemplate = fixedAlarm,
+                broadcast = broadcast
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -251,6 +253,10 @@ class MainActivity : ComponentActivity() {
                     // 故意保留 emit 是为了让 logcat bridge 留下一条审计记录(开发者可查)。
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户清除系统日志")
                     SystemLogger.clear()
+                }
+                override fun onBroadcastStop() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户停止语音对讲")
+                    viewModel.stopBroadcast()
                 }
             }
             // Rebuild encoder/streamer whenever video profile bumps.

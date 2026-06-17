@@ -89,6 +89,7 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         StatusBanner(state)
+        BroadcastIndicator(state, actions)
         CameraPreviewBox(state)
         SipConfigCard(state, actions, onFeedback = { msg ->
             toast.success(msg)
@@ -161,6 +162,64 @@ private data class BannerSpec(
     val bg: Color, val border: Color, val dot: Color,
     val text: String, val textColor: Color, val extra: String
 )
+
+// ============= M3 语音广播下行指示 =============
+
+@Composable
+private fun BroadcastIndicator(state: AppUiState, actions: AppActions) {
+    val bc = state.broadcast
+    if (!bc.isReceiving) return
+    var showSheet by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0x1AFF9800), RoundedCornerShape(8.dp))
+            .border(1.dp, Color(0xFFFF9800), RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("📢", fontSize = 14.sp)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "对讲中 ← ${bc.sourceId?.takeLast(4) ?: "----"}",
+            fontSize = 13.sp, fontWeight = FontWeight.Medium, color = Color(0xFFE65100),
+            modifier = Modifier.weight(1f).clickable { showSheet = true }
+        )
+        Text(
+            "${bc.codec ?: "PCMA"} · ${bc.rxPackets}pkt",
+            fontSize = 11.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace, maxLines = 1
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            "✕", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color(0xFFE65100),
+            modifier = Modifier.clickable { actions.onBroadcastStop() }
+        )
+    }
+    if (showSheet) {
+        BroadcastStatsSheet(bc) { showSheet = false }
+    }
+}
+
+@Composable
+private fun BroadcastStatsSheet(bc: BroadcastState, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        title = { Text("语音对讲") },
+        text = {
+            Column {
+                Text("来源: ${bc.sourceId ?: "-"}", fontSize = 12.sp)
+                Text("编码: ${bc.codec ?: "-"}", fontSize = 12.sp)
+                Text("本地端口: ${bc.localAudioPort}", fontSize = 12.sp)
+                Text("远端: ${bc.remoteAudioHost ?: "-"}:${bc.remoteAudioPort}", fontSize = 12.sp)
+                Text("接收包数: ${bc.rxPackets}", fontSize = 12.sp)
+                Text("接收字节: ${bc.rxBytes}", fontSize = 12.sp)
+                Text("丢包(seq): ${bc.seqLost}", fontSize = 12.sp)
+                Text("解码错误: ${bc.decodeErrors}", fontSize = 12.sp)
+            }
+        }
+    )
+}
 
 // ============= Camera preview =============
 

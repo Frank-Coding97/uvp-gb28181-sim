@@ -64,7 +64,27 @@ data class AppUiState(
     /**
      * 指定模式下用户保存的固定报警单(null = 还没存,退化随机)。本会话内存。
      */
-    val fixedAlarmTemplate: AlarmPayload? = null
+    val fixedAlarmTemplate: AlarmPayload? = null,
+    /**
+     * M3 语音广播下行(平台喊话设备)状态。isReceiving=true 时主屏挂「对讲中」标签。
+     */
+    val broadcast: BroadcastState = BroadcastState()
+)
+
+/**
+ * M3 语音广播下行 UI 状态。SipViewModel 从 engine.currentBroadcast 投影。
+ */
+data class BroadcastState(
+    val isReceiving: Boolean = false,
+    val sourceId: String? = null,
+    val codec: String? = null,
+    val localAudioPort: Int = -1,
+    val remoteAudioHost: String? = null,
+    val remoteAudioPort: Int = -1,
+    val rxPackets: Long = 0L,
+    val rxBytes: Long = 0L,
+    val seqLost: Long = 0L,
+    val decodeErrors: Long = 0L
 )
 
 /**
@@ -183,6 +203,9 @@ interface AppActions {
 
     /** 清空系统日志缓冲(日志页 系统 tab 清除按钮触发)。 */
     fun onClearSystemLogs() {}
+
+    /** M3 用户停止语音广播(主屏「对讲中」标签 ✕)。engine.stopBroadcast(Local)。 */
+    fun onBroadcastStop() {}
 }
 
 enum class AppTab(val label: String) {

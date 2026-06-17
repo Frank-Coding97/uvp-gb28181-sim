@@ -366,6 +366,26 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         "", "·", true, "EXP", UvpColor.TextHint,
         "报警订阅过期 · ${ev.subscriber}", category = "SUBSCRIBE"
     )
+    is SimEvent.BroadcastReceived -> LogRowSpec(
+        "", "←", false, "BC", UvpColor.Info,
+        "语音广播请求 · source=${ev.sourceId}", highlight = true, category = "BROADCAST"
+    )
+    is SimEvent.BroadcastInvited -> LogRowSpec(
+        "", "→", true, "INV", UvpColor.Primary,
+        "反向 INVITE → ${ev.platformUri} · 本地端口 ${ev.localPort}", category = "BROADCAST"
+    )
+    is SimEvent.BroadcastStarted -> LogRowSpec(
+        "", "♪", false, "RX", UvpColor.Success,
+        "对讲音频开始 · 首包 ${ev.firstPacketDelayMs}ms", category = "BROADCAST"
+    )
+    is SimEvent.BroadcastPacketRx -> LogRowSpec(
+        "", "♪", false, "RX", UvpColor.TextHint,
+        "${ev.codec} · ${ev.rxPackets}包 / ${ev.rxBytes}字节", category = "BROADCAST"
+    )
+    is SimEvent.BroadcastEnded -> LogRowSpec(
+        "", "■", true, "END", UvpColor.TextHint,
+        "对讲结束 · ${ev.reason} · ${ev.durationMs}ms", category = "BROADCAST"
+    )
 }
 
 private fun alarmResetBy(by: SimEvent.ResetSource): String = when (by) {
