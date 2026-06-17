@@ -19,7 +19,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.NotificationsActive
-import androidx.compose.material.icons.outlined.VideoLibrary
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,13 +44,12 @@ import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.simulate.SimulateScreen
 
 /**
- * 「能力」Tab 主屏 — 2 列网格,卡片化展示已实现的国标扩展能力。
+ * 「能力」Tab 主屏 — 卡片化展示已实现的国标扩展能力。
  *
  * 当前卡片:
- *  - 目录管理(§9.3.1, 已实现)
- *  - 模拟控制(§4, 已实现)
- *  - 录像查询(§9.10, 待开发占位)
- *  - 报警订阅(§9.4, 待开发占位)
+ *  - 目录管理(§9.3.1)
+ *  - 模拟控制(§4)
+ *  - 报警订阅(§9.4)
  */
 @Composable
 fun CapabilityScreen(
@@ -101,13 +99,6 @@ fun CapabilityScreen(
             .padding(horizontal = 14.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text(
-            text = "能力",
-            color = UvpColor.Text,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             CapabilityTile(
                 icon = Icons.Outlined.AccountTree,
@@ -137,17 +128,9 @@ fun CapabilityScreen(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             CapabilityTile(
-                icon = Icons.Outlined.VideoLibrary,
-                title = "录像查询",
-                metric = "待开发",
-                status = TileStatus.Pending("M3 规划中"),
-                onClick = null,
-                modifier = Modifier.weight(1f)
-            )
-            CapabilityTile(
                 icon = Icons.Outlined.NotificationsActive,
                 title = "报警",
-                metric = "§9.5 报警事件",
+                metric = "报警事件",
                 status = when {
                     isAlarming -> TileStatus.Warning("报警中")
                     alarmSub?.active == true -> TileStatus.Active(
@@ -162,6 +145,7 @@ fun CapabilityScreen(
                 onClick = { showAlarm = true },
                 modifier = Modifier.weight(1f)
             )
+            Spacer(Modifier.weight(1f))
         }
     }
 }
@@ -170,7 +154,6 @@ private sealed interface TileStatus {
     val text: String
     data class Active(override val text: String) : TileStatus
     data class Idle(override val text: String) : TileStatus
-    data class Pending(override val text: String) : TileStatus
     data class Warning(override val text: String) : TileStatus
 }
 
@@ -189,7 +172,6 @@ private fun CapabilityTile(
     val (dotColor, statusTextColor) = when (status) {
         is TileStatus.Active -> UvpColor.Success to UvpColor.Success
         is TileStatus.Idle -> UvpColor.TextHint to UvpColor.TextSecondary
-        is TileStatus.Pending -> UvpColor.Warning to UvpColor.Warning
         is TileStatus.Warning -> UvpColor.Warning to UvpColor.Warning
     }
 
