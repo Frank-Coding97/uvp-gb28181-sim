@@ -203,4 +203,27 @@ sealed class SimEvent {
         val subscriber: String,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+
+    /**
+     * 网络变化触发的事件。
+     *
+     * [NetworkBound] / [NetworkAuto]: 触发后 Engine 会做 unregister → register 序列
+     *                  (handleNetworkChange 编排)
+     * [NetworkUnavailable]: 网卡不可用,Engine 不主动 unregister(发不出去),UI 显示 banner
+     */
+    data class NetworkBound(
+        val preference: String,
+        val interfaceName: String,
+        val localIp: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    data class NetworkUnavailable(
+        val reason: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    object NetworkAuto : SimEvent() {
+        override val timestampMs: Long = nowMs()
+    }
 }

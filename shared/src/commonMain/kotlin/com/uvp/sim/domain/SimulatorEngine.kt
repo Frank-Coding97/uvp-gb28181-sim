@@ -405,6 +405,88 @@ class SimulatorEngine(
         }
     }
 
+    /**
+     * Called by the UI / Android SipViewModel when [com.uvp.sim.network.NetworkController]
+     * state changes. Drives re-registration so the SIP Contact / Via headers refresh to
+     * the new interface IP.
+     *
+     * Soft-switch policy(plan §"切换时序"):
+     *   - In-flight INVITE sessions are NOT torn down — the underlying RTP socket is
+     *     already bound to the old interface (java.nio doesn't migrate), so the platform
+     *     keeps receiving frames on the old source IP until it sends BYE. New INVITEs
+     *     will use the new interface.
+     *   - REGISTER cycle:Expires=0 unregister(旧 IP)→ register(新 IP)。Old IP's
+     *     unregister might fail to reach the server(进程已绑新网卡)— this is acceptable;
+     *     the server's stale binding will expire naturally.
+     */
+    suspend fun handleNetworkChange(newState: com.uvp.sim.network.NetworkState) {
+        when (newState) {
+            is com.uvp.sim.network.NetworkState.Bound -> {
+                _events.emit(
+                    SimEvent.NetworkBound(
+                        preference = newState.preference.name,
+                        interfaceName = newState.interfaceName,
+                        localIp = newState.localIp,
+                    )
+                )
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Network,
+                    "网络已切到 ${newState.preference.name} 接口 ${newState.interfaceName} IP=${newState.localIp},触发重注册"
+                )
+                triggerReregisterIfActive()
+            }
+            com.uvp.sim.network.NetworkState.Auto -> {
+                _events.emit(SimEvent.NetworkAuto)
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Network,
+                    "网络偏好 → 自动,触发重注册以刷新 Contact 头"
+                )
+                triggerReregisterIfActive()
+            }
+            is com.uvp.sim.network.NetworkState.Unavailable -> {
+                _events.emit(SimEvent.NetworkUnavailable(newState.reason))
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Network,
+                    "网络不可用: ${newState.reason}(不主动 unregister,等老板调整偏好)"
+                )
+                // 不主动 unregister:发不出去 + Contact 头还是旧 IP 没意义。
+                // SipState 会在心跳 / REGISTER 重试超时后自然转 Failed。
+            }
+            is com.uvp.sim.network.NetworkState.Switching -> {
+                // 仅 UI 用,Engine 不动作
+            }
+        }
+    }
+
+    /**
+     * 只有当 SIP 当前在线(Registered / InCall)或正在尝试注册(Registering)时,
+     * 才驱动 unregister → register cycle。Disconnected / Failed 状态下不动 —
+     * 老板可能还没手动点过"开始注册",我们不替他决定。
+     */
+    private suspend fun triggerReregisterIfActive() {
+        val current = _state.value
+        if (current != SipState.Registered &&
+            current != SipState.InCall &&
+            current != SipState.Registering
+        ) {
+            return
+        }
+        runCatching { unregister() }
+            .onFailure {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Network,
+                    "重注册 unregister 抛错(可忽略,旧网卡可能已断): ${it::class.simpleName}: ${it.message}"
+                )
+            }
+        runCatching { register() }
+            .onFailure {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Network,
+                    "重注册 register 抛错: ${it::class.simpleName}: ${it.message}"
+                )
+            }
+    }
+
     /** Stop background work. The transport itself is not closed (caller's responsibility). */
     suspend fun shutdown() {
         // 先把活跃流停掉(取消 statsJob / 关 RTP socket / 释放 camera),
