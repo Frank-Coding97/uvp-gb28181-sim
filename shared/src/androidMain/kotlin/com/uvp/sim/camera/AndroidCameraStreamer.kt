@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executor
+import kotlin.math.abs
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -196,6 +197,14 @@ class AndroidCameraStreamer(
             .build()
             .also { p ->
                 p.setSurfaceProvider { request ->
+                    val bufferSize = request.resolution
+                    val frameSize = displayFrameSizeFor(bufferSize)
+                    renderer.configureCameraInput(
+                        bufferWidth = bufferSize.width,
+                        bufferHeight = bufferSize.height,
+                        frameWidth = frameSize.width,
+                        frameHeight = frameSize.height
+                    )
                     request.provideSurface(target, mainExecutor) { /* released on streamer.release */ }
                 }
             }
@@ -403,6 +412,20 @@ class AndroidCameraStreamer(
         encoderPreview = preview
     }
 
+    private fun displayFrameSizeFor(bufferSize: Size): Size {
+        val targetAspect = config.widthPx.toFloat() / config.heightPx
+        val normalDelta = aspectDelta(bufferSize.width, bufferSize.height, targetAspect)
+        val swappedDelta = aspectDelta(bufferSize.height, bufferSize.width, targetAspect)
+        return if (swappedDelta + ASPECT_EPSILON < normalDelta) {
+            Size(bufferSize.height, bufferSize.width)
+        } else {
+            bufferSize
+        }
+    }
+
+    private fun aspectDelta(width: Int, height: Int, targetAspect: Float): Float =
+        abs(width.toFloat() / height - targetAspect)
+
     /** Rebind whichever use cases are currently set. Must run on main thread.
      *
      *  Critical: we MUST NOT call [ProcessCameraProvider.unbindAll] — that wipes
@@ -489,6 +512,7 @@ class AndroidCameraStreamer(
 
     companion object {
         const val OSD_ENCODER_TAG_LIVE = "live"
+        private const val ASPECT_EPSILON = 0.01f
 
         private suspend fun awaitCameraProvider(context: Context): ProcessCameraProvider =
             suspendCancellableCoroutine { cont ->

@@ -6,12 +6,15 @@ import android.opengl.EGLSurface
 import android.opengl.GLES30
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.view.Surface
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -85,6 +88,10 @@ internal class OsdRenderer(
 
     private var surfaceTexture: SurfaceTexture? = null
     private var _cameraInputSurface: Surface? = null
+    private var cameraBufferWidth: Int = targetWidth
+    private var cameraBufferHeight: Int = targetHeight
+    private var cameraFrameWidth: Int = targetWidth
+    private var cameraFrameHeight: Int = targetHeight
 
     val cameraInputSurface: Surface? get() = _cameraInputSurface
 
@@ -120,9 +127,16 @@ internal class OsdRenderer(
 
                 createFbo(targetWidth, targetHeight)
                 createBlitProgram()
+                cameraPass!!.setFrameSize(
+                    cameraFrameWidth,
+                    cameraFrameHeight,
+                    fboWidth,
+                    fboHeight,
+                    cropToFill = true
+                )
 
                 surfaceTexture = SurfaceTexture(cameraPass!!.cameraTextureId).apply {
-                    setDefaultBufferSize(targetWidth, targetHeight)
+                    setDefaultBufferSize(cameraBufferWidth, cameraBufferHeight)
                     setOnFrameAvailableListener {
                         h.post { onFrameAvailable() }
                     }
@@ -205,6 +219,50 @@ internal class OsdRenderer(
                         detail = t.message)
                 }
             }
+        }
+    }
+
+    /**
+     * SurfaceRequest 要求的 buffer 尺寸必须真实设置到 SurfaceTexture,否则 CameraX 可能
+     * 先把画面写变形。frame 尺寸只用于 GL 保比例绘制,处理旋转后宽高互换的情况。
+     */
+    fun configureCameraInput(
+        bufferWidth: Int,
+        bufferHeight: Int,
+        frameWidth: Int = bufferWidth,
+        frameHeight: Int = bufferHeight
+    ) {
+        if (bufferWidth <= 0 || bufferHeight <= 0 || frameWidth <= 0 || frameHeight <= 0) return
+        val h = handler
+        if (h == null) {
+            cameraBufferWidth = bufferWidth
+            cameraBufferHeight = bufferHeight
+            cameraFrameWidth = frameWidth
+            cameraFrameHeight = frameHeight
+            return
+        }
+        val applyConfig = {
+            cameraBufferWidth = bufferWidth
+            cameraBufferHeight = bufferHeight
+            cameraFrameWidth = frameWidth
+            cameraFrameHeight = frameHeight
+            surfaceTexture?.setDefaultBufferSize(bufferWidth, bufferHeight)
+            cameraPass?.setFrameSize(frameWidth, frameHeight, fboWidth, fboHeight, cropToFill = true)
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "OSD_CAMERA_INPUT_CONFIG",
+                detail = "buffer=${bufferWidth}x${bufferHeight}, frame=${frameWidth}x${frameHeight}, fbo=${fboWidth}x${fboHeight}")
+        }
+        if (Looper.myLooper() == h.looper) {
+            applyConfig()
+        } else {
+            val latch = CountDownLatch(1)
+            h.post {
+                try {
+                    applyConfig()
+                } finally {
+                    latch.countDown()
+                }
+            }
+            latch.await(500, TimeUnit.MILLISECONDS)
         }
     }
 
@@ -330,9 +388,16 @@ internal class OsdRenderer(
             textPass = OsdTextPass(atlas).apply { init() }
             createFbo(fboWidth, fboHeight)
             createBlitProgram()
+            cameraPass!!.setFrameSize(
+                cameraFrameWidth,
+                cameraFrameHeight,
+                fboWidth,
+                fboHeight,
+                cropToFill = true
+            )
 
             surfaceTexture = SurfaceTexture(cameraPass!!.cameraTextureId).apply {
-                setDefaultBufferSize(targetWidth, targetHeight)
+                setDefaultBufferSize(cameraBufferWidth, cameraBufferHeight)
                 setOnFrameAvailableListener { handler?.post { onFrameAvailable() } }
             }
             _cameraInputSurface = Surface(surfaceTexture)
