@@ -30,11 +30,18 @@ data class SdpOffer(
     val transport: SdpTransport = SdpTransport.UDP,
     /** TCP setup attribute from a=setup line. Only meaningful when [transport] = TCP. */
     val tcpSetup: SdpTcpSetup = SdpTcpSetup.PASSIVE,
+    /** Media type from m= line. VIDEO for Play/Playback, AUDIO for voice broadcast (§9.8). */
+    val mediaType: SdpMediaType = SdpMediaType.VIDEO,
+    /** Payload type numbers from the m= line tail (e.g. [96] for PS, [8, 0] for PCMA/PCMU). */
+    val payloadTypes: List<Int> = emptyList(),
     /** Whatever lines we don't understand — preserved for round-trip diagnostics. */
     val rawBody: String
 )
 
 enum class SdpDirection { SENDRECV, SENDONLY, RECVONLY, INACTIVE }
+
+/** SDP m= media type. */
+enum class SdpMediaType { VIDEO, AUDIO }
 
 /** RTP transport from SDP m= line proto field. */
 enum class SdpTransport { UDP, TCP }
@@ -58,6 +65,8 @@ object SdpParser {
         var direction = SdpDirection.SENDRECV
         var transport = SdpTransport.UDP
         var tcpSetup = SdpTcpSetup.PASSIVE
+        var mediaType = SdpMediaType.VIDEO
+        var payloadTypes: List<Int> = emptyList()
 
         for (line in text.lineSequence()) {
             val l = line.trim().trimEnd('\r')
@@ -66,14 +75,17 @@ object SdpParser {
                 l.startsWith("c=IN IP4 ") -> {
                     ip = l.removePrefix("c=IN IP4 ").trim()
                 }
-                l.startsWith("m=video ") -> {
-                    // m=video <port> RTP/AVP 96  (UDP — default)
-                    // m=video <port> TCP/RTP/AVP 96  (TCP — RFC 4571)
+                l.startsWith("m=video ") || l.startsWith("m=audio ") -> {
+                    // m=<media> <port> <proto> <pt...>
+                    //   m=video 9000 RTP/AVP 96
+                    //   m=audio 30100 RTP/AVP 8 0   (PCMA + PCMU)
                     val parts = l.split(" ")
                     if (parts.size >= 4) {
+                        mediaType = if (l.startsWith("m=audio")) SdpMediaType.AUDIO else SdpMediaType.VIDEO
                         port = parts[1].toIntOrNull()
                         transport = if (parts[2].startsWith("TCP", ignoreCase = true))
                             SdpTransport.TCP else SdpTransport.UDP
+                        payloadTypes = parts.drop(3).mapNotNull { it.toIntOrNull() }
                     }
                 }
                 l == "a=sendrecv" -> direction = SdpDirection.SENDRECV
@@ -87,8 +99,8 @@ object SdpParser {
             }
         }
 
-        require(ip != null) { "SDP offer missing c=IN IP4 ..." }
-        require(port != null) { "SDP offer missing m=video <port>" }
+        require(ip != null) { "SDP missing c=IN IP4 ..." }
+        require(port != null) { "SDP missing m=<media> <port>" }
         return SdpOffer(
             remoteIp = ip,
             remotePort = port,
@@ -96,9 +108,20 @@ object SdpParser {
             direction = direction,
             transport = transport,
             tcpSetup = tcpSetup,
+            mediaType = mediaType,
+            payloadTypes = payloadTypes,
             rawBody = text
         )
     }
+
+    /**
+     * Parse a platform's SDP answer to our voice-broadcast offer.
+     *
+     * Structurally identical to an offer (c= / m=audio / direction / payload types),
+     * so we delegate to [parseOffer]. The caller (T3 dialog state machine) inspects
+     * [SdpOffer.payloadTypes] to confirm a G.711 codec (8 = PCMA / 0 = PCMU).
+     */
+    fun parseAnswer(text: String): SdpOffer = parseOffer(text)
 }
 
 object SdpAnswer {
@@ -186,6 +209,31 @@ object SdpAnswer {
                 append(mediaSpec.toFLine()).append("\r\n")
             }
         }
+    }
+
+    /**
+     * Build the device's SDP offer for a voice-broadcast reverse stream (§9.8).
+     *
+     * The device is the *receiver* of platform audio, so the media line is
+     * `recvonly` and advertises both PCMA (8, preferred) and PCMU (0, fallback).
+     * No `f=` descriptor — that is a video-only GB28181 §C.2 convention.
+     */
+    fun buildBroadcastOffer(
+        deviceId: String,
+        localIp: String,
+        localAudioPort: Int,
+        deviceSsrc: String
+    ): String = buildString {
+        append("v=0\r\n")
+        append("o=").append(deviceId).append(" 0 0 IN IP4 ").append(localIp).append("\r\n")
+        append("s=Broadcast\r\n")
+        append("c=IN IP4 ").append(localIp).append("\r\n")
+        append("t=0 0\r\n")
+        append("m=audio ").append(localAudioPort).append(" RTP/AVP 8 0\r\n")
+        append("a=rtpmap:8 PCMA/8000\r\n")
+        append("a=rtpmap:0 PCMU/8000\r\n")
+        append("a=recvonly\r\n")
+        append("y=").append(deviceSsrc).append("\r\n")
     }
 }
 
