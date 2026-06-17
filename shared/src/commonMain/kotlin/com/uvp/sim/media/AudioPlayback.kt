@@ -13,3 +13,23 @@ expect class AudioPlayback(sampleRate: Int, channelCount: Int) {
     fun write(pcm: ShortArray)
     fun stop()
 }
+
+/**
+ * 扬声器输出抽象 — 让 [com.uvp.sim.domain.SimulatorEngine] 依赖接口而非 expect class,
+ * 单测可注入 fake(expect class 不可继承)。
+ */
+interface AudioSink {
+    fun start()
+    fun write(pcm: ShortArray)
+    fun stop()
+}
+
+/** 默认实现:包装真实 [AudioPlayback]。 */
+fun realAudioSink(sampleRate: Int, channelCount: Int): AudioSink {
+    val ap = AudioPlayback(sampleRate, channelCount)
+    return object : AudioSink {
+        override fun start() = ap.start()
+        override fun write(pcm: ShortArray) = ap.write(pcm)
+        override fun stop() = ap.stop()
+    }
+}

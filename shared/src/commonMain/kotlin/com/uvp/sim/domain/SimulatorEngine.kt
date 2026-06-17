@@ -78,7 +78,11 @@ class SimulatorEngine(
      * M3 语音广播 RX 接收器工厂。null 时用默认 expect class(Android = java.net UDP)。
      * 测试注入 fake 以避免真实 socket。
      */
-    private val rtpReceiverFactory: ((CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource)? = null
+    private val rtpReceiverFactory: ((CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource)? = null,
+    /**
+     * M3 语音广播扬声器工厂。null 时用默认(Android = AudioTrack)。测试注入 fake。
+     */
+    private val audioSinkFactory: ((Int, Int) -> com.uvp.sim.media.AudioSink)? = null
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -185,9 +189,14 @@ class SimulatorEngine(
     private var rxJob: Job? = null
     private var rxStatsJob: Job? = null
     private val audioChannel = Channel<ShortArray>(capacity = 50, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private var audioPlayback: com.uvp.sim.media.AudioSink? = null
+    private var audioPlayJob: Job? = null
     /** RtpReceiver 工厂:生产默认走 expect class;测试注入 fake 以避免真 socket + Dispatchers.IO 不确定性。 */
     private val resolvedRtpReceiverFactory: (CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource =
         rtpReceiverFactory ?: { sc -> com.uvp.sim.network.realBroadcastRxSource(sc) }
+    /** AudioPlayback 工厂:生产默认 AudioTrack/javax.sound;测试注入 fake 记录 start/stop。 */
+    private val resolvedAudioSinkFactory: (Int, Int) -> com.uvp.sim.media.AudioSink =
+        audioSinkFactory ?: { sr, ch -> com.uvp.sim.media.realAudioSink(sr, ch) }
 
     // M2: Subscription registry + mock GPS
     private val subscriptionRegistry = SubscriptionRegistry(scope)
@@ -1533,12 +1542,21 @@ class SimulatorEngine(
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台 BYE 关闭语音广播")
     }
 
-    /** T7:启动 RTP 接收 + 每秒节流统计。T9 在此追加扬声器播放消费协程。 */
+    /** T7:启动 RTP 接收 + 每秒节流统计;T9:启动扬声器播放消费协程。 */
     private fun startBroadcastRx() {
         val receiver = rtpReceiver ?: return
         rxJob = receiver.start { rtp ->
             // onPacket 在 IO 线程回调,hop 回 scope 安全地改状态 / emit
             scope.launch { handleRxPacket(rtp) }
+        }
+        // T9:扬声器 + audioChannel 消费协程
+        val sink = resolvedAudioSinkFactory(8000, 1)
+        sink.start()
+        audioPlayback = sink
+        audioPlayJob = scope.launch {
+            for (pcm in audioChannel) {
+                audioPlayback?.write(pcm)
+            }
         }
         rxStatsJob = scope.launch {
             while (isActive) {
@@ -1582,15 +1600,21 @@ class SimulatorEngine(
     /** 测试可见:RX 协程是否在运行。 */
     internal fun isRxActive(): Boolean = rxJob?.isActive == true
 
-    /** T7/T9:取消 RX/统计协程,关 RtpReceiver。T9 在此追加停 AudioPlayback。 */
+    /** T7/T9:取消 RX/统计/播放协程,关 RtpReceiver + AudioPlayback,清空音频缓冲。 */
     private suspend fun teardownBroadcastMedia() {
         rxStatsJob?.cancel()
         rxStatsJob = null
         rxJob?.cancel()
         rxJob = null
+        audioPlayJob?.cancel()
+        audioPlayJob = null
+        runCatching { audioPlayback?.stop() }
+        audioPlayback = null
         rtpReceiver?.let { runCatching { it.close() } }
         rtpReceiver = null
         broadcastLocalAudioPort = 0
+        // 排空残留 PCM,避免下一路广播听到上一路尾音
+        while (audioChannel.tryReceive().isSuccess) { /* drain */ }
     }
 
     /** 把已构造的 Broadcast Response MANSCDP body 包成 MESSAGE 发给平台(第二条,200 OK 之外)。 */
