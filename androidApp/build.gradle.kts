@@ -45,4 +45,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.datetime)
+    // 7.5 抓拍 HTTP 上传客户端(SipViewModel.attachSnapshotPipeline 用)
+    implementation(libs.ktor.client.core)
+    implementation(libs.ktor.client.cio)
 }

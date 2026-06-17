@@ -314,6 +314,21 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         )
         engine = eng
 
+        // T10 7.5 抓拍管线: 把 Context-scoped cache + ktor CIO HttpClient 注入引擎
+        val snapshotCache = com.uvp.sim.snapshot.JpegLocalCache.forContext(getApplication())
+        val snapshotHttp = io.ktor.client.HttpClient(io.ktor.client.engine.cio.CIO) {
+            engine {
+                requestTimeout = 30_000
+            }
+        }
+        eng.attachSnapshotPipeline(
+            capture = com.uvp.sim.snapshot.SnapshotCapture(),
+            cache = snapshotCache,
+            httpClient = snapshotHttp
+        )
+        // 启动期一次 GC: 清 7d 前 / 100MB 上限
+        engineScope.launch { snapshotCache.gc() }
+
         engineScope.launch { eng.state.collect { _state.value = it } }
         engineScope.launch {
             eng.events.collect { ev ->
