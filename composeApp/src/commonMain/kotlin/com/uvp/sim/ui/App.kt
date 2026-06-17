@@ -88,7 +88,7 @@ fun App(state: AppUiState, actions: AppActions) {
                             )
                             AppTab.Settings -> SettingsScreen(state, actions)
                             AppTab.Recording -> RecordingScreen(state, actions)
-                            AppTab.Log -> LogScreen(state)
+                            AppTab.Log -> LogScreen(state, actions)
                         }
                     }
                     CompactBottomBar(currentTab) { currentTab = it }

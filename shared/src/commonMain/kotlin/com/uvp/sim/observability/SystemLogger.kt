@@ -36,7 +36,7 @@ object SystemLogger {
 
     private var buffer = SystemLogBuffer(BUFFER_CAPACITY)
     private var seq: Long = 0
-    private var channel: Channel<Pending> = newChannel()
+    private var channel: Channel<Command> = newChannel()
     private val _flow = MutableSharedFlow<SystemLog>(
         replay = 0,
         extraBufferCapacity = 64,
@@ -49,7 +49,7 @@ object SystemLogger {
     val flow: SharedFlow<SystemLog> get() = _flow.asSharedFlow()
     val snapshot: List<SystemLog> get() = buffer.snapshot()
 
-    private fun newChannel() = Channel<Pending>(
+    private fun newChannel() = Channel<Command>(
         capacity = CHANNEL_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
@@ -58,26 +58,55 @@ object SystemLogger {
     fun bindScope(scope: CoroutineScope) {
         actorJob?.cancel()
         actorJob = scope.launch {
-            for (p in channel) {
-                seq += 1
-                val log = SystemLog(
-                    seq = seq,
-                    timestampMs = clock(),
-                    sessionId = SessionTracker.currentId,
-                    level = p.level,
-                    tag = p.tag,
-                    message = sanitize(p.message),
-                    detail = p.detail?.let(::sanitize)
-                )
-                buffer.add(log)
-                _flow.emit(log)
+            for (cmd in channel) {
+                when (cmd) {
+                    is Command.Emit -> {
+                        seq += 1
+                        val log = SystemLog(
+                            seq = seq,
+                            timestampMs = clock(),
+                            sessionId = SessionTracker.currentId,
+                            level = cmd.level,
+                            tag = cmd.tag,
+                            message = sanitize(cmd.message),
+                            detail = cmd.detail?.let(::sanitize)
+                        )
+                        buffer.add(log)
+                        _flow.emit(log)
+                    }
+                    Command.Clear -> {
+                        buffer = SystemLogBuffer(BUFFER_CAPACITY)
+                        seq += 1
+                        val marker = SystemLog(
+                            seq = seq,
+                            timestampMs = clock(),
+                            sessionId = SessionTracker.currentId,
+                            level = LogLevel.Info,
+                            tag = LogTag.User,
+                            message = "日志已清除",
+                            detail = null
+                        )
+                        buffer.add(marker)
+                        _flow.emit(marker)
+                    }
+                }
             }
         }
     }
 
     /** 业务侧 emit 入口 — 非阻塞、非 suspend、可在任意线程调用。 */
     fun emit(level: LogLevel, tag: LogTag, message: String, detail: String? = null) {
-        channel.trySend(Pending(level, tag, message, detail))
+        channel.trySend(Command.Emit(level, tag, message, detail))
+    }
+
+    /**
+     * 清空缓冲区。actor 串行处理 — 排队 Clear 命令,actor 收到后重建 buffer 并 emit
+     * 一条「日志已清除」标记给 flow,UI 拉 [snapshot] 即可看到清空后的状态。
+     *
+     * 不直接改 buffer 是因为业务线程与 actor 协程并发,直接改会撞上 add()。
+     */
+    fun clear() {
+        channel.trySend(Command.Clear)
     }
 
     /** 仅供测试 — 重置 buffer / seq / channel 到初始状态。 */
@@ -104,10 +133,14 @@ object SystemLogger {
             "${match.groupValues[1].lowercase()}=****"
         }
 
-    private data class Pending(
-        val level: LogLevel,
-        val tag: LogTag,
-        val message: String,
-        val detail: String?
-    )
+    private sealed class Command {
+        data class Emit(
+            val level: LogLevel,
+            val tag: LogTag,
+            val message: String,
+            val detail: String?
+        ) : Command()
+
+        object Clear : Command()
+    }
 }

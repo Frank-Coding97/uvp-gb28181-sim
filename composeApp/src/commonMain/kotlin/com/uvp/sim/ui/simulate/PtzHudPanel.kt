@@ -7,9 +7,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
@@ -49,36 +50,46 @@ fun PtzHudPanel(
 ) {
     Column(
         modifier = modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(12.dp))
+            .fillMaxWidth()
+            .heightIn(min = 154.dp)
+            .clip(RoundedCornerShape(8.dp))
             .background(UvpColor.Surface)
-            .border(1.dp, UvpColor.BorderLight, RoundedCornerShape(12.dp))
-            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .border(1.dp, UvpColor.BorderLight, RoundedCornerShape(8.dp))
+            .padding(horizontal = 12.dp, vertical = 11.dp)
     ) {
-        // Layer 1: 标题 + 状态灯
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "平台控制指令",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = UvpColor.TextSecondary,
-                letterSpacing = 0.5.sp
-            )
+            Column {
+                Text(
+                    "平台控制",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = UvpColor.Text
+                )
+                Text(
+                    "GB/T 28181 DeviceControl",
+                    fontSize = 9.sp,
+                    color = UvpColor.TextHint,
+                    fontWeight = FontWeight.Medium
+                )
+            }
             Spacer(Modifier.weight(1f))
             StatusDot("REC", state.isRecording, UvpColor.Danger)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(5.dp))
             StatusDot("GUARD", state.isGuarded, UvpColor.Success)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(5.dp))
             StatusDot("ALARM", state.isAlarming, UvpColor.Warning)
-            Spacer(Modifier.width(6.dp))
+            Spacer(Modifier.width(5.dp))
             StatusDot("REBOOT", state.isRebooting, UvpColor.Info)
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        // Layer 2: 大字姿态(Pan / Tilt / Zoom 居中)
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(UvpColor.Bg)
+                .padding(horizontal = 8.dp, vertical = 9.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -89,9 +100,8 @@ fun PtzHudPanel(
             PoseStat("Zoom", state.zoomLevel, "×", isActive = state.zoomSpeed != 0f)
         }
 
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        // Layer 3: 最近命令 chip + hex / 摘要
         when (val cmd = state.lastCommand) {
             null -> EmptyRow()
             else -> CommandRow(cmd)
@@ -107,7 +117,18 @@ private fun PoseStat(
     isActive: Boolean,
 ) {
     val valueColor = if (isActive) UvpColor.Primary else UvpColor.Text
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    val indicatorColor = if (isActive) UvpColor.Primary else UvpColor.Border
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(82.dp)
+    ) {
+        Box(
+            Modifier
+                .size(width = 18.dp, height = 3.dp)
+                .clip(RoundedCornerShape(99.dp))
+                .background(indicatorColor)
+        )
+        Spacer(Modifier.height(5.dp))
         Text(
             label,
             fontSize = 10.sp,
@@ -119,7 +140,7 @@ private fun PoseStat(
         Row(verticalAlignment = Alignment.Bottom) {
             Text(
                 formatPose(value, unit),
-                fontSize = 22.sp,
+                fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = valueColor,
                 fontFamily = FontFamily.Monospace
@@ -155,20 +176,26 @@ private fun formatPose(value: Float, unit: String): String {
 
 @Composable
 private fun StatusDot(label: String, active: Boolean, activeColor: Color) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(if (active) activeColor.copy(alpha = 0.12f) else UvpColor.BorderLight)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Box(
             Modifier
                 .size(7.dp)
                 .clip(RoundedCornerShape(4.dp))
                 .background(if (active) activeColor else UvpColor.Border)
         )
-        Spacer(Modifier.width(3.dp))
+        Spacer(Modifier.width(4.dp))
         Text(
             label,
-            fontSize = 9.sp,
+            fontSize = 8.sp,
             color = if (active) activeColor else UvpColor.TextHint,
             fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-            letterSpacing = 0.3.sp
+            letterSpacing = 0.2.sp
         )
     }
 }
@@ -176,7 +203,11 @@ private fun StatusDot(label: String, active: Boolean, activeColor: Color) {
 @Composable
 private fun EmptyRow() {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.CodeBg)
+            .padding(horizontal = 10.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
@@ -187,7 +218,7 @@ private fun EmptyRow() {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            "等待平台下发指令…",
+            "等待平台下发控制指令",
             fontSize = 12.sp,
             color = UvpColor.TextHint
         )
@@ -196,23 +227,35 @@ private fun EmptyRow() {
 
 @Composable
 private fun CommandRow(cmd: LastDeviceCommand) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        TypeChip(cmd.type)
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = decodedSummary(cmd),
-            fontSize = 12.sp,
-            color = UvpColor.Text,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f)
-        )
-        if (cmd.type == "PTZCmd" && cmd.rawHex.length == 16) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.CodeBg)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TypeChip(cmd.type)
+            Spacer(Modifier.width(8.dp))
             Text(
-                cmd.rawHex,
+                text = decodedSummary(cmd),
+                fontSize = 12.sp,
+                color = UvpColor.Text,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        if (cmd.type == "PTZCmd" && cmd.rawHex.length == 16) {
+            Spacer(Modifier.height(5.dp))
+            Text(
+                cmd.rawHex.chunked(2).joinToString(" "),
                 fontSize = 10.sp,
                 color = UvpColor.TextHint,
                 fontFamily = FontFamily.Monospace,
-                letterSpacing = 0.5.sp
+                letterSpacing = 0.4.sp,
+                maxLines = 1
             )
         }
     }

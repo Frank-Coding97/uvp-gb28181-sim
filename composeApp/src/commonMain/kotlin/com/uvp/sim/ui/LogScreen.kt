@@ -15,11 +15,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -45,9 +48,10 @@ import kotlinx.datetime.Clock
  * filter 入口故意不放 AppBar — 各 tab 内部已有 chip 行,业务级过滤更直观。
  */
 @Composable
-fun LogScreen(state: AppUiState) {
+fun LogScreen(state: AppUiState, actions: AppActions) {
     var selected by remember { mutableStateOf(LogTabKind.Sip) }
     var systemPaused by remember { mutableStateOf(false) }
+    var pendingClear by remember { mutableStateOf<LogTabKind?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         LogAppBar(
@@ -55,7 +59,8 @@ fun LogScreen(state: AppUiState) {
             onSelect = { selected = it },
             systemPaused = systemPaused,
             onTogglePause = { systemPaused = !systemPaused },
-            onShare = { shareCurrentTab(selected, state, systemPaused) }
+            onShare = { shareCurrentTab(selected, state, systemPaused) },
+            onClear = { pendingClear = selected }
         )
         Box(modifier = Modifier.fillMaxSize().padding(top = 4.dp)) {
             when (selected) {
@@ -68,6 +73,20 @@ fun LogScreen(state: AppUiState) {
                 )
             }
         }
+    }
+
+    pendingClear?.let { tab ->
+        ClearLogConfirmDialog(
+            tab = tab,
+            onConfirm = {
+                when (tab) {
+                    LogTabKind.Sip -> actions.onClearSipLogs()
+                    LogTabKind.System -> actions.onClearSystemLogs()
+                }
+                pendingClear = null
+            },
+            onDismiss = { pendingClear = null }
+        )
     }
 }
 
@@ -82,7 +101,8 @@ private fun LogAppBar(
     onSelect: (LogTabKind) -> Unit,
     systemPaused: Boolean,
     onTogglePause: () -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onClear: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -105,6 +125,13 @@ private fun LogAppBar(
             )
             Spacer(Modifier.width(4.dp))
         }
+        AppBarIcon(
+            icon = Icons.Outlined.DeleteOutline,
+            description = "清除当前 tab",
+            tint = UvpColor.Danger,
+            onClick = onClear
+        )
+        Spacer(Modifier.width(4.dp))
         AppBarIcon(
             icon = Icons.Outlined.Share,
             description = "导出当前 tab",
@@ -153,6 +180,25 @@ private fun LogTabChip(label: String, active: Boolean, onClick: () -> Unit) {
             color = textColor
         )
     }
+}
+
+@Composable
+private fun ClearLogConfirmDialog(
+    tab: LogTabKind,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("清除${tab.label}") },
+        text = { Text("将清空当前 tab 已累积的记录,清除后无法恢复。继续吗?") },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("清除") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        }
+    )
 }
 
 private fun shareCurrentTab(

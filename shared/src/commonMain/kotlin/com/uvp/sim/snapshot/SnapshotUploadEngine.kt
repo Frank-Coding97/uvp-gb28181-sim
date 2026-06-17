@@ -94,20 +94,39 @@ class SnapshotUploadEngine(
     private fun generateSnapShotId(idx: Int): String {
         val ldt: LocalDateTime = Instant.fromEpochMilliseconds(nowMs())
             .toLocalDateTime(TimeZone.currentSystemDefault())
-        return "%04d%02d%02dT%02d%02d%02d_%d".format(
-            ldt.year, ldt.monthNumber, ldt.dayOfMonth,
-            ldt.hour, ldt.minute, ldt.second,
-            idx
-        )
+        return buildString {
+            append(ldt.year.toString().padStart(4, '0'))
+            append(ldt.monthNumber.toString().padStart(2, '0'))
+            append(ldt.dayOfMonth.toString().padStart(2, '0'))
+            append('T')
+            append(ldt.hour.toString().padStart(2, '0'))
+            append(ldt.minute.toString().padStart(2, '0'))
+            append(ldt.second.toString().padStart(2, '0'))
+            append('_')
+            append(idx)
+        }
     }
 
     private fun generateTimeIso(): String {
         val ldt: LocalDateTime = Instant.fromEpochMilliseconds(nowMs())
             .toLocalDateTime(TimeZone.UTC)
-        return "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ".format(
-            ldt.year, ldt.monthNumber, ldt.dayOfMonth,
-            ldt.hour, ldt.minute, ldt.second, ldt.nanosecond / 1_000_000
-        )
+        val ms = ldt.nanosecond / 1_000_000
+        return buildString {
+            append(ldt.year.toString().padStart(4, '0'))
+            append('-')
+            append(ldt.monthNumber.toString().padStart(2, '0'))
+            append('-')
+            append(ldt.dayOfMonth.toString().padStart(2, '0'))
+            append('T')
+            append(ldt.hour.toString().padStart(2, '0'))
+            append(':')
+            append(ldt.minute.toString().padStart(2, '0'))
+            append(':')
+            append(ldt.second.toString().padStart(2, '0'))
+            append('.')
+            append(ms.toString().padStart(3, '0'))
+            append('Z')
+        }
     }
 }
 

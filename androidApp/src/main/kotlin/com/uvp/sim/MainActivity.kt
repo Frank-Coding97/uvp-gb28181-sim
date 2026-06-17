@@ -242,6 +242,16 @@ class MainActivity : ComponentActivity() {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "保存固定报警单 type=${payload.type.label}")
                     viewModel.saveFixedAlarm(payload)
                 }
+                override fun onClearSipLogs() {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户清除 SIP 日志")
+                    viewModel.clearSipEvents()
+                }
+                override fun onClearSystemLogs() {
+                    // emit 先入队,Clear 在后,actor 串行处理后这条 emit 会随旧 buffer 一起被清掉。
+                    // 故意保留 emit 是为了让 logcat bridge 留下一条审计记录(开发者可查)。
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户清除系统日志")
+                    SystemLogger.clear()
+                }
             }
             // Rebuild encoder/streamer whenever video profile bumps.
             LaunchedEffect(videoVersion) {

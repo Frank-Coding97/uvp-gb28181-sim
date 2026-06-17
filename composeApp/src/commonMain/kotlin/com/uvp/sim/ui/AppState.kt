@@ -177,6 +177,12 @@ interface AppActions {
 
     /** 保存固定报警单(指定模式),主页一点即发此单。 */
     fun onSaveFixedAlarm(payload: AlarmPayload) {}
+
+    /** 清空 SIP 信令事件流(日志页 SIP tab 清除按钮触发)。 */
+    fun onClearSipLogs() {}
+
+    /** 清空系统日志缓冲(日志页 系统 tab 清除按钮触发)。 */
+    fun onClearSystemLogs() {}
 }
 
 enum class AppTab(val label: String) {

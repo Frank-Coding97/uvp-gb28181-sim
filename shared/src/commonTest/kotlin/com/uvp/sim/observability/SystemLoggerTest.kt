@@ -73,4 +73,29 @@ class SystemLoggerTest {
         assertEquals(seqs.distinct(), seqs, "seq not unique: $seqs")
         SystemLogger.shutdownForTest()
     }
+
+    @Test fun clearReplacesBufferWithSingleMarker() = runTest {
+        SystemLogger.bindScope(this)
+        repeat(5) { SystemLogger.emit(LogLevel.Info, LogTag.Network, "old$it") }
+        testScheduler.advanceUntilIdle()
+        SystemLogger.clear()
+        testScheduler.advanceUntilIdle()
+        val snap = SystemLogger.snapshot
+        assertEquals(1, snap.size, "after clear only marker should remain")
+        assertEquals("日志已清除", snap[0].message)
+        SystemLogger.shutdownForTest()
+    }
+
+    @Test fun emitAfterClearAccumulatesNormally() = runTest {
+        SystemLogger.bindScope(this)
+        SystemLogger.emit(LogLevel.Info, LogTag.Network, "before")
+        SystemLogger.clear()
+        SystemLogger.emit(LogLevel.Info, LogTag.Network, "after")
+        testScheduler.advanceUntilIdle()
+        val snap = SystemLogger.snapshot
+        assertEquals(2, snap.size, "expected marker + post-clear emit")
+        assertEquals("日志已清除", snap[0].message)
+        assertEquals("after", snap[1].message)
+        SystemLogger.shutdownForTest()
+    }
 }

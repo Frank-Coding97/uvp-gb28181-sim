@@ -248,6 +248,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 清空 SIP 信令事件流(日志页清除按钮触发)。 */
+    fun clearSipEvents() {
+        _events.value = emptyList()
+    }
+
     fun connect() {
         val existing = engine
         if (existing != null) {
