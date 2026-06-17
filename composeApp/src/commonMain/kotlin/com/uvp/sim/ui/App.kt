@@ -48,7 +48,8 @@ import androidx.compose.ui.unit.sp
  * 让 CapabilityScreen 直接打开报警子页。null callback = 默认无操作(测试/预览安全)。
  */
 class AppNavigator(
-    val navigateToAlarm: () -> Unit = {}
+    val navigateToAlarm: () -> Unit = {},
+    val navigateToSettings: () -> Unit = {},
 )
 
 val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
@@ -69,12 +70,19 @@ fun App(state: AppUiState, actions: AppActions) {
             navigateToAlarm = {
                 alarmTarget = true
                 currentTab = AppTab.Capability
+            },
+            navigateToSettings = {
+                currentTab = AppTab.Settings
             }
         )
         UvpToastHost {
             CompositionLocalProvider(LocalAppNavigator provides navigator) {
                 Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
                     CompactTopBar()
+                    NetworkUnavailableBanner(
+                        runtime = state.networkRuntimeState,
+                        onClick = { currentTab = AppTab.Settings }
+                    )
                     Surface(
                         modifier = Modifier.fillMaxWidth().weight(1f),
                         color = UvpColor.Bg
