@@ -3,8 +3,10 @@ package com.uvp.sim.domain
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.gb28181.ManscdpParser
 import com.uvp.sim.gb28181.PanDirection
+import com.uvp.sim.gb28181.PresetOp
 import com.uvp.sim.gb28181.PtzCmdDecoder
 import com.uvp.sim.gb28181.PtzCommand
+import com.uvp.sim.gb28181.PtzInstruction
 import com.uvp.sim.gb28181.TiltDirection
 import com.uvp.sim.gb28181.ZoomDirection
 import kotlinx.coroutines.CoroutineScope
@@ -72,6 +74,11 @@ class DeviceControlDispatcher(
     private val scope: CoroutineScope? = null,
 ) {
 
+    companion object {
+        /** 预置位上限(spec Q3:行业惯例 1-8;越界一律 200 OK 但忽略业务). */
+        const val MAX_PRESET_INDEX = 8
+    }
+
     /**
      * 主入口.根据 XML 中第一个匹配的子命令标签分发.
      * 一个 DeviceControl 体里通常只含一个子命令,这里按已知顺序逐个尝试,
@@ -104,7 +111,14 @@ class DeviceControlDispatcher(
 
     private fun handlePtz(xml: String) {
         val hex = ManscdpParser.tagValue(xml, "PTZCmd") ?: return
-        val ptz = PtzCmdDecoder.decode(hex) ?: return
+        when (val ins = PtzCmdDecoder.decodeInstruction(hex)) {
+            is PtzInstruction.Motion -> handlePtzMotion(ins.cmd, hex)
+            is PtzInstruction.Preset -> handlePtzPreset(ins, hex)
+            null -> { /* 校验失败 / 巡航 / Aux 等,200 OK 由 ack 兜底 */ }
+        }
+    }
+
+    private fun handlePtzMotion(ptz: PtzCommand, hex: String) {
         state.update {
             it.copy(
                 panSpeed = mapPanSpeed(ptz),
@@ -112,6 +126,61 @@ class DeviceControlDispatcher(
                 zoomSpeed = mapZoomSpeed(ptz),
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), ptz)
             )
+        }
+    }
+
+    /**
+     * 预置位 CRUD (GB-2022 §F.3 byte3 = 0x81/0x82/0x83 + byte4 = 编号).
+     *
+     * - 上限 8 个,index 范围 1-8(spec Q3 决议),越界仅记 lastCommand 不动 presets
+     * - SET: 当前姿态入库(可覆盖)+ 设 currentPresetIndex
+     * - CALL: 已存在则 emit [DeviceEffect.PresetRecall];不存在仅记 lastCommand
+     * - DEL: 移除;若删除的正是 currentPresetIndex 则清零
+     */
+    private fun handlePtzPreset(p: PtzInstruction.Preset, hex: String) {
+        val idx = p.index
+        if (idx !in 1..MAX_PRESET_INDEX) {
+            state.update {
+                it.copy(
+                    lastCommand = LastDeviceCommand(
+                        "PTZCmd", "${p.op}#$idx (out-of-range)", nowMs()
+                    )
+                )
+            }
+            return
+        }
+        state.update { s ->
+            when (p.op) {
+                PresetOp.SET -> {
+                    val pose = PtzPose(s.panAngle, s.tiltAngle, s.zoomLevel)
+                    s.copy(
+                        presets = s.presets + (idx to pose),
+                        currentPresetIndex = idx,
+                        lastCommand = LastDeviceCommand("PTZCmd", "SetPreset#$idx", nowMs())
+                    )
+                }
+                PresetOp.CALL -> {
+                    val target = s.presets[idx]
+                    if (target == null) {
+                        s.copy(
+                            lastCommand = LastDeviceCommand(
+                                "PTZCmd", "CallPreset#$idx (empty)", nowMs()
+                            )
+                        )
+                    } else {
+                        s.copy(
+                            currentPresetIndex = idx,
+                            pendingEffect = DeviceEffect.PresetRecall(idx, target),
+                            lastCommand = LastDeviceCommand("PTZCmd", "CallPreset#$idx", nowMs())
+                        )
+                    }
+                }
+                PresetOp.DEL -> s.copy(
+                    presets = s.presets - idx,
+                    currentPresetIndex = if (s.currentPresetIndex == idx) null else s.currentPresetIndex,
+                    lastCommand = LastDeviceCommand("PTZCmd", "DelPreset#$idx", nowMs())
+                )
+            }
         }
     }
 

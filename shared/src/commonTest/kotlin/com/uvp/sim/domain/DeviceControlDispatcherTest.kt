@@ -333,4 +333,73 @@ class DeviceControlDispatcherTest {
         assertEquals(1, actions.snapshotConfigsTriggered.size, "新路径优先")
         assertEquals(0, actions.snapshotCalled, "旧路径不应再被触发")
     }
+
+    // ---------- T3 预置位 CRUD ----------
+
+    /** 预置位 hex helper — byte3 = 0x81/0x82/0x83, byte4 = 编号 */
+    private fun presetHex(opCode: Int, presetIndex: Int): String {
+        val sum = (0xA5 + 0x0F + 0x01 + opCode + presetIndex + 0 + 0) and 0xFF
+        return listOf(0xA5, 0x0F, 0x01, opCode, presetIndex, 0, 0, sum)
+            .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
+    }
+
+    @Test
+    fun `T3_1 — SetPreset 把当前 pose 入库`() {
+        val state = MutableStateFlow(
+            DeviceControlState(panAngle = 10f, tiltAngle = 20f, zoomLevel = 1.5f)
+        )
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${presetHex(0x81, 3)}</PTZCmd></C>")
+        val s = state.value
+        assertEquals(PtzPose(10f, 20f, 1.5f), s.presets[3])
+        assertEquals(3, s.currentPresetIndex)
+        assertEquals("PTZCmd", s.lastCommand?.type)
+        assertEquals("SetPreset#3", s.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `T3_2 — CallPreset 已存在 → emit PresetRecall effect`() {
+        val target = PtzPose(45f, 0f, 2f)
+        val state = MutableStateFlow(DeviceControlState(presets = mapOf(2 to target)))
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${presetHex(0x82, 2)}</PTZCmd></C>")
+        val s = state.value
+        assertEquals(DeviceEffect.PresetRecall(2, target), s.pendingEffect)
+        assertEquals(2, s.currentPresetIndex)
+    }
+
+    @Test
+    fun `T3_3 — CallPreset 不存在 → 不 emit effect`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${presetHex(0x82, 7)}</PTZCmd></C>")
+        val s = state.value
+        kotlin.test.assertNull(s.pendingEffect)
+        assertEquals("CallPreset#7 (empty)", s.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `T3_4 — DelPreset 移除 + 清当前索引`() {
+        val state = MutableStateFlow(
+            DeviceControlState(
+                presets = mapOf(1 to PtzPose(0f, 0f, 1f), 2 to PtzPose(10f, 0f, 1f)),
+                currentPresetIndex = 1,
+            )
+        )
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${presetHex(0x83, 1)}</PTZCmd></C>")
+        val s = state.value
+        assertEquals(mapOf(2 to PtzPose(10f, 0f, 1f)), s.presets)
+        kotlin.test.assertNull(s.currentPresetIndex)
+    }
+
+    @Test
+    fun `T3_5 — 越界 idx 99 不动 presets`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${presetHex(0x81, 99)}</PTZCmd></C>")
+        val s = state.value
+        assertTrue(s.presets.isEmpty())
+        assertTrue(s.lastCommand?.rawHex?.contains("out-of-range") == true)
+    }
 }
