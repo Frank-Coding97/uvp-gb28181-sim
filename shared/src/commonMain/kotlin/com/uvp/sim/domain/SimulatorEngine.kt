@@ -10,6 +10,7 @@ import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.DigestAuth
 import com.uvp.sim.sip.SipBuilders
+import com.uvp.sim.sip.SipDateParser
 import com.uvp.sim.sip.SipEvent
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
@@ -37,6 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
@@ -86,6 +88,10 @@ class SimulatorEngine(
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
+
+    /** M5 §4.15 SIP Date 校时偏移 — 注册 200 OK 解析 Date 头后更新。 */
+    private val _clockOffset = MutableStateFlow(ClockOffset.Empty)
+    val clockOffset: StateFlow<ClockOffset> = _clockOffset.asStateFlow()
 
     /**
      * 本机 IP 的 getter delegate — 委托给 [localIpProvider]。
@@ -1066,6 +1072,7 @@ class SimulatorEngine(
             in 200..299 -> {
                 cancelRegisterTimeout()
                 registerRetryCount = 0
+                applySipDateSync(resp)
                 if (!isRenewal) {
                     _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
                     _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
@@ -2018,9 +2025,11 @@ class SimulatorEngine(
         }
     }
 
-    /** 设备本地时间 ISO8601 无偏移,GB28181 默认格式 "yyyy-MM-ddTHH:mm:ss" */
+    /** 设备本地时间 ISO8601 无偏移,GB28181 默认格式 "yyyy-MM-ddTHH:mm:ss"。
+     *  M5 §4.15:基于 [_clockOffset] 推进的"对外时间",未校时降级本地墙钟。 */
     private fun currentLocalIso(): String {
-        val now = Clock.System.now()
+        val ms = _clockOffset.value.adjustedNowMs()
+        val now = Instant.fromEpochMilliseconds(ms)
         val tz = TimeZone.currentSystemDefault()
         val ldt = now.toLocalDateTime(tz)
         return buildString {
@@ -3266,6 +3275,45 @@ $itemsBlock
      * 1.6: Schedule a REGISTER renewal before expires lapses.
      * Fires at 80% of expiresSeconds to give time for auth challenge round-trip.
      */
+    /**
+     * M5 §4.15 SIP Date 校时:从注册 200 OK 的 Date 头校准平台基准时间。
+     *
+     * - Date 头格式 RFC1123 / ISO8601 双兼容(SipDateParser)
+     * - 解析失败 / 缺失:不校时,fallback 本地时钟,不阻塞注册
+     * - 续约 200 OK 也走此路径,自然滚动校准
+     * - 不修改手机系统时钟,只更新 _clockOffset
+     */
+    private fun applySipDateSync(resp: SipResponse) {
+        val rawDate = resp.firstHeader(SipHeader.DATE)
+        if (rawDate.isNullOrBlank()) return
+        val platformInstant = SipDateParser.parse(rawDate)
+        if (platformInstant == null) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "Date 头解析失败,fallback 本地时钟",
+                detail = rawDate
+            )
+            return
+        }
+        val offset = ClockOffset.synced(platformInstant, rawDate)
+        _clockOffset.value = offset
+        val deltaMs = offset.localOffsetMs() ?: 0L
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "已校时:平台 ${rawDate.trim()} 本地偏移 ${formatOffsetMs(deltaMs)}"
+        )
+    }
+
+    private fun formatOffsetMs(ms: Long): String {
+        val sign = if (ms >= 0) "+" else "-"
+        val abs = if (ms < 0) -ms else ms
+        return when {
+            abs < 1_000 -> "${sign}${abs}ms"
+            abs < 60_000 -> "${sign}${abs / 1000}.${(abs % 1000) / 100}s"
+            else -> "${sign}${abs / 60_000}m${(abs % 60_000) / 1000}s"
+        }
+    }
+
     private fun scheduleExpiresRenewal() {
         renewalJob?.cancel()
         val renewalDelayMs = (config.expiresSeconds * 800L)
