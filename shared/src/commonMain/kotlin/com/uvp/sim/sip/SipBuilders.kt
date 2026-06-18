@@ -348,6 +348,25 @@ object SipBuilders {
     ): SipResponse =
         buildSimpleResponse(request, 200, "OK", toTag, userAgent)
 
+    /**
+     * RFC 3261 §11.2 OPTIONS 200 OK 响应构造器(M5 平台兼容性补漏 batch1).
+     *
+     * 平台用 OPTIONS 探活,设备只需回 200 + Allow 头列出真实支持的 SIP 方法.
+     * 本实现复用 [buildSimpleResponse] 主体(Via/From/To/Call-ID/CSeq 透传 + Date),
+     * 末尾追加 `Allow: <逗号分隔方法>`,顺序按入参 [allowedMethods].
+     *
+     * MVP 仅发 Allow 一头,Accept / Supported / Accept-Language 等扩展头按需后补.
+     */
+    fun buildOptionsResponse(
+        request: SipRequest,
+        allowedMethods: List<SipMethod>,
+        userAgent: String? = null
+    ): SipResponse {
+        val base = buildSimpleResponse(request, 200, "OK", toTag = null, userAgent = userAgent)
+        val allowValue = allowedMethods.joinToString(", ") { it.name }
+        return base.copy(headers = base.headers + SipMessage.Header("Allow", allowValue))
+    }
+
     /** Build a simple non-2xx response (no body). Used for 486 Busy / 487 Terminated. */
     fun buildSimpleResponse(
         request: SipRequest,

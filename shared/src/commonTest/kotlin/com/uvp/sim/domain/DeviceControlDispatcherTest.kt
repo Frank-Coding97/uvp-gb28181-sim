@@ -43,6 +43,9 @@ class DeviceControlDispatcherTest {
         override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
             snapshotConfigsTriggered.add(cfg)
         }
+        override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
+            // 测试桩:DeviceControlDispatcher 走 §9.13 升级路径不在本套件覆盖
+        }
     }
 
     /** ((B0+B1+B2+B3+B4+B5+B6) mod 256) hex string */
