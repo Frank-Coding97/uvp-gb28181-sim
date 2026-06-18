@@ -1,13 +1,18 @@
 package com.uvp.sim.sip
 
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 
 /**
  * 解析 SIP `Date` 头(RFC 3261 § 20.17),返回 [Instant] 或 null。
  *
  * 双格式兼容:
  * - **RFC1123**(主流):`Wed, 18 Jun 2026 07:30:00 GMT` —— WVP / 自家 SipBuilders 都用这个
- * - **ISO8601**(部分自建平台):`2026-06-18T07:30:00.000Z` / `+08:00` / 无时区视为 UTC
+ * - **ISO8601**:
+ *   - 带 Z / +08:00 等显式时区:按 [Instant.parse] 直解
+ *   - **无时区**:按**系统默认时区**解析(GB28181 业界惯例,WVP 实测发本地时间无后缀)
  *
  * 任何异常 / 格式不识别返回 null,不抛 —— 调用方按"未校时"降级。
  */
@@ -48,13 +53,20 @@ object SipDateParser {
     }.getOrNull()
 
     /**
-     * ISO8601:优先按原样 parse;失败则补 `Z` 视为 UTC 再试。
+     * ISO8601:
+     * 1. 含显式时区(Z / ±HH:MM)→ Instant.parse 直解
+     * 2. 无时区(纯 LocalDateTime)→ 按**系统默认时区**解析
+     *    (WVP-Pro 实测会发 `2026-06-18T16:26:57.492` 这种本地时间无后缀,
+     *     如果当 UTC 解析会差一个时区偏移)
+     *
      * 必须含 `T` 分隔符避免 "2026-06-18" 这种半截日期被当成合法。
      */
     private fun parseIso8601(s: String): Instant? {
         if (!s.contains('T')) return null
+        // 优先按显式时区直解(Z / +08:00 / -05:00 等)
         runCatching { return Instant.parse(s) }
-        runCatching { return Instant.parse("${s}Z") }
+        // 无时区 → LocalDateTime + 系统默认时区
+        runCatching { return LocalDateTime.parse(s).toInstant(TimeZone.currentSystemDefault()) }
         return null
     }
 
