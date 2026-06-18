@@ -299,6 +299,34 @@ private fun PtzTabContent(state: DeviceControlState) {
             Spacer(Modifier.width(8.dp))
             PresetChipRow(presets = state.presets, currentIndex = state.currentPresetIndex)
         }
+        // 巡航轨迹(若已设过)
+        if (state.cruiseTracks.isNotEmpty()) {
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("巡航", fontSize = 10.sp, color = UvpColor.TextHint, fontWeight = FontWeight.Medium)
+                Spacer(Modifier.width(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    state.cruiseTracks.toSortedMap().forEach { (trackNum, points) ->
+                        val active = state.activeCruiseTrack == trackNum
+                        val bg = if (active) UvpColor.Primary else UvpColor.BorderLight
+                        val fg = if (active) Color.White else UvpColor.TextSecondary
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(99.dp))
+                                .background(bg)
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                        ) {
+                            Text(
+                                "T$trackNum·${points.size}",
+                                color = fg,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -446,6 +474,11 @@ private fun BigStatusLamp(
 @Composable
 private fun ImageTabContent(state: DeviceControlState) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // GB-2022 §9.13 在线升级进度条(优先于其他事件显示)
+        val upgrade = state.upgradeProgress
+        if (upgrade != null) {
+            UpgradeProgressRow(upgrade)
+        }
         // 拉框聚焦
         val rect = state.dragZoomRect
         ImageEventRow(
@@ -464,17 +497,79 @@ private fun ImageTabContent(state: DeviceControlState) {
             "TargetTrack" -> "目标跟踪" to (cmd.rawHex)
             else -> null
         }
-        if (cmdLabel != null) {
+        if (cmdLabel != null && upgrade == null) {
             ImageEventRow(
                 label = cmdLabel.first,
                 value = cmdLabel.second,
                 highlight = true,
             )
-        } else {
+        } else if (cmdLabel == null && upgrade == null) {
             ImageEventRow(
                 label = "最近命令",
                 value = "暂无图像类指令",
                 highlight = false,
+            )
+        }
+    }
+}
+
+/** GB-2022 §9.13 在线升级进度条 — 平台 DeviceUpgrade 触发,5s 假进度 0/30/60/100. */
+@Composable
+private fun UpgradeProgressRow(upgrade: com.uvp.sim.domain.UpgradeProgress) {
+    val statusText = when (upgrade.result) {
+        com.uvp.sim.domain.UpgradeResult.InProgress -> "升级中"
+        com.uvp.sim.domain.UpgradeResult.Success -> "升级成功"
+        com.uvp.sim.domain.UpgradeResult.Failure -> "升级失败"
+    }
+    val statusColor = when (upgrade.result) {
+        com.uvp.sim.domain.UpgradeResult.InProgress -> UvpColor.Primary
+        com.uvp.sim.domain.UpgradeResult.Success -> UvpColor.Success
+        com.uvp.sim.domain.UpgradeResult.Failure -> UvpColor.Danger
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.PrimaryLight)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "在线升级 v${upgrade.firmware}",
+                fontSize = 11.sp,
+                color = UvpColor.Primary,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                statusText,
+                fontSize = 10.sp,
+                color = statusColor,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "${upgrade.percent}%",
+                fontSize = 11.sp,
+                color = UvpColor.Text,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+        Spacer(Modifier.height(5.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(99.dp))
+                .background(UvpColor.BorderLight),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(upgrade.percent / 100f)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(statusColor)
             )
         }
     }

@@ -31,6 +31,8 @@ interface DeviceControlActions {
     fun requestKeyFrame()
     /** SnapShotConfig — GB-2022 §9.5 平台下发的图像抓拍配置(7.5 新路径,委托 SnapshotUploadEngine). */
     suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig)
+    /** GB-2022 §9.13 DeviceUpgrade 在线升级 — 启动假进度协程,5s 内推 4 条 NOTIFY (0/30/60/100). */
+    fun startUpgrade(sessionId: String, firmware: String, fileUrl: String)
 }
 
 /**
@@ -122,7 +124,8 @@ class DeviceControlDispatcher(
             is PtzInstruction.Motion -> handlePtzMotion(ins.cmd, hex)
             is PtzInstruction.Preset -> handlePtzPreset(ins, hex)
             is PtzInstruction.Aux -> handlePtzAux(ins, hex)
-            null -> { /* 校验失败 / 巡航 / 未知子族,200 OK 由 ack 兜底 */ }
+            is PtzInstruction.Cruise -> handlePtzCruise(ins, hex)
+            null -> { /* 校验失败 / 未知子族,200 OK 由 ack 兜底 */ }
         }
     }
 
@@ -136,13 +139,68 @@ class DeviceControlDispatcher(
                 com.uvp.sim.gb28181.FocusDirection.NONE -> 0f
             }
             val newFocusLevel = (it.focusLevel + focusDelta).coerceIn(0f, 1f)
+            // Iris 累计:跟 focus 同步累加机制
+            val irisDelta = when (ptz.irisDirection) {
+                com.uvp.sim.gb28181.IrisDirection.OPEN -> ptz.irisSpeed * 0.005f
+                com.uvp.sim.gb28181.IrisDirection.CLOSE -> -ptz.irisSpeed * 0.005f
+                com.uvp.sim.gb28181.IrisDirection.NONE -> 0f
+            }
+            val newIrisLevel = (it.irisLevel + irisDelta).coerceIn(0f, 1f)
             it.copy(
                 panSpeed = mapPanSpeed(ptz),
                 tiltSpeed = mapTiltSpeed(ptz),
                 zoomSpeed = mapZoomSpeed(ptz),
                 focusLevel = newFocusLevel,
+                irisLevel = newIrisLevel,
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), ptz)
             )
+        }
+    }
+
+    /** 巡航 CRUD (GB-2022 §F.3 byte3=0x84-0x88). */
+    private fun handlePtzCruise(p: PtzInstruction.Cruise, hex: String) {
+        val now = nowMs()
+        when (p.op) {
+            com.uvp.sim.gb28181.CruiseOp.SET_POINT -> {
+                // 把预置位 p.param 加入巡航轨迹 p.trackNum
+                state.update { s ->
+                    val track = s.cruiseTracks[p.trackNum].orEmpty()
+                    val updated = if (p.param in track) track else track + p.param
+                    s.copy(
+                        cruiseTracks = s.cruiseTracks + (p.trackNum to updated),
+                        lastCommand = LastDeviceCommand("PTZCmd", "巡航 #${p.trackNum} 添加 P${p.param}", now)
+                    )
+                }
+            }
+            com.uvp.sim.gb28181.CruiseOp.DEL_POINT -> {
+                state.update { s ->
+                    val track = s.cruiseTracks[p.trackNum].orEmpty()
+                    val updated = track - p.param
+                    s.copy(
+                        cruiseTracks = if (updated.isEmpty()) s.cruiseTracks - p.trackNum
+                            else s.cruiseTracks + (p.trackNum to updated),
+                        lastCommand = LastDeviceCommand("PTZCmd", "巡航 #${p.trackNum} 删除 P${p.param}", now)
+                    )
+                }
+            }
+            com.uvp.sim.gb28181.CruiseOp.SET_SPEED -> {
+                state.update { it.copy(lastCommand = LastDeviceCommand("PTZCmd", "巡航 #${p.trackNum} 速度=${p.param}", now)) }
+            }
+            com.uvp.sim.gb28181.CruiseOp.SET_DWELL_TIME -> {
+                state.update { it.copy(lastCommand = LastDeviceCommand("PTZCmd", "巡航 #${p.trackNum} 停留=${p.param}s", now)) }
+            }
+            com.uvp.sim.gb28181.CruiseOp.START -> {
+                state.update {
+                    it.copy(
+                        activeCruiseTrack = if (p.trackNum == 0) null else p.trackNum,
+                        lastCommand = LastDeviceCommand(
+                            "PTZCmd",
+                            if (p.trackNum == 0) "巡航停止" else "巡航 #${p.trackNum} 启动",
+                            now
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -354,9 +412,18 @@ class DeviceControlDispatcher(
     // ---------- HomePosition ----------
 
     private fun handleHomePosition(xml: String) {
-        val enabled = ManscdpParser.tagValue(xml, "Enabled")
-        if (enabled != null && enabled != "1") return
+        val enabledRaw = ManscdpParser.tagValue(xml, "Enabled")
         val idx = ManscdpParser.tagValue(xml, "PresetIndex")?.toIntOrNull() ?: return
+        // Enabled=0 → 关闭看守位
+        if (enabledRaw == "0") {
+            state.update {
+                it.copy(
+                    homePositionEnabled = false,
+                    lastCommand = LastDeviceCommand("HomePosition", "Disabled", nowMs())
+                )
+            }
+            return
+        }
         val existing = state.value.presets[idx]
         if (existing == null) {
             val now = state.value
@@ -365,6 +432,8 @@ class DeviceControlDispatcher(
                 it.copy(
                     presets = it.presets + (idx to pose),
                     currentPresetIndex = idx,
+                    homePosition = pose,             // 同步写看守位字段供 Query 应答
+                    homePositionEnabled = true,
                     lastCommand = LastDeviceCommand("HomePosition", "Set#$idx", nowMs())
                 )
             }
@@ -372,6 +441,8 @@ class DeviceControlDispatcher(
             state.update {
                 it.copy(
                     currentPresetIndex = idx,
+                    homePosition = existing,
+                    homePositionEnabled = true,
                     pendingEffect = DeviceEffect.HomePositionReturn(existing),
                     lastCommand = LastDeviceCommand("HomePosition", "Recall#$idx", nowMs())
                 )
@@ -415,15 +486,24 @@ class DeviceControlDispatcher(
         }
     }
 
-    /** A.2.3.1.12 DeviceUpgrade — 设备升级(选做最小集). 200 OK + snackbar 提示,不真 OTA. */
+    /** A.2.3.1.12 DeviceUpgrade — 在线升级,模拟 5s 假进度并推 NOTIFY 给平台. */
     private fun handleDeviceUpgrade(xml: String) {
         val firmware = ManscdpParser.tagValue(xml, "Firmware") ?: "(unknown)"
+        val sessionId = ManscdpParser.tagValue(xml, "SessionID") ?: "auto-${nowMs()}"
+        val fileUrl = ManscdpParser.tagValue(xml, "FileURL") ?: ""
         state.update {
             it.copy(
+                upgradeProgress = UpgradeProgress(
+                    sessionId = sessionId,
+                    firmware = firmware,
+                    percent = 0,
+                    result = UpgradeResult.InProgress,
+                ),
                 pendingEffect = DeviceEffect.DeviceUpgradeRequested(firmware),
                 lastCommand = LastDeviceCommand("DeviceUpgrade", firmware, nowMs())
             )
         }
+        actions.startUpgrade(sessionId, firmware, fileUrl)
     }
 
     /** A.2.3.1.13 FormatSDCard — 格式化 SD 卡(选做最小集). 手机无 SD 卡概念,只为协议合规. */

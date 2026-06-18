@@ -166,6 +166,13 @@ class SimulatorEngine(
                     )
                     pipeline.start(cfg)
                 }
+                override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Lifecycle,
+                        "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
+                    )
+                    scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
+                }
             },
             scope = scope
         )
@@ -1288,6 +1295,32 @@ class SimulatorEngine(
                 val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
                 sendPtzPreciseStatusResponse(sn, channelId)
             }
+            // GB-2022 §9.5.3 看守位查询(配套 HomePosition Set/Recall)
+            "HomePositionQuery" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
+                sendHomePositionQueryResponse(sn, channelId)
+            }
+            // GB-2022 §9.5.3 A.2.4.14 存储卡状态查询(配套 FormatSDCard)
+            "StorageCardStatusQuery" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
+                sendStorageCardStatusResponse(sn, channelId)
+            }
+            // GB-2022 §9.5.3 巡航轨迹列表 / 巡航轨迹查询
+            "CruiseTrackListQuery" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
+                sendCruiseTrackListResponse(sn, channelId)
+            }
+            "CruiseTrackQuery" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
+                val trackNum = com.uvp.sim.gb28181.ManscdpParser.tagValue(xml, "GroupID")?.toIntOrNull()
+                    ?: com.uvp.sim.gb28181.ManscdpParser.tagValue(xml, "TrackNum")?.toIntOrNull()
+                    ?: 1
+                sendCruiseTrackResponse(sn, channelId, trackNum)
+            }
             "ConfigDownload" -> {
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 val types = com.uvp.sim.gb28181.ConfigDownloadResponse.parseConfigTypes(xml)
@@ -2073,6 +2106,205 @@ class SimulatorEngine(
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send PTZPreciseStatusQuery response: ${e.message}"))
         }
+    }
+
+    /**
+     * GB-2022 §9.13 设备升级假进度 — 5s 内每秒推一次 DeviceUpgradeResult NOTIFY (0/30/60/100).
+     * 完成时推 result=1 + percent=100,同步写 _deviceControlState.upgradeProgress.
+     */
+    private suspend fun runUpgradeProgressFlow(sessionId: String, firmware: String) {
+        try {
+            val steps = listOf(0, 30, 60, 100)
+            for ((i, percent) in steps.withIndex()) {
+                _deviceControlState.update {
+                    it.copy(
+                        upgradeProgress = UpgradeProgress(
+                            sessionId = sessionId,
+                            firmware = firmware,
+                            percent = percent,
+                            result = if (percent < 100) UpgradeResult.InProgress else UpgradeResult.Success,
+                        )
+                    )
+                }
+                sendDeviceUpgradeResultNotify(
+                    sessionId = sessionId,
+                    firmware = firmware,
+                    percent = percent,
+                    result = if (percent < 100)
+                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_IN_PROGRESS
+                    else
+                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_SUCCESS,
+                )
+                if (i < steps.lastIndex) delay(1_500L)  // 步间隔
+            }
+            // 完成后保留 5s 让 UI 显示成功状态,然后清零
+            delay(5_000L)
+            _deviceControlState.update { it.copy(upgradeProgress = null) }
+        } catch (e: Throwable) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "DeviceUpgrade 假进度异常: ${e.message}"
+            )
+        }
+    }
+
+    private suspend fun sendDeviceUpgradeResultNotify(
+        sessionId: String,
+        firmware: String,
+        percent: Int,
+        result: Int,
+    ) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = com.uvp.sim.sip.SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.DeviceUpgradeResultNotify.build(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                sn = (cseq and 0xFFFF),
+                sessionId = sessionId,
+                firmware = firmware,
+                result = result,
+                percent = percent,
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "DeviceUpgradeResult NOTIFY → 进度 $percent% result=$result session=$sessionId"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send DeviceUpgradeResult NOTIFY: ${e.message}"))
+        }
+    }
+
+    /** GB-2022 §9.5.3 看守位查询应答(配套 HomePosition Set/Recall). */
+    private suspend fun sendHomePositionQueryResponse(sn: String, channelId: String) {
+        try {
+            cseq += 1
+            val s = _deviceControlState.value
+            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
+            // 看守位是 0-65535 编号,模拟器用 1 表示已设
+            val presetIndex = if (s.homePosition != null) 1 else 0
+            val xmlBody = """<?xml version="1.0" encoding="GB2312"?>
+<Response>
+<CmdType>HomePositionQuery</CmdType>
+<SN>$sn</SN>
+<DeviceID>$responseDeviceId</DeviceID>
+<Enabled>${if (s.homePositionEnabled) 1 else 0}</Enabled>
+<ResetTime>30</ResetTime>
+<PresetIndex>$presetIndex</PresetIndex>
+</Response>
+""".replace("\n", "\r\n")
+            sendMansResponseMessage(xmlBody, "HomePositionQuery sn=$sn")
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send HomePositionQuery response: ${e.message}"))
+        }
+    }
+
+    /** GB-2022 §9.5.3 A.2.4.14 存储卡状态查询应答(配套 FormatSDCard). */
+    private suspend fun sendStorageCardStatusResponse(sn: String, channelId: String) {
+        try {
+            cseq += 1
+            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
+            // 模拟器固定返回 1 张卡 / Normal / 32GB / 已用 8GB
+            val xmlBody = """<?xml version="1.0" encoding="GB2312"?>
+<Response>
+<CmdType>StorageCardStatusQuery</CmdType>
+<SN>$sn</SN>
+<DeviceID>$responseDeviceId</DeviceID>
+<SumNum>1</SumNum>
+<StorageList Num="1">
+<Item><CardNum>0</CardNum><Status>Normal</Status><TotalCapacity>32768</TotalCapacity><RemainingSpace>24576</RemainingSpace></Item>
+</StorageList>
+</Response>
+""".replace("\n", "\r\n")
+            sendMansResponseMessage(xmlBody, "StorageCardStatusQuery sn=$sn")
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send StorageCardStatus response: ${e.message}"))
+        }
+    }
+
+    /** GB-2022 §9.5.3 巡航轨迹列表查询. */
+    private suspend fun sendCruiseTrackListResponse(sn: String, channelId: String) {
+        try {
+            cseq += 1
+            val s = _deviceControlState.value
+            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
+            val sumNum = s.cruiseTracks.size
+            val items = s.cruiseTracks.toSortedMap().keys.joinToString("\n") { trackNum ->
+                "<Item><GroupID>$trackNum</GroupID><Name>巡航 $trackNum</Name></Item>"
+            }
+            val itemsBlock = if (sumNum == 0) "<TrackList Num=\"0\"/>"
+                else "<TrackList Num=\"$sumNum\">\n$items\n</TrackList>"
+            val xmlBody = """<?xml version="1.0" encoding="GB2312"?>
+<Response>
+<CmdType>CruiseTrackListQuery</CmdType>
+<SN>$sn</SN>
+<DeviceID>$responseDeviceId</DeviceID>
+<SumNum>$sumNum</SumNum>
+$itemsBlock
+</Response>
+""".replace("\n", "\r\n")
+            sendMansResponseMessage(xmlBody, "CruiseTrackList sn=$sn N=$sumNum")
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send CruiseTrackList response: ${e.message}"))
+        }
+    }
+
+    /** GB-2022 §9.5.3 巡航轨迹查询(单条详情). */
+    private suspend fun sendCruiseTrackResponse(sn: String, channelId: String, trackNum: Int) {
+        try {
+            cseq += 1
+            val s = _deviceControlState.value
+            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
+            val track = s.cruiseTracks[trackNum] ?: emptyList()
+            val sumNum = track.size
+            val items = track.joinToString("\n") { presetNum ->
+                "<Item><PresetID>$presetNum</PresetID><Speed>5</Speed><DwellTime>3</DwellTime></Item>"
+            }
+            val itemsBlock = if (sumNum == 0) "<PresetList Num=\"0\"/>"
+                else "<PresetList Num=\"$sumNum\">\n$items\n</PresetList>"
+            val xmlBody = """<?xml version="1.0" encoding="GB2312"?>
+<Response>
+<CmdType>CruiseTrackQuery</CmdType>
+<SN>$sn</SN>
+<DeviceID>$responseDeviceId</DeviceID>
+<GroupID>$trackNum</GroupID>
+<SumNum>$sumNum</SumNum>
+$itemsBlock
+</Response>
+""".replace("\n", "\r\n")
+            sendMansResponseMessage(xmlBody, "CruiseTrack #$trackNum sn=$sn")
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send CruiseTrack response: ${e.message}"))
+        }
+    }
+
+    /** 通用 MANSCDP Response 发送(沿用 PresetQuery / PTZPreciseStatusQuery 同款 SIP 包). */
+    private suspend fun sendMansResponseMessage(xmlBody: String, label: String) {
+        val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+        val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+        val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+        val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+            config = config,
+            cseq = cseq,
+            callId = callIdNow,
+            branch = branch,
+            fromTag = fromTagNow,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            xmlBody = xmlBody
+        )
+        transport.send(msg)
+        _events.emit(SimEvent.MessageSent(msg))
+        SystemLogger.emit(LogLevel.Info, LogTag.Network, "$label → 已应答")
     }
 
     private suspend fun sendConfigDownloadResponse(sn: String, configTypes: List<String>) {

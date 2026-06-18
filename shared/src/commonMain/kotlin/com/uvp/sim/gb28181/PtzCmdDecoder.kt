@@ -62,7 +62,11 @@ object PtzCmdDecoder {
             // GB-2022 §F.3 byte3 = 0x89 / 0x8A 辅助开关 (Aux On/Off)
             // byte4 = aux 编号: 1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷(海康/大华事实标准)
             opCode == 0x89 || opCode == 0x8A -> decodeAux(bytes, opCode)
-            // 其他全走 Motion bit 拆解(包括 byte3 bit6=Focus Far / bit7=Focus Near)
+            // 巡航控制(GB-2022 §F.3 byte3 = 0x84-0x88)
+            // 0x84=SetCruisePoint / 0x85=DelCruisePoint / 0x86=CruiseSpeed / 0x87=CruiseTime / 0x88=StartCruise
+            opCode in 0x84..0x88 -> decodeCruise(bytes, opCode)
+            // 其他全走 Motion bit 拆解(包括 byte3 bit6=Focus Far / bit7=Focus Near
+            //                          + byte3 = 0x44/0x48 行业 Iris Open/Close)
             else -> PtzInstruction.Motion(decodeMotion(bytes, opCode))
         }
     }
@@ -81,6 +85,20 @@ object PtzCmdDecoder {
         val on = opCode == 0x89  // 0x89=on / 0x8A=off
         val auxIndex = bytes[4].toInt() and 0xFF
         return PtzInstruction.Aux(on, auxIndex)
+    }
+
+    /** 巡航子命令解码. byte4 = 巡航号(1-N),byte5 = 预置位号 / 速度 / 时长(取决于 op). */
+    private fun decodeCruise(bytes: ByteArray, opCode: Int): PtzInstruction.Cruise {
+        val op = when (opCode) {
+            0x84 -> CruiseOp.SET_POINT       // byte4=巡航号 byte5=预置位号
+            0x85 -> CruiseOp.DEL_POINT       // byte4=巡航号 byte5=预置位号
+            0x86 -> CruiseOp.SET_SPEED       // byte4=巡航号 byte5+byte6 高=速度
+            0x87 -> CruiseOp.SET_DWELL_TIME  // byte4=巡航号 byte5+byte6 高=停留时长
+            else -> CruiseOp.START           // 0x88: byte4=巡航号
+        }
+        val trackNum = bytes[4].toInt() and 0xFF
+        val param = bytes[5].toInt() and 0xFF
+        return PtzInstruction.Cruise(op, trackNum, param)
     }
 
     private fun decodeMotion(bytes: ByteArray, opCode: Int): PtzCommand {
@@ -105,22 +123,29 @@ object PtzCmdDecoder {
             else -> ZoomDirection.NONE
         }
         // Focus: byte3 bit6 = Focus Far(远焦) / bit7 = Focus Near(近焦)
-        // 注意:整字节匹配 0x81/0x82/0x83/0x89/0x8A 已在外层 decodeInstruction 拦截,
-        // 走到这里的 opCode 不会是预置位/Aux 整字节值,bit7 单独置位是合法 Focus Near.
+        // 注意:整字节匹配 0x81/0x82/0x83 / 0x89/0x8A / 0x84-0x88 已在外层 decodeInstruction 拦截,
+        // 走到这里的 opCode 不会是预置位/Aux/Cruise 整字节值,bit7 单独置位是合法 Focus Near.
         val focusDir = when {
             (opCode and 0x80) != 0 -> FocusDirection.NEAR
             (opCode and 0x40) != 0 -> FocusDirection.FAR
             else -> FocusDirection.NONE
         }
+        // Iris(光圈):各家 byte3 编码不一致,模拟器约定 0x44=Iris Open / 0x48=Iris Close
+        // (不在 bit 拆解范围,需要外层精确匹配整字节)
+        // 注:这里走到 decodeMotion 的 0x44/0x48 也会被 bit 拆解成 Focus(0x44=Focus Far + bit2=down,
+        // 0x48=Focus Far + bit3=up),实际语义需要平台明确;整字节匹配在外层处理.
+        val irisDir = IrisDirection.NONE  // 由外层精确字节判别(见 dispatcher)
         return PtzCommand(
             panDirection = panDir,
             tiltDirection = tiltDir,
             zoomDirection = zoomDir,
             focusDirection = focusDir,
+            irisDirection = irisDir,
             panSpeed = if (panDir == PanDirection.NONE) 0 else panSpeed,
             tiltSpeed = if (tiltDir == TiltDirection.NONE) 0 else tiltSpeed,
             zoomSpeed = if (zoomDir == ZoomDirection.NONE) 0 else zoomSpeed,
             focusSpeed = if (focusDir == FocusDirection.NONE) 0 else focusOrIrisSpeed,
+            irisSpeed = 0,
         )
     }
 
@@ -157,9 +182,14 @@ sealed class PtzInstruction {
     data class Preset(val op: PresetOp, val index: Int) : PtzInstruction()
     /** 辅助开关 (byte3 = 0x89/0x8A,byte4 = aux 编号) — 雨刷/红外灯/加热/除雾/制冷. */
     data class Aux(val on: Boolean, val index: Int) : PtzInstruction()
+    /** 巡航 (byte3 = 0x84-0x88,byte4 = 巡航号,byte5 = 参数). */
+    data class Cruise(val op: CruiseOp, val trackNum: Int, val param: Int) : PtzInstruction()
 }
 
 enum class PresetOp { SET, CALL, DEL }
+
+/** 巡航子操作. */
+enum class CruiseOp { SET_POINT, DEL_POINT, SET_SPEED, SET_DWELL_TIME, START }
 
 /** 辅助控制编号映射(海康/大华行业事实标准). */
 enum class AuxFunction(val index: Int, val displayName: String) {
@@ -179,13 +209,16 @@ data class PtzCommand(
     val tiltDirection: TiltDirection,
     val zoomDirection: ZoomDirection,
     val focusDirection: FocusDirection = FocusDirection.NONE,
+    val irisDirection: IrisDirection = IrisDirection.NONE,
     val panSpeed: Int,
     val tiltSpeed: Int,
     val zoomSpeed: Int,
     val focusSpeed: Int = 0,
+    val irisSpeed: Int = 0,
 )
 
 enum class PanDirection { LEFT, RIGHT, NONE }
 enum class TiltDirection { UP, DOWN, NONE }
 enum class ZoomDirection { IN, OUT, NONE }
 enum class FocusDirection { NEAR, FAR, NONE }
+enum class IrisDirection { OPEN, CLOSE, NONE }
