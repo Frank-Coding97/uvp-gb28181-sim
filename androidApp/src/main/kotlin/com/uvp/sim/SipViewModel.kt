@@ -204,6 +204,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engine?.consumeEffect()
     }
 
+    /** 渲染层节流回写 PTZ 姿态(GlbSceneState 每 ~166ms 调用一次,修预置位入库 0/0/1 bug). */
+    fun updatePoseFromRender(pan: Float, tilt: Float, zoom: Float) {
+        engine?.updatePoseFromRender(pan, tilt, zoom)
+    }
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.

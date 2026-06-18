@@ -13,7 +13,11 @@ import com.uvp.sim.ui.UvpColor
 
 /** iOS 占位:cinterop SceneKit 留下次. */
 @Composable
-actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
+actual fun CameraGlbView(
+    state: DeviceControlState,
+    onPoseTick: (Float, Float, Float) -> Unit,
+    modifier: Modifier
+) {
     Box(
         modifier = modifier.fillMaxSize().background(UvpColor.PrimaryLight),
         contentAlignment = Alignment.Center

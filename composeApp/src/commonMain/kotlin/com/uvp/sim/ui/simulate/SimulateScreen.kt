@@ -118,6 +118,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
             MonitoringStage(
                 state = deviceControl,
                 iframeChipVisible = iframeChipVisible,
+                onPoseTick = actions::onPoseTick,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -153,6 +154,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
 private fun MonitoringStage(
     state: DeviceControlState,
     iframeChipVisible: Boolean,
+    onPoseTick: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -217,6 +219,7 @@ private fun MonitoringStage(
         ) {
             CameraGlbView(
                 state = state,
+                onPoseTick = onPoseTick,
                 modifier = Modifier.fillMaxSize()
             )
 
@@ -442,4 +445,8 @@ private val CameraStageBottom = Color(0xFF182B49)
  * - iOS: SceneKit 占位(待 cinterop)
  */
 @Composable
-expect fun CameraGlbView(state: DeviceControlState, modifier: Modifier)
+expect fun CameraGlbView(
+    state: DeviceControlState,
+    onPoseTick: (Float, Float, Float) -> Unit,
+    modifier: Modifier
+)

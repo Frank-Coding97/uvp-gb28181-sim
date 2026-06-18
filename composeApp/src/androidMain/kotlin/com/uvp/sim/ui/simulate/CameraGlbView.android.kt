@@ -62,10 +62,15 @@ import kotlin.math.sin
  *   Plane      = 地面      → 不动
  */
 @Composable
-actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
+actual fun CameraGlbView(
+    state: DeviceControlState,
+    onPoseTick: (Float, Float, Float) -> Unit,
+    modifier: Modifier
+) {
     val context = LocalContext.current
     val sceneState = remember { GlbSceneState() }
     val currentState by rememberUpdatedState(state)
+    val currentPoseTick by rememberUpdatedState(onPoseTick)
     val thumbnailBitmap = remember(context) { loadAssetImageBitmap(context, "ptz_scene_thumbnail.png") }
 
     // 订阅 pendingEffect:Reboot 触发自检 / HomePosition+PresetRecall+PrecisePoseGoto 触发 easeTo.
@@ -89,7 +94,8 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
                     sceneState.attach(
                         context = ctx,
                         textureView = textureView,
-                        provider = { currentState }
+                        provider = { currentState },
+                        poseSink = { p, t, z -> currentPoseTick(p, t, z) }
                     )
                 }
             }
@@ -112,6 +118,8 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
 internal class GlbSceneState {
     private var modelViewer: ModelViewer? = null
     private var stateProvider: (() -> DeviceControlState)? = null
+    private var poseSink: ((Float, Float, Float) -> Unit)? = null
+    private var lastPoseSinkNanos: Long = 0L
     private var light: Int = 0
 
     /** PTZ 网格绑定: Sphere / Sphere.002 / Cylinder / Sphere.001 — 跟随 Yaw/Pitch pivot. */
@@ -151,10 +159,12 @@ internal class GlbSceneState {
     fun attach(
         context: android.content.Context,
         textureView: TextureView,
-        provider: () -> DeviceControlState
+        provider: () -> DeviceControlState,
+        poseSink: (Float, Float, Float) -> Unit = { _, _, _ -> },
     ) {
         Utils.init()
         stateProvider = provider
+        this.poseSink = poseSink
 
         val viewer = ModelViewer(textureView)
         modelViewer = viewer
@@ -349,6 +359,13 @@ internal class GlbSceneState {
         for (entity in hiddenEntities) {
             hideEntity(viewer, entity)
         }
+
+        // 节流回写 pose 到 SimulatorEngine.deviceControlState(每 ~166ms 一次).
+        // 这样平台 SetPreset 取 state.panAngle/tiltAngle/zoomLevel 时能拿到真实姿态.
+        if (frameTimeNanos - lastPoseSinkNanos > 166_000_000L) {
+            poseSink?.invoke(panAngle, tiltAngle, zoomLevel)
+            lastPoseSinkNanos = frameTimeNanos
+        }
     }
 
     fun detach() {
@@ -367,6 +384,8 @@ internal class GlbSceneState {
             // engine 已经被销毁过的容错
         }
         modelViewer = null; stateProvider = null
+        poseSink = null
+        lastPoseSinkNanos = 0L
         inspectionTargets.clear(); hiddenEntities.clear()
         yawPivot = null
         pitchPivot = null
@@ -382,9 +401,9 @@ internal class GlbSceneState {
         easeAnimActive = false
     }
 
-    /** HomePosition / PresetRecall / PrecisePoseGoto effect 触发: 平滑过渡到 target. */
+    /** HomePosition / PresetRecall / PrecisePoseGoto effect 触发: 平滑过渡到 target.
+     *  自检期间忽略(等自检结束再让平台命令接管). */
     fun easeToPose(target: PtzPose, durationMs: Long = 1200L) {
-        // 自检期间忽略(等自检结束再让平台命令接管)
         if (selfTestActive) return
         easeAnimFrom = PtzPose(panAngle, tiltAngle, zoomLevel)
         easeAnimTo = target

@@ -274,6 +274,9 @@ class MainActivity : ComponentActivity() {
                 override fun onConsumeDeviceEffect() {
                     viewModel.consumeDeviceEffect()
                 }
+                override fun onPoseTick(pan: Float, tilt: Float, zoom: Float) {
+                    viewModel.updatePoseFromRender(pan, tilt, zoom)
+                }
             }
             // Rebuild encoder/streamer whenever video profile bumps.
             LaunchedEffect(videoVersion) {

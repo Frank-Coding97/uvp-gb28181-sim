@@ -238,6 +238,13 @@ interface AppActions {
      * SimulateScreen 在 LaunchedEffect(pendingEffect) 处理完动画/snackbar 后兜底调用。
      */
     fun onConsumeDeviceEffect() {}
+
+    /**
+     * 渲染层(GlbSceneState)节流回写当前 PTZ 姿态到 SimulatorEngine.deviceControlState。
+     * 由 Filament 渲染线程每 ~10 帧调用一次(166ms),
+     * 让 SetPreset 入库的是真实当前姿态而不是 0/0/1。
+     */
+    fun onPoseTick(pan: Float, tilt: Float, zoom: Float) {}
 }
 
 enum class AppTab(val label: String) {

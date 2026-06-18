@@ -114,6 +114,22 @@ class SimulatorEngine(
         _deviceControlState.update { it.copy(pendingEffect = null) }
     }
 
+    /**
+     * 渲染层节流回写当前 PTZ 姿态.
+     *
+     * 背景:`DeviceControlState.panAngle/tiltAngle/zoomLevel` 设计上由 UI 渲染层
+     * 维护(每帧基于 panSpeed 等积分)。但 `GlbSceneState`(Filament)以前从未把
+     * 渲染端的 panAngle 推回 state,导致 `handlePtzPreset SET` 取的永远是 0/0/1
+     * → 预置位调用回原点而不是真实位置。
+     *
+     * 本接口由 `GlbSceneState` 每 ~10 帧(166ms)调用一次,推渲染端最新 pose 进 state。
+     */
+    fun updatePoseFromRender(pan: Float, tilt: Float, zoom: Float) {
+        _deviceControlState.update {
+            it.copy(panAngle = pan, tiltAngle = tilt, zoomLevel = zoom)
+        }
+    }
+
     private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
         DeviceControlDispatcher(
             state = _deviceControlState,
