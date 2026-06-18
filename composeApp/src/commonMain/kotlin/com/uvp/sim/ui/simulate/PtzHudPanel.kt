@@ -154,10 +154,11 @@ fun PtzHudPanel(
         )
         Spacer(Modifier.height(10.dp))
         // Tab 内容 — 固定高度避免不同 tab 切换时整体面板高度抖动(老板 06-18 反馈)
+        // 184dp 实测云台 Tab(三大字 74 + 聚焦光圈 52 + 预置位 28 + 间距 16 = 170)+ 余量
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(160.dp),
+                .height(184.dp),
             contentAlignment = Alignment.TopStart,
         ) {
             AnimatedContent(
