@@ -310,6 +310,13 @@ fun CatalogManagementScreen(
                         it.copy(fields = it.fields + ("Status" to if (nowOnline) "OFF" else "ON"))
                     } else it
                 }
+                // 反馈订阅状态:有订阅 → 已 fan-out 简化包;无订阅 → 仅本地标记
+                val targetLabel = if (nowOnline) "离线" else "在线"
+                if (catalogActive) {
+                    toast.success("通道已切$targetLabel,简化 NOTIFY 已推送给 Catalog 订阅")
+                } else {
+                    toast.info("通道已切$targetLabel(本地标记);无 Catalog 订阅,未推送 NOTIFY")
+                }
                 menuFor = null
             }
         )
