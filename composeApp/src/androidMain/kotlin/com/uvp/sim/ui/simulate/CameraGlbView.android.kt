@@ -171,7 +171,7 @@ internal class GlbSceneState {
         viewer.renderer.setClearOptions(
             Renderer.ClearOptions().apply {
                 clear = true
-                clearColor = doubleArrayOf(0.165, 0.251, 0.408, 1.0)
+                clearColor = doubleArrayOf(0.039, 0.204, 0.376, 1.0)
             }
         )
         // 禁止用户拖动,只展示平台指令驱动的姿态。

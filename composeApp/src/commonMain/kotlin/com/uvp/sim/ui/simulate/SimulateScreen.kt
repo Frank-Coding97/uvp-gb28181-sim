@@ -435,9 +435,9 @@ internal fun hasMotion(state: DeviceControlState): Boolean {
     return state.panSpeed != 0f || state.tiltSpeed != 0f || state.zoomSpeed != 0f
 }
 
-private val CameraStageTop = Color(0xFF3D5A85)
-private val CameraStageMid = Color(0xFF2A4068)
-private val CameraStageBottom = Color(0xFF182B49)
+private val CameraStageTop = Color(0xFF0F4A7A)     // Primary 系深一档,白球机站前显眼
+private val CameraStageMid = Color(0xFF0A3460)
+private val CameraStageBottom = Color(0xFF052547)  // 近深海蓝,跟流光按钮呼应
 
 /**
  * 加载 .glb 摄像机模型(C 方案 2026-06-13).
