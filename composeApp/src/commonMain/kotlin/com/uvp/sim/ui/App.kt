@@ -1,6 +1,14 @@
 package com.uvp.sim.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
@@ -38,6 +47,10 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -150,22 +163,138 @@ private fun CompactTopBar() {
 private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
     Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(UvpColor.Surface)
-                .height(56.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
+                .height(64.dp)  // 比标准 56dp 高 8dp,容纳半圆上凸
+                .background(UvpColor.Surface),
+            contentAlignment = Alignment.BottomStart
         ) {
-            AppTab.entries.forEach { tab ->
-                BottomTabItem(
-                    tab = tab,
-                    selected = tab == active,
-                    onClick = { onPick(tab) },
-                    modifier = Modifier.weight(1f)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .align(Alignment.BottomStart),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AppTab.entries.forEachIndexed { index, tab ->
+                    if (index == 2) {
+                        // 中间位置(模拟)留 weight 占位,真正的圆按钮浮在 Row 上方
+                        Box(modifier = Modifier.weight(1f).fillMaxSize())
+                    } else {
+                        BottomTabItem(
+                            tab = tab,
+                            selected = tab == active,
+                            onClick = { onPick(tab) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+            // 半圆上凸的特色按钮(模拟控制)
+            SimulateAccentButton(
+                selected = active == AppTab.Simulate,
+                onClick = { onPick(AppTab.Simulate) },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 2.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 半圆上凸的中间特色按钮 — UvpColor.Primary 实心圆,白色图标,
+ * conic 渐变流转一圈(2.4s/圈)给"在线感",选中时光环更亮.
+ */
+@Composable
+private fun SimulateAccentButton(
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "simulate-accent")
+    val sweepAngle by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "sweep"
+    )
+    // 选中态外层光环更亮 + 微脉动
+    val haloAlpha by infiniteTransition.animateFloat(
+        initialValue = if (selected) 0.55f else 0.28f,
+        targetValue = if (selected) 0.85f else 0.45f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "halo"
+    )
+
+    Box(
+        modifier = modifier
+            .size(54.dp)
+            .clip(CircleShape)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        // 外层 conic 流光环
+        Canvas(modifier = Modifier.size(54.dp)) {
+            // 半透明背光
+            drawCircle(
+                color = UvpColor.Primary.copy(alpha = haloAlpha * 0.35f),
+                radius = size.minDimension / 2f,
+            )
+            // conic 旋转扫光(渐隐尾巴 → 头部高亮)
+            rotate(degrees = sweepAngle) {
+                drawArc(
+                    brush = Brush.sweepGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            UvpColor.Primary.copy(alpha = 0.0f),
+                            UvpColor.Primary.copy(alpha = 0.55f),
+                            Color.White.copy(alpha = 0.95f),
+                            UvpColor.Primary.copy(alpha = 0.55f),
+                            Color.Transparent,
+                        )
+                    ),
+                    startAngle = 0f,
+                    sweepAngle = 360f,
+                    useCenter = false,
+                    style = Stroke(width = 3.dp.toPx()),
                 )
             }
+        }
+        // 内层实心蓝圆
+        Box(
+            modifier = Modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            UvpColor.Primary,
+                            UvpColor.PrimaryDark,
+                        )
+                    )
+                )
+                .border(
+                    1.5.dp,
+                    Color.White.copy(alpha = 0.6f),
+                    CircleShape
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Outlined.ViewInAr,
+                contentDescription = "模拟",
+                tint = Color.White,
+                modifier = Modifier.size(22.dp)
+            )
         }
     }
 }
