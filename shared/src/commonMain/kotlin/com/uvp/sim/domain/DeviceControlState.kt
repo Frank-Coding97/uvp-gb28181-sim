@@ -43,6 +43,10 @@ data class DeviceControlState(
     // 最近一次平台控制命令(HUD 显示用)
     val lastCommand: LastDeviceCommand? = null,
 
+    // GB-2022 §9.3.4 PTZPreciseCtrl 收到的最近一次精确控制指令,
+    // 供 §9.5.3 PTZ 精准状态查询(A.2.4.13)回包用。null 表示从未收过。
+    val lastPreciseCtrl: PtzPose? = null,
+
     // 一次性效果触发器,UI 消费后置 null
     val pendingEffect: DeviceEffect? = null,
 )
@@ -68,5 +72,13 @@ sealed class DeviceEffect {
     data object Reboot : DeviceEffect()
     data object SnapshotFlash : DeviceEffect()
     data class HomePositionReturn(val targetPose: PtzPose) : DeviceEffect()
+    /** 预置位调用 — 跟看守位 [HomePositionReturn] 区分,UI 同时高亮 chip */
+    data class PresetRecall(val index: Int, val targetPose: PtzPose) : DeviceEffect()
+    /** GB-2022 §9.3.4 PTZPreciseCtrl 触发的精确角度跳转 */
+    data class PrecisePoseGoto(val targetPose: PtzPose) : DeviceEffect()
     data class ConfigChanged(val changedFields: List<String>) : DeviceEffect()
+    /** GB-2022 §9.3.4 DeviceUpgrade — UI snackbar 提示,不真 OTA */
+    data class DeviceUpgradeRequested(val firmware: String) : DeviceEffect()
+    /** GB-2022 §9.3.4 FormatSDCard — UI snackbar 提示,不真格式化 */
+    data class FormatSDCardRequested(val cardIndex: Int) : DeviceEffect()
 }
