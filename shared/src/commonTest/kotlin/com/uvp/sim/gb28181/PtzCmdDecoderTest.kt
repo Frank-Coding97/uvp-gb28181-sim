@@ -127,4 +127,66 @@ class PtzCmdDecoderTest {
     fun `非 hex 字符返回 null`() {
         assertNull(PtzCmdDecoder.decode("A50F01023200ZZ00"))
     }
+
+    // ---------- 预置位 (GB-2022 §F.3 byte3 高 4 位 = 0x8) ----------
+
+    @Test
+    fun `预置位 SetPreset 编号 3`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x81, 0x03, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Preset, "expected Preset, got $ins")
+        ins as PtzInstruction.Preset
+        assertEquals(PresetOp.SET, ins.op)
+        assertEquals(3, ins.index)
+    }
+
+    @Test
+    fun `预置位 CallPreset 编号 5`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x82, 0x05, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Preset)
+        ins as PtzInstruction.Preset
+        assertEquals(PresetOp.CALL, ins.op)
+        assertEquals(5, ins.index)
+    }
+
+    @Test
+    fun `预置位 DelPreset 编号 1`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x83, 0x01, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Preset)
+        ins as PtzInstruction.Preset
+        assertEquals(PresetOp.DEL, ins.op)
+        assertEquals(1, ins.index)
+    }
+
+    @Test
+    fun `预置位 校验和错误返回 null`() {
+        // 故意把 checksum 改错
+        assertNull(PtzCmdDecoder.decodeInstruction("A50F01810300000000"))
+    }
+
+    @Test
+    fun `decodeInstruction 对方向位返回 Motion`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x02, 0x32, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Motion)
+        ins as PtzInstruction.Motion
+        assertEquals(PanDirection.LEFT, ins.cmd.panDirection)
+        assertEquals(50, ins.cmd.panSpeed)
+    }
+
+    @Test
+    fun `decode 老接口对预置位返回 null(向后兼容)`() {
+        // 既有调用方只关心 Motion,预置位走 decodeInstruction 分支,decode 应该 null
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x81, 0x03, 0x00, 0x00)
+        assertNull(PtzCmdDecoder.decode(hex))
+    }
+
+    @Test
+    fun `decodeInstruction 对未知高位 0x9 (Aux) 返回 null`() {
+        // Aux/Cruise 等子族本轮不支持,返回 null 让 dispatch 走 200 OK 兜底
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x91, 0x00, 0x00, 0x00)
+        assertNull(PtzCmdDecoder.decodeInstruction(hex))
+    }
 }
