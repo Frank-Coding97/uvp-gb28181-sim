@@ -1982,7 +1982,12 @@ class SimulatorEngine(
             val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
             val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
             val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
-            val xmlBody = com.uvp.sim.gb28181.PresetQueryResponse.build(config, sn, channelId)
+            val xmlBody = com.uvp.sim.gb28181.PresetQueryResponse.build(
+                config = config,
+                sn = sn,
+                channelId = channelId,
+                presets = _deviceControlState.value.presets,
+            )
             val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
                 config = config,
                 cseq = cseq,

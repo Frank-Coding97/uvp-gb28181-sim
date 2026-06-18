@@ -3,6 +3,7 @@ package com.uvp.sim.gb28181
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.PtzPose
 import kotlin.test.Test
 import kotlin.test.assertTrue
 
@@ -37,5 +38,30 @@ class PresetQueryResponseTest {
         val xml = PresetQueryResponse.build(cfg, sn = "1", channelId = "ch")
         assertTrue(xml.startsWith("<?xml version=\"1.0\" encoding=\"GB2312\"?>"))
         assertTrue(xml.contains("\r\n"))
+    }
+
+    // ---------- T4 真实预置位列表渲染 ----------
+
+    @Test fun build_singlePreset_emitsItem() {
+        val presets = mapOf(1 to PtzPose(0f, 0f, 1f))
+        val xml = PresetQueryResponse.build(cfg, sn = "9", channelId = "ch", presets = presets)
+        assertTrue(xml.contains("<SumNum>1</SumNum>"))
+        assertTrue(xml.contains("<PresetList Num=\"1\">"))
+        assertTrue(xml.contains("<Item><PresetID>1</PresetID><PresetName>Preset 1</PresetName></Item>"))
+    }
+
+    @Test fun build_multiplePresets_sortedAscending() {
+        val presets = mapOf(
+            3 to PtzPose(0f, 0f, 1f),
+            1 to PtzPose(0f, 0f, 1f),
+            2 to PtzPose(0f, 0f, 1f),
+        )
+        val xml = PresetQueryResponse.build(cfg, sn = "9", channelId = "ch", presets = presets)
+        assertTrue(xml.contains("<SumNum>3</SumNum>"))
+        // Item 顺序 1 → 2 → 3
+        val idx1 = xml.indexOf("<PresetID>1</PresetID>")
+        val idx2 = xml.indexOf("<PresetID>2</PresetID>")
+        val idx3 = xml.indexOf("<PresetID>3</PresetID>")
+        assertTrue(idx1 in 1..idx2 && idx2 < idx3, "应按 index 升序排列")
     }
 }
