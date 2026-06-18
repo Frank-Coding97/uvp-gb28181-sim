@@ -69,6 +69,7 @@ import kotlinx.datetime.toLocalDateTime
  */
 @Composable
 fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
+    com.uvp.sim.ui.PlatformBackHandler(enabled = true, onBack = onBack)
     val toast = LocalToastHost.current
     val scroll = rememberScrollState()
     val isAlarming = state.deviceControl.isAlarming

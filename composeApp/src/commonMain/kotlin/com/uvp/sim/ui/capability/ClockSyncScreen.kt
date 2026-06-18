@@ -55,6 +55,7 @@ import kotlinx.datetime.toLocalDateTime
  */
 @Composable
 fun ClockSyncScreen(state: AppUiState, onBack: () -> Unit) {
+    com.uvp.sim.ui.PlatformBackHandler(enabled = true, onBack = onBack)
     val offset = state.clockOffset
     var nowMs by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
     LaunchedEffect(Unit) {

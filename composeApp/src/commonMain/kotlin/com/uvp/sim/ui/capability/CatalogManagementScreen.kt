@@ -119,6 +119,8 @@ fun CatalogManagementScreen(
         if (isDirty) showLeaveConfirm = true else onBack()
     }
 
+    com.uvp.sim.ui.PlatformBackHandler(enabled = true, onBack = tryLeave)
+
     Column(
         modifier = Modifier
             .fillMaxSize()

@@ -171,6 +171,7 @@ private fun SettingsSubPage(
     onBack: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    PlatformBackHandler(enabled = true, onBack = onBack)
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier

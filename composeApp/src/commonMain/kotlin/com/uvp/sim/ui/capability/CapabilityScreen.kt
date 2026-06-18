@@ -261,6 +261,7 @@ private fun CapabilityTile(
 
 @Composable
 private fun RecordingSubScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
+    com.uvp.sim.ui.PlatformBackHandler(enabled = true, onBack = onBack)
     Column(
         modifier = Modifier
             .fillMaxSize()
