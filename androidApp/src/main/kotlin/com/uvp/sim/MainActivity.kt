@@ -223,6 +223,13 @@ class MainActivity : ComponentActivity() {
                         result.message
                     } else null
                 }
+                override fun onToggleChannelStatus(channelId: String, online: Boolean) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "用户切换通道状态 ${channelId} → ${if (online) "ON" else "OFF"}"
+                    )
+                    viewModel.toggleChannelStatus(channelId, online)
+                }
                 override fun onAlarmFire(payload: com.uvp.sim.gb28181.AlarmPayload) {
                     SystemLogger.emit(
                         LogLevel.Info, LogTag.User,

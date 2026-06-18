@@ -189,6 +189,13 @@ interface AppActions {
     fun onCatalogTreeSave(tree: List<CatalogNode>): String? = null
 
     /**
+     * M5 batch2 §7.10 — 切换通道在线状态(模拟离线 / 恢复在线)。
+     * engine 走 toggleChannelStatus:更新 fields["Status"] + 给 Catalog 订阅
+     * fan-out 简化 NOTIFY(只含 DeviceID + Event + Status)。
+     */
+    fun onToggleChannelStatus(channelId: String, online: Boolean) {}
+
+    /**
      * 主屏 tile 一键 / 能力页子页详细编辑后发送报警。
      * engine 走 reportAlarm:MESSAGE 给注册中心 + NOTIFY 给 Alarm 订阅人。
      */
