@@ -1155,7 +1155,30 @@ class SimulatorEngine(
             SipMethod.CANCEL -> handleCancel(req)
             SipMethod.SUBSCRIBE -> handleSubscribe(req)
             SipMethod.INFO -> handleInfo(req)
+            SipMethod.OPTIONS -> handleOptions(req)
             else -> Unit
+        }
+    }
+
+    /**
+     * RFC 3261 §11.2 OPTIONS 探活响应(M5 平台兼容性补漏 batch1, 矩阵 2.6).
+     *
+     * 平台(WVP / EasyGBS / LiveGBS)定期 OPTIONS 探活,设备此前不响应导致平台日志
+     * 出现"OPTIONS timeout"。本路径直接出栈 200 OK + Allow,Allow 列举 sim 真实
+     * 支持的方法 — REGISTER 不在(设备只发不收)。OPTIONS 是 stateless,
+     * 不查 dialog 表,不互斥任何活跃事务。
+     */
+    private suspend fun handleOptions(req: SipRequest) {
+        runCatching {
+            val resp = SipBuilders.buildOptionsResponse(
+                request = req,
+                allowedMethods = ALLOWED_OPTIONS_METHODS,
+                userAgent = config.userAgent
+            )
+            transport.send(resp)
+            _events.emit(SimEvent.MessageSent(resp))
+        }.onFailure {
+            _events.emit(SimEvent.TransportError("send OPTIONS 200: ${it.message}"))
         }
     }
 
@@ -3306,5 +3329,15 @@ $itemsBlock
         const val ACK_TIMEOUT_MS: Long = 32_000L
         /** 语音广播接收统计节流间隔。 */
         const val BROADCAST_STATS_INTERVAL_MS: Long = 1_000L
+
+        /**
+         * RFC 3261 §11 OPTIONS Allow 头集 — sim 真实支持(可被路由处理)的方法.
+         * REGISTER 设备只发不收,故不在 Allow.顺序按 [SipMethod] 枚举声明顺序,跟代码自洽.
+         */
+        val ALLOWED_OPTIONS_METHODS: List<SipMethod> = listOf(
+            SipMethod.INVITE, SipMethod.ACK, SipMethod.BYE, SipMethod.MESSAGE,
+            SipMethod.SUBSCRIBE, SipMethod.NOTIFY, SipMethod.CANCEL,
+            SipMethod.INFO, SipMethod.OPTIONS
+        )
     }
 }
