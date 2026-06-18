@@ -40,6 +40,8 @@ import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Videocam
+import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -297,6 +299,24 @@ fun CatalogManagementScreen(
             onDelete = {
                 val ids = collectDescendants(menuNode.id, draft) + menuNode.id
                 draft = draft.filterNot { it.id in ids }
+                menuFor = null
+            },
+            onToggleStatus = {
+                val nowOnline = menuNode.fields["Status"] != "OFF"
+                actions.onToggleChannelStatus(menuNode.id, !nowOnline)
+                // 本地 draft 也立即更新,UI 即时反映
+                draft = draft.map {
+                    if (it.id == menuNode.id) {
+                        it.copy(fields = it.fields + ("Status" to if (nowOnline) "OFF" else "ON"))
+                    } else it
+                }
+                // 反馈订阅状态:有订阅 → 已 fan-out 简化包;无订阅 → 仅本地标记
+                val targetLabel = if (nowOnline) "离线" else "在线"
+                if (catalogActive) {
+                    toast.success("通道已切$targetLabel,简化 NOTIFY 已推送给 Catalog 订阅")
+                } else {
+                    toast.info("通道已切$targetLabel(本地标记);无 Catalog 订阅,未推送 NOTIFY")
+                }
                 menuFor = null
             }
         )
@@ -639,7 +659,8 @@ private fun NodeActionsSheet(
     onAddChild: () -> Unit,
     onMove: () -> Unit,
     onClone: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onToggleStatus: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(
@@ -666,6 +687,19 @@ private fun NodeActionsSheet(
             }
 
             ActionRow(Icons.Outlined.Edit, "编辑字段", UvpColor.Primary, onEdit)
+            // M5 batch2 §7.10 — 通道在线状态切换(只对叶子通道有意义,
+            // 目录类节点(Device/BG/VirtualOrg)平台一般不显示在/离线,排除以免误用)
+            if (node.type == CatalogNodeType.VideoChannel ||
+                node.type == CatalogNodeType.AlarmChannel
+            ) {
+                val isOnline = node.fields["Status"] != "OFF"
+                ActionRow(
+                    icon = if (isOnline) Icons.Outlined.WifiOff else Icons.Outlined.Wifi,
+                    label = if (isOnline) "模拟离线(发简化 NOTIFY)" else "恢复在线(发简化 NOTIFY)",
+                    tint = if (isOnline) UvpColor.Warning else UvpColor.Success,
+                    onClick = onToggleStatus
+                )
+            }
             // 只有 Device / BusinessGroup / VirtualOrg 能加子节点
             if (node.type == CatalogNodeType.Device ||
                 node.type == CatalogNodeType.BusinessGroup ||

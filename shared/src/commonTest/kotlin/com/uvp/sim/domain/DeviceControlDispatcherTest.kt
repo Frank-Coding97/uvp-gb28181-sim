@@ -37,6 +37,7 @@ class DeviceControlDispatcherTest {
         var snapshotCalled = 0
         var keyFrameCalled = 0
         val snapshotConfigsTriggered = mutableListOf<com.uvp.sim.gb28181.SnapShotConfig>()
+        val upgradesStarted = mutableListOf<Triple<String, String, String>>()
         override suspend fun reboot() { rebootCalled++ }
         override suspend fun snapshot() { snapshotCalled++ }
         override fun requestKeyFrame() { keyFrameCalled++ }
@@ -44,7 +45,7 @@ class DeviceControlDispatcherTest {
             snapshotConfigsTriggered.add(cfg)
         }
         override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
-            // 测试桩:DeviceControlDispatcher 走 §9.13 升级路径不在本套件覆盖
+            upgradesStarted.add(Triple(sessionId, firmware, fileUrl))
         }
     }
 

@@ -163,6 +163,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _broadcast = MutableStateFlow(com.uvp.sim.ui.BroadcastState())
     val broadcast: StateFlow<com.uvp.sim.ui.BroadcastState> = _broadcast.asStateFlow()
 
+    /** M5 batch2 §4.15 — 校时偏移快照(engine.clockOffset 投影)。 */
+    private val _clockOffset = MutableStateFlow(com.uvp.sim.domain.ClockOffset.Empty)
+    val clockOffset: StateFlow<com.uvp.sim.domain.ClockOffset> = _clockOffset.asStateFlow()
+
     /**
      * 网络选择控制器(T10)。
      * - attach ApplicationContext(避免泄漏 Activity)
@@ -403,6 +407,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
         engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
         engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
+        engineScope.launch { eng.clockOffset.collect { _clockOffset.value = it } }
         engineScope.launch {
             combine(eng.currentBroadcast, eng.broadcastSpeakerOn) { bc, speakerOn -> bc to speakerOn }
                 .collect { (bc, speakerOn) ->
@@ -516,6 +521,27 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return result
+    }
+
+    /**
+     * M5 batch2 §7.10 — UI 触发的通道在线状态切换。
+     * engine 端更新 fields["Status"] + 对 Catalog 订阅 fan-out 简化 NOTIFY。
+     * UI 立即同步 _catalogTree(让节点行图标即时变灰)。
+     */
+    fun toggleChannelStatus(channelId: String, online: Boolean) {
+        val eng = engine ?: return
+        engineScope.launch {
+            try {
+                eng.toggleChannelStatus(channelId, online)
+                // engine 更新树后,把最新树同步到 ViewModel _catalogTree
+                _catalogTree.value = eng.catalogTree.value
+            } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(SimEvent.TransportError("toggle channel status: ${e.message}")) + current)
+                        .take(MAX_EVENT_LOG)
+                }
+            }
+        }
     }
 
     /** Trigger a snapshot upload (T15). Engine handles the rest. */

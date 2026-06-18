@@ -10,6 +10,7 @@ import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.DigestAuth
 import com.uvp.sim.sip.SipBuilders
+import com.uvp.sim.sip.SipDateParser
 import com.uvp.sim.sip.SipEvent
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
@@ -37,6 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Clock
+import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
@@ -86,6 +88,10 @@ class SimulatorEngine(
 ) {
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
+
+    /** M5 §4.15 SIP Date 校时偏移 — 注册 200 OK 解析 Date 头后更新。 */
+    private val _clockOffset = MutableStateFlow(ClockOffset.Empty)
+    val clockOffset: StateFlow<ClockOffset> = _clockOffset.asStateFlow()
 
     /**
      * 本机 IP 的 getter delegate — 委托给 [localIpProvider]。
@@ -1174,6 +1180,7 @@ class SimulatorEngine(
             in 200..299 -> {
                 cancelRegisterTimeout()
                 registerRetryCount = 0
+                applySipDateSync(resp)
                 if (!isRenewal) {
                     _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
                     _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
@@ -1468,7 +1475,7 @@ class SimulatorEngine(
             "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
             "RecordInfo" -> handleRecordInfoQuery(xml)
             "Broadcast" -> handleBroadcast(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
-            // 其它 CmdType(SVAC*、AlarmStatusQuery 等)暂不处理。
+            // 其它 CmdType(SVAC* 等)暂不处理。
             else -> Unit
         }
     }
@@ -2019,6 +2026,16 @@ class SimulatorEngine(
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "RecordInfo 查询解析失败")
             return
         }
+        // M5 batch2 §3.11 — 平台带高级过滤字段时记一行说明,plan §Q3 仅解析透传不参与命中
+        if (query.indistinctQuery == 1 || query.filePath != null ||
+            query.address != null || query.recorderId != null) {
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "RecordInfo 高级过滤(已解析,sim 单通道 mock 不参与命中): " +
+                    "indistinct=${query.indistinctQuery} path=${query.filePath} " +
+                    "addr=${query.address} recId=${query.recorderId}"
+            )
+        }
         val files = recordingService.files.value
         val hits = files.filter {
             query.startMs <= it.endTimeMs && query.endMs >= it.startTimeMs &&
@@ -2189,9 +2206,11 @@ class SimulatorEngine(
         }
     }
 
-    /** 设备本地时间 ISO8601 无偏移,GB28181 默认格式 "yyyy-MM-ddTHH:mm:ss" */
+    /** 设备本地时间 ISO8601 无偏移,GB28181 默认格式 "yyyy-MM-ddTHH:mm:ss"。
+     *  M5 §4.15:基于 [_clockOffset] 推进的"对外时间",未校时降级本地墙钟。 */
     private fun currentLocalIso(): String {
-        val now = Clock.System.now()
+        val ms = _clockOffset.value.adjustedNowMs()
+        val now = Instant.fromEpochMilliseconds(ms)
         val tz = TimeZone.currentSystemDefault()
         val ldt = now.toLocalDateTime(tz)
         return buildString {
@@ -3320,6 +3339,86 @@ $itemsBlock
         }
     }
 
+    /**
+     * M5 batch2 §7.10 — 切换通道在线状态(模拟离线 / 恢复在线)。
+     *
+     * 1. 写回 [_catalogTree],把目标节点的 fields["Status"] 设为 "ON" / "OFF"
+     * 2. 对所有活跃 Catalog 订阅 fan-out 简化 NOTIFY(plan §Q5)
+     * 3. 找不到通道:仅日志,不发包不改树
+     *
+     * 跟 [pushCatalogIncremental] 路径独立 —— 简化包是"通道在线状态变更"语义,
+     * 不进 ChangeEvent 队列(避免污染 ADD/DEL/UPDATE 批处理)。
+     */
+    suspend fun toggleChannelStatus(channelId: String, online: Boolean) {
+        val current = _catalogTree.value
+        val target = current.firstOrNull { it.id == channelId } ?: run {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "通道状态切换失败:找不到 channelId=$channelId"
+            )
+            return
+        }
+        val newStatus = if (online) "ON" else "OFF"
+        if (target.fields["Status"] == newStatus) return  // 状态相同,不发包
+
+        val updatedNode = target.copy(fields = target.fields + ("Status" to newStatus))
+        _catalogTree.value = current.map { if (it.id == channelId) updatedNode else it }
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Subscription,
+            "通道 $channelId Status → $newStatus(简化 NOTIFY fan-out)"
+        )
+        pushCatalogStatusChange(channelId, online)
+    }
+
+    /**
+     * 给所有活跃 Catalog 订阅推一次"单通道状态变更"简化 NOTIFY,
+     * Item 仅含 DeviceID + Event(ON|OFF) + Status,不含完整字段。
+     */
+    private suspend fun pushCatalogStatusChange(channelId: String, online: Boolean) {
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogStatusOnlyNotify(updated, channelId, online)
+        }
+    }
+
+    private suspend fun sendCatalogStatusOnlyNotify(
+        dialog: SubscriptionDialog,
+        channelId: String,
+        online: Boolean
+    ) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildStatusOnly(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            channelId = channelId,
+            online = online
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog status-only NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
     private suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
         notifySn++
         val fix = mockGps.next()
@@ -3437,6 +3536,45 @@ $itemsBlock
      * 1.6: Schedule a REGISTER renewal before expires lapses.
      * Fires at 80% of expiresSeconds to give time for auth challenge round-trip.
      */
+    /**
+     * M5 §4.15 SIP Date 校时:从注册 200 OK 的 Date 头校准平台基准时间。
+     *
+     * - Date 头格式 RFC1123 / ISO8601 双兼容(SipDateParser)
+     * - 解析失败 / 缺失:不校时,fallback 本地时钟,不阻塞注册
+     * - 续约 200 OK 也走此路径,自然滚动校准
+     * - 不修改手机系统时钟,只更新 _clockOffset
+     */
+    private fun applySipDateSync(resp: SipResponse) {
+        val rawDate = resp.firstHeader(SipHeader.DATE)
+        if (rawDate.isNullOrBlank()) return
+        val platformInstant = SipDateParser.parse(rawDate)
+        if (platformInstant == null) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "Date 头解析失败,fallback 本地时钟",
+                detail = rawDate
+            )
+            return
+        }
+        val offset = ClockOffset.synced(platformInstant, rawDate)
+        _clockOffset.value = offset
+        val deltaMs = offset.localOffsetMs() ?: 0L
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "已校时:平台 ${rawDate.trim()} 本地偏移 ${formatOffsetMs(deltaMs)}"
+        )
+    }
+
+    private fun formatOffsetMs(ms: Long): String {
+        val sign = if (ms >= 0) "+" else "-"
+        val abs = if (ms < 0) -ms else ms
+        return when {
+            abs < 1_000 -> "${sign}${abs}ms"
+            abs < 60_000 -> "${sign}${abs / 1000}.${(abs % 1000) / 100}s"
+            else -> "${sign}${abs / 60_000}m${(abs % 60_000) / 1000}s"
+        }
+    }
+
     private fun scheduleExpiresRenewal() {
         renewalJob?.cancel()
         val renewalDelayMs = (config.expiresSeconds * 800L)

@@ -64,6 +64,44 @@ object CatalogNotifyBuilder {
         return sb.toString().replace("\n", "\r\n")
     }
 
+    /**
+     * M5 batch2 §7.10 GB §9.3.1.4 通道在线状态简化 NOTIFY。
+     *
+     * 跟 [buildIncremental] 区别:Item 仅含 `DeviceID + Event(ON|OFF) + Status`,
+     * **不含** Manufacturer / Model / Owner / Address / Parental / SafetyWay / RegisterWay / Secrecy。
+     * 平台据此只更新该单通道在线状态,不必 fan-out 全字段 UPDATE 包。
+     *
+     * @param deviceId  设备 ID(顶层 DeviceID)
+     * @param sn        SN 自增序号
+     * @param channelId 变更状态的通道 ID(Item.DeviceID)
+     * @param online    true=ON / false=OFF
+     */
+    fun buildStatusOnly(
+        deviceId: String,
+        sn: Int,
+        channelId: String,
+        online: Boolean
+    ): String {
+        val event = if (online) "ON" else "OFF"
+        val status = if (online) "ON" else "OFF"
+        val sb = StringBuilder()
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
+        sb.append("<Notify>\n")
+        sb.append("<CmdType>Catalog</CmdType>\n")
+        sb.append("<SN>").append(sn).append("</SN>\n")
+        sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
+        sb.append("<SumNum>1</SumNum>\n")
+        sb.append("<DeviceList Num=\"1\">\n")
+        sb.append("<Item>\n")
+        sb.append("<DeviceID>").append(channelId).append("</DeviceID>\n")
+        sb.append("<Event>").append(event).append("</Event>\n")
+        sb.append("<Status>").append(status).append("</Status>\n")
+        sb.append("</Item>\n")
+        sb.append("</DeviceList>\n")
+        sb.append("</Notify>\n")
+        return sb.toString().replace("\n", "\r\n")
+    }
+
     private fun renderEventItem(event: CatalogChangeEvent): String {
         return when (event) {
             is CatalogChangeEvent.Add -> renderItemWithEvent(event.node, "ADD")
