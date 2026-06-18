@@ -3168,6 +3168,86 @@ $itemsBlock
         }
     }
 
+    /**
+     * M5 batch2 §7.10 — 切换通道在线状态(模拟离线 / 恢复在线)。
+     *
+     * 1. 写回 [_catalogTree],把目标节点的 fields["Status"] 设为 "ON" / "OFF"
+     * 2. 对所有活跃 Catalog 订阅 fan-out 简化 NOTIFY(plan §Q5)
+     * 3. 找不到通道:仅日志,不发包不改树
+     *
+     * 跟 [pushCatalogIncremental] 路径独立 —— 简化包是"通道在线状态变更"语义,
+     * 不进 ChangeEvent 队列(避免污染 ADD/DEL/UPDATE 批处理)。
+     */
+    suspend fun toggleChannelStatus(channelId: String, online: Boolean) {
+        val current = _catalogTree.value
+        val target = current.firstOrNull { it.id == channelId } ?: run {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "通道状态切换失败:找不到 channelId=$channelId"
+            )
+            return
+        }
+        val newStatus = if (online) "ON" else "OFF"
+        if (target.fields["Status"] == newStatus) return  // 状态相同,不发包
+
+        val updatedNode = target.copy(fields = target.fields + ("Status" to newStatus))
+        _catalogTree.value = current.map { if (it.id == channelId) updatedNode else it }
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Subscription,
+            "通道 $channelId Status → $newStatus(简化 NOTIFY fan-out)"
+        )
+        pushCatalogStatusChange(channelId, online)
+    }
+
+    /**
+     * 给所有活跃 Catalog 订阅推一次"单通道状态变更"简化 NOTIFY,
+     * Item 仅含 DeviceID + Event(ON|OFF) + Status,不含完整字段。
+     */
+    private suspend fun pushCatalogStatusChange(channelId: String, online: Boolean) {
+        val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
+        for (d in dialogs) {
+            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+            sendCatalogStatusOnlyNotify(updated, channelId, online)
+        }
+    }
+
+    private suspend fun sendCatalogStatusOnlyNotify(
+        dialog: SubscriptionDialog,
+        channelId: String,
+        online: Boolean
+    ) {
+        catalogNotifySn++
+        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildStatusOnly(
+            deviceId = config.device.deviceId,
+            sn = catalogNotifySn,
+            channelId = channelId,
+            online = online
+        )
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xml,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+            _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send Catalog status-only NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        }
+    }
+
     private suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
         notifySn++
         val fix = mockGps.next()
