@@ -115,7 +115,7 @@ private fun ToastOverlay(state: ToastHostState) {
         }
     }
     Box(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 88.dp),
         contentAlignment = Alignment.TopCenter
     ) {
         AnimatedVisibility(

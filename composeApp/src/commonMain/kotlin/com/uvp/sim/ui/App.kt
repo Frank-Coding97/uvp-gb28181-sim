@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
@@ -141,6 +142,7 @@ fun App(state: AppUiState, actions: AppActions) {
 
 @Composable
 private fun CompactTopBar(unreadCount: Int = 0, onBellClick: () -> Unit = {}) {
+    val toast = LocalToastHost.current
     Column(modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
         Row(
             modifier = Modifier
@@ -150,6 +152,19 @@ private fun CompactTopBar(unreadCount: Int = 0, onBellClick: () -> Unit = {}) {
                 .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .clickable { toast.info("扫一扫功能将在 UVP 平台上线后启用") }
+                    .padding(4.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.QrCodeScanner,
+                    contentDescription = "扫一扫",
+                    tint = UvpColor.TextSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
             Spacer(Modifier.weight(1f))
             Text(
                 "GB28181 Sim",
