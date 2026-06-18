@@ -1416,6 +1416,10 @@ class SimulatorEngine(
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 sendDeviceStatusResponse(sn)
             }
+            "AlarmStatus" -> {
+                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
+                sendAlarmStatusResponse(sn)
+            }
             "PresetQuery" -> {
                 val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
                 val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
@@ -2146,6 +2150,42 @@ class SimulatorEngine(
             )
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send DeviceStatus response: ${e.message}"))
+        }
+    }
+
+    /**
+     * M5 batch1 §3.10 — AlarmStatusQuery 应答(§9.3.3 衍生).
+     * 沿用 DeviceStatus 同款 SIP MESSAGE 链路,body 由 AlarmStatusResponse 双版本构造。
+     */
+    private suspend fun sendAlarmStatusResponse(sn: String) {
+        try {
+            cseq += 1
+            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
+            val callIdNow = callId ?: com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: com.uvp.sim.sip.SipBuilders.randomTag()
+            val snapshot = com.uvp.sim.gb28181.AlarmStatusSnapshot(
+                alarming = _deviceControlState.value.isAlarming,
+                alarmChannelId = config.device.alarmChannelId
+            )
+            val xmlBody = com.uvp.sim.gb28181.AlarmStatusResponse.build(config, sn, snapshot)
+            val msg = com.uvp.sim.sip.SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            transport.send(msg)
+            _events.emit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "平台查询 AlarmStatus → 已应答 sn=$sn alarm=${snapshot.alarming}"
+            )
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("send AlarmStatus response: ${e.message}"))
         }
     }
 
