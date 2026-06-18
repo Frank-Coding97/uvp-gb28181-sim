@@ -202,15 +202,7 @@ private fun MonitoringStage(
                 .fillMaxWidth()
                 .weight(1f)
                 .clip(RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            CameraStageTop,
-                            CameraStageMid,
-                            CameraStageBottom
-                        )
-                    )
-                )
+                .background(CameraStageBase)  // Filament 之下兜底色,跟 clearColor 同色
                 .border(
                     1.dp,
                     UvpColor.BorderLight,
@@ -222,6 +214,10 @@ private fun MonitoringStage(
                 onPoseTick = onPoseTick,
                 modifier = Modifier.fillMaxSize()
             )
+
+            // 磨砂玻璃质感叠层(在 3D 之上,GuardOverlay 之下)
+            // 中心保持透明不影响球机,只在边缘 / 上下沿透出"光透磨砂"的高级感
+            FrostedGlassOverlay(modifier = Modifier.fillMaxSize())
 
             // GuardCmd 力场罩(径向渐变光圈 + 边缘描边)— state.isGuarded 切换时 600ms 淡入/淡出
             GuardOverlay(
@@ -435,9 +431,63 @@ internal fun hasMotion(state: DeviceControlState): Boolean {
     return state.panSpeed != 0f || state.tiltSpeed != 0f || state.zoomSpeed != 0f
 }
 
-private val CameraStageTop = Color(0xFF0F4A7A)     // Primary 系深一档,白球机站前显眼
-private val CameraStageMid = Color(0xFF0A3460)
-private val CameraStageBottom = Color(0xFF052547)  // 近深海蓝,跟流光按钮呼应
+private val CameraStageBase = Color(0xFF0E1A36)  // 中性深紫蓝(午夜蓝),跟 Filament clearColor 同色,给 Compose 层兜底
+
+/** 磨砂玻璃质感叠层 — 在 Filament 3D 渲染上方覆盖三层光晕,
+ *  中心保持透明,只在边缘/对角辐射出青蓝 + 紫蓝光斑,模拟 Win10 Acrylic / Big Sur. */
+@Composable
+private fun FrostedGlassOverlay(modifier: Modifier = Modifier) {
+    Box(modifier = modifier) {
+        // 第 1 层:左上青蓝光斑(科技感),径向渐变中心偏左上
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFF1890FF).copy(alpha = 0.22f),
+                            Color(0xFF1890FF).copy(alpha = 0.10f),
+                            Color.Transparent,
+                        ),
+                        center = Offset(0f, 0f),
+                        radius = 1200f,
+                    )
+                )
+        )
+        // 第 2 层:右下紫蓝光斑(高级感),径向渐变中心偏右下
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.radialGradient(
+                        colors = listOf(
+                            Color(0xFF7C5DDF).copy(alpha = 0.18f),
+                            Color(0xFF7C5DDF).copy(alpha = 0.06f),
+                            Color.Transparent,
+                        ),
+                        center = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+                        radius = 1100f,
+                    )
+                )
+        )
+        // 第 3 层:顶部 1dp 高光线(模拟玻璃顶边反光)+ 整体微白朦胧
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.08f),
+                            Color.White.copy(alpha = 0.03f),
+                            Color.Transparent,
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.10f),  // 底部暗角增加深度
+                        )
+                    )
+                )
+        )
+    }
+}
 
 /**
  * 加载 .glb 摄像机模型(C 方案 2026-06-13).
