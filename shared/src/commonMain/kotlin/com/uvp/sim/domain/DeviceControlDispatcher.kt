@@ -128,10 +128,19 @@ class DeviceControlDispatcher(
 
     private fun handlePtzMotion(ptz: PtzCommand, hex: String) {
         state.update {
+            // Focus 累计:WVP 按住按钮每秒发 ~5-10 条,每条 +/- 一个 step.
+            // step = focusSpeed * 0.005,speed=15 → 0.075/cmd,speed=1 → 0.005/cmd.
+            val focusDelta = when (ptz.focusDirection) {
+                com.uvp.sim.gb28181.FocusDirection.NEAR -> -ptz.focusSpeed * 0.005f
+                com.uvp.sim.gb28181.FocusDirection.FAR -> ptz.focusSpeed * 0.005f
+                com.uvp.sim.gb28181.FocusDirection.NONE -> 0f
+            }
+            val newFocusLevel = (it.focusLevel + focusDelta).coerceIn(0f, 1f)
             it.copy(
                 panSpeed = mapPanSpeed(ptz),
                 tiltSpeed = mapTiltSpeed(ptz),
                 zoomSpeed = mapZoomSpeed(ptz),
+                focusLevel = newFocusLevel,
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), ptz)
             )
         }

@@ -264,11 +264,84 @@ private fun PtzTabContent(state: DeviceControlState) {
             PoseStatDivider()
             PoseStat("变焦", state.zoomLevel, "×", isActive = state.zoomSpeed != 0f)
         }
-        Spacer(Modifier.height(10.dp))
+        Spacer(Modifier.height(8.dp))
+        // 聚焦 / 光圈进度条(平台 PTZCmd byte3 bit6/bit7 累积驱动)
+        val cmd = state.lastCommand
+        val ptz = cmd?.ptz
+        val focusActive = cmd?.type == "PTZCmd" && ptz != null &&
+            ptz.focusDirection != com.uvp.sim.gb28181.FocusDirection.NONE
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            LevelBar(
+                label = "聚焦",
+                level = state.focusLevel,
+                modifier = Modifier.weight(1f),
+                hint = if (focusActive) "调节中" else null,
+            )
+            LevelBar(
+                label = "光圈",
+                level = state.irisLevel,
+                modifier = Modifier.weight(1f),
+                hint = "等待协议",  // Iris byte3 编码各家不同,真机抓包后再补
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("预置位", fontSize = 10.sp, color = UvpColor.TextHint, fontWeight = FontWeight.Medium)
             Spacer(Modifier.width(8.dp))
             PresetChipRow(presets = state.presets, currentIndex = state.currentPresetIndex)
+        }
+    }
+}
+
+/** 聚焦 / 光圈横向进度条 — 0~1 范围,只读显示. */
+@Composable
+private fun LevelBar(
+    label: String,
+    level: Float,
+    modifier: Modifier = Modifier,
+    hint: String? = null,
+) {
+    val pct = (level.coerceIn(0f, 1f) * 100f).toInt()
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.Bg)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, fontSize = 10.sp, color = UvpColor.TextHint, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.weight(1f))
+            Text(
+                "$pct%",
+                fontSize = 11.sp,
+                color = UvpColor.Text,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace,
+            )
+            if (hint != null) {
+                Spacer(Modifier.width(6.dp))
+                Text(hint, fontSize = 9.sp, color = UvpColor.Primary, fontWeight = FontWeight.Medium)
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        // 横向进度槽 + 填充
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(RoundedCornerShape(99.dp))
+                .background(UvpColor.BorderLight),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(level.coerceIn(0f, 1f))
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(UvpColor.Primary)
+            )
         }
     }
 }

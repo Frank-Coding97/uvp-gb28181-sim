@@ -495,4 +495,33 @@ class DeviceControlDispatcherTest {
         assertTrue(s.auxStates.isEmpty())
         assertTrue(s.lastCommand?.rawHex?.contains("unmapped") == true)
     }
+
+    // ---------- Focus 累计 ----------
+
+    /** Focus hex helper — byte3 = 0x40 / 0x80,byte6 低 4 位 = focus speed */
+    private fun focusHex(near: Boolean, focusSpeed: Int): String {
+        val opCode = if (near) 0x80 else 0x40
+        val b6 = focusSpeed and 0x0F
+        val sum = (0xA5 + 0x0F + 0x01 + opCode + 0 + 0 + b6) and 0xFF
+        return listOf(0xA5, 0x0F, 0x01, opCode, 0, 0, b6, sum)
+            .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
+    }
+
+    @Test
+    fun `Focus_1 — Near 累减 focusLevel`() {
+        val state = MutableStateFlow(DeviceControlState(focusLevel = 0.5f))
+        val d = newDispatcher(state)
+        // speed=10 → step = 10*0.005 = 0.05 → 0.5-0.05=0.45
+        d.dispatch("<C><PTZCmd>${focusHex(near = true, focusSpeed = 10)}</PTZCmd></C>")
+        kotlin.test.assertEquals(0.45f, state.value.focusLevel, absoluteTolerance = 0.001f)
+    }
+
+    @Test
+    fun `Focus_2 — Far 累加 focusLevel + clamp 上限`() {
+        val state = MutableStateFlow(DeviceControlState(focusLevel = 0.96f))
+        val d = newDispatcher(state)
+        // speed=15 → step = 0.075,0.96+0.075 = 1.035 → clamp 到 1.0
+        d.dispatch("<C><PTZCmd>${focusHex(near = false, focusSpeed = 15)}</PTZCmd></C>")
+        kotlin.test.assertEquals(1.0f, state.value.focusLevel, absoluteTolerance = 0.001f)
+    }
 }

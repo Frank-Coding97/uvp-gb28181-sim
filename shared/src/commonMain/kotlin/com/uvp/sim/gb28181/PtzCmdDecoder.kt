@@ -62,9 +62,7 @@ object PtzCmdDecoder {
             // GB-2022 §F.3 byte3 = 0x89 / 0x8A 辅助开关 (Aux On/Off)
             // byte4 = aux 编号: 1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷(海康/大华事实标准)
             opCode == 0x89 || opCode == 0x8A -> decodeAux(bytes, opCode)
-            // byte3 高位置位但非已支持(巡航等),本轮不解析
-            opCode >= 0x80 -> null
-            // 0x00-0x3F 方向位组合(bit0=右 / bit1=左 / bit2=下 / bit3=上 / bit4=zoom in / bit5=zoom out)
+            // 其他全走 Motion bit 拆解(包括 byte3 bit6=Focus Far / bit7=Focus Near)
             else -> PtzInstruction.Motion(decodeMotion(bytes, opCode))
         }
     }
@@ -89,6 +87,7 @@ object PtzCmdDecoder {
         val panSpeed = bytes[4].toInt() and 0xFF
         val tiltSpeed = bytes[5].toInt() and 0xFF
         val zoomSpeed = (bytes[6].toInt() and 0xFF) ushr 4
+        val focusOrIrisSpeed = bytes[6].toInt() and 0x0F  // byte6 低 4 位通常是 Focus/Iris 速度
 
         val panDir = when {
             (opCode and 0x02) != 0 -> PanDirection.LEFT
@@ -105,13 +104,23 @@ object PtzCmdDecoder {
             (opCode and 0x20) != 0 -> ZoomDirection.OUT
             else -> ZoomDirection.NONE
         }
+        // Focus: byte3 bit6 = Focus Far(远焦) / bit7 = Focus Near(近焦)
+        // 注意:整字节匹配 0x81/0x82/0x83/0x89/0x8A 已在外层 decodeInstruction 拦截,
+        // 走到这里的 opCode 不会是预置位/Aux 整字节值,bit7 单独置位是合法 Focus Near.
+        val focusDir = when {
+            (opCode and 0x80) != 0 -> FocusDirection.NEAR
+            (opCode and 0x40) != 0 -> FocusDirection.FAR
+            else -> FocusDirection.NONE
+        }
         return PtzCommand(
             panDirection = panDir,
             tiltDirection = tiltDir,
             zoomDirection = zoomDir,
+            focusDirection = focusDir,
             panSpeed = if (panDir == PanDirection.NONE) 0 else panSpeed,
             tiltSpeed = if (tiltDir == TiltDirection.NONE) 0 else tiltSpeed,
-            zoomSpeed = if (zoomDir == ZoomDirection.NONE) 0 else zoomSpeed
+            zoomSpeed = if (zoomDir == ZoomDirection.NONE) 0 else zoomSpeed,
+            focusSpeed = if (focusDir == FocusDirection.NONE) 0 else focusOrIrisSpeed,
         )
     }
 
@@ -169,11 +178,14 @@ data class PtzCommand(
     val panDirection: PanDirection,
     val tiltDirection: TiltDirection,
     val zoomDirection: ZoomDirection,
+    val focusDirection: FocusDirection = FocusDirection.NONE,
     val panSpeed: Int,
     val tiltSpeed: Int,
     val zoomSpeed: Int,
+    val focusSpeed: Int = 0,
 )
 
 enum class PanDirection { LEFT, RIGHT, NONE }
 enum class TiltDirection { UP, DOWN, NONE }
 enum class ZoomDirection { IN, OUT, NONE }
+enum class FocusDirection { NEAR, FAR, NONE }
