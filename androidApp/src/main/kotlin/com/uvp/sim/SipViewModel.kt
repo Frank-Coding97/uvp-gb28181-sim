@@ -589,6 +589,28 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         _alarmFireMode.value = com.uvp.sim.ui.AlarmFireMode.Fixed
     }
 
+    /**
+     * M5 batch1 §C3 — 演示触发 MediaStatus 122/123(报警子页"高级模拟"折叠区).
+     * 委托 engine.triggerMediaStatusAbnormal,未注册时 toast 提示.
+     */
+    fun simulateMediaStatusAbnormal(notifyType: Int) {
+        val eng = engine ?: run {
+            _toasts.tryEmit("未注册,无法发送 MediaStatus")
+            return
+        }
+        engineScope.launch {
+            try {
+                eng.triggerMediaStatusAbnormal(notifyType)
+            } catch (e: Throwable) {
+                _events.update { current ->
+                    (listOf(com.uvp.sim.domain.SimEvent.TransportError(
+                        "MediaStatus simulate: ${e.message}"
+                    )) + current).take(MAX_EVENT_LOG)
+                }
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         try {

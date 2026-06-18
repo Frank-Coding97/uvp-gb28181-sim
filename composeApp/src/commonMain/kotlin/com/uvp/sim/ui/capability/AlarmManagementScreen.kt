@@ -92,6 +92,7 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
     var showXmlPreview by remember { mutableStateOf(false) }
     var historyExpanded by remember { mutableStateOf(false) }
     var subscribersExpanded by remember { mutableStateOf(false) }
+    var advancedExpanded by remember { mutableStateOf(false) }
 
     fun buildDraft(): AlarmPayload = AlarmPayload(
         deviceId = deviceId,
@@ -330,6 +331,50 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                         modifier = Modifier.padding(start = 8.dp))
                 }
             }
+
+            // 高级模拟折叠区 — MediaStatus 122/123 演示(M5 batch1 §7.9)
+            // 注册后才允许触发 — 走 engine.triggerMediaStatusAbnormal,
+            // 注册中心 MESSAGE + Alarm 订阅人 NOTIFY 同 fan-out。
+            val canSimulate = state.sip == com.uvp.sim.sip.SipState.Registered
+            CollapsibleHeader(
+                icon = Icons.Outlined.Code,
+                title = "高级模拟 (调试用)",
+                count = 0,
+                expanded = advancedExpanded,
+                onToggle = { advancedExpanded = !advancedExpanded }
+            )
+            if (advancedExpanded) {
+                Column(
+                    modifier = Modifier.padding(start = 8.dp, top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "GB §9.5.3 异常通知。触发后给注册中心 + Alarm 订阅人各发一条 MediaStatus NOTIFY。",
+                        fontSize = 11.sp, color = UvpColor.TextSecondary
+                    )
+                    OutlinedButton(
+                        onClick = {
+                            actions.onSimulateMediaStatusAbnormal(122)
+                            toast.info("已发送 MediaStatus 122 (录像异常)")
+                        },
+                        enabled = canSimulate,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("模拟录像异常 (NotifyType=122)") }
+                    OutlinedButton(
+                        onClick = {
+                            actions.onSimulateMediaStatusAbnormal(123)
+                            toast.info("已发送 MediaStatus 123 (存储满)")
+                        },
+                        enabled = canSimulate,
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("模拟存储满 (NotifyType=123)") }
+                    if (!canSimulate) {
+                        Text("未注册,按钮禁用",
+                            fontSize = 10.sp, color = UvpColor.TextHint)
+                    }
+                }
+            }
+
             Spacer(Modifier.height(12.dp))
         }
     }

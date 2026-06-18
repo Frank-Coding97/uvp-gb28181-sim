@@ -246,6 +246,18 @@ class MainActivity : ComponentActivity() {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "保存固定报警单 type=${payload.type.label}")
                     viewModel.saveFixedAlarm(payload)
                 }
+                override fun onSimulateMediaStatusAbnormal(notifyType: Int) {
+                    val label = when (notifyType) {
+                        122 -> "录像异常"
+                        123 -> "存储满"
+                        else -> "未知($notifyType)"
+                    }
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "高级模拟 → MediaStatus NotifyType=$notifyType ($label)"
+                    )
+                    viewModel.simulateMediaStatusAbnormal(notifyType)
+                }
                 override fun onClearSipLogs() {
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户清除 SIP 日志")
                     viewModel.clearSipEvents()

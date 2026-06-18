@@ -212,6 +212,13 @@ interface AppActions {
     /** 保存固定报警单(指定模式),主页一点即发此单。 */
     fun onSaveFixedAlarm(payload: AlarmPayload) {}
 
+    /**
+     * M5 batch1 §C3 — 报警子页"高级模拟"折叠区:演示触发 MediaStatus 122/123.
+     * notifyType ∈ {122 录像异常, 123 存储满}。engine 走 triggerMediaStatusAbnormal:
+     * 注册中心 MESSAGE + Alarm 订阅人 NOTIFY 同 fan-out。
+     */
+    fun onSimulateMediaStatusAbnormal(notifyType: Int) {}
+
     /** 清空 SIP 信令事件流(日志页 SIP tab 清除按钮触发)。 */
     fun onClearSipLogs() {}
 

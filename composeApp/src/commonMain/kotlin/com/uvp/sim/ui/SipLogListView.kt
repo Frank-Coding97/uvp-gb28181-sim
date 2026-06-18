@@ -294,6 +294,11 @@ private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
         highlight = true,
         category = "MESSAGE"
     )
+    is SimEvent.MediaStatusSent -> LogRowSpec(
+        "", "→", true, "STA", UvpColor.Info,
+        "MediaStatus ${ev.notifyType} · ${ev.subscriberCount} 订阅",
+        category = "MESSAGE"
+    )
     is SimEvent.MessageSent -> LogRowSpec(
         "", "→", true, msgMethodShort(ev.message), UvpColor.Primary,
         msgContent(ev.message), category = msgCategory(ev.message)
