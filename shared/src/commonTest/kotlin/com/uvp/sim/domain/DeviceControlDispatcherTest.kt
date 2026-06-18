@@ -402,4 +402,57 @@ class DeviceControlDispatcherTest {
         assertTrue(s.presets.isEmpty())
         assertTrue(s.lastCommand?.rawHex?.contains("out-of-range") == true)
     }
+
+    // ---------- T5b/T5d GB-2022 §9.3.4 新增项 ----------
+
+    @Test
+    fun `T5b — PTZPreciseCtrl emit PrecisePoseGoto + 写 lastPreciseCtrl`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        val xml = """
+            <Control><CmdType>DeviceControl</CmdType>
+              <PTZPreciseCtrl><Pan>123.45</Pan><Tilt>-15.0</Tilt><Zoom>3.5</Zoom></PTZPreciseCtrl>
+            </Control>
+        """.trimIndent()
+        val ack = d.dispatch(xml)
+        assertTrue(ack.needSipResponse)
+        val s = state.value
+        assertEquals(PtzPose(123.45f, -15.0f, 3.5f), s.lastPreciseCtrl)
+        assertEquals(DeviceEffect.PrecisePoseGoto(PtzPose(123.45f, -15.0f, 3.5f)), s.pendingEffect)
+        assertEquals("PTZPreciseCtrl", s.lastCommand?.type)
+    }
+
+    @Test
+    fun `T5d_1 — DeviceUpgrade emit DeviceUpgradeRequested`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        val xml = "<C><DeviceUpgrade><Firmware>v1.2.3</Firmware></DeviceUpgrade></C>"
+        d.dispatch(xml)
+        val s = state.value
+        assertEquals(DeviceEffect.DeviceUpgradeRequested("v1.2.3"), s.pendingEffect)
+        assertEquals("DeviceUpgrade", s.lastCommand?.type)
+    }
+
+    @Test
+    fun `T5d_2 — FormatSDCard emit FormatSDCardRequested`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        val xml = "<C><FormatSDCard>0</FormatSDCard></C>"
+        d.dispatch(xml)
+        val s = state.value
+        assertEquals(DeviceEffect.FormatSDCardRequested(0), s.pendingEffect)
+        assertEquals("FormatSDCard", s.lastCommand?.type)
+    }
+
+    @Test
+    fun `T5d_3 — TargetTrack 仅记 lastCommand 不 emit effect`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        val xml = "<C><TargetTrack>Manual</TargetTrack></C>"
+        d.dispatch(xml)
+        val s = state.value
+        kotlin.test.assertNull(s.pendingEffect)
+        assertEquals("TargetTrack", s.lastCommand?.type)
+        assertEquals("Manual", s.lastCommand?.rawHex)
+    }
 }

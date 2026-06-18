@@ -92,6 +92,8 @@ class DeviceControlDispatcher(
 
         return when {
             ManscdpParser.tagValue(xml, "PTZCmd") != null -> { handlePtz(xml); DeviceControlAck() }
+            // GB-2022 §9.3.4 A.2.3.1.11 精确云台 — 优先于其他控制命令匹配
+            xml.contains("<PTZPreciseCtrl>") -> { handlePtzPrecise(xml); DeviceControlAck() }
             ManscdpParser.tagValue(xml, "IFameCmd") != null -> { handleIFrame(xml); DeviceControlAck() }
             ManscdpParser.tagValue(xml, "TeleBoot") != null -> { handleTeleBoot(xml); DeviceControlAck() }
             ManscdpParser.tagValue(xml, "RecordCmd") != null -> { handleRecord(xml); DeviceControlAck() }
@@ -100,6 +102,10 @@ class DeviceControlDispatcher(
             xml.contains("<DragZoomIn>") || xml.contains("<DragZoomOut>") -> { handleDragZoom(xml); DeviceControlAck() }
             xml.contains("<HomePosition>") -> { handleHomePosition(xml); DeviceControlAck() }
             xml.contains("<BasicParam>") -> { handleDeviceConfig(xml); DeviceControlAck() }
+            // GB-2022 §9.3.4 新增项 — 200 OK + UI snackbar 提示,不真做业务
+            xml.contains("<DeviceUpgrade>") -> { handleDeviceUpgrade(xml); DeviceControlAck() }
+            xml.contains("<FormatSDCard>") -> { handleFormatSDCard(xml); DeviceControlAck() }
+            xml.contains("<TargetTrack>") -> { handleTargetTrack(xml); DeviceControlAck() }
             // GB-2022 §9.5 图像抓拍 — 7.5 新路径,优先于 7.4 旧 SnapShotCmd 匹配
             xml.contains("<SnapShotConfig>") -> { handleSnapShotConfig(xml); DeviceControlAck() }
             ManscdpParser.tagValue(xml, "SnapShotCmd") != null -> { handleSnapshot(xml); DeviceControlAck() }
@@ -348,6 +354,55 @@ class DeviceControlDispatcher(
                 pendingEffect = DeviceEffect.ConfigChanged(changed),
                 lastCommand = LastDeviceCommand("DeviceConfig", changed.joinToString(","), nowMs())
             )
+        }
+    }
+
+    // ---------- GB-2022 §9.3.4 新增项 ----------
+
+    /** A.2.3.1.11 PTZPreciseCtrl — 精确云台控制(必做). */
+    private fun handlePtzPrecise(xml: String) {
+        val p = com.uvp.sim.gb28181.PtzPreciseCtrlParser.parse(xml) ?: return
+        val target = PtzPose(p.pan, p.tilt, p.zoom)
+        state.update {
+            it.copy(
+                lastPreciseCtrl = target,
+                pendingEffect = DeviceEffect.PrecisePoseGoto(target),
+                lastCommand = LastDeviceCommand(
+                    "PTZPreciseCtrl",
+                    "${p.pan},${p.tilt},${p.zoom}x",
+                    nowMs()
+                )
+            )
+        }
+    }
+
+    /** A.2.3.1.12 DeviceUpgrade — 设备升级(选做最小集). 200 OK + snackbar 提示,不真 OTA. */
+    private fun handleDeviceUpgrade(xml: String) {
+        val firmware = ManscdpParser.tagValue(xml, "Firmware") ?: "(unknown)"
+        state.update {
+            it.copy(
+                pendingEffect = DeviceEffect.DeviceUpgradeRequested(firmware),
+                lastCommand = LastDeviceCommand("DeviceUpgrade", firmware, nowMs())
+            )
+        }
+    }
+
+    /** A.2.3.1.13 FormatSDCard — 格式化 SD 卡(选做最小集). 手机无 SD 卡概念,只为协议合规. */
+    private fun handleFormatSDCard(xml: String) {
+        val card = ManscdpParser.tagValue(xml, "FormatSDCard")?.toIntOrNull() ?: 0
+        state.update {
+            it.copy(
+                pendingEffect = DeviceEffect.FormatSDCardRequested(card),
+                lastCommand = LastDeviceCommand("FormatSDCard", "card $card", nowMs())
+            )
+        }
+    }
+
+    /** A.2.3.1.14 TargetTrack — 目标跟踪(本轮不做). 鱼眼/全景球机专用,白名单识别 200 OK. */
+    private fun handleTargetTrack(xml: String) {
+        val mode = ManscdpParser.tagValue(xml, "TargetTrack") ?: "?"
+        state.update {
+            it.copy(lastCommand = LastDeviceCommand("TargetTrack", mode, nowMs()))
         }
     }
 
