@@ -37,11 +37,15 @@ class DeviceControlDispatcherTest {
         var snapshotCalled = 0
         var keyFrameCalled = 0
         val snapshotConfigsTriggered = mutableListOf<com.uvp.sim.gb28181.SnapShotConfig>()
+        val upgradesStarted = mutableListOf<Triple<String, String, String>>()
         override suspend fun reboot() { rebootCalled++ }
         override suspend fun snapshot() { snapshotCalled++ }
         override fun requestKeyFrame() { keyFrameCalled++ }
         override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
             snapshotConfigsTriggered.add(cfg)
+        }
+        override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
+            upgradesStarted.add(Triple(sessionId, firmware, fileUrl))
         }
     }
 
