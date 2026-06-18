@@ -1,11 +1,14 @@
 package com.uvp.sim.ui.simulate
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,10 +19,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -27,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.LastDeviceCommand
+import com.uvp.sim.domain.PtzPose
 import com.uvp.sim.gb28181.PanDirection
 import com.uvp.sim.gb28181.PtzCommand
 import com.uvp.sim.gb28181.TiltDirection
@@ -99,6 +105,13 @@ fun PtzHudPanel(
             PoseStatDivider()
             PoseStat("Zoom", state.zoomLevel, "×", isActive = state.zoomSpeed != 0f)
         }
+
+        Spacer(Modifier.height(10.dp))
+
+        PresetChipRow(
+            presets = state.presets,
+            currentIndex = state.currentPresetIndex,
+        )
 
         Spacer(Modifier.height(10.dp))
 
@@ -319,4 +332,80 @@ private fun typeChipBg(type: String): Color = when (type) {
     "GuardCmd" -> UvpColor.Success
     "AlarmCmd" -> UvpColor.Danger
     else -> UvpColor.TextSecondary
+}
+
+/**
+ * 预置位 chip 行 — spec Q2 决议:PtzHudPanel 第三层,8 chip 横向布局.
+ *
+ * 三态视觉:
+ *   - 未设(presets[idx] 为空)→ 灰底灰字,Normal weight
+ *   - 已设 → 浅蓝底蓝字,SemiBold
+ *   - 当前调用(currentIndex == idx)→ 实心蓝底白字 + 描边 + 1.05f scale bounce
+ *
+ * 设备只读:chip 不响应点击,纯展示.
+ */
+@Composable
+private fun PresetChipRow(
+    presets: Map<Int, PtzPose>,
+    currentIndex: Int?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        for (idx in 1..8) {
+            PresetChip(
+                idx = idx,
+                isSet = presets.containsKey(idx),
+                isCurrent = currentIndex == idx,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RowScope.PresetChip(
+    idx: Int,
+    isSet: Boolean,
+    isCurrent: Boolean,
+) {
+    val bg = when {
+        isCurrent -> UvpColor.Primary
+        isSet -> UvpColor.PrimaryLight
+        else -> UvpColor.BorderLight
+    }
+    val fg = when {
+        isCurrent -> Color.White
+        isSet -> UvpColor.Primary
+        else -> UvpColor.TextHint
+    }
+    val targetScale = if (isCurrent) 1.05f else 1f
+    val scale by animateFloatAsState(
+        targetScale,
+        animationSpec = tween(durationMillis = if (isCurrent) 200 else 300),
+        label = "preset-chip-scale-$idx"
+    )
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .height(28.dp)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .let { m ->
+                if (isCurrent) m.border(1.dp, UvpColor.Primary, RoundedCornerShape(6.dp))
+                else m
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "P$idx",
+            color = fg,
+            fontSize = 11.sp,
+            fontWeight = if (isCurrent || isSet) FontWeight.SemiBold else FontWeight.Normal,
+        )
+    }
 }
