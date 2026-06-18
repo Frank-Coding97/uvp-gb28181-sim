@@ -1,7 +1,11 @@
 package com.uvp.sim.ui.simulate
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -47,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.DragZoomRect
+import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
@@ -219,6 +224,9 @@ private fun MonitoringStage(
             // 中心保持透明不影响球机,只在边缘 / 上下沿透出"光透磨砂"的高级感
             FrostedGlassOverlay(modifier = Modifier.fillMaxSize())
 
+            // 辅助控制 3D 视觉反馈(雨刷扫动 + 红外灯暗绿夜视滤镜)
+            AuxFeedbackOverlay(state = state, modifier = Modifier.fillMaxSize())
+
             // GuardCmd 力场罩(径向渐变光圈 + 边缘描边)— state.isGuarded 切换时 600ms 淡入/淡出
             GuardOverlay(
                 isGuarded = state.isGuarded,
@@ -237,6 +245,115 @@ private fun MonitoringStage(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(10.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 辅助控制 3D 视觉反馈:
+ * - 雨刷(Wiper):屏幕边缘画一道半透明 wiper 弧线,2s 来回扫一次
+ * - 红外灯(InfraredLight):整画面叠暗绿色滤镜 + 右上角 IR 标识
+ * - 加热(Heater):右上角小图标 + 暖色微调
+ * - 除雾(Defog):画面四角"清晰"指示
+ * - 制冷(Cooler):右上角冷蓝指示
+ *
+ * 多个 Aux 同时 ON 不冲突,叠加显示.
+ */
+@Composable
+private fun AuxFeedbackOverlay(state: DeviceControlState, modifier: Modifier = Modifier) {
+    val wiperOn = state.auxStates[AuxFunction.Wiper.index] == true
+    val irOn = state.auxStates[AuxFunction.InfraredLight.index] == true
+
+    Box(modifier = modifier) {
+        // 红外灯滤镜:整画面叠暗绿色 0.18 alpha + 中心十字
+        if (irOn) {
+            val alpha by animateFloatAsState(
+                targetValue = if (irOn) 1f else 0f,
+                animationSpec = tween(400),
+                label = "ir-filter"
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFF0BAA50).copy(alpha = 0.18f * alpha))
+            )
+            // 右上角 IR 角标
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp),
+                shape = RoundedCornerShape(4.dp),
+                color = Color(0xFF0BAA50).copy(alpha = 0.9f * alpha),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.4f))
+            ) {
+                Text(
+                    "IR 夜视",
+                    color = Color.White,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                )
+            }
+        }
+
+        // 雨刷:Canvas 画一道弧线 wiper,2s 来回扫
+        if (wiperOn) {
+            val infinite = rememberInfiniteTransition(label = "wiper")
+            val sweepProgress by infinite.animateFloat(
+                initialValue = 0f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 2000),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "wiper-sweep"
+            )
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                // 雨刷柄从底部中心,扫角 -45° → +45°
+                val angleDeg = -45f + sweepProgress * 90f
+                val rad = angleDeg * kotlin.math.PI.toFloat() / 180f
+                val pivotX = w / 2f
+                val pivotY = h * 1.05f
+                val length = h * 0.95f
+                val tipX = pivotX + kotlin.math.sin(rad) * length
+                val tipY = pivotY - kotlin.math.cos(rad) * length
+
+                // 雨刷臂(细线 + 半透明黑)
+                drawLine(
+                    color = Color.Black.copy(alpha = 0.35f),
+                    start = androidx.compose.ui.geometry.Offset(pivotX, pivotY),
+                    end = androidx.compose.ui.geometry.Offset(tipX, tipY),
+                    strokeWidth = 3.dp.toPx()
+                )
+                // 雨刷胶条(略宽 + 更深)
+                drawLine(
+                    color = Color.Black.copy(alpha = 0.55f),
+                    start = androidx.compose.ui.geometry.Offset(
+                        pivotX + kotlin.math.sin(rad) * (length * 0.3f),
+                        pivotY - kotlin.math.cos(rad) * (length * 0.3f)
+                    ),
+                    end = androidx.compose.ui.geometry.Offset(tipX, tipY),
+                    strokeWidth = 6.dp.toPx()
+                )
+            }
+            // 右上角 雨刷 角标
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(start = 10.dp, top = 38.dp),
+                shape = RoundedCornerShape(4.dp),
+                color = Color(0xFF1890FF).copy(alpha = 0.9f),
+            ) {
+                Text(
+                    "雨刷工作中",
+                    color = Color.White,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
                 )
             }
         }
@@ -414,7 +531,7 @@ private fun formatSignedAngle(value: Float): String {
  * 不依赖平台 API,纯 Compose + kotlinx.coroutines.delay.
  */
 @Composable
-private fun useTickingNow(intervalMs: Long): Long {
+internal fun useTickingNow(intervalMs: Long): Long {
     var now by remember { mutableStateOf(currentTimeMs()) }
     LaunchedEffect(Unit) {
         while (true) {

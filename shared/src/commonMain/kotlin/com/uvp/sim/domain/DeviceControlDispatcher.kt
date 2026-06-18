@@ -231,17 +231,19 @@ class DeviceControlDispatcher(
         val func = AuxFunction.fromIndex(p.index)
         val name = func?.displayName ?: "Aux${p.index}"
         val opLabel = if (p.on) "ON" else "OFF"
+        val now = nowMs()
         if (func != null) {
             state.update {
                 it.copy(
                     auxStates = it.auxStates + (p.index to p.on),
-                    lastCommand = LastDeviceCommand("PTZCmd", "$name $opLabel", nowMs())
+                    auxTimestamps = it.auxTimestamps + (p.index to now),
+                    lastCommand = LastDeviceCommand("PTZCmd", "$name $opLabel", now)
                 )
             }
         } else {
             state.update {
                 it.copy(
-                    lastCommand = LastDeviceCommand("PTZCmd", "Aux#${p.index} $opLabel (unmapped)", nowMs())
+                    lastCommand = LastDeviceCommand("PTZCmd", "Aux#${p.index} $opLabel (unmapped)", now)
                 )
             }
         }

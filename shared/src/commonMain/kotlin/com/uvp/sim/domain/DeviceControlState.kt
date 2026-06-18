@@ -44,6 +44,8 @@ data class DeviceControlState(
     // key = AuxFunction.index(1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷)
     // value = true=ON / false=OFF
     val auxStates: Map<Int, Boolean> = emptyMap(),
+    /** 辅助开关最近一次状态变更的时间戳(ms),供 UI 显示运行时长. */
+    val auxTimestamps: Map<Int, Long> = emptyMap(),
 
     // 最近一次平台控制命令(HUD 显示用)
     val lastCommand: LastDeviceCommand? = null,

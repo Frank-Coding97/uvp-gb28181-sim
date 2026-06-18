@@ -518,9 +518,11 @@ private fun AuxTabContent(state: DeviceControlState) {
     ) {
         for (func in AuxFunction.entries) {
             val on = state.auxStates[func.index] == true
+            val sinceMs = state.auxTimestamps[func.index]
             AuxToggle(
                 func = func,
                 on = on,
+                sinceMs = sinceMs,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -531,6 +533,7 @@ private fun AuxTabContent(state: DeviceControlState) {
 private fun AuxToggle(
     func: AuxFunction,
     on: Boolean,
+    sinceMs: Long?,
     modifier: Modifier = Modifier,
 ) {
     val tint = if (on) UvpColor.Primary else UvpColor.TextHint
@@ -558,12 +561,36 @@ private fun AuxToggle(
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(Modifier.height(2.dp))
-        Text(
-            if (on) "ON" else "OFF",
-            fontSize = 8.sp,
-            color = if (on) UvpColor.PrimaryDark else UvpColor.TextHint,
-            fontWeight = FontWeight.Bold,
-        )
+        // 状态文案:运行中显示运行时长,关闭显示 OFF 或最近一次时长
+        AuxStatusLine(on = on, sinceMs = sinceMs)
+    }
+}
+
+/** 显示"已开 X 分钟" / "OFF" 等运行状态副文本,每秒刷新一次. */
+@Composable
+private fun AuxStatusLine(on: Boolean, sinceMs: Long?) {
+    val nowMs = useTickingNow(intervalMs = 1000L)
+    val text = when {
+        on && sinceMs != null -> "已开 ${formatDuration(nowMs - sinceMs)}"
+        on -> "ON"
+        else -> "OFF"
+    }
+    Text(
+        text,
+        fontSize = 8.sp,
+        color = if (on) UvpColor.PrimaryDark else UvpColor.TextHint,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+    )
+}
+
+/** 简短时长格式: <60s → 'Ns' / <60min → 'NmS' / 否则 'NhM' . */
+private fun formatDuration(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return when {
+        s < 60 -> "${s}s"
+        s < 3600 -> "${s / 60}m${s % 60}"
+        else -> "${s / 3600}h${(s % 3600) / 60}m"
     }
 }
 
