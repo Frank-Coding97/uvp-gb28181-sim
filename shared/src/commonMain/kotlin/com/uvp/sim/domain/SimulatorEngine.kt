@@ -805,6 +805,114 @@ class SimulatorEngine(
         SystemLogger.emit(LogLevel.Info, LogTag.Network, "本地复位报警(不走 SIP)")
     }
 
+    /**
+     * M5 batch1 §C2 — 主动通知平台异常媒体状态(MediaStatus NotifyType 122/123).
+     *
+     * notifyType 仅接受 122(录像异常)/ 123(存储满),其余忽略 + warn log.
+     *
+     * fan-out 跟 7.1 报警同语义(plan §C2 R3 决议):
+     *   路 A — MESSAGE 给注册中心(buildMessage 走 server.serverId 目标 URI)
+     *   路 B — NOTIFY 给所有已订阅 Alarm 的平台(SubscriptionRegistry.dialogsByKind("Alarm"))
+     *
+     * 完成后 emit MediaStatusSent(notifyType, subscriberCount).
+     * 未注册时 emit TransportError 并直接返回 — 这跟 reportSnapshot/reportAlarm 一致.
+     */
+    suspend fun triggerMediaStatusAbnormal(notifyType: Int) {
+        if (notifyType != com.uvp.sim.sip.MediaStatusNotify.NOTIFY_TYPE_RECORDING_ABNORMAL &&
+            notifyType != com.uvp.sim.sip.MediaStatusNotify.NOTIFY_TYPE_STORAGE_FULL
+        ) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Network,
+                "triggerMediaStatusAbnormal: 非法 NotifyType=$notifyType — 仅支持 122/123,忽略"
+            )
+            return
+        }
+
+        val dialogs: List<SubscriptionDialog>
+        mutex.withLock {
+            if (_state.value != SipState.Registered && _state.value != SipState.InCall) {
+                _events.emit(SimEvent.TransportError("MediaStatus: not registered"))
+                return
+            }
+            cseq += 1
+            notifySn += 1
+
+            // 路 A — MESSAGE 给注册中心(走 buildMessage 默认目标 = server URI)
+            val branch = SipBuilders.randomBranch()
+            val callIdNow = callId ?: SipBuilders.randomCallId(localIp)
+            val fromTagNow = fromTag ?: SipBuilders.randomTag()
+            val xmlBody = com.uvp.sim.sip.MediaStatusNotify.buildXml(
+                deviceId = config.device.deviceId,
+                sn = notifySn,
+                notifyType = notifyType
+            )
+            val msg = SipBuilders.buildMessage(
+                config = config,
+                cseq = cseq,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                xmlBody = xmlBody
+            )
+            try {
+                transport.send(msg)
+                _events.emit(SimEvent.MessageSent(msg))
+            } catch (e: Throwable) {
+                _events.emit(SimEvent.TransportError("MediaStatus MESSAGE send: ${e.message}"))
+            }
+
+            // 路 B — NOTIFY 给每个 Alarm 订阅人(锁内拿快照,锁外发)
+            dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+            for (d in dialogs) {
+                val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
+                sendMediaStatusNotifyToSubscriber(updated, xmlBody)
+            }
+        }
+
+        _events.emit(SimEvent.MediaStatusSent(notifyType, dialogs.size))
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "MediaStatus 通知 → MESSAGE + ${dialogs.size} Alarm 订阅 NOTIFY · NotifyType=$notifyType"
+        )
+    }
+
+    /**
+     * §C2 fan-out 路 B — 给单个 Alarm 订阅 dialog 发一条 MediaStatus NOTIFY,
+     * body 跟注册中心 MESSAGE 完全一致.沿用 sendAlarmNotify 的事件路径.
+     */
+    private suspend fun sendMediaStatusNotifyToSubscriber(
+        dialog: SubscriptionDialog,
+        body: String
+    ) {
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val notify = SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",  // WVP Alarm 订阅走 Event:presence,跟 Alarm fan-out 同语义
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = body,
+            localIp = localIp,
+            localPort = localPortProvider(),
+            transport = config.transport.name,
+            userAgent = config.userAgent
+        )
+        try {
+            transport.send(notify)
+            _events.emit(SimEvent.MessageSent(notify))
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError(
+                "send MediaStatus NOTIFY: ${e::class.simpleName}: ${e.message}"
+            ))
+        }
+    }
+
     /** 给单个 Alarm 订阅 dialog 发一条 NOTIFY(body 跟 MESSAGE 一致)。 */
     private suspend fun sendAlarmNotify(dialog: SubscriptionDialog, body: String, sn: String) {
         alarmNotifySn++

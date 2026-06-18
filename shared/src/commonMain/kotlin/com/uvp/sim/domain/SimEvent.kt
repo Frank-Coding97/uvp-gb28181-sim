@@ -82,6 +82,16 @@ sealed class SimEvent {
     ) : SimEvent()
 
     /**
+     * M5 batch1 §C2 — 设备主动通知平台异常媒体状态(MediaStatus NotifyType 122/123).
+     * notifyType=122 录像异常 / 123 存储满。fan-out 给注册中心 + 已订阅 Alarm 的平台。
+     */
+    data class MediaStatusSent(
+        val notifyType: Int,
+        val subscriberCount: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /**
      * T10 (7.5 GB-2022) — 平台 SnapShotConfig 触发的抓拍 + 上传成功后,设备发出 SnapShot
      * Notify 的事件。一次 SnapShotConfig 序列每张图触发一次本事件,最后一张时 [count] == [total]。
      */
