@@ -1891,6 +1891,16 @@ class SimulatorEngine(
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "RecordInfo 查询解析失败")
             return
         }
+        // M5 batch2 §3.11 — 平台带高级过滤字段时记一行说明,plan §Q3 仅解析透传不参与命中
+        if (query.indistinctQuery == 1 || query.filePath != null ||
+            query.address != null || query.recorderId != null) {
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "RecordInfo 高级过滤(已解析,sim 单通道 mock 不参与命中): " +
+                    "indistinct=${query.indistinctQuery} path=${query.filePath} " +
+                    "addr=${query.address} recId=${query.recorderId}"
+            )
+        }
         val files = recordingService.files.value
         val hits = files.filter {
             query.startMs <= it.endTimeMs && query.endMs >= it.startTimeMs &&
