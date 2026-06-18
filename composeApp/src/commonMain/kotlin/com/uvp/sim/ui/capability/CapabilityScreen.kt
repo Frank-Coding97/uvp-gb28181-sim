@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
@@ -59,7 +60,7 @@ fun CapabilityScreen(
     onAlarmTargetConsumed: () -> Unit = {}
 ) {
     var showCatalog by remember { mutableStateOf(false) }
-    var showSimulate by remember { mutableStateOf(false) }
+    var showRecording by remember { mutableStateOf(false) }
     var showAlarm by remember { mutableStateOf(false) }
 
     // 主屏长按报警 tile 携带 target → 自动打开报警子页
@@ -78,8 +79,8 @@ fun CapabilityScreen(
         )
         return
     }
-    if (showSimulate) {
-        SimulateSubScreen(state = state, actions = actions, onBack = { showSimulate = false })
+    if (showRecording) {
+        RecordingSubScreen(state = state, actions = actions, onBack = { showRecording = false })
         return
     }
     if (showAlarm) {
@@ -118,11 +119,15 @@ fun CapabilityScreen(
                 modifier = Modifier.weight(1f)
             )
             CapabilityTile(
-                icon = Icons.Outlined.ViewInAr,
-                title = "模拟控制",
-                metric = "PTZ + 3D HUD",
-                status = TileStatus.Active("实时就绪"),
-                onClick = { showSimulate = true },
+                icon = Icons.Outlined.Movie,
+                title = "录像列表",
+                metric = "${state.recording.files.size} 文件",
+                status = if (state.recording.isRecording) {
+                    TileStatus.Active("录像中")
+                } else {
+                    TileStatus.Idle("待机")
+                },
+                onClick = { showRecording = true },
                 modifier = Modifier.weight(1f)
             )
         }
@@ -236,7 +241,7 @@ private fun CapabilityTile(
 }
 
 @Composable
-private fun SimulateSubScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
+private fun RecordingSubScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -258,7 +263,7 @@ private fun SimulateSubScreen(state: AppUiState, actions: AppActions, onBack: ()
                     )
                 }
                 Text(
-                    "模拟控制",
+                    "录像列表",
                     color = UvpColor.Text,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -266,6 +271,6 @@ private fun SimulateSubScreen(state: AppUiState, actions: AppActions, onBack: ()
                 )
             }
         }
-        SimulateScreen(state = state, actions = actions, modifier = Modifier.weight(1f))
+        com.uvp.sim.ui.RecordingScreen(state = state, actions = actions, modifier = Modifier.weight(1f))
     }
 }

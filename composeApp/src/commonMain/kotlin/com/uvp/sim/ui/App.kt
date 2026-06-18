@@ -22,9 +22,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -94,8 +94,11 @@ fun App(state: AppUiState, actions: AppActions) {
                                 openAlarmTarget = alarmTarget,
                                 onAlarmTargetConsumed = { alarmTarget = false }
                             )
+                            AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(
+                                state = state,
+                                actions = actions,
+                            )
                             AppTab.Settings -> SettingsScreen(state, actions)
-                            AppTab.Recording -> RecordingScreen(state, actions)
                             AppTab.Log -> LogScreen(state, actions)
                         }
                     }
@@ -199,7 +202,7 @@ private fun BottomTabItem(
 private fun AppTab.icon(): ImageVector = when (this) {
     AppTab.Home -> Icons.Outlined.Home
     AppTab.Capability -> Icons.Outlined.Extension
+    AppTab.Simulate -> Icons.Outlined.ViewInAr
     AppTab.Log -> Icons.Outlined.Description
-    AppTab.Recording -> Icons.Outlined.Movie
     AppTab.Settings -> Icons.Outlined.Settings
 }

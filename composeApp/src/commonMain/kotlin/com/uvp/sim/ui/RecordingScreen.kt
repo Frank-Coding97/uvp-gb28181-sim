@@ -61,7 +61,7 @@ import kotlinx.datetime.toLocalDateTime
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RecordingScreen(state: AppUiState, actions: AppActions) {
+fun RecordingScreen(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
     val tz = remember { TimeZone.currentSystemDefault() }
     var playingFile by remember { mutableStateOf<RecordingFile?>(null) }
     var deletingFile by remember { mutableStateOf<RecordingFile?>(null) }
@@ -78,7 +78,7 @@ fun RecordingScreen(state: AppUiState, actions: AppActions) {
     val filterLabel = filter?.let { describeFilter(it, tz) } ?: "全部"
 
     Column(
-        modifier = Modifier.fillMaxSize().background(UvpColor.Bg)
+        modifier = modifier.fillMaxSize().background(UvpColor.Bg)
     ) {
         FilterBar(
             filterLabel = filterLabel,
