@@ -59,7 +59,10 @@ object PtzCmdDecoder {
         val opCode = bytes[3].toInt() and 0xFF
         return when {
             opCode == 0x81 || opCode == 0x82 || opCode == 0x83 -> decodePreset(bytes, opCode)
-            // byte3 高位置位但非 0x81-0x83: 巡航 / Aux / 扩展位,本轮不解析
+            // GB-2022 §F.3 byte3 = 0x89 / 0x8A 辅助开关 (Aux On/Off)
+            // byte4 = aux 编号: 1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷(海康/大华事实标准)
+            opCode == 0x89 || opCode == 0x8A -> decodeAux(bytes, opCode)
+            // byte3 高位置位但非已支持(巡航等),本轮不解析
             opCode >= 0x80 -> null
             // 0x00-0x3F 方向位组合(bit0=右 / bit1=左 / bit2=下 / bit3=上 / bit4=zoom in / bit5=zoom out)
             else -> PtzInstruction.Motion(decodeMotion(bytes, opCode))
@@ -74,6 +77,12 @@ object PtzCmdDecoder {
         }
         val idx = bytes[4].toInt() and 0xFF
         return PtzInstruction.Preset(op, idx)
+    }
+
+    private fun decodeAux(bytes: ByteArray, opCode: Int): PtzInstruction.Aux {
+        val on = opCode == 0x89  // 0x89=on / 0x8A=off
+        val auxIndex = bytes[4].toInt() and 0xFF
+        return PtzInstruction.Aux(on, auxIndex)
     }
 
     private fun decodeMotion(bytes: ByteArray, opCode: Int): PtzCommand {
@@ -132,13 +141,29 @@ object PtzCmdDecoder {
     }
 }
 
-/** PTZ 8 字节命令解码后的语义,Motion 走方向控制 / Preset 走预置位 CRUD. */
+/** PTZ 8 字节命令解码后的语义. */
 sealed class PtzInstruction {
     data class Motion(val cmd: PtzCommand) : PtzInstruction()
+    /** 预置位 CRUD (byte3 = 0x81/0x82/0x83) */
     data class Preset(val op: PresetOp, val index: Int) : PtzInstruction()
+    /** 辅助开关 (byte3 = 0x89/0x8A,byte4 = aux 编号) — 雨刷/红外灯/加热/除雾/制冷. */
+    data class Aux(val on: Boolean, val index: Int) : PtzInstruction()
 }
 
 enum class PresetOp { SET, CALL, DEL }
+
+/** 辅助控制编号映射(海康/大华行业事实标准). */
+enum class AuxFunction(val index: Int, val displayName: String) {
+    Wiper(1, "雨刷"),
+    InfraredLight(2, "红外灯"),
+    Heater(3, "加热"),
+    Defog(4, "除雾"),
+    Cooler(5, "制冷");
+
+    companion object {
+        fun fromIndex(idx: Int): AuxFunction? = entries.firstOrNull { it.index == idx }
+    }
+}
 
 data class PtzCommand(
     val panDirection: PanDirection,

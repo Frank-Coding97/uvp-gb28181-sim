@@ -189,4 +189,38 @@ class PtzCmdDecoderTest {
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x91, 0x00, 0x00, 0x00)
         assertNull(PtzCmdDecoder.decodeInstruction(hex))
     }
+
+    // ---------- 辅助控制 (GB-2022 §F.3 byte3 = 0x89 / 0x8A) ----------
+
+    @Test
+    fun `Aux On 雨刷(byte4=1)`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x89, 0x01, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Aux, "expected Aux, got $ins")
+        ins as PtzInstruction.Aux
+        assertTrue(ins.on)
+        assertEquals(1, ins.index)
+        assertEquals(AuxFunction.Wiper, AuxFunction.fromIndex(ins.index))
+    }
+
+    @Test
+    fun `Aux Off 加热(byte4=3)`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x8A, 0x03, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Aux)
+        ins as PtzInstruction.Aux
+        assertFalse(ins.on)
+        assertEquals(3, ins.index)
+        assertEquals(AuxFunction.Heater, AuxFunction.fromIndex(ins.index))
+    }
+
+    @Test
+    fun `Aux 未知 index 仍解码成功(由 dispatcher 决定语义)`() {
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x89, 0xEE, 0x00, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Aux)
+        ins as PtzInstruction.Aux
+        assertEquals(0xEE, ins.index)
+        assertNull(AuxFunction.fromIndex(0xEE))  // 没有映射
+    }
 }

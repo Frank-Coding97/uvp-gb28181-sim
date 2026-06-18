@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.gb28181.ManscdpParser
 import com.uvp.sim.gb28181.PanDirection
 import com.uvp.sim.gb28181.PresetOp
@@ -120,7 +121,8 @@ class DeviceControlDispatcher(
         when (val ins = PtzCmdDecoder.decodeInstruction(hex)) {
             is PtzInstruction.Motion -> handlePtzMotion(ins.cmd, hex)
             is PtzInstruction.Preset -> handlePtzPreset(ins, hex)
-            null -> { /* 校验失败 / 巡航 / Aux 等,200 OK 由 ack 兜底 */ }
+            is PtzInstruction.Aux -> handlePtzAux(ins, hex)
+            null -> { /* 校验失败 / 巡航 / 未知子族,200 OK 由 ack 兜底 */ }
         }
     }
 
@@ -208,6 +210,32 @@ class DeviceControlDispatcher(
         ZoomDirection.IN -> p.zoomSpeed / 15f
         ZoomDirection.OUT -> -p.zoomSpeed / 15f
         ZoomDirection.NONE -> 0f
+    }
+
+    /**
+     * 辅助控制 (GB-2022 §F.3 byte3=0x89/0x8A).
+     *
+     * 编号映射(海康/大华事实标准):1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷.
+     * 未知 index 仍记 lastCommand 但不动 auxStates.
+     */
+    private fun handlePtzAux(p: PtzInstruction.Aux, hex: String) {
+        val func = AuxFunction.fromIndex(p.index)
+        val name = func?.displayName ?: "Aux${p.index}"
+        val opLabel = if (p.on) "ON" else "OFF"
+        if (func != null) {
+            state.update {
+                it.copy(
+                    auxStates = it.auxStates + (p.index to p.on),
+                    lastCommand = LastDeviceCommand("PTZCmd", "$name $opLabel", nowMs())
+                )
+            }
+        } else {
+            state.update {
+                it.copy(
+                    lastCommand = LastDeviceCommand("PTZCmd", "Aux#${p.index} $opLabel (unmapped)", nowMs())
+                )
+            }
+        }
     }
 
     // ---------- IFrame ----------

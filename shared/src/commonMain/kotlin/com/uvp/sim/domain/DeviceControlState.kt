@@ -40,6 +40,11 @@ data class DeviceControlState(
     val presets: Map<Int, PtzPose> = emptyMap(),
     val currentPresetIndex: Int? = null,
 
+    // 辅助控制状态(GB-2022 §F.3 byte3=0x89/0x8A Aux On/Off)
+    // key = AuxFunction.index(1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷)
+    // value = true=ON / false=OFF
+    val auxStates: Map<Int, Boolean> = emptyMap(),
+
     // 最近一次平台控制命令(HUD 显示用)
     val lastCommand: LastDeviceCommand? = null,
 

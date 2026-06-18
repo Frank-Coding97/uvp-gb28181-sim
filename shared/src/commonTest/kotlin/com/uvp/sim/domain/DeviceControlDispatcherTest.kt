@@ -455,4 +455,44 @@ class DeviceControlDispatcherTest {
         assertEquals("TargetTrack", s.lastCommand?.type)
         assertEquals("Manual", s.lastCommand?.rawHex)
     }
+
+    // ---------- 辅助控制 (Aux On/Off, byte3=0x89/0x8A) ----------
+
+    private fun auxHex(on: Boolean, auxIndex: Int): String {
+        val opCode = if (on) 0x89 else 0x8A
+        val sum = (0xA5 + 0x0F + 0x01 + opCode + auxIndex + 0 + 0) and 0xFF
+        return listOf(0xA5, 0x0F, 0x01, opCode, auxIndex, 0, 0, sum)
+            .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
+    }
+
+    @Test
+    fun `Aux_1 — 雨刷 ON 写 auxStates 1=true`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${auxHex(true, 1)}</PTZCmd></C>")
+        val s = state.value
+        assertEquals(true, s.auxStates[1])
+        assertEquals("PTZCmd", s.lastCommand?.type)
+        assertEquals("雨刷 ON", s.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `Aux_2 — 加热 OFF 写 auxStates 3=false`() {
+        val state = MutableStateFlow(DeviceControlState(auxStates = mapOf(3 to true)))
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${auxHex(false, 3)}</PTZCmd></C>")
+        val s = state.value
+        assertEquals(false, s.auxStates[3])
+        assertEquals("加热 OFF", s.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `Aux_3 — 未知 index 不动 auxStates 仅记 unmapped lastCommand`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>${auxHex(true, 99)}</PTZCmd></C>")
+        val s = state.value
+        assertTrue(s.auxStates.isEmpty())
+        assertTrue(s.lastCommand?.rawHex?.contains("unmapped") == true)
+    }
 }
