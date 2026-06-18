@@ -55,6 +55,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uvp.sim.ui.notification.NotificationBell
+import com.uvp.sim.ui.notification.NotificationScreen
+import com.uvp.sim.ui.notification.rememberNotificationState
 
 /**
  * 跨 Tab 导航跳转能力。主屏报警 tile 长按时,通过它切到「能力」Tab 并
@@ -77,8 +80,9 @@ val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
 fun App(state: AppUiState, actions: AppActions) {
     UvpTheme {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
-        // 报警子页跳转目标:主屏长按报警 tile 置 true,CapabilityScreen 消费后清零
         var alarmTarget by rememberSaveable { mutableStateOf(false) }
+        var notificationOpen by rememberSaveable { mutableStateOf(false) }
+        val (notificationState, markAllRead) = rememberNotificationState(state.events)
         val navigator = AppNavigator(
             navigateToAlarm = {
                 alarmTarget = true
@@ -91,31 +95,44 @@ fun App(state: AppUiState, actions: AppActions) {
         UvpToastHost {
             CompositionLocalProvider(LocalAppNavigator provides navigator) {
                 Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-                    CompactTopBar()
-                    NetworkUnavailableBanner(
-                        runtime = state.networkRuntimeState,
-                        onClick = { currentTab = AppTab.Settings }
-                    )
-                    Surface(
-                        modifier = Modifier.fillMaxWidth().weight(1f),
-                        color = UvpColor.Bg
-                    ) {
-                        when (currentTab) {
-                            AppTab.Home -> HomeScreen(state, actions)
-                            AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
-                                state, actions,
-                                openAlarmTarget = alarmTarget,
-                                onAlarmTargetConsumed = { alarmTarget = false }
-                            )
-                            AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(
-                                state = state,
-                                actions = actions,
-                            )
-                            AppTab.Settings -> SettingsScreen(state, actions)
-                            AppTab.Log -> LogScreen(state, actions)
+                    if (notificationOpen) {
+                        NotificationScreen(
+                            state = notificationState,
+                            onBack = { notificationOpen = false },
+                        )
+                    } else {
+                        CompactTopBar(
+                            unreadCount = notificationState.unreadCount,
+                            onBellClick = {
+                                notificationOpen = true
+                                markAllRead()
+                            }
+                        )
+                        NetworkUnavailableBanner(
+                            runtime = state.networkRuntimeState,
+                            onClick = { currentTab = AppTab.Settings }
+                        )
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            color = UvpColor.Bg
+                        ) {
+                            when (currentTab) {
+                                AppTab.Home -> HomeScreen(state, actions)
+                                AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
+                                    state, actions,
+                                    openAlarmTarget = alarmTarget,
+                                    onAlarmTargetConsumed = { alarmTarget = false }
+                                )
+                                AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(
+                                    state = state,
+                                    actions = actions,
+                                )
+                                AppTab.Settings -> SettingsScreen(state, actions)
+                                AppTab.Log -> LogScreen(state, actions)
+                            }
                         }
+                        CompactBottomBar(currentTab) { currentTab = it }
                     }
-                    CompactBottomBar(currentTab) { currentTab = it }
                 }
             }
         }
@@ -123,7 +140,7 @@ fun App(state: AppUiState, actions: AppActions) {
 }
 
 @Composable
-private fun CompactTopBar() {
+private fun CompactTopBar(unreadCount: Int = 0, onBellClick: () -> Unit = {}) {
     Column(modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
         Row(
             modifier = Modifier
@@ -141,19 +158,10 @@ private fun CompactTopBar() {
                 color = UvpColor.Text
             )
             Spacer(Modifier.weight(1f))
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable { /* notification: M2 */ }
-                    .padding(4.dp)
-            ) {
-                Icon(
-                    Icons.Outlined.Notifications,
-                    contentDescription = "通知",
-                    tint = UvpColor.TextSecondary,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+            NotificationBell(
+                unreadCount = unreadCount,
+                onClick = onBellClick,
+            )
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
     }
