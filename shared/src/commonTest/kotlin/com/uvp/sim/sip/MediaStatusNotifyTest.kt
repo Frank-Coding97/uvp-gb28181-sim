@@ -50,6 +50,32 @@ class MediaStatusNotifyTest {
         assertTrue(xml.contains("<CmdType>MediaStatus</CmdType>"))
     }
 
+    // ----- M5 batch1 §C1: 122 录像异常 / 123 存储满 NotifyType 常量与回归 -----
+
+    @Test fun c1_t1_xml_containsNotifyType122_recordingAbnormal() {
+        val xml = MediaStatusNotify.buildXml("dev", 1, MediaStatusNotify.NOTIFY_TYPE_RECORDING_ABNORMAL)
+        assertTrue(xml.contains("<NotifyType>122</NotifyType>"),
+            "录像异常 NotifyType=122 应出现在 XML")
+    }
+
+    @Test fun c1_t2_xml_containsNotifyType123_storageFull() {
+        val xml = MediaStatusNotify.buildXml("dev", 1, MediaStatusNotify.NOTIFY_TYPE_STORAGE_FULL)
+        assertTrue(xml.contains("<NotifyType>123</NotifyType>"),
+            "存储满 NotifyType=123 应出现在 XML")
+    }
+
+    @Test fun c1_t3_existing121_regressionStillEmitsCorrectType() {
+        val xml = MediaStatusNotify.buildXml("dev", 1, MediaStatusNotify.NOTIFY_TYPE_DOWNLOAD_END)
+        assertTrue(xml.contains("<NotifyType>121</NotifyType>"),
+            "既有 121 路径回归不破")
+    }
+
+    @Test fun c1_t4_constants_haveExpectedValues() {
+        // 122/123 为 GB/T 28181 §A.2.6.4 NotifyType 表 — 提交锁死值,防误改
+        assertEquals(122, MediaStatusNotify.NOTIFY_TYPE_RECORDING_ABNORMAL)
+        assertEquals(123, MediaStatusNotify.NOTIFY_TYPE_STORAGE_FULL)
+    }
+
     @Test fun build_methodIsMessage() {
         val req = MediaStatusNotify.build(
             config = stubConfig(), cseq = 5, callId = "abc",

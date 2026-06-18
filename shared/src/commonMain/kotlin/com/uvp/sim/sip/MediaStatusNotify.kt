@@ -21,6 +21,18 @@ object MediaStatusNotify {
     /** 121 = 历史媒体文件发送结束(GB/T §9.5.3 表 22) */
     const val NOTIFY_TYPE_DOWNLOAD_END = 121
 
+    /**
+     * 122 = 录像异常(M5 batch1 §C1).GB/T 28181 §A.2.6.4 NotifyType 编码.
+     * 设备主动通知平台"本地录像出现异常",由 SimulatorEngine.triggerMediaStatusAbnormal 演示触发.
+     */
+    const val NOTIFY_TYPE_RECORDING_ABNORMAL = 122
+
+    /**
+     * 123 = 存储满(M5 batch1 §C1).GB/T 28181 §A.2.6.4 NotifyType 编码.
+     * 设备主动通知平台"存储介质已满",由 SimulatorEngine.triggerMediaStatusAbnormal 演示触发.
+     */
+    const val NOTIFY_TYPE_STORAGE_FULL = 123
+
     fun buildXml(deviceId: String, sn: Int, notifyType: Int = NOTIFY_TYPE_DOWNLOAD_END): String =
         """<?xml version="1.0" encoding="GB2312"?>
 <Notify>
