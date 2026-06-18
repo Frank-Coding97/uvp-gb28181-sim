@@ -191,7 +191,7 @@ private fun MonitoringStage(
                     )
                 }
                 Text(
-                    "实时模拟画面",
+                    "模拟中心",
                     modifier = Modifier.padding(start = 8.dp),
                     color = UvpColor.Text,
                     fontSize = 13.sp,
