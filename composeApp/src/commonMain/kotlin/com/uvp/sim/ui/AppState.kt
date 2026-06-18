@@ -80,7 +80,13 @@ data class AppUiState(
      * - 设置 → 网络子页诊断区显示接口名 / IP
      * - 主屏顶 banner:Unavailable 时显示红 banner 提示老板
      */
-    val networkRuntimeState: NetworkState = NetworkState.Auto
+    val networkRuntimeState: NetworkState = NetworkState.Auto,
+    /**
+     * M5 batch2 §4.15 — SIP Date 校时偏移快照(SimulatorEngine.clockOffset 投影)。
+     * 能力中心「设备校时」tile + ClockSyncScreen 读这个,
+     * 显示平台基准时间 / 偏移 / 原始 Date 头。
+     */
+    val clockOffset: com.uvp.sim.domain.ClockOffset = com.uvp.sim.domain.ClockOffset.Empty
 )
 
 /**

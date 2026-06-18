@@ -163,6 +163,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private val _broadcast = MutableStateFlow(com.uvp.sim.ui.BroadcastState())
     val broadcast: StateFlow<com.uvp.sim.ui.BroadcastState> = _broadcast.asStateFlow()
 
+    /** M5 batch2 §4.15 — 校时偏移快照(engine.clockOffset 投影)。 */
+    private val _clockOffset = MutableStateFlow(com.uvp.sim.domain.ClockOffset.Empty)
+    val clockOffset: StateFlow<com.uvp.sim.domain.ClockOffset> = _clockOffset.asStateFlow()
+
     /**
      * 网络选择控制器(T10)。
      * - attach ApplicationContext(避免泄漏 Activity)
@@ -403,6 +407,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
         engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
         engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
+        engineScope.launch { eng.clockOffset.collect { _clockOffset.value = it } }
         engineScope.launch {
             combine(eng.currentBroadcast, eng.broadcastSpeakerOn) { bc, speakerOn -> bc to speakerOn }
                 .collect { (bc, speakerOn) ->

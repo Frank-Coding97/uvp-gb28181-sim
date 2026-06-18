@@ -135,6 +135,7 @@ class MainActivity : ComponentActivity() {
             val fixedAlarm by viewModel.fixedAlarm.collectAsStateWithLifecycle()
             val broadcast by viewModel.broadcast.collectAsStateWithLifecycle()
             val networkState by viewModel.networkState.collectAsStateWithLifecycle()
+            val clockOffset by viewModel.clockOffset.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -176,6 +177,7 @@ class MainActivity : ComponentActivity() {
                 fixedAlarmTemplate = fixedAlarm,
                 broadcast = broadcast,
                 networkRuntimeState = networkState,
+                clockOffset = clockOffset,
             )
             val actions = object : AppActions {
                 override fun onConnect() {

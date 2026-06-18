@@ -20,6 +20,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,6 +63,7 @@ fun CapabilityScreen(
     var showCatalog by remember { mutableStateOf(false) }
     var showRecording by remember { mutableStateOf(false) }
     var showAlarm by remember { mutableStateOf(false) }
+    var showClockSync by remember { mutableStateOf(false) }
 
     // 主屏长按报警 tile 携带 target → 自动打开报警子页
     androidx.compose.runtime.LaunchedEffect(openAlarmTarget) {
@@ -85,6 +87,10 @@ fun CapabilityScreen(
     }
     if (showAlarm) {
         AlarmManagementScreen(state = state, actions = actions, onBack = { showAlarm = false })
+        return
+    }
+    if (showClockSync) {
+        ClockSyncScreen(state = state, onBack = { showClockSync = false })
         return
     }
 
@@ -150,7 +156,20 @@ fun CapabilityScreen(
                 onClick = { showAlarm = true },
                 modifier = Modifier.weight(1f)
             )
-            Spacer(Modifier.weight(1f))
+            CapabilityTile(
+                icon = Icons.Outlined.Schedule,
+                title = "设备校时",
+                metric = if (state.clockOffset.isSynced) {
+                    formatOffsetMs(state.clockOffset.localOffsetMs() ?: 0L)
+                } else "未校时",
+                status = if (state.clockOffset.isSynced) {
+                    TileStatus.Active("已校时")
+                } else {
+                    TileStatus.Idle("等注册")
+                },
+                onClick = { showClockSync = true },
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }
