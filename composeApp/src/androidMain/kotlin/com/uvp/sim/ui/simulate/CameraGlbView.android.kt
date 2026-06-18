@@ -6,6 +6,7 @@ import android.view.TextureView
 import androidx.compose.foundation.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +39,8 @@ import com.google.android.filament.Renderer
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
 import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceEffect
+import com.uvp.sim.domain.PtzPose
 import com.uvp.sim.ui.UvpColor
 import java.nio.ByteBuffer
 import kotlin.math.PI
@@ -64,6 +67,19 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
     val sceneState = remember { GlbSceneState() }
     val currentState by rememberUpdatedState(state)
     val thumbnailBitmap = remember(context) { loadAssetImageBitmap(context, "ptz_scene_thumbnail.png") }
+
+    // 订阅 pendingEffect:Reboot 触发自检 / HomePosition+PresetRecall+PrecisePoseGoto 触发 easeTo.
+    // 其他 effect(IFrameFlash / SnapshotFlash / ConfigChanged / DeviceUpgrade / FormatSDCard)
+    // 由 SimulateScreen 层订阅(全屏闪/角标/snackbar),consumeEffect() 也由 SimulateScreen 兜底清零.
+    LaunchedEffect(state.pendingEffect) {
+        when (val e = state.pendingEffect) {
+            is DeviceEffect.Reboot -> sceneState.restartSelfTest()
+            is DeviceEffect.HomePositionReturn -> sceneState.easeToPose(e.targetPose)
+            is DeviceEffect.PresetRecall -> sceneState.easeToPose(e.targetPose)
+            is DeviceEffect.PrecisePoseGoto -> sceneState.easeToPose(e.targetPose)
+            else -> {}
+        }
+    }
 
     Box(modifier = modifier) {
         AndroidView(
@@ -93,7 +109,7 @@ actual fun CameraGlbView(state: DeviceControlState, modifier: Modifier) {
     }
 }
 
-private class GlbSceneState {
+internal class GlbSceneState {
     private var modelViewer: ModelViewer? = null
     private var stateProvider: (() -> DeviceControlState)? = null
     private var light: Int = 0
@@ -114,7 +130,15 @@ private class GlbSceneState {
     private var selfTestActive: Boolean = true
     private var selfTestStartNanos: Long = 0L
 
-    var pose by mutableStateOf(PtzPose())
+    /** easeTo 动画: 平台 HomePosition / PresetRecall / PrecisePoseGoto 触发,
+     *  从当前 pose 余弦缓动到 target,期间覆盖平台速度积分,完成后由平台命令接管. */
+    private var easeAnimActive: Boolean = false
+    private var easeAnimStartNanos: Long = 0L
+    private var easeAnimDurationMs: Long = 1200L
+    private var easeAnimFrom: PtzPose = PtzPose(0f, 0f, 1f)
+    private var easeAnimTo: PtzPose = PtzPose(0f, 0f, 1f)
+
+    var pose by mutableStateOf(PtzPose(0f, 0f, 1f))
         private set
 
     private val frameCallback = object : Choreographer.FrameCallback {
@@ -259,6 +283,20 @@ private class GlbSceneState {
             tiltAngle = testTilt
             zoomLevel = 1f
             if (done) selfTestActive = false
+        } else if (easeAnimActive) {
+            if (easeAnimStartNanos == 0L) easeAnimStartNanos = frameTimeNanos
+            val tProg = ((frameTimeNanos - easeAnimStartNanos) / 1e6f) / easeAnimDurationMs.toFloat()
+            if (tProg >= 1f) {
+                panAngle = easeAnimTo.pan
+                tiltAngle = easeAnimTo.tilt
+                zoomLevel = easeAnimTo.zoom
+                easeAnimActive = false
+            } else {
+                val eased = 0.5f - 0.5f * cos(tProg.coerceIn(0f, 1f) * PI.toFloat())
+                panAngle  = easeAnimFrom.pan  + (easeAnimTo.pan  - easeAnimFrom.pan)  * eased
+                tiltAngle = easeAnimFrom.tilt + (easeAnimTo.tilt - easeAnimFrom.tilt) * eased
+                zoomLevel = easeAnimFrom.zoom + (easeAnimTo.zoom - easeAnimFrom.zoom) * eased
+            }
         } else {
             panAngle = (panAngle + s.panSpeed * dt).coerceIn(-180f, 180f)
             tiltAngle = (tiltAngle + s.tiltSpeed * dt).coerceIn(-90f, 90f)
@@ -333,6 +371,26 @@ private class GlbSceneState {
         yawPivot = null
         pitchPivot = null
         lastFrameNanos = 0L
+        easeAnimActive = false
+    }
+
+    /** TeleBoot effect 触发: 重新跑开机自检序列(跟首次进页面动画完全一致). */
+    fun restartSelfTest() {
+        selfTestActive = true
+        selfTestStartNanos = 0L
+        // 互斥: 自检覆盖 easeAnim
+        easeAnimActive = false
+    }
+
+    /** HomePosition / PresetRecall / PrecisePoseGoto effect 触发: 平滑过渡到 target. */
+    fun easeToPose(target: PtzPose, durationMs: Long = 1200L) {
+        // 自检期间忽略(等自检结束再让平台命令接管)
+        if (selfTestActive) return
+        easeAnimFrom = PtzPose(panAngle, tiltAngle, zoomLevel)
+        easeAnimTo = target
+        easeAnimDurationMs = durationMs
+        easeAnimStartNanos = 0L
+        easeAnimActive = true
     }
 
     private fun readAsset(context: android.content.Context, name: String): ByteBuffer {
@@ -454,12 +512,6 @@ private data class PtzPivot(
     val name: String,
     val entity: Int,
     val initialTransform: FloatArray
-)
-
-private data class PtzPose(
-    val pan: Float = 0f,
-    val tilt: Float = 0f,
-    val zoom: Float = 1f
 )
 
 @Composable
