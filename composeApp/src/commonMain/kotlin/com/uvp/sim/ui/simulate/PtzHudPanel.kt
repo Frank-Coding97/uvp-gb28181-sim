@@ -1,14 +1,18 @@
 package com.uvp.sim.ui.simulate
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,14 +21,28 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AcUnit
+import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.WaterDrop
+import androidx.compose.material.icons.outlined.Whatshot
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,63 +51,204 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
-import com.uvp.sim.gb28181.PanDirection
-import com.uvp.sim.gb28181.PtzCommand
-import com.uvp.sim.gb28181.TiltDirection
-import com.uvp.sim.gb28181.ZoomDirection
+import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.ui.UvpColor
 
 /**
- * 平台控制指令面板(2026-06-13 老板验收后产品化重构).
+ * 平台控制 HUD — 4 Tab 分组(2026-06-18 PM 重设计):
+ *   云台 / 状态 / 图像 / 辅助
  *
- * 三层信息架构:
- *   1. 大字态势 — Pan/Tilt/Zoom 当前姿态(主要信息)
- *   2. 命令 chip + hex — 最近一次平台下发(辅助信息)
- *   3. 状态指示灯 — REC/GUARD/ALARM/REBOOT(右侧 chip 行)
+ * - 平台命令到达时自动切到对应 Tab(老板看屏幕就知道平台在做什么)
+ * - 全中文化(REC → 录像 / GUARD → 布防 / Pan → 水平 ...)
+ * - 设备 UI 严格只读(spec AC2),所有 chip / 灯 / 开关都是状态展示
  *
- * 抛弃:8 字节拆解大表(过度工程师化,产品场景下没人需要看 B0=A5 帧头).
+ * 命令到 Tab 映射:
+ *   云台: PTZCmd(Motion+Preset) / PTZPreciseCtrl / HomePosition
+ *   状态: RecordCmd / GuardCmd / AlarmCmd / TeleBoot
+ *   图像: IFameCmd / SnapShotCmd / DragZoomIn-Out / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack
+ *   辅助: PTZCmd(Aux on/off,byte3=0x89/0x8A)
  */
+enum class HudTab(val title: String) {
+    Ptz("云台"),
+    Status("状态"),
+    Image("图像"),
+    Aux("辅助");
+
+    companion object {
+        /** 根据 lastCommand 类型 + rawHex 标记决定该切到哪个 Tab,null 表示不切. */
+        fun fromCommand(cmd: LastDeviceCommand?): HudTab? {
+            if (cmd == null) return null
+            return when (cmd.type) {
+                "PTZCmd" -> {
+                    // 辅助控制的 lastCommand.rawHex 由 dispatcher 写中文(如"雨刷 ON")
+                    val raw = cmd.rawHex
+                    val isAux = raw.startsWith("雨刷") || raw.startsWith("红外灯") ||
+                        raw.startsWith("加热") || raw.startsWith("除雾") ||
+                        raw.startsWith("制冷") || raw.startsWith("Aux")
+                    if (isAux) Aux else Ptz
+                }
+                "PTZPreciseCtrl" -> Ptz
+                "RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot" -> Status
+                "IFameCmd", "SnapShotCmd", "DeviceConfig",
+                "DeviceUpgrade", "FormatSDCard", "TargetTrack" -> Image
+                else -> null
+            }
+        }
+    }
+}
+
 @Composable
 fun PtzHudPanel(
     state: DeviceControlState,
     modifier: Modifier = Modifier,
 ) {
+    var selectedTab by remember { mutableStateOf(HudTab.Ptz) }
+
+    // 各 Tab 是否有"未读"红点提示(收到命令但当前没在该 Tab)
+    val tabBadges = remember { mutableStateOf<Set<HudTab>>(emptySet()) }
+
+    // 平台命令到达 → 自动切到对应 Tab + 清掉该 Tab 的红点
+    LaunchedEffect(state.lastCommand?.timestampMs) {
+        val target = HudTab.fromCommand(state.lastCommand) ?: return@LaunchedEffect
+        if (target != selectedTab) {
+            // 给其他非目标 Tab 留红点(不清掉),目标 Tab 切过去就消红点
+            tabBadges.value = tabBadges.value + target
+            selectedTab = target
+        }
+    }
+    // 用户切到某 Tab → 清掉该 Tab 的红点
+    LaunchedEffect(selectedTab) {
+        tabBadges.value = tabBadges.value - selectedTab
+    }
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 154.dp)
+            .heightIn(min = 200.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(UvpColor.Surface)
             .border(1.dp, UvpColor.BorderLight, RoundedCornerShape(8.dp))
             .padding(horizontal = 12.dp, vertical = 11.dp)
     ) {
+        // 标题
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Column {
-                Text(
-                    "平台控制",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = UvpColor.Text
-                )
-                Text(
-                    "GB/T 28181 DeviceControl",
-                    fontSize = 9.sp,
-                    color = UvpColor.TextHint,
-                    fontWeight = FontWeight.Medium
+            Text(
+                "平台控制",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = UvpColor.Text
+            )
+            Spacer(Modifier.weight(1f))
+            // 当前 tab 提示
+            Text(
+                "平台触发自动切换",
+                fontSize = 9.sp,
+                color = UvpColor.TextHint,
+                fontWeight = FontWeight.Medium
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        // Tab 行
+        TabRow(
+            selected = selectedTab,
+            onSelect = { selectedTab = it },
+            badges = tabBadges.value,
+        )
+        Spacer(Modifier.height(10.dp))
+        // Tab 内容
+        AnimatedContent(
+            targetState = selectedTab,
+            transitionSpec = {
+                fadeIn(animationSpec = tween(220)) togetherWith
+                    fadeOut(animationSpec = tween(180))
+            },
+            label = "hud-tab-content"
+        ) { tab ->
+            when (tab) {
+                HudTab.Ptz -> PtzTabContent(state)
+                HudTab.Status -> StatusTabContent(state)
+                HudTab.Image -> ImageTabContent(state)
+                HudTab.Aux -> AuxTabContent(state)
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Tab 行
+// ─────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun TabRow(
+    selected: HudTab,
+    onSelect: (HudTab) -> Unit,
+    badges: Set<HudTab>,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.Bg)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        for (tab in HudTab.entries) {
+            TabItem(
+                tab = tab,
+                selected = tab == selected,
+                hasBadge = tab in badges,
+                onClick = { onSelect(tab) },
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TabItem(
+    tab: HudTab,
+    selected: Boolean,
+    hasBadge: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val bg = if (selected) UvpColor.Surface else Color.Transparent
+    val fg = if (selected) UvpColor.Primary else UvpColor.TextSecondary
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(bg)
+            .clickable { onClick() }
+            .padding(vertical = 6.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                tab.title,
+                color = fg,
+                fontSize = 12.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+            )
+            if (hasBadge) {
+                Spacer(Modifier.width(4.dp))
+                Box(
+                    Modifier
+                        .size(5.dp)
+                        .clip(RoundedCornerShape(99.dp))
+                        .background(UvpColor.Danger)
                 )
             }
-            Spacer(Modifier.weight(1f))
-            StatusDot("REC", state.isRecording, UvpColor.Danger)
-            Spacer(Modifier.width(5.dp))
-            StatusDot("GUARD", state.isGuarded, UvpColor.Success)
-            Spacer(Modifier.width(5.dp))
-            StatusDot("ALARM", state.isAlarming, UvpColor.Warning)
-            Spacer(Modifier.width(5.dp))
-            StatusDot("REBOOT", state.isRebooting, UvpColor.Info)
         }
+    }
+}
 
-        Spacer(Modifier.height(10.dp))
+// ─────────────────────────────────────────────────────────────────────
+// 云台 Tab
+// ─────────────────────────────────────────────────────────────────────
 
+@Composable
+private fun PtzTabContent(state: DeviceControlState) {
+    Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -99,28 +258,253 @@ fun PtzHudPanel(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            PoseStat("Pan", state.panAngle, "°", isActive = state.panSpeed != 0f)
+            PoseStat("水平", state.panAngle, "°", isActive = state.panSpeed != 0f)
             PoseStatDivider()
-            PoseStat("Tilt", state.tiltAngle, "°", isActive = state.tiltSpeed != 0f)
+            PoseStat("俯仰", state.tiltAngle, "°", isActive = state.tiltSpeed != 0f)
             PoseStatDivider()
-            PoseStat("Zoom", state.zoomLevel, "×", isActive = state.zoomSpeed != 0f)
+            PoseStat("变焦", state.zoomLevel, "×", isActive = state.zoomSpeed != 0f)
         }
-
         Spacer(Modifier.height(10.dp))
-
-        PresetChipRow(
-            presets = state.presets,
-            currentIndex = state.currentPresetIndex,
-        )
-
-        Spacer(Modifier.height(10.dp))
-
-        when (val cmd = state.lastCommand) {
-            null -> EmptyRow()
-            else -> CommandRow(cmd)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("预置位", fontSize = 10.sp, color = UvpColor.TextHint, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.width(8.dp))
+            PresetChipRow(presets = state.presets, currentIndex = state.currentPresetIndex)
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// 状态 Tab
+// ─────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun StatusTabContent(state: DeviceControlState) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BigStatusLamp(
+                label = "录像",
+                active = state.isRecording,
+                activeColor = UvpColor.Danger,
+                modifier = Modifier.weight(1f),
+            )
+            BigStatusLamp(
+                label = "布防",
+                active = state.isGuarded,
+                activeColor = UvpColor.Success,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            BigStatusLamp(
+                label = "报警",
+                active = state.isAlarming,
+                activeColor = UvpColor.Warning,
+                modifier = Modifier.weight(1f),
+            )
+            BigStatusLamp(
+                label = "重启",
+                active = state.isRebooting,
+                activeColor = UvpColor.Info,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BigStatusLamp(
+    label: String,
+    active: Boolean,
+    activeColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    val pulse by animateFloatAsState(
+        targetValue = if (active) 1f else 0f,
+        animationSpec = tween(durationMillis = 400),
+        label = "lamp-pulse-$label",
+    )
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) activeColor.copy(alpha = 0.10f) else UvpColor.Bg)
+            .border(
+                1.dp,
+                if (active) activeColor.copy(alpha = 0.35f) else UvpColor.BorderLight,
+                RoundedCornerShape(8.dp)
+            )
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(12.dp)
+                .clip(RoundedCornerShape(99.dp))
+                .background(if (active) activeColor else UvpColor.Border)
+                .graphicsLayer { scaleX = 1f + pulse * 0.1f; scaleY = 1f + pulse * 0.1f }
+        )
+        Spacer(Modifier.width(8.dp))
+        Column {
+            Text(
+                label,
+                fontSize = 11.sp,
+                color = if (active) activeColor else UvpColor.TextSecondary,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                if (active) "已开启" else "未开启",
+                fontSize = 9.sp,
+                color = if (active) activeColor.copy(alpha = 0.85f) else UvpColor.TextHint,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 图像 Tab — 一次性事件 / 配置变更
+// ─────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun ImageTabContent(state: DeviceControlState) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // 拉框聚焦
+        val rect = state.dragZoomRect
+        ImageEventRow(
+            label = "拉框聚焦",
+            value = if (rect != null) "(${rect.midX}, ${rect.midY})  ${rect.lengthX}×${rect.lengthY}" else "—",
+            highlight = rect != null,
+        )
+        // 最近一条相关命令
+        val cmd = state.lastCommand
+        val cmdLabel = when (cmd?.type) {
+            "IFameCmd" -> "强制关键帧" to "已下发"
+            "SnapShotCmd" -> "抓拍" to "已下发"
+            "DeviceConfig" -> "设备配置" to (cmd.rawHex.take(20))
+            "DeviceUpgrade" -> "设备升级" to ("v${cmd.rawHex}")
+            "FormatSDCard" -> "格式化 SD" to (cmd.rawHex)
+            "TargetTrack" -> "目标跟踪" to (cmd.rawHex)
+            else -> null
+        }
+        if (cmdLabel != null) {
+            ImageEventRow(
+                label = cmdLabel.first,
+                value = cmdLabel.second,
+                highlight = true,
+            )
+        } else {
+            ImageEventRow(
+                label = "最近命令",
+                value = "暂无图像类指令",
+                highlight = false,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ImageEventRow(
+    label: String,
+    value: String,
+    highlight: Boolean,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (highlight) UvpColor.PrimaryLight else UvpColor.Bg)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            fontSize = 11.sp,
+            color = if (highlight) UvpColor.Primary else UvpColor.TextSecondary,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.weight(1f))
+        Text(
+            value,
+            fontSize = 11.sp,
+            color = if (highlight) UvpColor.PrimaryDark else UvpColor.TextHint,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 辅助 Tab — 5 个开关图标
+// ─────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun AuxTabContent(state: DeviceControlState) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        for (func in AuxFunction.entries) {
+            val on = state.auxStates[func.index] == true
+            AuxToggle(
+                func = func,
+                on = on,
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AuxToggle(
+    func: AuxFunction,
+    on: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val tint = if (on) UvpColor.Primary else UvpColor.TextHint
+    val bg = if (on) UvpColor.PrimaryLight else UvpColor.Bg
+    val border = if (on) UvpColor.Primary.copy(alpha = 0.4f) else UvpColor.BorderLight
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .border(1.dp, border, RoundedCornerShape(8.dp))
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            auxIcon(func),
+            contentDescription = func.displayName,
+            tint = tint,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            func.displayName,
+            fontSize = 10.sp,
+            color = tint,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            if (on) "ON" else "OFF",
+            fontSize = 8.sp,
+            color = if (on) UvpColor.PrimaryDark else UvpColor.TextHint,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+private fun auxIcon(func: AuxFunction): ImageVector = when (func) {
+    AuxFunction.Wiper -> Icons.Outlined.WaterDrop
+    AuxFunction.InfraredLight -> Icons.Outlined.Visibility
+    AuxFunction.Heater -> Icons.Outlined.LocalFireDepartment
+    AuxFunction.Defog -> Icons.Outlined.CleaningServices
+    AuxFunction.Cooler -> Icons.Outlined.AcUnit
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// 复用组件:PoseStat / 预置位 chip
+// ─────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun PoseStat(
@@ -180,7 +564,11 @@ private fun PoseStatDivider() {
 
 private fun formatPose(value: Float, unit: String): String {
     return if (unit == "×") {
-        "%.1f".format(value)
+        // KMP 友好的 "%.1f"
+        val rounded = kotlin.math.round(value * 10f).toInt()
+        val whole = rounded / 10
+        val frac = kotlin.math.abs(rounded % 10)
+        "$whole.$frac"
     } else {
         val rounded = kotlin.math.round(value).toInt()
         if (rounded > 0) "+$rounded" else "$rounded"
@@ -188,167 +576,7 @@ private fun formatPose(value: Float, unit: String): String {
 }
 
 @Composable
-private fun StatusDot(label: String, active: Boolean, activeColor: Color) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(999.dp))
-            .background(if (active) activeColor.copy(alpha = 0.12f) else UvpColor.BorderLight)
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier
-                .size(7.dp)
-                .clip(RoundedCornerShape(4.dp))
-                .background(if (active) activeColor else UvpColor.Border)
-        )
-        Spacer(Modifier.width(4.dp))
-        Text(
-            label,
-            fontSize = 8.sp,
-            color = if (active) activeColor else UvpColor.TextHint,
-            fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
-            letterSpacing = 0.2.sp
-        )
-    }
-}
-
-@Composable
-private fun EmptyRow() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(UvpColor.CodeBg)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            Modifier
-                .size(6.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(UvpColor.Border)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            "暂无命令记录",
-            fontSize = 12.sp,
-            color = UvpColor.TextHint
-        )
-    }
-}
-
-@Composable
-private fun CommandRow(cmd: LastDeviceCommand) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(UvpColor.CodeBg)
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TypeChip(cmd.type)
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = decodedSummary(cmd),
-                fontSize = 12.sp,
-                color = UvpColor.Text,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-        }
-        if (cmd.type == "PTZCmd" && cmd.rawHex.length == 16) {
-            Spacer(Modifier.height(5.dp))
-            Text(
-                cmd.rawHex.chunked(2).joinToString(" "),
-                fontSize = 10.sp,
-                color = UvpColor.TextHint,
-                fontFamily = FontFamily.Monospace,
-                letterSpacing = 0.4.sp,
-                maxLines = 1
-            )
-        }
-    }
-}
-
-private fun decodedSummary(cmd: LastDeviceCommand): String {
-    val ptz = cmd.ptz
-    if (cmd.type == "PTZCmd" && ptz != null) {
-        return ptzArrowAndSpeeds(ptz)
-    }
-    return "${cmd.type}: ${cmd.rawHex.take(30)}"
-}
-
-private fun ptzArrowAndSpeeds(p: PtzCommand): String {
-    val arrow = buildString {
-        append(when (p.panDirection) {
-            PanDirection.LEFT -> "←"
-            PanDirection.RIGHT -> "→"
-            PanDirection.NONE -> ""
-        })
-        append(when (p.tiltDirection) {
-            TiltDirection.UP -> "↑"
-            TiltDirection.DOWN -> "↓"
-            TiltDirection.NONE -> ""
-        })
-        if (this.isEmpty()) {
-            append(when (p.zoomDirection) {
-                ZoomDirection.IN -> "⊕"
-                ZoomDirection.OUT -> "⊖"
-                ZoomDirection.NONE -> "■停"
-            })
-        }
-    }
-    val speeds = "Pan ${p.panSpeed} · Tilt ${p.tiltSpeed} · Zoom ${p.zoomSpeed}"
-    return "$arrow  $speeds"
-}
-
-@Composable
-private fun TypeChip(type: String) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
-            .background(typeChipBg(type))
-            .padding(horizontal = 7.dp, vertical = 2.dp)
-    ) {
-        Text(
-            type,
-            fontSize = 10.sp,
-            color = Color.White,
-            fontWeight = FontWeight.SemiBold,
-            letterSpacing = 0.3.sp
-        )
-    }
-}
-
-private fun typeChipBg(type: String): Color = when (type) {
-    "PTZCmd" -> UvpColor.Primary
-    "IFameCmd" -> UvpColor.Info
-    "TeleBoot" -> UvpColor.Warning
-    "RecordCmd" -> UvpColor.Danger
-    "GuardCmd" -> UvpColor.Success
-    "AlarmCmd" -> UvpColor.Danger
-    else -> UvpColor.TextSecondary
-}
-
-/**
- * 预置位 chip 行 — spec Q2 决议:PtzHudPanel 第三层,8 chip 横向布局.
- *
- * 三态视觉:
- *   - 未设(presets[idx] 为空)→ 灰底灰字,Normal weight
- *   - 已设 → 浅蓝底蓝字,SemiBold
- *   - 当前调用(currentIndex == idx)→ 实心蓝底白字 + 描边 + 1.05f scale bounce
- *
- * 设备只读:chip 不响应点击,纯展示.
- */
-@Composable
-private fun PresetChipRow(
-    presets: Map<Int, PtzPose>,
-    currentIndex: Int?,
-) {
+private fun PresetChipRow(presets: Map<Int, PtzPose>, currentIndex: Int?) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -364,7 +592,7 @@ private fun PresetChipRow(
 }
 
 @Composable
-private fun RowScope.PresetChip(
+private fun androidx.compose.foundation.layout.RowScope.PresetChip(
     idx: Int,
     isSet: Boolean,
     isCurrent: Boolean,
@@ -383,16 +611,13 @@ private fun RowScope.PresetChip(
     val scale by animateFloatAsState(
         targetScale,
         animationSpec = tween(durationMillis = if (isCurrent) 200 else 300),
-        label = "preset-chip-scale-$idx"
+        label = "preset-scale-$idx"
     )
     Box(
         modifier = Modifier
             .weight(1f)
             .height(28.dp)
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(RoundedCornerShape(6.dp))
             .background(bg)
             .let { m ->
