@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -124,7 +123,6 @@ fun PtzHudPanel(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 200.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(UvpColor.Surface)
             .border(1.dp, UvpColor.BorderLight, RoundedCornerShape(8.dp))
@@ -155,20 +153,27 @@ fun PtzHudPanel(
             badges = tabBadges.value,
         )
         Spacer(Modifier.height(10.dp))
-        // Tab 内容
-        AnimatedContent(
-            targetState = selectedTab,
-            transitionSpec = {
-                fadeIn(animationSpec = tween(220)) togetherWith
-                    fadeOut(animationSpec = tween(180))
-            },
-            label = "hud-tab-content"
-        ) { tab ->
-            when (tab) {
-                HudTab.Ptz -> PtzTabContent(state)
-                HudTab.Status -> StatusTabContent(state)
-                HudTab.Image -> ImageTabContent(state)
-                HudTab.Aux -> AuxTabContent(state)
+        // Tab 内容 — 固定高度避免不同 tab 切换时整体面板高度抖动(老板 06-18 反馈)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(160.dp),
+            contentAlignment = Alignment.TopStart,
+        ) {
+            AnimatedContent(
+                targetState = selectedTab,
+                transitionSpec = {
+                    fadeIn(animationSpec = tween(220)) togetherWith
+                        fadeOut(animationSpec = tween(180))
+                },
+                label = "hud-tab-content"
+            ) { tab ->
+                when (tab) {
+                    HudTab.Ptz -> PtzTabContent(state)
+                    HudTab.Status -> StatusTabContent(state)
+                    HudTab.Image -> ImageTabContent(state)
+                    HudTab.Aux -> AuxTabContent(state)
+                }
             }
         }
     }
