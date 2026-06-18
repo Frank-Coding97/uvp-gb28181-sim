@@ -1,20 +1,27 @@
 package com.uvp.sim.ui.simulate
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CenterFocusWeak
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +39,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceEffect
+import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
 import kotlinx.coroutines.delay
@@ -51,25 +60,84 @@ import kotlinx.coroutines.delay
  * 时补上(留给 T16 收尾).
  */
 @Composable
-fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
+fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
     val deviceControl = state.deviceControl
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(UvpColor.Bg)
-            .padding(horizontal = 12.dp, vertical = 10.dp)
-    ) {
-        MonitoringStage(
-            state = deviceControl,
+
+    // SnapshotFlash 全屏快门白光
+    val snapshotFlashAlpha = remember { Animatable(0f) }
+    // IFrameFlash 角标
+    var iframeChipVisible by remember { mutableStateOf(false) }
+    // ConfigChanged / DeviceUpgrade / FormatSDCard 三类 snackbar
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // 5 个 effect 订阅(Reboot / HomePosition / PresetRecall / PrecisePoseGoto 由 CameraGlbView 内部消费)
+    LaunchedEffect(deviceControl.pendingEffect) {
+        when (val e = deviceControl.pendingEffect) {
+            is DeviceEffect.SnapshotFlash -> {
+                snapshotFlashAlpha.snapTo(0.85f)
+                delay(80)
+                snapshotFlashAlpha.animateTo(0f, animationSpec = tween(80))
+            }
+            is DeviceEffect.IFrameFlash -> {
+                iframeChipVisible = true
+                delay(700)  // 入 150 + 维持 250 + 出 300
+                iframeChipVisible = false
+            }
+            is DeviceEffect.ConfigChanged -> {
+                snackbarHostState.showSnackbar("配置已更新: ${e.changedFields.joinToString(", ")}")
+            }
+            is DeviceEffect.DeviceUpgradeRequested -> {
+                snackbarHostState.showSnackbar("收到设备升级请求(模拟): v${e.firmware}")
+            }
+            is DeviceEffect.FormatSDCardRequested -> {
+                snackbarHostState.showSnackbar("格式化 SD 卡(模拟): card ${e.cardIndex}")
+            }
+            else -> { /* 余下交给 CameraGlbView 处理 */ }
+        }
+        if (deviceControl.pendingEffect != null) {
+            // 给 CameraGlbView LaunchedEffect 一帧消费时间,然后兜底清零
+            delay(50)
+            actions.onConsumeDeviceEffect()
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        )
-        PtzHudPanel(
-            state = deviceControl,
+                .fillMaxSize()
+                .background(UvpColor.Bg)
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            MonitoringStage(
+                state = deviceControl,
+                iframeChipVisible = iframeChipVisible,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            )
+            PtzHudPanel(
+                state = deviceControl,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp)
+            )
+        }
+
+        // 全屏快门白光覆盖层(在 Column 之上,SnackbarHost 之下)
+        if (snapshotFlashAlpha.value > 0.001f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = snapshotFlashAlpha.value))
+            )
+        }
+
+        // Snackbar host(浮在最上层)
+        SnackbarHost(
+            hostState = snackbarHostState,
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 10.dp)
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp)
         )
     }
 }
@@ -77,6 +145,7 @@ fun SimulateScreen(state: AppUiState, modifier: Modifier = Modifier) {
 @Composable
 private fun MonitoringStage(
     state: DeviceControlState,
+    iframeChipVisible: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -142,6 +211,44 @@ private fun MonitoringStage(
             CameraGlbView(
                 state = state,
                 modifier = Modifier.fillMaxSize()
+            )
+
+            // IFameCmd 关键帧角标(右上角)— DeviceEffect.IFrameFlash 触发,250ms 维持
+            if (iframeChipVisible) {
+                IFrameChip(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(10.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IFrameChip(modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(6.dp),
+        color = UvpColor.Info.copy(alpha = 0.95f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, UvpColor.Info)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Outlined.CenterFocusWeak,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(13.dp)
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "I-FRAME",
+                color = Color.White,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
             )
         }
     }

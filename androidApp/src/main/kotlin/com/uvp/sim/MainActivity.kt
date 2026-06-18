@@ -271,6 +271,9 @@ class MainActivity : ComponentActivity() {
                     )
                     viewModel.applyNetworkPreference(preference)
                 }
+                override fun onConsumeDeviceEffect() {
+                    viewModel.consumeDeviceEffect()
+                }
             }
             // Rebuild encoder/streamer whenever video profile bumps.
             LaunchedEffect(videoVersion) {

@@ -199,6 +199,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** UI 层消费完 DeviceEffect 后兜底清零(SimulateScreen LaunchedEffect 触发). */
+    fun consumeDeviceEffect() {
+        engine?.consumeEffect()
+    }
+
     init {
         // Load persisted config on cold start; bump videoConfigVersion so the
         // Activity rebuilds streamers with the restored encoder params.

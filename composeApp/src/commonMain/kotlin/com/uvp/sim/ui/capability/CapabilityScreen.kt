@@ -79,7 +79,7 @@ fun CapabilityScreen(
         return
     }
     if (showSimulate) {
-        SimulateSubScreen(state = state, onBack = { showSimulate = false })
+        SimulateSubScreen(state = state, actions = actions, onBack = { showSimulate = false })
         return
     }
     if (showAlarm) {
@@ -236,7 +236,7 @@ private fun CapabilityTile(
 }
 
 @Composable
-private fun SimulateSubScreen(state: AppUiState, onBack: () -> Unit) {
+private fun SimulateSubScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -266,6 +266,6 @@ private fun SimulateSubScreen(state: AppUiState, onBack: () -> Unit) {
                 )
             }
         }
-        SimulateScreen(state = state, modifier = Modifier.weight(1f))
+        SimulateScreen(state = state, actions = actions, modifier = Modifier.weight(1f))
     }
 }

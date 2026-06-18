@@ -231,6 +231,13 @@ interface AppActions {
      * iOS / JVM: no-op(子页入口已灰显拦截,这里兜底)
      */
     fun onNetworkPreferenceChange(preference: NetworkPreference) {}
+
+    /**
+     * UI 层消费完 [com.uvp.sim.domain.DeviceEffect] 后调用,
+     * 把 SimulatorEngine 的 pendingEffect 置 null 防止重复触发。
+     * SimulateScreen 在 LaunchedEffect(pendingEffect) 处理完动画/snackbar 后兜底调用。
+     */
+    fun onConsumeDeviceEffect() {}
 }
 
 enum class AppTab(val label: String) {
