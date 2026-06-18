@@ -1,7 +1,10 @@
 package com.uvp.sim.ui.simulate
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -33,13 +36,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.DeviceEffect
+import com.uvp.sim.domain.DragZoomRect
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
@@ -213,6 +220,18 @@ private fun MonitoringStage(
                 modifier = Modifier.fillMaxSize()
             )
 
+            // GuardCmd 力场罩(径向渐变光圈 + 边缘描边)— state.isGuarded 切换时 600ms 淡入/淡出
+            GuardOverlay(
+                isGuarded = state.isGuarded,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // DragZoom 线框可视化(平台拉框聚焦)— state.dragZoomRect 写入时 200ms 入 / 1.4× 放大 / 600ms 淡出
+            DragZoomOverlay(
+                rect = state.dragZoomRect,
+                modifier = Modifier.fillMaxSize()
+            )
+
             // IFameCmd 关键帧角标(右上角)— DeviceEffect.IFrameFlash 触发,250ms 维持
             if (iframeChipVisible) {
                 IFrameChip(
@@ -222,6 +241,93 @@ private fun MonitoringStage(
                 )
             }
         }
+    }
+}
+
+/**
+ * 布防力场罩 — `state.isGuarded` 为 true 时叠加径向渐变绿光圈 + 边缘描边.
+ * 600ms 淡入,撤防 600ms 淡出. 不抢点击事件(纯绘制层).
+ */
+@Composable
+private fun GuardOverlay(isGuarded: Boolean, modifier: Modifier = Modifier) {
+    val alpha by animateFloatAsState(
+        targetValue = if (isGuarded) 1f else 0f,
+        animationSpec = tween(durationMillis = 600),
+        label = "guard-alpha"
+    )
+    if (alpha < 0.01f) return
+    Canvas(modifier = modifier) {
+        val maxR = size.minDimension * 0.6f
+        // 径向渐变(中心透明 → 中间浅绿光晕 → 边缘透明)
+        drawCircle(
+            brush = Brush.radialGradient(
+                colors = listOf(
+                    Color.Transparent,
+                    UvpColor.Success.copy(alpha = 0.18f * alpha),
+                    UvpColor.Success.copy(alpha = 0.32f * alpha),
+                    Color.Transparent,
+                ),
+                center = center,
+                radius = maxR,
+            ),
+            center = center,
+            radius = maxR,
+        )
+        // 边缘绿色描边(整个 3D 区四周)
+        drawRect(
+            color = UvpColor.Success.copy(alpha = 0.5f * alpha),
+            topLeft = Offset.Zero,
+            size = size,
+            style = Stroke(width = 2.dp.toPx()),
+        )
+    }
+}
+
+/**
+ * DragZoom 线框可视化 — `state.dragZoomRect` 写入时画青色矩形 → 缓动放大 1.4× → 淡出.
+ *
+ * GB28181 §F DragZoom 坐标系: midX/midY/lengthX/lengthY 在 0-1000 归一化空间.
+ * 映射到 3D 区像素时按 size.width/1000 缩放.
+ */
+@Composable
+private fun DragZoomOverlay(rect: DragZoomRect?, modifier: Modifier = Modifier) {
+    if (rect == null) return
+    var alpha by remember(rect) { mutableStateOf(0f) }
+    var scale by remember(rect) { mutableStateOf(1f) }
+    LaunchedEffect(rect) {
+        // 200ms 入(0→1)
+        val steps = 12
+        repeat(steps) { i ->
+            alpha = (i + 1).toFloat() / steps
+            delay(200L / steps)
+        }
+        // 1.5s 维持 + 1s 缓动放大到 1.4×
+        val growSteps = 30
+        repeat(growSteps) { i ->
+            val p = (i + 1).toFloat() / growSteps
+            scale = 1f + 0.4f * (0.5f - 0.5f * kotlin.math.cos(p * kotlin.math.PI.toFloat()))
+            delay(1000L / growSteps)
+        }
+        // 600ms 淡出
+        val fadeSteps = 18
+        repeat(fadeSteps) { i ->
+            alpha = 1f - (i + 1).toFloat() / fadeSteps
+            delay(600L / fadeSteps)
+        }
+    }
+    Canvas(modifier = modifier) {
+        val sx = size.width / 1000f
+        val sy = size.height / 1000f
+        val w = (rect.lengthX * sx) * scale
+        val h = (rect.lengthY * sy) * scale
+        val cx = rect.midX * sx
+        val cy = rect.midY * sy
+        drawRect(
+            color = UvpColor.Info.copy(alpha = alpha),
+            topLeft = Offset(cx - w / 2f, cy - h / 2f),
+            size = Size(w, h),
+            style = Stroke(width = 2.dp.toPx()),
+        )
     }
 }
 
@@ -258,7 +364,7 @@ private fun IFrameChip(modifier: Modifier = Modifier) {
  * 顶部状态短句 — "现在平台/设备到底在干什么"维度的文案,
  * 跟底部 StatusDot(REC/GUARD/ALARM/REBOOT 持续开关状态) 不重叠.
  *
- * 优先级: 开机自检中 > PTZ 运动中 > 刚收到平台命令 (3s 内) > 等待中.
+ * 优先级: 远程重启中 > 开机自检中 > 预置位调用 > PTZ 运动中 > 刚收到平台命令 (3s 内) > 等待中.
  */
 @Composable
 private fun StatusHeadline(state: DeviceControlState) {
@@ -267,9 +373,16 @@ private fun StatusHeadline(state: DeviceControlState) {
     val selfTesting = (nowMs - mountMs) in 0..6_500
     val cmd = state.lastCommand
     val recentCmd = cmd != null && (nowMs - cmd.timestampMs) in 0..3_000
+    val effect = state.pendingEffect
 
     val (text, color, dotColor) = when {
+        effect is DeviceEffect.Reboot -> Triple("远程重启中", UvpColor.Primary, UvpColor.Primary)
         selfTesting -> Triple("开机自检中", UvpColor.Primary, UvpColor.Primary)
+        effect is DeviceEffect.PresetRecall ->
+            Triple("预置位 P${effect.index} 调用中", UvpColor.Primary, UvpColor.Primary)
+        effect is DeviceEffect.PrecisePoseGoto ->
+            Triple("精确控制 → ${formatSignedAngle(effect.targetPose.pan)} / ${formatSignedAngle(effect.targetPose.tilt)}",
+                UvpColor.Primary, UvpColor.Primary)
         hasMotion(state) -> Triple("PTZ 运动中", UvpColor.Primary, UvpColor.Primary)
         recentCmd -> Triple("刚收到 ${cmd!!.type}", UvpColor.SuccessText, UvpColor.Success)
         else -> Triple("等待平台下发控制指令", UvpColor.TextHint, UvpColor.Border)
@@ -290,6 +403,11 @@ private fun StatusHeadline(state: DeviceControlState) {
             fontWeight = FontWeight.SemiBold
         )
     }
+}
+
+private fun formatSignedAngle(value: Float): String {
+    val rounded = kotlin.math.round(value).toInt()
+    return if (rounded > 0) "+$rounded°" else "$rounded°"
 }
 
 /**
