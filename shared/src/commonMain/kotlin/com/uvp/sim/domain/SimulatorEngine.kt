@@ -106,6 +106,14 @@ class SimulatorEngine(
     private val _deviceControlState = MutableStateFlow(DeviceControlState())
     val deviceControlState: StateFlow<DeviceControlState> = _deviceControlState.asStateFlow()
 
+    /**
+     * UI 层消费 [DeviceEffect] 后调用以清零 `pendingEffect`,防止重复触发。
+     * Compose 层 `LaunchedEffect(pendingEffect)` 处理完动画/snackbar 后调本接口。
+     */
+    fun consumeEffect() {
+        _deviceControlState.update { it.copy(pendingEffect = null) }
+    }
+
     private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
         DeviceControlDispatcher(
             state = _deviceControlState,
