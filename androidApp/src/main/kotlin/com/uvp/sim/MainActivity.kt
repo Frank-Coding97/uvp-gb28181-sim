@@ -135,6 +135,7 @@ class MainActivity : ComponentActivity() {
             val fixedAlarm by viewModel.fixedAlarm.collectAsStateWithLifecycle()
             val broadcast by viewModel.broadcast.collectAsStateWithLifecycle()
             val networkState by viewModel.networkState.collectAsStateWithLifecycle()
+            val clockOffset by viewModel.clockOffset.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -176,6 +177,7 @@ class MainActivity : ComponentActivity() {
                 fixedAlarmTemplate = fixedAlarm,
                 broadcast = broadcast,
                 networkRuntimeState = networkState,
+                clockOffset = clockOffset,
             )
             val actions = object : AppActions {
                 override fun onConnect() {
@@ -222,6 +224,13 @@ class MainActivity : ComponentActivity() {
                     return if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
                         result.message
                     } else null
+                }
+                override fun onToggleChannelStatus(channelId: String, online: Boolean) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.User,
+                        "用户切换通道状态 ${channelId} → ${if (online) "ON" else "OFF"}"
+                    )
+                    viewModel.toggleChannelStatus(channelId, online)
                 }
                 override fun onAlarmFire(payload: com.uvp.sim.gb28181.AlarmPayload) {
                     SystemLogger.emit(
