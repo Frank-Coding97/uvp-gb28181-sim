@@ -506,9 +506,14 @@ class DeviceControlDispatcher(
         actions.startUpgrade(sessionId, firmware, fileUrl)
     }
 
-    /** A.2.3.1.13 FormatSDCard — 格式化 SD 卡(选做最小集). 手机无 SD 卡概念,只为协议合规. */
+    /** A.2.3.1.13 FormatSDCard — 格式化 SD 卡(选做最小集). 手机无 SD 卡概念,只为协议合规.
+     *
+     *  M5 batch3 §4.13 字段补全:GB-2022 标准是 `<FormatSDCard>1</FormatSDCard><DiskNum>N</DiskNum>`,
+     *  优先读 `<DiskNum>`(真实卡号),fallback 读 `<FormatSDCard>` 的整数(老格式兼容)。
+     */
     private fun handleFormatSDCard(xml: String) {
-        val card = ManscdpParser.tagValue(xml, "FormatSDCard")?.toIntOrNull() ?: 0
+        val diskNum = ManscdpParser.tagValue(xml, "DiskNum")?.toIntOrNull()
+        val card = diskNum ?: ManscdpParser.tagValue(xml, "FormatSDCard")?.toIntOrNull() ?: 0
         state.update {
             it.copy(
                 pendingEffect = DeviceEffect.FormatSDCardRequested(card),
@@ -517,11 +522,29 @@ class DeviceControlDispatcher(
         }
     }
 
-    /** A.2.3.1.14 TargetTrack — 目标跟踪(本轮不做). 鱼眼/全景球机专用,白名单识别 200 OK. */
+    /** A.2.3.1.14 TargetTrack — 目标跟踪. 鱼眼/全景球机专用,sim 白名单识别 mode 不做业务.
+     *
+     *  M5 batch3 §4.14 字段补全:GB-2022 标准是 `<Mode>Auto|Manual|Stop</Mode>` + 可选
+     *  `<ObjectID>...</ObjectID>` + `<Speed>1-255</Speed>`。老格式兼容 `<TargetTrack>Auto</TargetTrack>`。
+     *  mode 不在白名单 → warn 不写 lastCommand(平台仍收 200 由外层路由保证)。
+     */
     private fun handleTargetTrack(xml: String) {
-        val mode = ManscdpParser.tagValue(xml, "TargetTrack") ?: "?"
+        val mode = ManscdpParser.tagValue(xml, "Mode")
+            ?: ManscdpParser.tagValue(xml, "TargetTrack")
+            ?: "Auto"
+        if (mode !in setOf("Auto", "Manual", "Stop")) {
+            // 不更新 lastCommand,但外层 dispatch 已返回 DeviceControlAck → 仍回 200 OK
+            return
+        }
+        val objectId = ManscdpParser.tagValue(xml, "ObjectID")
+        val speed = ManscdpParser.tagValue(xml, "Speed")?.toIntOrNull()
+        val detail = buildString {
+            append("mode=").append(mode)
+            objectId?.let { append(" obj=").append(it) }
+            speed?.let { append(" speed=").append(it) }
+        }
         state.update {
-            it.copy(lastCommand = LastDeviceCommand("TargetTrack", mode, nowMs()))
+            it.copy(lastCommand = LastDeviceCommand("TargetTrack", detail, nowMs()))
         }
     }
 

@@ -448,6 +448,44 @@ class DeviceControlDispatcherTest {
         assertEquals("FormatSDCard", s.lastCommand?.type)
     }
 
+    // M5 batch3 §4.13 FormatSDCard DiskNum 字段补全(T3)
+
+    @Test
+    fun `batch3 T3-1 — FormatSDCard 优先取 DiskNum`() {
+        // GB-2022 标准:<FormatSDCard>1</FormatSDCard><DiskNum>2</DiskNum>
+        // 卡号应取 DiskNum=2,而不是 FormatSDCard 的 "1"(动作触发标志)
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><FormatSDCard>1</FormatSDCard><DiskNum>2</DiskNum></C>")
+        assertEquals(DeviceEffect.FormatSDCardRequested(2), state.value.pendingEffect)
+    }
+
+    @Test
+    fun `batch3 T3-2 — FormatSDCard 缺 DiskNum fallback FormatSDCard 整数(老格式)`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><FormatSDCard>3</FormatSDCard></C>")
+        assertEquals(DeviceEffect.FormatSDCardRequested(3), state.value.pendingEffect)
+    }
+
+    @Test
+    fun `batch3 T3-3 — FormatSDCard DiskNum 非数字降级 0`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><FormatSDCard>1</FormatSDCard><DiskNum>abc</DiskNum></C>")
+        // DiskNum 解析失败 → fallback FormatSDCard=1
+        assertEquals(DeviceEffect.FormatSDCardRequested(1), state.value.pendingEffect)
+    }
+
+    @Test
+    fun `batch3 T3-4 — FormatSDCard 全部缺失 → cardIndex=0`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><FormatSDCard>x</FormatSDCard></C>")
+        // 都解析不到数字 → 0
+        assertEquals(DeviceEffect.FormatSDCardRequested(0), state.value.pendingEffect)
+    }
+
     @Test
     fun `T5d_3 — TargetTrack 仅记 lastCommand 不 emit effect`() {
         val state = newState()
@@ -457,7 +495,53 @@ class DeviceControlDispatcherTest {
         val s = state.value
         kotlin.test.assertNull(s.pendingEffect)
         assertEquals("TargetTrack", s.lastCommand?.type)
-        assertEquals("Manual", s.lastCommand?.rawHex)
+        // batch3 改动:detail 改为 mode=Manual 风格(从单一字符串改为多字段),老格式回退
+        assertEquals("mode=Manual", s.lastCommand?.rawHex)
+    }
+
+    // M5 batch3 §4.14 TargetTrack 完整字段(T4)
+
+    @Test
+    fun `batch3 T4-1 — TargetTrack Mode + ObjectID + Speed 全字段`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Auto</Mode><ObjectID>person-1</ObjectID><Speed>50</Speed></C>")
+        val s = state.value
+        assertEquals("TargetTrack", s.lastCommand?.type)
+        assertEquals("mode=Auto obj=person-1 speed=50", s.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `batch3 T4-2 — TargetTrack Manual 仅 ObjectID(无 Speed)`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode><ObjectID>car-2</ObjectID></C>")
+        assertEquals("mode=Manual obj=car-2", state.value.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `batch3 T4-3 — TargetTrack Stop 无附加`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Stop</Mode></C>")
+        assertEquals("mode=Stop", state.value.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `batch3 T4-4 — TargetTrack 未知 mode 不写 lastCommand`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Foo</Mode></C>")
+        kotlin.test.assertNull(state.value.lastCommand)
+    }
+
+    @Test
+    fun `batch3 T4-5 — TargetTrack 老格式 fallback`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        // 老格式:<TargetTrack>Auto</TargetTrack> 取代 <Mode>Auto</Mode>
+        d.dispatch("<C><TargetTrack>Auto</TargetTrack><ObjectID>obj-9</ObjectID></C>")
+        assertEquals("mode=Auto obj=obj-9", state.value.lastCommand?.rawHex)
     }
 
     // ---------- 辅助控制 (Aux On/Off, byte3=0x89/0x8A) ----------
