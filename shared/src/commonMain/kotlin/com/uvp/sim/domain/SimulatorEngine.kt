@@ -289,8 +289,16 @@ class SimulatorEngine(
         val streamJob: Job,
         val audioJob: Job? = null,
         val statsJob: Job? = null,
+        /** M5 batch3 §9.9 RTCP SR 反馈:5s 周期发 SR 包到 remotePort+1。 */
+        val rtcpSender: com.uvp.sim.network.RtpSender? = null,
+        val rtcpJob: Job? = null,
+        val rtpTimestampProvider: () -> Long = { 0L },
         var frameCount: Int = 0,
         var packetCount: Int = 0,
+        /** M5 batch3 §9.9:RTP payload 累计字节数(不含 RTP header 12 字节)。 */
+        var octetCount: Long = 0L,
+        /** M5 batch3 §9.9:最后一帧的 RTP 时间戳(90kHz),写入 SR 包 byte 16-19。 */
+        var lastRtpTimestamp: Long = 0L,
         // Dialog state for device-initiated BYE
         val localUri: String = "",
         val localTag: String = "",
@@ -2752,7 +2760,12 @@ $itemsBlock
                             // 单次 send 失败即整路终止 — TCP broken pipe 等不可恢复错误
                             // 必须停掉,否则下一帧再写再抛,日志风暴 + 抢锁拖垮 audio 线程
                             rtp.send(p)
-                            activeStream?.let { it.packetCount += 1 }
+                            activeStream?.let {
+                                it.packetCount += 1
+                                // RTCP §9.9:累计 RTP payload 字节,不含 12 字节 header
+                                it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
+                                it.lastRtpTimestamp = timestamp90k
+                            }
                         }
                     }
                     activeStream?.let { it.frameCount += 1 }
@@ -2775,7 +2788,10 @@ $itemsBlock
                         rtpMutex.withLock {
                             for (p in packets) {
                                 rtp.send(p)
-                                activeStream?.let { it.packetCount += 1 }
+                                activeStream?.let {
+                                    it.packetCount += 1
+                                    it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
+                                }
                             }
                         }
                     }
@@ -2788,12 +2804,41 @@ $itemsBlock
             }
         }
 
+        // M5 batch3 §9.9 RTCP SR 反馈:5s 周期发 SR 包到 remotePort+1。
+        // RtcpSender 复用 RtpSender(UDP)透出包,但目标端口是 RTP+1(RFC3550 § 6)。
+        val rtcp = sender(offer.remoteIp, offer.remotePort + 1, com.uvp.sim.network.RtpMode.UDP)
+        try {
+            rtcp.bindLocalPort()
+        } catch (e: Throwable) {
+            _events.emit(SimEvent.TransportError("RTCP bind: ${e.message}"))
+            // 不阻塞推流,RTCP 失败仅降级
+        }
+        val ssrcInt = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
+        val rtcpJob = scope.launch {
+            while (true) {
+                delay(RTCP_SR_INTERVAL_MS)
+                val a = activeStream ?: break
+                runCatching {
+                    val sr = com.uvp.sim.rtp.RtcpSender.buildSR(
+                        ssrc = ssrcInt,
+                        ntpEpochMs = _clockOffset.value.adjustedNowMs(),
+                        rtpTimestamp = a.lastRtpTimestamp,
+                        senderPacketCount = a.packetCount.toLong(),
+                        senderOctetCount = a.octetCount
+                    )
+                    rtcp.send(sr)
+                }
+            }
+        }
+
         activeStream = ActiveStream(
             callId = cid,
             ssrc = ssrc,
             rtpSender = rtp,
             streamJob = streamJob,
             audioJob = audioJob,
+            rtcpSender = rtcp,
+            rtcpJob = rtcpJob,
             localUri = localUri,
             localTag = localToTag,
             remoteUri = remoteUri,
@@ -3076,7 +3121,9 @@ $itemsBlock
         active.streamJob.cancel()
         active.audioJob?.cancel()
         active.statsJob?.cancel()
+        active.rtcpJob?.cancel()
         try { active.rtpSender.close() } catch (_: Throwable) { }
+        try { active.rtcpSender?.close() } catch (_: Throwable) { }
         try { cameraCapture?.stop() } catch (_: Throwable) { }
         try { audioCapture?.stop() } catch (_: Throwable) { }
         _events.emit(
@@ -3615,6 +3662,9 @@ $itemsBlock
         const val ACK_TIMEOUT_MS: Long = 32_000L
         /** 语音广播接收统计节流间隔。 */
         const val BROADCAST_STATS_INTERVAL_MS: Long = 1_000L
+
+        /** M5 batch3 §9.9 RTCP SR 周期(RFC3550 § 6.2 推荐 5%-10% 带宽,5s 是经典值)。 */
+        const val RTCP_SR_INTERVAL_MS: Long = 5_000L
 
         /**
          * RFC 3261 §11 OPTIONS Allow 头集 — sim 真实支持(可被路由处理)的方法.
