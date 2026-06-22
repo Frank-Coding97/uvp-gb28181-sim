@@ -46,4 +46,11 @@ internal sealed class RegistrationEvent {
     data class AuthChallenged(val realm: String) : RegistrationEvent()
     data class Unauthorized(val statusCode: Int, val reason: String) : RegistrationEvent()
     data class NetworkSwitchedReregister(val newIp: String) : RegistrationEvent()
+
+    /**
+     * 心跳连续超时触发的自动重注册。Engine façade 收到后应顺序关闭其他域的活跃流
+     * (invite.stopStream / playback.stop / broadcast.stop)。
+     * Reg 自己继续 unregister + register 循环。
+     */
+    data class AutoReregisterTriggered(val reason: String) : RegistrationEvent()
 }
