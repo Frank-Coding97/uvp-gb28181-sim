@@ -1,8 +1,17 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.compose.compiler)
 }
+
+val keystoreProps = Properties().apply {
+    val f = file(System.getProperty("user.home") + "/.gradle/uvp-sim-keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+val hasReleaseSigning = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+    .all { keystoreProps.getProperty(it)?.isNotBlank() == true }
 
 android {
     namespace = "com.uvp.sim"
@@ -12,8 +21,34 @@ android {
         applicationId = "cn.uvp.gb28181sim"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-M1-dev"
+        versionCode = 10000
+        versionName = "1.0.0"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                val rawPath = keystoreProps.getProperty("storeFile")
+                val resolvedPath = rawPath
+                    .replace("\$HOME", System.getProperty("user.home"))
+                    .replace("~/", System.getProperty("user.home") + "/")
+                storeFile = file(resolvedPath)
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+        }
     }
 
     buildFeatures {

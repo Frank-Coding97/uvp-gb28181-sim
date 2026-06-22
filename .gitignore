@@ -63,3 +63,7 @@ reports/
 # Local secrets
 *.local.properties
 secrets.properties
+*.jks
+*.keystore
+keystore.properties
+tools/__pycache__/

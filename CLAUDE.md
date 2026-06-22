@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-通用 GB/T 28181-2022 下级设备模拟器(iOS + Android)，Kotlin Multiplatform + Compose Multiplatform。
+通用 GB/T 28181-2022 下级设备模拟器(v1 仅 Android,iOS 排期 v1.1),Kotlin Multiplatform + Compose Multiplatform。
 
 ## 构建
 
@@ -10,15 +10,16 @@
 export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 ./gradlew build                          # 全量编译
 ./gradlew :androidApp:installDebug       # Android 真机(壳模块,composeApp 是 library 无 installDebug)
+./gradlew :androidApp:assembleRelease    # 出 release APK(release keystore 配在 ~/.gradle/uvp-sim-keystore.properties)
 ```
 
 ## 模块结构
 
-- `shared/` — commonMain 跨平台核心(SIP 信令栈 / PS Muxer / RTP / GB28181 MANSCDP)
+- `shared/` — commonMain 跨平台核心(SIP 信令栈 / PS Muxer / RTP / GB28181 MANSCDP),iosMain 媒体线 v1.1 接入
 - `composeApp/` — Compose Multiplatform UI 层
-- `androidApp/` — Android 壳
-- `iosApp/` — iOS 壳(Xcode)
-- `dev-env/` — 本地 WVP docker 联调环境
+- `androidApp/` — Android 壳(v1 唯一发版目标)
+- `dev-env/` — `snapshot-receiver/` 抓拍 HTTP 上传联调 mock(Python)
+- `docs/` — README 用截图(`screenshots/`)+ 联系方式 / 收款码(`contact/`)
 
 ## GB/T 28181 设备端能力追踪
 
