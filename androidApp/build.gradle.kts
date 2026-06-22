@@ -51,6 +51,13 @@ android {
         }
     }
 
+    applicationVariants.all {
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "uvp-gb28181-sim-${defaultConfig.versionName}.apk"
+        }
+    }
+
     buildFeatures {
         compose = true
     }
