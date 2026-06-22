@@ -37,7 +37,19 @@ data class SimConfig(
      * 自动生成默认 3 节点扁平树(老 SimConfig 升级路径)。
      */
     val catalogTree: List<CatalogNode> = emptyList()
-)
+) {
+    /**
+     * 配置是否齐备到可发起 SIP 注册。
+     * 任一必填项空 → 注册按钮禁用,避免向上级平台发空字段的 REGISTER。
+     * 必填项:服务器 IP / 服务器 ID / 域 / 设备 ID / 密码;端口由默认值 5060 兜底。
+     */
+    val isReadyToRegister: Boolean
+        get() = server.ip.isNotBlank() &&
+            server.serverId.isNotBlank() &&
+            server.domain.isNotBlank() &&
+            device.deviceId.isNotBlank() &&
+            device.password.isNotBlank()
+}
 
 /**
  * 录像引擎参数 — 默认值对标 plan §4 / §5。

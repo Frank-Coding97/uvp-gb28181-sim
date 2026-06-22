@@ -241,6 +241,9 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {
         if (cfg.device.frontChannelId.isNotBlank()) return cfg
+        // domain 也为空时不强行补全(全空首次启动场景),否则会生成 "0000000000..."
+        // 这种伪造编码,等用户填好 domain 保存时再触发本函数。
+        if (cfg.server.domain.isBlank()) return cfg
         val frontId = com.uvp.sim.gb28181.IdEncoder.genChildId(
             cfg.server.domain, com.uvp.sim.config.CatalogNodeType.VideoChannel, 2
         )
@@ -473,12 +476,16 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun updateConfig(newCfg: SimConfig) {
         val prev = _config.value
-        _config.value = newCfg
-        if (prev.video != newCfg.video) {
+        // 首次保存可能 frontChannelId 仍为空(默认全清+用户刚填完 domain),
+        // 这里跑一遍 migrate,基于用户新填的 domain 立刻补全前置通道 ID,
+        // 避免等下次冷启动才生效。
+        val migrated = migrateDualChannel(newCfg)
+        _config.value = migrated
+        if (prev.video != migrated.video) {
             _videoConfigVersion.value += 1
         }
         // Persist asynchronously; UI doesn't need to wait for disk.
-        viewModelScope.launch { runCatching { configStore.save(newCfg) } }
+        viewModelScope.launch { runCatching { configStore.save(migrated) } }
         if (engine != null) {
             engineScope.launch {
                 try { engine?.unregister() } catch (_: Throwable) { }
@@ -670,21 +677,24 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     companion object {
-        // ===== WVP target initial defaults; overridable via Config screen =====
-        const val WVP_IP = "192.168.10.222"
-        const val WVP_PORT = 8160
-        const val WVP_SERVER_ID = "35020000002000000001"
-        const val WVP_DOMAIN = "3502000000"
-        const val WVP_PASSWORD = "wvp_sip_password"
+        // ===== 首次启动默认值 =====
+        // 上级平台相关字段(IP/serverId/domain/password/port)全部清空,强制用户照
+        // placeholder 提示填真实参数,避免误连测试环境。端口用 0 当"未填"哨兵,
+        // UI 层会渲染为空串 + placeholder "5060"(GB/T 28181-2022 §8.2.1.1 SIP 标准端口),
+        // 保存时 port.toIntOrNull() ?: 5060 兜底,空提交也能拿到合法端口。
+        // 设备侧三个 ID(deviceId / videoChannelId / alarmChannelId)给国标示例值,
+        // 这是设备自身编码,不依赖平台环境,开箱即用降低 onboarding 门槛。
+        // FRONT_CHANNEL_ID 不再启动期生成,由 migrateDualChannel 在用户填好 domain
+        // 并保存后按 IdEncoder 补全;domain 为空时跳过,避免伪造编码 "0000000000xxx"。
+        const val WVP_IP = ""
+        const val WVP_PORT = 0
+        const val WVP_SERVER_ID = ""
+        const val WVP_DOMAIN = ""
+        const val WVP_PASSWORD = ""
 
-        const val DEVICE_ID = "35020000001310000001"
-        const val VIDEO_CHANNEL_ID = "35020000001320000001"
-        const val ALARM_CHANNEL_ID = "35020000001340000001"
-        // 双真实通道:前置通道 ID 用 IdEncoder 按 domain 生成(VideoChannel, seq=2),
-        // 与后置(seq=1 → ...1320000001)区分。
-        val FRONT_CHANNEL_ID: String = com.uvp.sim.gb28181.IdEncoder.genChildId(
-            WVP_DOMAIN, com.uvp.sim.config.CatalogNodeType.VideoChannel, 2
-        )
+        const val DEVICE_ID = "34020000001310000001"
+        const val VIDEO_CHANNEL_ID = "34020000001320000001"
+        const val ALARM_CHANNEL_ID = "34020000001340000001"
 
         const val MAX_EVENT_LOG = 100
 
@@ -700,7 +710,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 alarmChannelId = ALARM_CHANNEL_ID,
                 username = DEVICE_ID,
                 password = WVP_PASSWORD,
-                frontChannelId = FRONT_CHANNEL_ID
+                frontChannelId = ""
             ),
             transport = TransportType.UDP,
             keepaliveIntervalSeconds = 60

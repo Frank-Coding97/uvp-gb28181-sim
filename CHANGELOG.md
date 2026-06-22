@@ -5,6 +5,25 @@
 
 ---
 
+## [1.0.1] - 2026-06-22
+
+首次启动 UX 补漏 — SIP 配置卡新手友好性 + 注册按钮防误触。
+
+### 新增
+
+- SIP 配置卡所有字段加 placeholder 格式提示(IP / 端口 / 服务器 ID / 服务器域 / 设备 ID / 密码)
+- SIP 卡编辑态新增「取消」按钮,可无校验丢弃编辑退出(解决填到一半想撤回但被表单校验卡死的死锁)
+- 注册按钮接入 `SimConfig.isReadyToRegister` 校验,SIP 必填项不全时按钮灰显 + 文案「请先填写 SIP 配置」,避免向上级平台发空字段 REGISTER
+
+### 变更
+
+- 首次启动默认值:上级平台相关字段(IP / serverId / domain / password / port)全部清空,强制用户填真实参数,避免误连测试环境
+- 设备侧三个 ID(deviceId / videoChannelId / alarmChannelId)预填国标示例值 `34020000...`,降低 onboarding 门槛
+- `migrateDualChannel` 增加 domain 空兜底,避免 domain 未填时生成伪造前置通道编码 `0000000000xxx`
+- `updateConfig` 入口也跑 `migrateDualChannel`,用户首次填好 domain 保存后立刻补全 `frontChannelId`(不再等冷启动)
+
+---
+
 ## [1.0.0] - 2026-06-22
 
 首个正式版本。已在 WVP-Pro / EasyGBS / LiveGBS / UVP 四个国标上级平台完成联调验证,

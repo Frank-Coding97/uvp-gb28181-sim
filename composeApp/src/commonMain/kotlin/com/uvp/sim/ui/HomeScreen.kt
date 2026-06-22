@@ -119,7 +119,9 @@ private fun StatusBanner(state: AppUiState) {
         )
         SipState.Disconnected -> BannerSpec(
             UvpColor.BorderLight, UvpColor.Border, UvpColor.TextHint,
-            "未连接", UvpColor.TextSecondary, "编辑配置 → 注册"
+            "未连接", UvpColor.TextSecondary,
+            if (state.config.isReadyToRegister) "编辑配置 → 注册"
+            else "请先填写 SIP 配置"
         )
         SipState.Failed -> {
             val reason = state.events.filterIsInstance<com.uvp.sim.domain.SimEvent.RegistrationFailed>()
@@ -383,7 +385,10 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     val toast = LocalToastHost.current
     var editing by remember { mutableStateOf(false) }
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
-    var port by remember(state.config) { mutableStateOf(state.config.server.port.toString()) }
+    var port by remember(state.config) {
+        // port == 0 当"未填"哨兵(默认值),UI 渲染为空串让 placeholder 露出来。
+        mutableStateOf(if (state.config.server.port == 0) "" else state.config.server.port.toString())
+    }
     var deviceId by remember(state.config) { mutableStateOf(state.config.device.deviceId) }
     var password by remember(state.config) { mutableStateOf(state.config.device.password) }
     var transport by remember(state.config) { mutableStateOf(state.config.transport.name) }
@@ -399,7 +404,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
 
     fun resetFromConfig() {
         ip = state.config.server.ip
-        port = state.config.server.port.toString()
+        port = if (state.config.server.port == 0) "" else state.config.server.port.toString()
         deviceId = state.config.device.deviceId
         password = state.config.device.password
         transport = state.config.transport.name
@@ -448,6 +453,27 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
             Text("SIP 配置", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.TextHint)
             Spacer(Modifier.weight(1f))
             val tint = if (locked) UvpColor.TextHint else UvpColor.Primary
+            if (editing && !locked) {
+                // 编辑态:取消(还原) + 完成(校验后保存) 两按钮并排,
+                // 表单不合法时"完成"toast 报错,用户可点"取消"无校验退出。
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable {
+                            resetFromConfig()
+                            editing = false
+                        }
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "取消",
+                        fontSize = 12.sp,
+                        color = UvpColor.TextSecondary
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+            }
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
@@ -492,28 +518,39 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
                 label = "服务器",
                 value = ip,
                 enabled = canEdit,
+                placeholder = "例如 192.168.1.100",
                 trailing = {
                     InlineCompactPort(
                         port = port,
                         enabled = canEdit,
+                        placeholder = "5060",
                         onChange = { port = it.filter { c -> c.isDigit() } }
                     )
                 },
                 onChange = { ip = it }
             )
-            InlineEditableRow("服务器 ID", serverId, canEdit, KeyboardType.Number) { newId ->
+            InlineEditableRow(
+                "服务器 ID", serverId, canEdit, KeyboardType.Number,
+                placeholder = "例如 34020000002000000001"
+            ) { newId ->
                 serverId = newId.filter { c -> c.isDigit() }
                 if (!domainManuallyEdited) domain = serverId.take(10)
             }
-            InlineEditableRow("服务器域", domain, canEdit, KeyboardType.Number) { newDomain ->
+            InlineEditableRow(
+                "服务器域", domain, canEdit, KeyboardType.Number,
+                placeholder = "例如 3402000000"
+            ) { newDomain ->
                 domain = newDomain.filter { c -> c.isDigit() }
                 domainManuallyEdited = true
             }
-            InlineEditableRow("设备 ID", deviceId, canEdit, KeyboardType.Number) {
+            InlineEditableRow(
+                "设备 ID", deviceId, canEdit, KeyboardType.Number,
+                placeholder = "例如 34020000001310000001"
+            ) {
                 deviceId = it.filter { c -> c.isDigit() }
             }
             InlineEditableRow("注册密码", password, canEdit, KeyboardType.Password,
-                masked = true) { password = it }
+                masked = true, placeholder = "上级平台配置的 SIP 密码") { password = it }
             InlineSegmentedRow("信令传输", transport, listOf("UDP", "TCP"), canEdit) {
                 transport = it
             }
@@ -822,17 +859,27 @@ private fun DetailKv(key: String, value: String) {
 private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     when (state.sip) {
         SipState.Disconnected, SipState.Failed -> {
+            val ready = state.config.isReadyToRegister
             Button(
                 onClick = {
                     actions.onConnect()
                     onFeedback("正在注册…")
                 },
+                enabled = ready,
                 modifier = Modifier.fillMaxWidth().height(44.dp),
                 shape = RoundedCornerShape(8.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = UvpColor.Primary)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = UvpColor.Primary,
+                    disabledContainerColor = UvpColor.Primary.copy(alpha = 0.35f),
+                    disabledContentColor = Color.White.copy(alpha = 0.75f)
+                )
             ) {
-                Text("注 册", fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                    color = Color.White, letterSpacing = 4.sp)
+                Text(
+                    if (ready) "注 册" else "请先填写 SIP 配置",
+                    fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    color = Color.White,
+                    letterSpacing = if (ready) 4.sp else 1.sp
+                )
             }
         }
         SipState.Registering -> {
@@ -1013,6 +1060,7 @@ internal fun InlineEditableRow(
     enabled: Boolean,
     keyboard: KeyboardType = KeyboardType.Text,
     masked: Boolean = false,
+    placeholder: String = "",
     trailing: (@Composable () -> Unit)? = null,
     onChange: (String) -> Unit
 ) {
@@ -1050,6 +1098,21 @@ internal fun InlineEditableRow(
                 visualTransformation = if (masked && !revealed) PasswordVisualTransformation()
                 else VisualTransformation.None,
                 cursorBrush = androidx.compose.ui.graphics.SolidColor(UvpColor.Primary),
+                decorationBox = { innerTextField ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (value.isEmpty() && placeholder.isNotEmpty()) {
+                            Text(
+                                placeholder,
+                                fontSize = 12.5.sp,
+                                fontFamily = if (keyboard == KeyboardType.Number) FontFamily.Monospace
+                                else FontFamily.Default,
+                                color = UvpColor.TextHint.copy(alpha = 0.6f),
+                                maxLines = 1
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
                 modifier = Modifier.weight(1f)
             )
             if (masked) {
@@ -1080,6 +1143,7 @@ internal fun InlineEditableRow(
 private fun InlineCompactPort(
     port: String,
     enabled: Boolean,
+    placeholder: String = "",
     onChange: (String) -> Unit
 ) {
     Spacer(Modifier.width(8.dp))
@@ -1098,6 +1162,20 @@ private fun InlineCompactPort(
         ),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         cursorBrush = androidx.compose.ui.graphics.SolidColor(UvpColor.Primary),
+        decorationBox = { innerTextField ->
+            Box(contentAlignment = Alignment.CenterStart) {
+                if (port.isEmpty() && placeholder.isNotEmpty()) {
+                    Text(
+                        placeholder,
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = UvpColor.TextHint.copy(alpha = 0.6f),
+                        maxLines = 1
+                    )
+                }
+                innerTextField()
+            }
+        },
         modifier = Modifier.width(54.dp)
     )
 }
