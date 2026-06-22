@@ -43,6 +43,10 @@ Thumbs.db
 # Claude Code worktree
 .claude/
 
+# AI 协作约定 — 仅本地保留,不进公共仓库(避免暴露私人 Atlas 路径等)
+CLAUDE.md
+AGENTS.md
+
 # Logs
 *.log
 npm-debug.log*
