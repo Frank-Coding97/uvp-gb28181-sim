@@ -44,6 +44,11 @@ import kotlinx.coroutines.sync.withLock
  *   - heartbeat 完全归本域
  *   - 心跳超时触发的自动重注册:本类只发 [RegistrationEvent.AutoReregisterTriggered],
  *     由 Engine façade 听 event 后关闭其他域的活跃流(不反向调其他 Coordinator)
+ *   - **cseq / callId / fromTag SN 池跨域共享(2026-06-23 T2.3a 修订)**:
+ *     这三个字段是 Engine 全局 SN 池 + dialog identity(78/85/47 处跨业务方法引用),
+ *     不能下沉到本 Coord 独占。构造期通过 6 个 lambda(provider/setter)注入外部 SN 池
+ *     访问通道。默认值给独立 counter,让单元测试隔离假设成立。详见研究文档
+ *     `wiki/projects/uvp-gb28181-sim/research/2026-06-23-cseq-sn-pool-coupling.md`。
  */
 internal class RegistrationCoordinatorImpl(
     private val config: SimConfig,
@@ -51,6 +56,12 @@ internal class RegistrationCoordinatorImpl(
     private val scope: CoroutineScope,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
+    cseqProvider: (() -> Int)? = null,
+    cseqIncrementer: (() -> Int)? = null,
+    callIdProvider: (() -> String?)? = null,
+    callIdSetter: ((String) -> Unit)? = null,
+    fromTagProvider: (() -> String?)? = null,
+    fromTagSetter: ((String) -> Unit)? = null,
 ) : RegistrationCoordinator {
 
     private val _state = MutableStateFlow(RegistrationState.Disconnected)
@@ -65,10 +76,48 @@ internal class RegistrationCoordinatorImpl(
     private val mutex = Mutex()
     private val localIp: String get() = localIpProvider()
 
+    // ---- SN 池 provider 适配(2026-06-23 T2.3a 加,详见 class kdoc) ----
+    // 默认走独立 counter,T2.3b 时 Engine 注入会让本 Coord 的 cseq/callId/fromTag
+    // 读写直达 Engine 上的全局 SN 池。
+    private var internalCseq: Int = 0
+    private var internalCallId: String? = null
+    private var internalFromTag: String? = null
+
+    private val cseqRead: () -> Int =
+        cseqProvider ?: { internalCseq }
+    private val cseqIncAndRead: () -> Int = cseqIncrementer ?: {
+        internalCseq += 1
+        internalCseq
+    }
+    private val callIdRead: () -> String? =
+        callIdProvider ?: { internalCallId }
+    private val callIdWrite: (String) -> Unit =
+        callIdSetter ?: { internalCallId = it }
+    private val fromTagRead: () -> String? =
+        fromTagProvider ?: { internalFromTag }
+    private val fromTagWrite: (String) -> Unit =
+        fromTagSetter ?: { internalFromTag = it }
+
+    /** true 表示 cseq 完全跑独立 counter(单元测试模式),允许 register() 时重置 = 1。 */
+    private val ownsCseqPool: Boolean = cseqIncrementer == null
+
+    /** 给本类内部用的 cseq 读访问器(read-only view of SN pool)。 */
+    private val cseq: Int get() = cseqRead()
+    /** 给本类内部用的 cseq 自增并返回新值(write to SN pool)。 */
+    private fun cseqInc(): Int = cseqIncAndRead()
+    /** 把 cseq 重置到指定值(register 起始要重置 = 1)。 */
+    private fun cseqResetTo(value: Int) {
+        // 当 cseqIncrementer 是注入的(指 Engine 的 SN 池),不应该手动重置 —
+        // SN 池跨整个 Engine 生命周期单调递增。仅在默认 internal counter 时允许。
+        if (ownsCseqPool) internalCseq = value
+        // 注入模式下:不重置,等 cseqIncrementer 自然推进
+    }
+    private val callId: String? get() = callIdRead()
+    private val fromTag: String? get() = fromTagRead()
+    private fun callIdSet(v: String) = callIdWrite(v)
+    private fun fromTagSet(v: String) = fromTagWrite(v)
+
     // ---- 注册事务字段(从 Engine 迁) ----
-    private var cseq: Int = 0
-    private var callId: String? = null
-    private var fromTag: String? = null
     private var pendingRegister: SipRequest? = null
     private var registerJob: Job? = null
 
@@ -98,9 +147,9 @@ internal class RegistrationCoordinatorImpl(
             retryJob = null
             registerRetryCount = 0
 
-            cseq = 1
-            callId = SipBuilders.randomCallId(localIp)
-            fromTag = SipBuilders.randomTag()
+            cseqResetTo(1)
+            callIdSet(SipBuilders.randomCallId(localIp))
+            fromTagSet(SipBuilders.randomTag())
             val branch = SipBuilders.randomBranch()
             val req = SipBuilders.buildRegister(
                 config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider(),
@@ -150,7 +199,7 @@ internal class RegistrationCoordinatorImpl(
             heartbeat?.stop()
             heartbeat = null
 
-            cseq += 1
+            cseqInc()
             val branch = SipBuilders.randomBranch()
             val callIdNow = callId ?: SipBuilders.randomCallId(localIp)
             val fromTagNow = fromTag ?: SipBuilders.randomTag()
@@ -276,9 +325,9 @@ internal class RegistrationCoordinatorImpl(
                 _state.value != RegistrationState.Failed &&
                 _state.value != RegistrationState.Disconnected
             ) return
-            cseq = 1
-            callId = SipBuilders.randomCallId(localIp)
-            fromTag = SipBuilders.randomTag()
+            cseqResetTo(1)
+            callIdSet(SipBuilders.randomCallId(localIp))
+            fromTagSet(SipBuilders.randomTag())
             val branch = SipBuilders.randomBranch()
             val req = SipBuilders.buildRegister(
                 config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider(),
@@ -374,7 +423,7 @@ internal class RegistrationCoordinatorImpl(
                     method = "REGISTER",
                     uri = pending.requestUri,
                 )
-                cseq += 1
+                cseqInc()
                 val newBranch = SipBuilders.randomBranch()
                 val authedReq = SipBuilders.addAuthorization(pending, authHeader, cseq, newBranch)
                 pendingRegister = authedReq
@@ -428,7 +477,7 @@ internal class RegistrationCoordinatorImpl(
             }
             lastKeepaliveAcked = false
             keepaliveSn += 1
-            cseq += 1
+            cseqInc()
             val branch = SipBuilders.randomBranch()
             val msg = SipBuilders.buildKeepalive(
                 config = config,
@@ -495,7 +544,7 @@ internal class RegistrationCoordinatorImpl(
             mutex.withLock {
                 if (_state.value != RegistrationState.Registered) return@withLock
                 isRenewal = true
-                cseq += 1
+                cseqInc()
                 val branch = SipBuilders.randomBranch()
                 val req = SipBuilders.buildRegister(
                     config, cseq, callId ?: SipBuilders.randomCallId(localIp),

@@ -254,4 +254,90 @@ class RegistrationCoordinatorTest {
         val allow = resp.firstHeader("Allow")
         assertNotNull(allow, "OPTIONS 200 必须含 Allow 头")
     }
+
+    // -------- T2.3a (2026-06-23) — SN 池 provider 路径 --------
+    // 验证当注入 cseqProvider/cseqIncrementer 时,Coord 走外部 SN 池而非自管 counter。
+    // 这是 T2.3b Engine 委派的前置:让 Reg 跟 Engine 共享同一份全局 cseq。
+    // 详见研究文档 wiki/projects/uvp-gb28181-sim/research/2026-06-23-cseq-sn-pool-coupling.md。
+
+    @Test
+    fun t2_3a_register_uses_injected_cseqIncrementer_for_REGISTER_CSeq() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+
+        // 模拟 Engine 全局 SN 池 — 起始 cseq=42,Coord register() 时该走 cseqInc 推到 43
+        var sharedCseq = 42
+        val coord = RegistrationCoordinatorImpl(
+            config = config(),
+            transport = transport,
+            scope = this,
+            localIpProvider = { "192.168.1.50" },
+            localPortProvider = { 5060 },
+            cseqProvider = { sharedCseq },
+            cseqIncrementer = { sharedCseq += 1; sharedCseq },
+        )
+
+        coord.register()
+        runCurrent()
+
+        val req = transport.sent.filterIsInstance<SipRequest>().firstOrNull()
+        assertNotNull(req, "register() 应发出 REGISTER")
+        // register() 内 cseqResetTo(1) 在注入模式下不重置(ownsCseqPool=false)。
+        // 后续没有 cseqInc → REGISTER 包的 CSeq 头读到的是 sharedCseq 当前值(42)。
+        val cseqHeader = req.firstHeader(SipHeader.CSEQ)
+        assertNotNull(cseqHeader, "REGISTER 必须含 CSeq 头")
+        assertEquals(
+            "42 REGISTER",
+            cseqHeader,
+            "注入 cseqProvider 时,REGISTER 包的 CSeq 必须读外部 SN 池当前值(不重置)",
+        )
+        assertEquals(42, sharedCseq, "register() 不应在注入模式下推进 SN 池")
+    }
+
+    @Test
+    fun t2_3a_unregister_uses_injected_cseqIncrementer() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+
+        var sharedCseq = 100
+        val coord = RegistrationCoordinatorImpl(
+            config = config(),
+            transport = transport,
+            scope = this,
+            localIpProvider = { "192.168.1.50" },
+            localPortProvider = { 5060 },
+            cseqProvider = { sharedCseq },
+            cseqIncrementer = { sharedCseq += 1; sharedCseq },
+        )
+
+        coord.register()
+        runCurrent()
+        val firstReq = transport.sent.filterIsInstance<SipRequest>().first()
+        val callId = firstReq.firstHeader(SipHeader.CALL_ID)!!
+        val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
+        coord.onIncoming(fake200OkRegister(callId, fromTag))
+        runCurrent()
+        transport.sent.clear()
+
+        val cseqBeforeUnreg = sharedCseq
+
+        coord.unregister()
+        runCurrent()
+
+        val unreg = transport.sent.filterIsInstance<SipRequest>().firstOrNull()
+        assertNotNull(unreg, "unregister() 必须发 REGISTER")
+        // unregister() 内 cseqInc() 推一次,REGISTER 包的 CSeq 必须 = cseqBeforeUnreg + 1
+        val unregCseqHeader = unreg.firstHeader(SipHeader.CSEQ)
+        assertNotNull(unregCseqHeader, "unregister REGISTER 必须含 CSeq 头")
+        assertEquals(
+            "${cseqBeforeUnreg + 1} REGISTER",
+            unregCseqHeader,
+            "unregister 必须通过 cseqIncrementer 推进外部 SN 池",
+        )
+        assertEquals(
+            cseqBeforeUnreg + 1,
+            sharedCseq,
+            "外部 SN 池应被推进一次",
+        )
+    }
 }
