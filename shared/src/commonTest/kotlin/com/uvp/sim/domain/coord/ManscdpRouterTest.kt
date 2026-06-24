@@ -10,12 +10,11 @@ import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.DeviceControlActions
 import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.MockSipTransport
 import com.uvp.sim.domain.SubscriptionRegistry
-import com.uvp.sim.gb28181.AlarmPayload
-import com.uvp.sim.gb28181.AlarmPriority
-import com.uvp.sim.gb28181.AlarmType
 import com.uvp.sim.network.TransportType
+import com.uvp.sim.recording.NoopRecordingService
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
@@ -33,8 +32,8 @@ import kotlin.test.assertTrue
 /**
  * PR3 T3.1 RED:[ManscdpRouterImpl] 直接路径覆盖。
  *
- * 这里只测 Router 独有的契约(BroadcastInvoker 反向调 / SN 池 provider 注入 /
- * ManscdpEvent 类目翻译);8 路径完整迁移正确性走 Engine 既有 contract test
+ * 这里只测 Router 独有的契约(BroadcastInvoker 反向调 / SN 池 provider 注入);
+ * 8 路径完整迁移正确性走 Engine 既有 contract test
  * (SimulatorEngineAlarmTest / SimulatorEngineMediaStatusTest / CatalogSubscribeIntegrationTest
  * / AlarmSubscribeIntegrationTest 等),Engine 切换委派后这些测试不改一行继续绿
  * = Router 行为等价证明。
@@ -76,6 +75,7 @@ class ManscdpRouterTest {
             override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {}
         }
         val cfg = config()
+        val tree = MutableStateFlow(CatalogTreeStore.effectiveTree(cfg))
         return ManscdpRouterImpl(
             config = cfg,
             transport = transport,
@@ -83,7 +83,7 @@ class ManscdpRouterTest {
             localIpProvider = { "192.168.1.50" },
             localPortProvider = { 5060 },
             subscriptionRegistry = SubscriptionRegistry(scope),
-            catalogTreeStore = CatalogTreeStore.effectiveTree(cfg),
+            catalogTree = tree,
             alarmHistoryStore = AlarmHistoryStore(),
             mutableDeviceControlState = deviceControlState,
             deviceControlDispatcher = DeviceControlDispatcher(
@@ -93,6 +93,9 @@ class ManscdpRouterTest {
                 scope = scope,
             ),
             broadcastInvoker = broadcastInvoker,
+            recordingService = NoopRecordingService,
+            mockGps = MockGpsSource(cfg.mockPosition),
+            stateRegisteredOrInCall = { true },
             cseqProvider = cseqProvider,
             cseqIncrementer = cseqIncrementer,
         )
@@ -130,7 +133,6 @@ class ManscdpRouterTest {
         runCurrent()
 
         assertEquals(RoutingResult.Handled, result, "Catalog 查询应被 Router 吃下")
-        // 200 OK 走 transport.sent;CatalogResponse(MESSAGE)也会发出
         val responses = transport.sent.filterIsInstance<SipRequest>()
             .filter { it.method == SipMethod.MESSAGE }
         assertTrue(
@@ -172,7 +174,6 @@ class ManscdpRouterTest {
         val transport = MockSipTransport()
         transport.connect()
 
-        // 模拟 Engine 全局 SN 池起始 100
         var sharedCseq = 100
         val router = newRouter(
             this, transport,
@@ -191,3 +192,4 @@ class ManscdpRouterTest {
         assertEquals(101, sharedCseq, "外部 SN 池应被推进")
     }
 }
+
