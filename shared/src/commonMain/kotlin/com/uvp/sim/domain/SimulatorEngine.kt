@@ -1,16 +1,16 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
+import com.uvp.sim.domain.coord.RegistrationEvent
+import com.uvp.sim.domain.coord.RegistrationState
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.MobilePositionNotify
-import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
-import com.uvp.sim.sip.DigestAuth
 import com.uvp.sim.sip.SipBuilders
-import com.uvp.sim.sip.SipDateParser
 import com.uvp.sim.sip.SipEvent
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
@@ -23,6 +23,8 @@ import com.uvp.sim.sip.SubscribeHandler
 import com.uvp.sim.sip.SubscribeIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -59,7 +61,7 @@ import kotlinx.datetime.toLocalDateTime
 class SimulatorEngine(
     private val config: SimConfig,
     private val transport: SipTransport,
-    private val scope: CoroutineScope,
+    scope: CoroutineScope,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
@@ -86,6 +88,12 @@ class SimulatorEngine(
      */
     private val audioSinkFactory: ((Int, Int) -> com.uvp.sim.media.AudioSink)? = null
 ) {
+    /**
+     * Engine 自有的协程 scope(PR2 T2.3b)。继承外部传入 [scope] 的 dispatcher / job 树,
+     * 但加 [SupervisorJob] 让 Coordinator 内部协程的失败不传染到外部。所有内部 launch /
+     * stateIn / collect 都走这个 scope,[shutdown] 时 cancel 一次性收掉。
+     */
+    private val scope: CoroutineScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
 
@@ -185,9 +193,7 @@ class SimulatorEngine(
     }
 
     private val mutex = Mutex()
-    private var registerJob: Job? = null
     private var inboundJob: Job? = null
-    private var heartbeat: Heartbeat? = null
 
     /**
      * 7.5 抓拍管线(GB-2022 §9.5)。Android 壳启动时通过 [attachSnapshotPipeline] 注入真实例,
@@ -196,24 +202,40 @@ class SimulatorEngine(
     private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
     private var snapshotCachePipeline: com.uvp.sim.snapshot.JpegLocalCache? = null
 
-    // Per-registration session state
+    // ----------------------------------------------------------------------
+    // 全局 SIP SN 池 / dialog identity(2026-06-23 plan §2.1.1 修订)
+    //
+    // 这三个字段被全部业务路径(reportSnapshot / sendAlarmNotify / Catalog/Position
+    // /Alarm NOTIFY / Invite / Broadcast / 心跳)读写共用,本质是设备端全局 CSeq SN 池
+    // + dialog identity。RegistrationCoordinator 通过构造期 6 个 lambda(provider/setter)
+    // 接入这套池子,REGISTER / 心跳 / OPTIONS 跟业务请求共享同一份单调递增 CSeq,
+    // 跟 4 平台(WVP / EasyGBS / LiveGBS / UVP)的兼容性观感一致。
+    //
+    // 长期治理:见 wiki/projects/uvp-gb28181-sim/research/2026-06-23-cseq-sn-pool-coupling.md
+    // 跟 PR4-PR5 InviteCoordinator 拆出后另起 sip-dialog-store spec。
+    // ----------------------------------------------------------------------
     private var cseq: Int = 0
     private var callId: String? = null
     private var fromTag: String? = null
-    private var pendingRegister: SipRequest? = null
-    private var keepaliveSn: Int = 0
 
-    // 1.5: Heartbeat timeout detection
-    private var consecutiveKeepaliveTimeouts: Int = 0
-    private var lastKeepaliveAcked: Boolean = true
-
-    // 1.6: Expires auto-renewal
-    private var renewalJob: Job? = null
-    private var isRenewal: Boolean = false
-
-    // 1.7: Registration retry with backoff
-    private var registerRetryCount: Int = 0
-    private var retryJob: Job? = null
+    /**
+     * 注册域 Coordinator(PR2 T2.3b)。Engine 把注册 / 心跳 / OPTIONS / 续约 / 重试退避
+     * 全部委派给本实例,自身只保留业务域(snapshot / alarm / invite / playback / broadcast)。
+     * 全局 SN 池通过 6 个 lambda 透传,Reg 跟 Engine 业务路径共享同一份 cseq / callId / fromTag。
+     */
+    private val registration = RegistrationCoordinatorImpl(
+        config = config,
+        transport = transport,
+        scope = scope,
+        localIpProvider = localIpProvider,
+        localPortProvider = localPortProvider,
+        cseqProvider = { cseq },
+        cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId },
+        callIdSetter = { callId = it },
+        fromTagProvider = { fromTag },
+        fromTagSetter = { fromTag = it },
+    )
 
     // 5.14: ACK verification after we 200-OK an INVITE
     private var ackTimeoutJob: Job? = null
@@ -319,142 +341,73 @@ class SimulatorEngine(
 
     enum class MediaMode { PLAYBACK, DOWNLOAD }
 
-    /** Initiate registration. Returns immediately; observe [state] for completion. */
-    suspend fun register() {
-        mutex.withLock {
-            if (_state.value == SipState.Registering ||
-                _state.value == SipState.Registered) return
-            retryJob?.cancel()
-            retryJob = null
-            registerRetryCount = 0
-            startInboundIfNeeded()
-
-            cseq = 1
-            callId = SipBuilders.randomCallId(localIp)
-            fromTag = SipBuilders.randomTag()
-            val branch = SipBuilders.randomBranch()
-            val req = SipBuilders.buildRegister(
-                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider()
-            )
-            pendingRegister = req
-            _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterRequested)
-            _events.emit(SimEvent.RegistrationStarted("${config.server.ip}:${config.server.port}"))
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Lifecycle,
-                "开始注册到 ${config.server.ip}:${config.server.port}"
-            )
-            try {
-                transport.send(req)
-                _events.emit(SimEvent.MessageSent(req))
-                armRegisterTimeout()
-            } catch (e: Throwable) {
-                _state.value = SipStateMachine.transition(
-                    _state.value, SipEvent.RegisterFailed("transport.send: ${e.message}")
-                )
-                _events.emit(SimEvent.TransportError("send REGISTER: ${e::class.simpleName}: ${e.message}"))
-                _events.emit(SimEvent.RegistrationFailed("transport: ${e.message}"))
-                SystemLogger.emit(
-                    LogLevel.Error, LogTag.Lifecycle,
-                    "注册请求发送失败: ${e::class.simpleName}: ${e.message}"
-                )
+    /**
+     * 注册域桥接 job(PR2 T2.3b):把 Coordinator 自管的 [registration.state] 单向直写到
+     * Engine 的 [_state],并把 [registration.events] 翻译成 [SimEvent] 转发给 UI。
+     * Engine 仍然在某些路径直接写 [_state](INVITE / BYE 等),完整 derived state 留 PR4/PR5。
+     *
+     * 单向语义:Coord 是注册栈的"真相源",Engine 不反向写 registration.state。
+     * shutdown 时 cancel 一次性收掉。
+     */
+    private val registrationStateBridge: Job = scope.launch {
+        registration.state.collect { regState ->
+            val mapped = when (regState) {
+                RegistrationState.Disconnected -> SipState.Disconnected
+                RegistrationState.Registering -> SipState.Registering
+                RegistrationState.Registered -> SipState.Registered
+                RegistrationState.RetryBackoff -> SipState.Registering
+                RegistrationState.Failed -> SipState.Failed
+            }
+            // 单向直写:仅当 Engine 当前不在 InCall 时同步,InCall 由业务路径维护
+            if (_state.value != SipState.InCall) {
+                _state.value = mapped
             }
         }
+    }
+    private val registrationEventBridge: Job = scope.launch {
+        registration.events.collect { ev ->
+            val sim = when (ev) {
+                is RegistrationEvent.Registered ->
+                    SimEvent.RegistrationSucceeded(config.expiresSeconds)
+                is RegistrationEvent.Renewed ->
+                    SimEvent.RegistrationSucceeded(config.expiresSeconds)
+                is RegistrationEvent.AuthChallenged ->
+                    SimEvent.RegistrationChallenged(ev.realm)
+                is RegistrationEvent.Unauthorized ->
+                    SimEvent.RegistrationFailed(ev.reason)
+                is RegistrationEvent.NetworkSwitchedReregister -> null
+                is RegistrationEvent.AutoReregisterTriggered -> {
+                    // 心跳连续超时:由 Engine 顺序关掉其他域的活跃流。
+                    // Coord 自己已经 unregister + register。
+                    activeStream?.let { active ->
+                        active.statsJob?.cancel()
+                        active.streamJob.cancel()
+                        active.audioJob?.cancel()
+                        try { active.rtpSender.close() } catch (_: Throwable) {}
+                        activeStream = null
+                    }
+                    SimEvent.AutoReregisterTriggered(ev.reason)
+                }
+            }
+            if (sim != null) _events.emit(sim)
+        }
+    }
+    private val registrationClockBridge: Job = scope.launch {
+        registration.clockOffset.collect { off -> _clockOffset.value = off }
+    }
+
+    /** Initiate registration. Returns immediately; observe [state] for completion. */
+    suspend fun register() {
+        startInboundIfNeeded()
+        _events.emit(SimEvent.RegistrationStarted("${config.server.ip}:${config.server.port}"))
+        registration.register()
+        syncStateFromRegistration()
     }
 
     /** Cancel an in-flight REGISTER (before any response). Used by UI cancel. */
     suspend fun cancelRegister() {
-        mutex.withLock {
-            if (_state.value != SipState.Registering) return
-            registerJob?.cancel()
-            registerJob = null
-            retryJob?.cancel()
-            retryJob = null
-            registerRetryCount = 0
-            _state.value = SipStateMachine.transition(
-                _state.value, SipEvent.UnregisterRequested
-            )
-            _events.emit(SimEvent.RegistrationFailed("用户取消"))
-        }
-    }
-
-    /**
-     * Arm a watchdog so the UI doesn't sit in "Registering…" forever when the
-     * platform never replies (e.g. server down, UDP black hole, wrong IP).
-     *
-     * Re-armed on each REGISTER send (initial + 401 re-send), cancelled when
-     * we either succeed, get a terminal failure, or the user cancels.
-     */
-    private fun armRegisterTimeout() {
-        registerJob?.cancel()
-        registerJob = scope.launch {
-            delay(REGISTER_TIMEOUT_MS)
-            mutex.withLock {
-                if (_state.value != SipState.Registering) return@withLock
-                scheduleRetryOrFail("平台 ${REGISTER_TIMEOUT_MS / 1000}s 未响应")
-            }
-        }
-    }
-
-    private fun cancelRegisterTimeout() {
-        registerJob?.cancel()
-        registerJob = null
-    }
-
-    /**
-     * 1.7: Decide whether to retry registration or give up.
-     * Retries only for transient failures (timeout / 5xx). Permanent rejections
-     * (403, 404, bad credentials) go straight to Failed.
-     */
-    private suspend fun scheduleRetryOrFail(reason: String, permanent: Boolean = false) {
-        if (permanent || registerRetryCount >= MAX_REGISTER_RETRIES) {
-            _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterFailed(reason))
-            _events.emit(SimEvent.RegistrationFailed(reason))
-            SystemLogger.emit(LogLevel.Warning, LogTag.Lifecycle, "注册失败(不重试): $reason")
-            registerRetryCount = 0
-            return
-        }
-        registerRetryCount++
-        val delayMs = INITIAL_RETRY_DELAY_MS * (1L shl (registerRetryCount - 1))
-        _events.emit(SimEvent.RegistrationRetryScheduled(delayMs, registerRetryCount))
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Lifecycle,
-            "注册失败: $reason → 第 $registerRetryCount 次重试,${delayMs}ms 后"
-        )
-        retryJob?.cancel()
-        retryJob = scope.launch {
-            delay(delayMs)
-            doRegisterInternal()
-        }
-    }
-
-    /**
-     * Internal register logic reused by initial register and retry.
-     * Unlike public [register], does NOT reset retryCount.
-     */
-    private suspend fun doRegisterInternal() {
-        mutex.withLock {
-            if (_state.value != SipState.Registering &&
-                _state.value != SipState.Failed &&
-                _state.value != SipState.Disconnected
-            ) return
-            startInboundIfNeeded()
-            cseq = 1
-            callId = SipBuilders.randomCallId(localIp)
-            fromTag = SipBuilders.randomTag()
-            val branch = SipBuilders.randomBranch()
-            val req = SipBuilders.buildRegister(
-                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider()
-            )
-            pendingRegister = req
-            _state.value = SipStateMachine.transition(_state.value, SipEvent.RegisterRequested)
-            try {
-                transport.send(req)
-                _events.emit(SimEvent.MessageSent(req))
-                armRegisterTimeout()
-            } catch (e: Throwable) {
-                scheduleRetryOrFail("transport.send: ${e.message}")
-            }
-        }
+        registration.cancelRegister()
+        syncStateFromRegistration()
     }
 
     /** Send Unregister and tear down. */
@@ -464,33 +417,13 @@ class SimulatorEngine(
         if (activeStream != null) {
             stopStream("user unregister")
         }
-        mutex.withLock {
-            if (_state.value == SipState.Disconnected) return
-            cancelRegisterTimeout()
-            retryJob?.cancel()
-            retryJob = null
-            registerRetryCount = 0
-            renewalJob?.cancel()
-            renewalJob = null
-            heartbeat?.stop()
-            heartbeat = null
-            subscriptionRegistry.cancelAll()
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Lifecycle,
-                "用户注销 → 发送 Unregister"
-            )
-
-            cseq += 1
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp)
-            val fromTagNow = fromTag ?: SipBuilders.randomTag()
-            val req = SipBuilders.buildUnregister(
-                config, cseq, callIdNow, branch, fromTagNow, localIp, localPortProvider()
-            )
-            transport.send(req)
-            _events.emit(SimEvent.MessageSent(req))
-            _state.value = SipStateMachine.transition(_state.value, SipEvent.UnregisterRequested)
-        }
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "用户注销 → 发送 Unregister"
+        )
+        subscriptionRegistry.cancelAll()
+        registration.unregister()
+        syncStateFromRegistration()
     }
 
     /**
@@ -592,22 +525,20 @@ class SimulatorEngine(
             _currentBroadcast.value = null
         }
         mutex.withLock {
-            heartbeat?.stop()
-            heartbeat = null
-            renewalJob?.cancel()
-            renewalJob = null
-            retryJob?.cancel()
-            retryJob = null
             ackTimeoutJob?.cancel()
             ackTimeoutJob = null
             awaitingAckCallId = null
             subscriptionRegistry.cancelAll()
             inboundJob?.cancel()
             inboundJob = null
-            registerJob?.cancel()
-            registerJob = null
             _state.value = SipState.Disconnected
         }
+        // 收掉 RegistrationCoordinator + 三条桥接协程,最后取消 engineScope
+        registration.shutdown()
+        registrationStateBridge.cancel()
+        registrationEventBridge.cancel()
+        registrationClockBridge.cancel()
+        scope.cancel()
     }
 
     /**
@@ -1169,103 +1100,40 @@ class SimulatorEngine(
         val cseqMethod = cseqHeader.split(" ").getOrNull(1)?.let { SipMethod.fromString(it) } ?: return
 
         when (cseqMethod) {
-            SipMethod.REGISTER -> handleRegisterResponse(resp)
+            SipMethod.REGISTER -> {
+                registration.onIncoming(resp)
+                // 同步把 Coord 最新状态拉回 _state — bridge 协程是 launch 调度的,
+                // 跨消息时序可能滞后,而 inbound collector 此刻可能马上处理下一条消息(如 INVITE),
+                // 业务状态机基于"Coord 已经 Registered"才能正确迁移到 InCall。
+                syncStateFromRegistration()
+            }
             SipMethod.INVITE -> handleBroadcastInviteResponse(resp)
             SipMethod.MESSAGE -> {
+                // 心跳 ack 计数归 RegistrationCoordinator(它持有 keepalive 状态),
+                // Engine 仅 emit UI 事件(后续 PR4/PR5 拆完后转 RegistrationEvent 桥接,
+                // 顺带把心跳序号一起带过来 — 当前只携带 0,UI 不依赖该字段)。
                 if (resp.statusCode in 200..299) {
-                    val sn = keepaliveSn
-                    consecutiveKeepaliveTimeouts = 0
-                    lastKeepaliveAcked = true
-                    _events.emit(SimEvent.HeartbeatAcknowledged(sn))
+                    registration.onIncoming(resp)
+                    _events.emit(SimEvent.HeartbeatAcknowledged(0))
                 }
             }
             else -> Unit
         }
     }
 
-    private suspend fun handleRegisterResponse(resp: SipResponse) {
-        when (resp.statusCode) {
-            in 200..299 -> {
-                cancelRegisterTimeout()
-                registerRetryCount = 0
-                applySipDateSync(resp)
-                if (!isRenewal) {
-                    _state.value = SipStateMachine.transition(_state.value, SipEvent.Register200Received)
-                    _events.emit(SimEvent.RegistrationSucceeded(config.expiresSeconds))
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.Lifecycle,
-                        "已注册,expires=${config.expiresSeconds}s"
-                    )
-                    startHeartbeat()
-                } else {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.Lifecycle,
-                        "续约成功,expires=${config.expiresSeconds}s"
-                    )
-                    isRenewal = false
-                }
-                scheduleExpiresRenewal()
-            }
-
-            401, 407 -> {
-                val challenge = resp.firstHeader(SipHeader.WWW_AUTHENTICATE)
-                    ?: resp.firstHeader("Proxy-Authenticate")
-                val pending = pendingRegister
-                if (challenge == null || pending == null) {
-                    cancelRegisterTimeout()
-                    _state.value = SipStateMachine.transition(
-                        _state.value, SipEvent.RegisterFailed("401 missing WWW-Authenticate")
-                    )
-                    _events.emit(SimEvent.RegistrationFailed("Missing challenge"))
-                    SystemLogger.emit(
-                        LogLevel.Warning, LogTag.Lifecycle,
-                        "注册失败: 401 缺少 WWW-Authenticate"
-                    )
-                    return
-                }
-                // Break the 401 storm: a single REGISTER can be retransmitted (UDP) and the
-                // platform answers each copy with its own fresh-nonce 401. If we already
-                // responded to a challenge (pending now carries Authorization), re-sending
-                // again would spawn one new REGISTER per 401 → exponential blast → the
-                // platform rate-limits us ("register N times in 3 seconds") and the device
-                // never truly registers. Respond to the *first* challenge only; ignore the
-                // rest of the storm and let the watchdog/retry path handle a genuine failure.
-                val alreadyAuthed = pending.firstHeader(SipHeader.AUTHORIZATION) != null
-                if (alreadyAuthed) {
-                    SystemLogger.emit(
-                        LogLevel.Debug, LogTag.Lifecycle,
-                        "忽略重复 401(已应答挑战,等待 200 或超时)"
-                    )
-                    return
-                }
-                _events.emit(SimEvent.RegistrationChallenged(challenge))
-                _state.value = SipStateMachine.transition(
-                    _state.value, SipEvent.Register401Received(challenge)
-                )
-
-                val parsed = DigestAuth.parseChallenge(challenge)
-                val authHeader = DigestAuth.buildResponse(
-                    challenge = parsed,
-                    username = config.device.username,
-                    password = config.device.password,
-                    method = "REGISTER",
-                    uri = pending.requestUri
-                )
-                cseq += 1
-                val newBranch = SipBuilders.randomBranch()
-                val authedReq = SipBuilders.addAuthorization(pending, authHeader, cseq, newBranch)
-                pendingRegister = authedReq
-                transport.send(authedReq)
-                _events.emit(SimEvent.MessageSent(authedReq))
-                armRegisterTimeout()
-            }
-
-            in 400..699 -> {
-                cancelRegisterTimeout()
-                val reason = "${resp.statusCode} ${resp.reasonPhrase}"
-                val permanent = resp.statusCode in 400..499 && resp.statusCode != 401 && resp.statusCode != 407
-                scheduleRetryOrFail(reason, permanent)
-            }
+    /**
+     * 把 [registration] 状态同步映射回 Engine 的 [_state]。InCall 期间不回写,
+     * 保留 Engine 持有的业务状态。仅在路由层调用 — Coord 改完状态后立即拉回,
+     * 避免 bridge 协程时序滞后导致后续消息(如 INVITE)读到陈旧状态。
+     */
+    private fun syncStateFromRegistration() {
+        if (_state.value == SipState.InCall) return
+        _state.value = when (registration.state.value) {
+            RegistrationState.Disconnected -> SipState.Disconnected
+            RegistrationState.Registering -> SipState.Registering
+            RegistrationState.Registered -> SipState.Registered
+            RegistrationState.RetryBackoff -> SipState.Registering
+            RegistrationState.Failed -> SipState.Failed
         }
     }
 
@@ -1278,30 +1146,10 @@ class SimulatorEngine(
             SipMethod.CANCEL -> handleCancel(req)
             SipMethod.SUBSCRIBE -> handleSubscribe(req)
             SipMethod.INFO -> handleInfo(req)
-            SipMethod.OPTIONS -> handleOptions(req)
+            // RFC 3261 §11.2 OPTIONS 探活响应 — 委派给 RegistrationCoordinator
+            // (M5 平台兼容性补漏 batch1, 矩阵 2.6,平台定期探活,设备 200 OK + Allow)
+            SipMethod.OPTIONS -> registration.onIncoming(req)
             else -> Unit
-        }
-    }
-
-    /**
-     * RFC 3261 §11.2 OPTIONS 探活响应(M5 平台兼容性补漏 batch1, 矩阵 2.6).
-     *
-     * 平台(WVP / EasyGBS / LiveGBS)定期 OPTIONS 探活,设备此前不响应导致平台日志
-     * 出现"OPTIONS timeout"。本路径直接出栈 200 OK + Allow,Allow 列举 sim 真实
-     * 支持的方法 — REGISTER 不在(设备只发不收)。OPTIONS 是 stateless,
-     * 不查 dialog 表,不互斥任何活跃事务。
-     */
-    private suspend fun handleOptions(req: SipRequest) {
-        runCatching {
-            val resp = SipBuilders.buildOptionsResponse(
-                request = req,
-                allowedMethods = ALLOWED_OPTIONS_METHODS,
-                userAgent = config.userAgent
-            )
-            transport.send(resp)
-            _events.emit(SimEvent.MessageSent(resp))
-        }.onFailure {
-            _events.emit(SimEvent.TransportError("send OPTIONS 200: ${it.message}"))
         }
     }
 
@@ -3500,156 +3348,6 @@ $itemsBlock
             _events.emit(SimEvent.NotifySent(kind = dialog.kind, sn = notifySn))
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    private fun startHeartbeat() {
-        heartbeat?.stop()
-        consecutiveKeepaliveTimeouts = 0
-        lastKeepaliveAcked = true
-        heartbeat = Heartbeat(
-            intervalMillis = config.keepaliveIntervalSeconds * 1000L,
-            scope = scope
-        ) {
-            if (!lastKeepaliveAcked) {
-                consecutiveKeepaliveTimeouts++
-                if (consecutiveKeepaliveTimeouts >= config.maxKeepaliveTimeouts) {
-                    _events.emit(
-                        SimEvent.HeartbeatTimeoutDetected(
-                            consecutiveKeepaliveTimeouts,
-                            config.maxKeepaliveTimeouts
-                        )
-                    )
-                    SystemLogger.emit(
-                        LogLevel.Warning, LogTag.Lifecycle,
-                        "心跳连续 ${consecutiveKeepaliveTimeouts} 次未响应,触发重注册"
-                    )
-                    triggerAutoReregister("heartbeat timeout ×${consecutiveKeepaliveTimeouts}")
-                    return@Heartbeat
-                }
-            }
-            lastKeepaliveAcked = false
-            keepaliveSn += 1
-            cseq += 1
-            val branch = SipBuilders.randomBranch()
-            val msg = SipBuilders.buildKeepalive(
-                config = config,
-                sn = keepaliveSn,
-                cseq = cseq,
-                callId = callId ?: SipBuilders.randomCallId(localIp),
-                branch = branch,
-                fromTag = fromTag ?: SipBuilders.randomTag(),
-                localIp = localIp,
-                localPort = localPortProvider()
-            )
-            try {
-                transport.send(msg)
-                _events.emit(SimEvent.HeartbeatSent(keepaliveSn))
-                _events.emit(SimEvent.MessageSent(msg))
-            } catch (e: Throwable) {
-                _events.emit(SimEvent.TransportError("send Keepalive: ${e::class.simpleName}: ${e.message}"))
-            }
-        }
-        heartbeat?.start()
-    }
-
-    /**
-     * 1.5: Auto re-register after heartbeat timeout.
-     * Tears down current session (heartbeat + active stream) without sending
-     * Unregister (platform is likely unreachable), then re-starts registration.
-     */
-    private fun triggerAutoReregister(reason: String) {
-        scope.launch {
-            _events.emit(SimEvent.AutoReregisterTriggered(reason))
-            heartbeat?.stop()
-            heartbeat = null
-            renewalJob?.cancel()
-            renewalJob = null
-            activeStream?.let { active ->
-                active.statsJob?.cancel()
-                active.streamJob.cancel()
-                active.audioJob?.cancel()
-                try { active.rtpSender.close() } catch (_: Throwable) {}
-                activeStream = null
-            }
-            mutex.withLock {
-                _state.value = SipState.Disconnected
-            }
-            register()
-        }
-    }
-
-    /**
-     * 1.6: Schedule a REGISTER renewal before expires lapses.
-     * Fires at 80% of expiresSeconds to give time for auth challenge round-trip.
-     */
-    /**
-     * M5 §4.15 SIP Date 校时:从注册 200 OK 的 Date 头校准平台基准时间。
-     *
-     * - Date 头格式 RFC1123 / ISO8601 双兼容(SipDateParser)
-     * - 解析失败 / 缺失:不校时,fallback 本地时钟,不阻塞注册
-     * - 续约 200 OK 也走此路径,自然滚动校准
-     * - 不修改手机系统时钟,只更新 _clockOffset
-     */
-    private fun applySipDateSync(resp: SipResponse) {
-        val rawDate = resp.firstHeader(SipHeader.DATE)
-        if (rawDate.isNullOrBlank()) return
-        val platformInstant = SipDateParser.parse(rawDate)
-        if (platformInstant == null) {
-            SystemLogger.emit(
-                LogLevel.Warning, LogTag.Lifecycle,
-                "Date 头解析失败,fallback 本地时钟",
-                detail = rawDate
-            )
-            return
-        }
-        val offset = ClockOffset.synced(platformInstant, rawDate)
-        _clockOffset.value = offset
-        val deltaMs = offset.localOffsetMs() ?: 0L
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Lifecycle,
-            "已校时:平台 ${rawDate.trim()} 本地偏移 ${formatOffsetMs(deltaMs)}"
-        )
-    }
-
-    private fun formatOffsetMs(ms: Long): String {
-        val sign = if (ms >= 0) "+" else "-"
-        val abs = if (ms < 0) -ms else ms
-        return when {
-            abs < 1_000 -> "${sign}${abs}ms"
-            abs < 60_000 -> "${sign}${abs / 1000}.${(abs % 1000) / 100}s"
-            else -> "${sign}${abs / 60_000}m${(abs % 60_000) / 1000}s"
-        }
-    }
-
-    private fun scheduleExpiresRenewal() {
-        renewalJob?.cancel()
-        val renewalDelayMs = (config.expiresSeconds * 800L)
-        renewalJob = scope.launch {
-            delay(renewalDelayMs)
-            mutex.withLock {
-                if (_state.value != SipState.Registered && _state.value != SipState.InCall) return@withLock
-                isRenewal = true
-                cseq += 1
-                val branch = SipBuilders.randomBranch()
-                val req = SipBuilders.buildRegister(
-                    config, cseq, callId ?: SipBuilders.randomCallId(localIp),
-                    branch, fromTag ?: SipBuilders.randomTag(), localIp, localPortProvider()
-                )
-                pendingRegister = req
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Lifecycle,
-                    "Expires 续约: 发送 REGISTER(剩余 ${config.expiresSeconds * 200 / 1000}s)"
-                )
-                try {
-                    transport.send(req)
-                    _events.emit(SimEvent.MessageSent(req))
-                    armRegisterTimeout()
-                } catch (e: Throwable) {
-                    isRenewal = false
-                    _events.emit(SimEvent.TransportError("renewal send: ${e.message}"))
-                }
-            }
         }
     }
 

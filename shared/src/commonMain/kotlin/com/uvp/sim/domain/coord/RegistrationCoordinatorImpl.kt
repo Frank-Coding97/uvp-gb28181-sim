@@ -223,11 +223,22 @@ internal class RegistrationCoordinatorImpl(
         return when (msg) {
             is SipResponse -> {
                 val msgCallId = msg.firstHeader(SipHeader.CALL_ID)
-                if (msgCallId != null && msgCallId == callId) {
-                    handleRegisterResponse(msg)
-                    RoutingResult.Handled
-                } else {
-                    RoutingResult.Skip
+                if (msgCallId == null || msgCallId != callId) return RoutingResult.Skip
+                val cseqRaw = msg.cseqRaw()
+                val cseqMethod = cseqRaw?.split(" ")?.getOrNull(1)?.let { SipMethod.fromString(it) }
+                when (cseqMethod) {
+                    SipMethod.REGISTER -> {
+                        handleRegisterResponse(msg)
+                        RoutingResult.Handled
+                    }
+                    SipMethod.MESSAGE -> {
+                        if (msg.statusCode in 200..299) {
+                            consecutiveKeepaliveTimeouts = 0
+                            lastKeepaliveAcked = true
+                        }
+                        RoutingResult.Handled
+                    }
+                    else -> RoutingResult.Skip
                 }
             }
             is SipRequest -> {
