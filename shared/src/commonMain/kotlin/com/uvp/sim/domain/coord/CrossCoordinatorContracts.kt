@@ -43,6 +43,13 @@ internal interface ManscdpRouterFacade {
  * PR5 拆 BroadcastCoordinator 时:本接口由 BroadcastCoordinator 实现,Invite 退出广播域。
  */
 internal interface BroadcastDialogHandshakeListener {
+    /**
+     * PR4 临时桥:Engine 同步 bind RTP receiver 拿本地音频端口。
+     * Invite 发 outbound INVITE 之前必须用真实端口拼 SDP offer。
+     * 返回 -1 表示 bind 失败,Invite 取消 INVITE。
+     */
+    suspend fun bindBroadcastRtpPort(mode: com.uvp.sim.network.RtpMode): Int
+
     suspend fun onInviting(
         callId: String,
         fromTag: String,
