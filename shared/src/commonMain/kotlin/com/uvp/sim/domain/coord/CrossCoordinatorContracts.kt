@@ -26,3 +26,42 @@ internal interface BroadcastInvoker {
 internal interface ManscdpRouterFacade {
     fun nextSn(): String
 }
+
+/**
+ * **PR4 临时桥**(PR5 BroadcastCoordinator 落地时整段删除)。
+ *
+ * 决策 6(plan-tasks §2):PR4 抽 InviteCoordinator 时,Invite 实现 [BroadcastInvoker.fireBroadcastInvite]
+ * 把 SIP INVITE 发出去 + 处理 200 OK / 4xx 响应,但 RX 媒体链(rtpReceiver / audioPlayback /
+ * `_currentBroadcast` 状态机)**仍然留 Engine 上**。
+ *
+ * Invite 在 200 OK / 4xx 处理完调本接口告诉 Engine 该启 RX 还是清状态。Engine 实现接口的
+ * 三个回调:
+ *   - [onInviting]:INVITE 发出去后,Engine 把 `_currentBroadcast.value = BroadcastDialog(Inviting)`
+ *   - [onTalking]:200 OK + ACK 处理完 + codec 校验通过,Engine `state = Talking` + 启 RX 链
+ *   - [onFailed]:4xx / codec 拒绝 / TCP 连接失败,Engine 清状态 + emit BroadcastEnded
+ *
+ * PR5 拆 BroadcastCoordinator 时:本接口由 BroadcastCoordinator 实现,Invite 退出广播域。
+ */
+internal interface BroadcastDialogHandshakeListener {
+    suspend fun onInviting(
+        callId: String,
+        fromTag: String,
+        cseq: Int,
+        sourceId: String,
+        targetId: String,
+        platformUri: String,
+        localAudioPort: Int,
+        deviceSsrc: String,
+        mode: com.uvp.sim.network.RtpMode,
+    )
+
+    suspend fun onTalking(
+        callId: String,
+        remoteTag: String,
+        remoteHost: String,
+        remotePort: Int,
+        codec: com.uvp.sim.domain.AudioRxCodec,
+    )
+
+    suspend fun onFailed(callId: String, reason: BroadcastEndReasonHint)
+}
