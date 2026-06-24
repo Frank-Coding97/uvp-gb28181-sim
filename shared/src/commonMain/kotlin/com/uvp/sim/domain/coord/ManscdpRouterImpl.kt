@@ -80,6 +80,7 @@ internal class ManscdpRouterImpl(
     private val mockGps: MockGpsSource,
     private val clockOffsetProvider: () -> ClockOffset = { ClockOffset.Empty },
     private val stateRegisteredOrInCall: () -> Boolean = { true },
+    private val broadcastBusy: () -> Boolean = { false },
     private val simEventEmit: suspend (SimEvent) -> Unit = {},
     cseqProvider: (() -> Int)? = null,
     cseqIncrementer: (() -> Int)? = null,
@@ -1368,6 +1369,19 @@ internal class ManscdpRouterImpl(
         val query = com.uvp.sim.gb28181.BroadcastQuery.parse(xml)
         val sn = query.sn ?: "0"
         val myId = config.device.deviceId
+
+        // 并发拒绝(spec Q1):已持有一路 broadcast → ERROR busy,不发 INVITE
+        if (broadcastBusy()) {
+            sendBroadcastResponseMessage(
+                com.uvp.sim.gb28181.BroadcastResponse.build(
+                    deviceId = myId, sn = sn,
+                    result = com.uvp.sim.gb28181.BroadcastResponse.Result.ERROR,
+                    reason = "busy",
+                )
+            )
+            SystemLogger.emit(LogLevel.Warning, LogTag.Network, "已有语音广播进行中 → 拒绝第二路(busy)")
+            return
+        }
 
         val targetId = query.targetId
         if (targetId.isNullOrBlank() || !isOwnedBroadcastTarget(targetId)) {
