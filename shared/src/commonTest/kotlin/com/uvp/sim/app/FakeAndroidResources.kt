@@ -15,15 +15,15 @@ import com.uvp.sim.snapshot.SnapshotCapture
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
 
-/** 单测用 fake AndroidResources(全空)。GREEN 路径 ViewModel 注入真实 Android implementation。 */
+/** 单测用 fake AndroidResources(全空)。 */
 internal class FakeAndroidResources(
     override val cameraCapture: CameraCapture? = null,
     override val audioCapture: AudioCapture? = null,
-    override val rtpSenderFactory: ((String, Int, RtpMode) -> RtpSender)? = null,
+    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null,
     override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null,
     override val audioSinkFactory: ((Int, Int) -> AudioSink)? = null,
     override val recordingService: RecordingService = NoopRecordingService,
-    override val playbackBuilderFactory: ((CoroutineScope, AudioCodec) -> com.uvp.sim.domain.PlaybackBuilder)? = null,
+    override val playbackBuilderFactory: ((CoroutineScope, AudioCodec, (String, Int, RtpMode) -> RtpSender) -> com.uvp.sim.domain.PlaybackBuilder)? = null,
     override val localIpProvider: () -> String = { "0.0.0.0" },
     override val snapshotCapture: SnapshotCapture? = null,
     override val snapshotCache: JpegLocalCache? = null,
