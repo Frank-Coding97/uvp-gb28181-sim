@@ -10,18 +10,18 @@ import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.sip.SipResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFails
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 
 /**
- * PR5 T5.1 RED:[PlaybackCoordinatorImpl] 直接路径覆盖。
- *
- * GREEN 后(T5.2)改正向断言。
+ * PR5 T5.2 GREEN:[PlaybackCoordinatorImpl] 直接路径覆盖。正向断言。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PlaybackCoordinatorTest {
@@ -53,7 +53,6 @@ class PlaybackCoordinatorTest {
         )
 
     private fun playbackInvite(callId: String, channelId: String = "35020000001320000001"): SipRequest {
-        // s=Playback + t=<startEpochSec> <endEpochSec>
         val sdp = """
             v=0
             o=server 0 0 IN IP4 192.168.10.222
@@ -83,19 +82,55 @@ class PlaybackCoordinatorTest {
     }
 
     @Test
-    fun t5_1_pb_a_handlePlaybackInvite_no_segments_returns_487() = runTest {
+    fun t5_2_pb_a_handlePlaybackInvite_no_builder_returns_487() = runTest {
         val transport = MockSipTransport()
         transport.connect()
         val pb = newPb(this, transport)
-        // RED:onIncoming 抛错 → assertFails 通过
-        // GREEN:transport.sent 含 487 响应(playbackBuilder=null 走 487 路径)
-        assertFails("RED: handlePlaybackInvite stub 应抛错") {
-            pb.onIncoming(playbackInvite("pb-1@plat"))
-        }
+        val result = pb.onIncoming(playbackInvite("pb-1@plat"))
+        runCurrent()
+        assertEquals(RoutingResult.Handled, result, "Playback INVITE 应被 Coord 吃下")
+        val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
+        assertNotNull(resp, "应有响应")
+        assertEquals(487, resp.statusCode, "无 playbackBuilder 应 487")
     }
 
     @Test
-    fun t5_1_pb_b_handleInfo_no_active_returns_Skip() = runTest {
+    fun t5_2_pb_b_play_INVITE_returns_Skip() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val pb = newPb(this, transport)
+        // s=Play 的 INVITE,Playback 必须 Skip 让 Invite 接
+        val sdp = """
+            v=0
+            o=server 0 0 IN IP4 192.168.10.222
+            s=Play
+            c=IN IP4 192.168.10.222
+            t=0 0
+            m=video 30000 RTP/AVP 96
+            a=recvonly
+            a=rtpmap:96 PS/90000
+            y=0100000001
+        """.trimIndent().replace("\n", "\r\n")
+        val req = SipRequest(
+            method = SipMethod.INVITE,
+            requestUri = "sip:35020000001320000001@3502000000",
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.10.222:8160;branch=z9hG4bK-play"),
+                SipMessage.Header(SipHeader.FROM, "<sip:35020000002000000001@3502000000>;tag=plat"),
+                SipMessage.Header(SipHeader.TO, "<sip:35020000001320000001@3502000000>"),
+                SipMessage.Header(SipHeader.CALL_ID, "play-1@plat"),
+                SipMessage.Header(SipHeader.CSEQ, "1 INVITE"),
+                SipMessage.Header("Content-Type", "application/sdp"),
+            ),
+            body = sdp.encodeToByteArray(),
+        )
+        val result = pb.onIncoming(req)
+        runCurrent()
+        assertEquals(RoutingResult.Skip, result, "Play INVITE 必须 Skip 给 Invite")
+    }
+
+    @Test
+    fun t5_2_pb_c_handleInfo_no_active_returns_Skip() = runTest {
         val transport = MockSipTransport()
         transport.connect()
         val pb = newPb(this, transport)
@@ -111,26 +146,20 @@ class PlaybackCoordinatorTest {
             ),
             body = ByteArray(0),
         )
-        // RED:抛错;GREEN:无 activePlayback 必须 Skip 让 Mans 接
-        assertFails("RED: onIncoming stub 应抛错") { pb.onIncoming(info) }
-    }
-
-    @Test
-    fun t5_1_pb_c_stop_with_no_active_is_noop() = runTest {
-        val transport = MockSipTransport()
-        transport.connect()
-        val pb = newPb(this, transport)
-        // RED:抛错;GREEN:stop 无活跃回放是 no-op
-        assertFails("RED: stop stub 应抛错") { pb.stop("user stop") }
-    }
-
-    @Test
-    fun t5_1_pb_d_initial_state_is_Idle() = runTest {
-        val transport = MockSipTransport()
-        transport.connect()
-        val pb = newPb(this, transport)
-        // 初始状态固定 Idle,不抛错
-        assertEquals(PlaybackState.Idle, pb.state.value, "初始状态必须 Idle")
+        val result = pb.onIncoming(info)
         runCurrent()
+        assertEquals(RoutingResult.Skip, result, "无 activePlayback 必须 Skip 让 Mans 接")
+    }
+
+    @Test
+    fun t5_2_pb_d_stop_with_no_active_is_noop() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val pb = newPb(this, transport)
+        pb.stop("user stop")
+        runCurrent()
+        // 无活跃 → no-op,不发任何消息,状态保持 Idle
+        assertEquals(0, transport.sent.size, "无活跃回放时 stop 不应发消息")
+        assertEquals(PlaybackState.Idle, pb.state.value)
     }
 }
