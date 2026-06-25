@@ -1,9 +1,11 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
 import com.uvp.sim.domain.coord.BroadcastInvoker
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
+import com.uvp.sim.domain.coord.PlaybackCoordinatorImpl
 import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
 import com.uvp.sim.domain.coord.RegistrationEvent
 import com.uvp.sim.domain.coord.RegistrationState
@@ -242,36 +244,10 @@ class SimulatorEngine(
 
     // 5.14 / activeStream / activePlayback / ackTimeoutJob 全部迁到 InviteCoordinator(PR4 T4.3)
 
-    // M3 语音广播下行(§9.8)— 单 slot,同时只允许一路 broadcast(spec Q1)
-    private val _currentBroadcast = MutableStateFlow<BroadcastDialog?>(null)
-    val currentBroadcast: StateFlow<BroadcastDialog?> = _currentBroadcast.asStateFlow()
-    /** 本地音频接收端口。T7 接入真实 RtpReceiver 后绑定真实 UDP 端口,在此之前为占位值。 */
-    private var broadcastLocalAudioPort: Int = 0
-    /** 当前对讲媒体传输模式(UDP/TCP主动/TCP被动),200 OK 时决定是否需要主动 connect 平台。 */
-    private var broadcastMode: com.uvp.sim.network.RtpMode = com.uvp.sim.network.RtpMode.UDP
-    // RX 热计数:每包累加普通字段(不触发 StateFlow recompose),由 rxStatsJob 每秒同步进 currentBroadcast
-    private var rxPackets = 0L
-    private var rxBytes = 0L
-    private var rxSeqLost = 0L
-    private var rxDecodeErrors = 0L
-    private var rxFirstPacketAtMs = 0L
+    // M3 语音广播下行(§9.8)— PR5 T5.4:全部迁到 BroadcastCoordinator,Engine 不再持任何 RX / dialog state。
+    // 公开 API(currentBroadcast / broadcastSpeakerOn / stopBroadcast / setBroadcastSpeaker)委派到 broadcast。
 
-    // M3 语音广播 RX 链路(T7)
-    private var rtpReceiver: com.uvp.sim.network.BroadcastRxSource? = null
-    private var rxJob: Job? = null
-    private var rxStatsJob: Job? = null
-    private val audioChannel = Channel<ShortArray>(capacity = 50, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-    private var audioPlayback: com.uvp.sim.media.AudioSink? = null
-    private var audioPlayJob: Job? = null
-    /** 扬声器开关:false = 静音(继续收 RTP/统计,只是不往 AudioTrack 写)。每路新对讲重置为 true。 */
-    private val _broadcastSpeakerOn = MutableStateFlow(true)
-    val broadcastSpeakerOn: StateFlow<Boolean> = _broadcastSpeakerOn.asStateFlow()
-    /** RtpReceiver 工厂:生产默认走 expect class;测试注入 fake 以避免真 socket + Dispatchers.IO 不确定性。 */
-    private val resolvedRtpReceiverFactory: (CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource =
-        rtpReceiverFactory ?: { sc -> com.uvp.sim.network.realBroadcastRxSource(sc) }
-    /** AudioPlayback 工厂:生产默认 AudioTrack/javax.sound;测试注入 fake 记录 start/stop。 */
-    private val resolvedAudioSinkFactory: (Int, Int) -> com.uvp.sim.media.AudioSink =
-        audioSinkFactory ?: { sr, ch -> com.uvp.sim.media.realAudioSink(sr, ch) }
+    // rtpReceiverFactory / audioSinkFactory 参数直接透传给 BroadcastCoordinatorImpl,Engine 不再 resolve。
 
     // M2: Subscription registry + mock GPS
     private val subscriptionRegistry = SubscriptionRegistry(scope)
@@ -294,83 +270,49 @@ class SimulatorEngine(
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
     /**
-     * PR4 T4.3 临时桥:Invite 完成 broadcast handshake 后通知 Engine 启动 / 终止 RX 链。
-     * 把 Engine 上原有的 _currentBroadcast / startBroadcastRx / teardownBroadcastMedia
-     * 包成接口实现,方便 PR5 BroadcastCoordinator 接管时整段挪过去。
+     * 广播域(PR5 T5.3 GREEN)。InviteCoordinator 已退出广播域,BroadcastInvoker 直接由
+     * BroadcastCoordinator 实现注入给 ManscdpRouter。所有 RX 链 / dialog state / handshake 都在本 Coord 内。
      */
-    private val engineBroadcastHandshakeListener = object : com.uvp.sim.domain.coord.BroadcastDialogHandshakeListener {
-        override suspend fun bindBroadcastRtpPort(mode: com.uvp.sim.network.RtpMode): Int {
-            broadcastMode = mode
-            val receiver = resolvedRtpReceiverFactory(scope)
-            val boundPort = runCatching { receiver.bind(mode) }.getOrDefault(-1)
-            if (boundPort < 0) {
-                runCatching { receiver.close() }
-                return -1
-            }
-            rtpReceiver = receiver
-            broadcastLocalAudioPort = boundPort
-            _broadcastSpeakerOn.value = true
-            rxPackets = 0L; rxBytes = 0L; rxSeqLost = 0L; rxDecodeErrors = 0L; rxFirstPacketAtMs = 0L
-            return boundPort
-        }
-
-        override suspend fun onInviting(
-            callId: String, fromTag: String, cseq: Int, sourceId: String, targetId: String,
-            platformUri: String, localAudioPort: Int, deviceSsrc: String, mode: com.uvp.sim.network.RtpMode,
-        ) {
-            _currentBroadcast.value = BroadcastDialog(
-                callId = callId, localTag = fromTag, remoteTag = null, cseq = cseq,
-                sourceId = sourceId, targetId = targetId, sourcePlatformUri = platformUri,
-                localAudioPort = localAudioPort, deviceSsrc = deviceSsrc,
-                state = BroadcastDialogState.Inviting, createdAtMs = nowMs(),
-            )
-        }
-
-        override suspend fun onTalking(
-            callId: String, remoteTag: String, remoteHost: String, remotePort: Int, codec: AudioRxCodec,
-        ) {
-            val bc = _currentBroadcast.value ?: return
-            if (bc.callId != callId) return
-            if (broadcastMode == com.uvp.sim.network.RtpMode.TCP_ACTIVE) {
-                val connected = runCatching { rtpReceiver?.connect(remoteHost, remotePort) }.isSuccess
-                if (!connected) {
-                    teardownBroadcastMedia()
-                    val dur = nowMs() - bc.createdAtMs
-                    _currentBroadcast.value = null
-                    _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
-                    SystemLogger.emit(LogLevel.Warning, LogTag.Media, "语音广播 TCP 主动连接平台失败 $remoteHost:$remotePort")
-                    return
-                }
-                SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音广播 TCP 主动已连平台 $remoteHost:$remotePort")
-            }
-            _currentBroadcast.value = bc.copy(
-                state = BroadcastDialogState.Talking, remoteTag = remoteTag,
-                remoteAudioHost = remoteHost, remoteAudioPort = remotePort, codec = codec,
-            )
-            _events.emit(SimEvent.BroadcastInvited(bc.sourcePlatformUri, bc.localAudioPort))
-            SystemLogger.emit(LogLevel.Info, LogTag.Media,
-                "语音广播建立(Talking)codec=${codec.name} mode=$broadcastMode ← $remoteHost:$remotePort")
-            startBroadcastRx()
-        }
-
-        override suspend fun onFailed(callId: String, reason: com.uvp.sim.domain.coord.BroadcastEndReasonHint) {
-            val bc = _currentBroadcast.value
-            val dur = if (bc != null) nowMs() - bc.createdAtMs else 0L
-            teardownBroadcastMedia()
-            _currentBroadcast.value = null
-            val mapped = when (reason) {
-                com.uvp.sim.domain.coord.BroadcastEndReasonHint.Error -> BroadcastEndReason.Error
-                com.uvp.sim.domain.coord.BroadcastEndReasonHint.CodecRejected -> BroadcastEndReason.CodecRejected
-                com.uvp.sim.domain.coord.BroadcastEndReasonHint.InviteFailed -> BroadcastEndReason.InviteFailed
-            }
-            _events.emit(SimEvent.BroadcastEnded(mapped, dur))
-        }
-    }
+    private val broadcast: BroadcastCoordinatorImpl = BroadcastCoordinatorImpl(
+        config = config,
+        transport = transport,
+        scope = scope,
+        localIpProvider = localIpProvider,
+        localPortProvider = localPortProvider,
+        rtpReceiverFactory = rtpReceiverFactory,
+        audioSinkFactory = audioSinkFactory,
+        simEventEmit = { ev -> _events.emit(ev) },
+        cseqProvider = { cseq },
+        cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId },
+        callIdSetter = { callId = it },
+        fromTagProvider = { fromTag },
+        fromTagSetter = { fromTag = it },
+    )
 
     /**
-     * 主叫推流 + 反向广播 INVITE 域(PR4 T4.3)。InviteCoordinatorImpl 实现 BroadcastInvoker,
-     * 注入给 Manscdp 当 broadcastInvoker。Engine 实现 BroadcastDialogHandshakeListener
-     * 临时桥(决策 6,PR5 删)。
+     * 回放域(PR5 T5.2 GREEN)。InviteCoordinator 退出回放域,PLAYBACK / DOWNLOAD INVITE +
+     * INFO MANSRTSP 由本 Coord 接管。
+     */
+    private val playback: PlaybackCoordinatorImpl = PlaybackCoordinatorImpl(
+        config = config,
+        transport = transport,
+        scope = scope,
+        localIpProvider = localIpProvider,
+        localPortProvider = localPortProvider,
+        playbackBuilder = playbackBuilder,
+        recordingService = recordingService,
+        simEventEmit = { ev -> _events.emit(ev) },
+        cseqProvider = { cseq },
+        cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId },
+        callIdSetter = { callId = it },
+        fromTagProvider = { fromTag },
+        fromTagSetter = { fromTag = it },
+    )
+
+    /**
+     * 主叫直播域(PR4 T4.3 + PR5 T5.4)。PR5 后 Invite 退出广播 / 回放域,只管直播 INVITE。
      */
     private val invite: InviteCoordinatorImpl = InviteCoordinatorImpl(
         config = config,
@@ -381,11 +323,8 @@ class SimulatorEngine(
         cameraCapture = cameraCapture,
         audioCapture = audioCapture,
         rtpSenderFactory = rtpSenderFactory,
-        recordingService = recordingService,
-        playbackBuilder = playbackBuilder,
         catalogTree = _catalogTree,
         clockOffsetProvider = { _clockOffset.value },
-        broadcastHandshakeListener = engineBroadcastHandshakeListener,
         mutableSipState = _state,
         simEventEmit = { ev -> _events.emit(ev) },
         cseqProvider = { cseq },
@@ -397,10 +336,9 @@ class SimulatorEngine(
     )
 
     /**
-     * MANSCDP 路由域(PR3 T3.3+T3.4)。Engine 只在路由层把 SUBSCRIBE / MESSAGE 转给 Router,
-     * 主动业务方法 public 委派。
+     * MANSCDP 路由域(PR3 T3.3+T3.4)。
      *
-     * BroadcastInvoker 实装(PR4 T4.3):InviteCoordinatorImpl 实例直接调,删 PR3 anonymous 占位。
+     * BroadcastInvoker 实装(PR5 T5.4):BroadcastCoordinatorImpl 实例直接调,取代 PR4 InviteCoordinator 实现。
      */
     private val manscdp: ManscdpRouterImpl = ManscdpRouterImpl(
         config = config,
@@ -413,14 +351,14 @@ class SimulatorEngine(
         alarmHistoryStore = alarmHistoryStore,
         mutableDeviceControlState = _deviceControlState,
         deviceControlDispatcher = deviceControlDispatcher,
-        broadcastInvoker = invite,
+        broadcastInvoker = broadcast,
         recordingService = recordingService,
         mockGps = mockGps,
         clockOffsetProvider = { _clockOffset.value },
         stateRegisteredOrInCall = {
             _state.value == SipState.Registered || _state.value == SipState.InCall
         },
-        broadcastBusy = { _currentBroadcast.value != null },
+        broadcastBusy = { broadcast.current.value != null },
         simEventEmit = { ev -> _events.emit(ev) },
         cseqProvider = { cseq },
         cseqIncrementer = { cseq += 1; cseq },
@@ -592,13 +530,10 @@ class SimulatorEngine(
 
     /** Stop background work. The transport itself is not closed (caller's responsibility). */
     suspend fun shutdown() {
-        // PR4 T4.3:活跃流 + ackTimeoutJob 全部归 InviteCoordinator,Engine 只调 shutdown
+        // PR5 T5.4:活跃域全部归 Coordinator,Engine 顺序调 shutdown
         invite.shutdown()
-        // M3: 停语音广播媒体(PR5 BroadcastCoordinator 拆出后此段也走 Coord)
-        if (_currentBroadcast.value != null) {
-            teardownBroadcastMedia()
-            _currentBroadcast.value = null
-        }
+        playback.shutdown()
+        broadcast.shutdown()
         mutex.withLock {
             subscriptionRegistry.cancelAll()
             inboundJob?.cancel()
@@ -655,6 +590,30 @@ class SimulatorEngine(
     /** 5.5 device-initiated BYE — PR4 T4.3 委派给 InviteCoordinator(决策 2 选 A)。 */
     suspend fun stopStream(reason: String = "user stop") = invite.stopStream(reason)
 
+    // ---- PR5 T5.4:Broadcast public API 全部委派给 BroadcastCoordinator ----
+
+    /** 当前广播 dialog state — 委派给 BroadcastCoordinator(PR5)。 */
+    val currentBroadcast: StateFlow<BroadcastDialog?> get() = broadcast.current
+
+    /** 扬声器开关 — 委派给 BroadcastCoordinator(PR5)。 */
+    val broadcastSpeakerOn: StateFlow<Boolean> get() = broadcast.speakerOn
+
+    /** 切换语音对讲扬声器(静音不影响 RTP 接收 / dialog,只 gate 写 AudioTrack)。 */
+    fun setBroadcastSpeaker(on: Boolean) = broadcast.setSpeaker(on)
+
+    /** 用户主动停止语音广播(UI ✕)。 */
+    suspend fun stopBroadcast(reason: BroadcastEndReason = BroadcastEndReason.Local) =
+        broadcast.stop(reason)
+
+    /** 测试可见:RX 热计数(绕过每秒节流直接读)。 */
+    internal fun rxPacketCountForTest(): Long = broadcast.debugSnapshot().rxPacketCount
+    internal fun decodeErrorCountForTest(): Long = broadcast.debugSnapshot().decodeErrorCount
+    internal fun isRxActive(): Boolean = broadcast.debugSnapshot().rxActive
+
+    /** 测试可见:test 直注 RTP 包(绕过真 socket)。 */
+    internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) =
+        broadcast.handleRxPacket(rtp)
+
 
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
@@ -690,8 +649,8 @@ class SimulatorEngine(
                 registration.onIncoming(resp)
                 syncStateFromRegistration()
             }
-            // PR4 T4.3:INVITE 响应(主叫 broadcast)归 InviteCoordinator
-            SipMethod.INVITE -> invite.onIncoming(resp)
+            // PR5 T5.4:INVITE 响应(主叫 broadcast)归 BroadcastCoordinator
+            SipMethod.INVITE -> broadcast.onIncoming(resp)
             SipMethod.MESSAGE -> {
                 if (resp.statusCode in 200..299) {
                     registration.onIncoming(resp)
@@ -721,23 +680,23 @@ class SimulatorEngine(
     private suspend fun handleRequest(req: SipRequest) {
         when (req.method) {
             // PR4 T4.3:INVITE / ACK / CANCEL 委派 InviteCoordinator
-            SipMethod.INVITE -> invite.onIncoming(req)
-            SipMethod.ACK -> invite.onIncoming(req)
-            SipMethod.CANCEL -> invite.onIncoming(req)
-            // BYE:先看是否命中当前 broadcast dialog(留 Engine 处理 broadcast BYE,PR5 迁出),
-            // 否则委派给 InviteCoordinator(直播 / 回放 dialog)
-            SipMethod.BYE -> {
-                val cid = req.callId() ?: ""
-                val bc = _currentBroadcast.value
-                if (bc != null && bc.callId == cid) {
-                    handleBroadcastBye(req, bc)
-                } else {
-                    invite.onIncoming(req)
+            // PR5 T5.4:INVITE 先试 invite(直播),Skip 时给 playback
+            SipMethod.INVITE -> {
+                if (invite.onIncoming(req) == com.uvp.sim.domain.coord.RoutingResult.Skip) {
+                    playback.onIncoming(req)
                 }
             }
-            // INFO:Invite 拿到后内部判 activePlayback 决定吃还是 Skip,Skip 给 Mans
+            SipMethod.ACK -> invite.onIncoming(req)
+            SipMethod.CANCEL -> invite.onIncoming(req)
+            // BYE:顺序路由 broadcast → invite → playback
+            SipMethod.BYE -> {
+                var result = broadcast.onIncoming(req)
+                if (result == com.uvp.sim.domain.coord.RoutingResult.Skip) result = invite.onIncoming(req)
+                if (result == com.uvp.sim.domain.coord.RoutingResult.Skip) playback.onIncoming(req)
+            }
+            // INFO:先 playback(MANSRTSP),Skip 给 manscdp
             SipMethod.INFO -> {
-                if (invite.onIncoming(req) == com.uvp.sim.domain.coord.RoutingResult.Skip) {
+                if (playback.onIncoming(req) == com.uvp.sim.domain.coord.RoutingResult.Skip) {
                     manscdp.onIncoming(req)
                 }
             }
@@ -749,158 +708,6 @@ class SimulatorEngine(
     }
 
     // handleInfo / sendSimpleResponse / handleAck / handleCancel 全部迁到 InviteCoordinator(PR4 T4.3)
-
-
-    // sendBroadcastInvite / handleBroadcastInviteResponse / sendBroadcastAck / sendBroadcastBye
-    // 全部迁到 InviteCoordinator(PR4 T4.3)。Engine 上保留 _currentBroadcast 状态机的写入由
-    // engineBroadcastHandshakeListener 处理(临时桥,PR5 BroadcastCoordinator 抽离时整段挪)。
-
-    /** 用户切换语音对讲扬声器开关(静音不影响 RTP 接收 / dialog,只 gate 写 AudioTrack)。 */
-    fun setBroadcastSpeaker(on: Boolean) {
-        _broadcastSpeakerOn.value = on
-        SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音对讲扬声器 → ${if (on) "开" else "静音"}")
-    }
-
-    /**
-     * 用户主动停止语音广播(UI ✕)。发 BYE(若已建立 dialog)→ 拆媒体 → 清状态 → emit BroadcastEnded。
-     */
-    suspend fun stopBroadcast(reason: BroadcastEndReason = BroadcastEndReason.Local) {
-        val bc = _currentBroadcast.value ?: return
-        val remoteTag = bc.remoteTag
-        if (remoteTag != null) {
-            sendBroadcastBye(bc, remoteTag)
-        }
-        teardownBroadcastMedia()
-        val dur = nowMs() - bc.createdAtMs
-        _currentBroadcast.value = null
-        _events.emit(SimEvent.BroadcastEnded(reason, dur))
-        SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音广播停止(${reason.name})")
-    }
-
-    /**
-     * 给 [stopBroadcast] 用的发 BYE(PR4 T4.3 临时留 Engine,PR5 BroadcastCoordinator 拆出时挪走)。
-     * 主动 BYE 用 dialog 的 callId/cseq+1 拼。SN 池跟全局 cseq 共享。
-     */
-    private suspend fun sendBroadcastBye(bc: BroadcastDialog, remoteTag: String) {
-        runCatching {
-            val bye = com.uvp.sim.sip.SipBuilders.buildBye(
-                config = config,
-                callId = bc.callId,
-                cseq = bc.cseq + 1,
-                branch = com.uvp.sim.sip.SipBuilders.randomBranch(),
-                localUri = "sip:${bc.targetId}@${config.server.domain}",
-                localTag = bc.localTag,
-                remoteUri = bc.sourcePlatformUri,
-                remoteTag = remoteTag,
-                remoteTarget = bc.sourcePlatformUri,
-                localIp = localIp,
-                localPort = localPortProvider(),
-            )
-            transport.send(bye)
-            _events.emit(SimEvent.MessageSent(bye))
-        }.onFailure {
-            _events.emit(SimEvent.TransportError("send broadcast BYE: ${it.message}"))
-        }
-    }
-
-    /** 平台先发 BYE 关闭语音广播 dialog → 200 OK + 拆媒体 + 清状态。 */
-    private suspend fun handleBroadcastBye(bye: SipRequest, bc: BroadcastDialog) {
-        runCatching {
-            val ok = com.uvp.sim.sip.SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
-            transport.send(ok)
-            _events.emit(SimEvent.MessageSent(ok))
-        }.onFailure {
-            _events.emit(SimEvent.TransportError("send broadcast BYE 200: ${it.message}"))
-        }
-        teardownBroadcastMedia()
-        val dur = nowMs() - bc.createdAtMs
-        _currentBroadcast.value = null
-        _events.emit(SimEvent.BroadcastEnded(BroadcastEndReason.Remote, dur))
-        SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台 BYE 关闭语音广播")
-    }
-
-    /** T7:启动 RTP 接收 + 每秒节流统计;T9:启动扬声器播放消费协程。 */
-    private fun startBroadcastRx() {
-        val receiver = rtpReceiver ?: return
-        rxJob = receiver.start { rtp ->
-            // onPacket 在 IO 线程回调,hop 回 scope 安全地改状态 / emit
-            scope.launch { handleRxPacket(rtp) }
-        }
-        // T9:扬声器 + audioChannel 消费协程
-        val sink = resolvedAudioSinkFactory(8000, 1)
-        sink.start()
-        audioPlayback = sink
-        audioPlayJob = scope.launch {
-            for (pcm in audioChannel) {
-                if (_broadcastSpeakerOn.value) audioPlayback?.write(pcm)
-            }
-        }
-        rxStatsJob = scope.launch {
-            while (isActive) {
-                delay(BROADCAST_STATS_INTERVAL_MS)
-                val bc = _currentBroadcast.value ?: break
-                // 每秒把热计数同步进 currentBroadcast(UI 每秒最多 recompose 一次,避免 50Hz 卡顿)
-                _currentBroadcast.value = bc.copy(
-                    rxPackets = rxPackets, rxBytes = rxBytes,
-                    seqLost = rxSeqLost, decodeErrors = rxDecodeErrors,
-                    firstPacketAtMs = rxFirstPacketAtMs
-                )
-                _events.emit(SimEvent.BroadcastPacketRx(rxPackets, rxBytes, bc.codec.name))
-            }
-        }
-    }
-
-    /**
-     * 处理一个收到的 RTP 包 — PT 校验 → G.711 解码 → 投 audioChannel → 累加热计数(普通字段)。
-     * 第一个有效包 emit BroadcastStarted。非 PCMA/PCMU payload 计入 decodeErrors,不入 channel。
-     * 不在此写 currentBroadcast StateFlow(由 rxStatsJob 每秒同步),避免高频 recompose。
-     * internal 供 commonTest 直注(绕过真 socket)。
-     */
-    internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) {
-        val bc = _currentBroadcast.value ?: return
-        val codec = AudioRxCodec.fromPayloadType(rtp.payloadType)
-        if (codec == null) {
-            rxDecodeErrors++
-            return
-        }
-        val first = rxPackets == 0L
-        if (first) rxFirstPacketAtMs = nowMs()
-        val pcm = if (codec == AudioRxCodec.PCMA) {
-            com.uvp.sim.media.G711.decodeAlaw(rtp.payload)
-        } else {
-            com.uvp.sim.media.G711.decodeUlaw(rtp.payload)
-        }
-        audioChannel.trySend(pcm)
-        rxPackets++
-        rxBytes += rtp.payload.size
-        if (first) {
-            _events.emit(SimEvent.BroadcastStarted(rxFirstPacketAtMs - bc.createdAtMs))
-        }
-    }
-
-    /** 测试可见:RX 热计数(绕过每秒节流直接读)。 */
-    internal fun rxPacketCountForTest(): Long = rxPackets
-    internal fun decodeErrorCountForTest(): Long = rxDecodeErrors
-
-    /** 测试可见:RX 协程是否在运行。 */
-    internal fun isRxActive(): Boolean = rxJob?.isActive == true
-
-    /** T7/T9:取消 RX/统计/播放协程,关 RtpReceiver + AudioPlayback,清空音频缓冲。 */
-    private suspend fun teardownBroadcastMedia() {
-        rxStatsJob?.cancel()
-        rxStatsJob = null
-        rxJob?.cancel()
-        rxJob = null
-        audioPlayJob?.cancel()
-        audioPlayJob = null
-        runCatching { audioPlayback?.stop() }
-        audioPlayback = null
-        rtpReceiver?.let { runCatching { it.close() } }
-        rtpReceiver = null
-        broadcastLocalAudioPort = 0
-        // 排空残留 PCM,避免下一路广播听到上一路尾音
-        while (audioChannel.tryReceive().isSuccess) { /* drain */ }
-    }
 
     /** 把已构造的 Broadcast Response MANSCDP body 包成 MESSAGE 发给平台(第二条,200 OK 之外)。 */
     /**
