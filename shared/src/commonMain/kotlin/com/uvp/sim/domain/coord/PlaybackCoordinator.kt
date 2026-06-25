@@ -1,19 +1,23 @@
 package com.uvp.sim.domain.coord
 
+import com.uvp.sim.sip.SipMessage
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
  * 回放(PLAYBACK / DOWNLOAD)对话域。
  *
- * 接管的 SIP 流程(plan 第 2.3 节):
- * - INVITE 含 SDP s=Playback / s=Download / s=Download(M2 录像回放)
- * - INFO + MANSRTSP body(seek / scale / teardown)
- * - 对应 dialog 的 BYE
- * - ActivePlayback 状态(seek / 倍速 / 进度)
+ * PR5 完整抽离:接管 InviteCoordinatorImpl 上的回放路径(handlePlaybackInvite /
+ * handleInfo MANSRTSP / sendBye / sendMediaStatusNotify / stopActivePlayback /
+ * ActivePlayback / MediaMode)。
  *
- * 来自 SimulatorEngine 的方法迁移清单:handlePlaybackInvite / handleInfo(MANSRTSP) /
- * stopActivePlayback + 内部 ActivePlayback data class
+ * onIncoming 路由:
+ * - INVITE + SDP s=Playback / s=Download → handlePlaybackInvite,Handled
+ * - INVITE 其他 → Skip(给 Invite 接)
+ * - INFO + 有 activePlayback → handleInfo(MANSRTSP),Handled
+ * - INFO 其他 → Skip
+ * - BYE + callId 命中 activePlayback → stopActivePlayback + 200 OK,Handled
+ * - 其他 → Skip
  */
 internal interface PlaybackCoordinator : Coordinator {
     val state: StateFlow<PlaybackState>
@@ -31,10 +35,13 @@ internal enum class PlaybackState {
     Stopping,
 }
 
+internal enum class PlaybackMediaMode { PLAYBACK, DOWNLOAD }
+
 internal sealed class PlaybackEvent {
-    data class Started(val callId: String, val channelId: String, val startTimeMs: Long) : PlaybackEvent()
+    data class Started(val callId: String, val ssrc: String, val isDownload: Boolean) : PlaybackEvent()
     data class SeekedTo(val positionMs: Long) : PlaybackEvent()
-    data class ScaleChanged(val scale: Float) : PlaybackEvent()
+    data class ScaleChanged(val scale: Double) : PlaybackEvent()
     data class Stopped(val callId: String, val reason: String) : PlaybackEvent()
-    data class Error(val reason: String) : PlaybackEvent()
+    data class TransportError(val message: String) : PlaybackEvent()
+    data class MessageSent(val message: SipMessage) : PlaybackEvent()
 }
