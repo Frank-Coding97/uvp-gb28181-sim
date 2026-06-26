@@ -79,13 +79,24 @@ object DigestAuth {
     }
 
     private fun defaultCnonce(): String {
-        // 简单的伪随机(纯 Kotlin,跨平台)。生产里要走平台 secure random,M1 够用。
-        var seed = 0x9E3779B97F4A7C15uL
-        seed = seed xor (seed shl 13).toULong()
-        seed = seed xor (seed shr 7).toULong()
-        seed = seed xor (seed shl 17).toULong()
-        return Md5.hashHex(seed.toString().encodeToByteArray()).take(16)
+        // H-3 (security-audit §2):用 kotlin.random.Random.Default(JVM/Android
+        // 底层是 ThreadLocalRandom / SecureRandom 派生,跨平台都比手写
+        // xorshift + 固定常量种子强得多),16 字节随机数 → hex(32 chars)。
+        val bytes = kotlin.random.Random.Default.nextBytes(16)
+        return bytes.toHex()
     }
+
+    private fun ByteArray.toHex(): String {
+        val sb = StringBuilder(size * 2)
+        for (b in this) {
+            val v = b.toInt() and 0xFF
+            sb.append(HEX_CHARS[v ushr 4])
+            sb.append(HEX_CHARS[v and 0x0F])
+        }
+        return sb.toString()
+    }
+
+    private val HEX_CHARS = "0123456789abcdef".toCharArray()
 
     /**
      * Parse `key=value, key="value", ...` style attribute lists.

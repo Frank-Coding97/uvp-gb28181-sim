@@ -127,4 +127,51 @@ class DigestAuthTest {
         val auth = DigestAuth.buildResponse(challenge, "u", "p", "REGISTER", "sip:x@y")
         assertTrue(auth.contains("opaque=\"OPAQUE-VAL\""))
     }
+
+    // ---------- H-3 (PR-SEC-1):cnonce 不可预测 ----------
+
+    /**
+     * 从 `Digest ... cnonce="abcdef", ...` 抽出 cnonce 值。
+     */
+    private fun extractCnonce(authHeader: String): String? {
+        val key = "cnonce=\""
+        val start = authHeader.indexOf(key)
+        if (start < 0) return null
+        val from = start + key.length
+        val end = authHeader.indexOf('"', from)
+        if (end < 0) return null
+        return authHeader.substring(from, end)
+    }
+
+    @Test fun defaultCnonce_changes_across_calls() {
+        val challenge = DigestAuth.Challenge(
+            realm = "R", nonce = "N", algorithm = "MD5", qop = "auth", opaque = null
+        )
+        val a1 = DigestAuth.buildResponse(challenge, "u", "p", "REGISTER", "sip:x@y")
+        val a2 = DigestAuth.buildResponse(challenge, "u", "p", "REGISTER", "sip:x@y")
+        val a3 = DigestAuth.buildResponse(challenge, "u", "p", "REGISTER", "sip:x@y")
+        val c1 = extractCnonce(a1)
+        val c2 = extractCnonce(a2)
+        val c3 = extractCnonce(a3)
+        assertTrue(c1 != null && c2 != null && c3 != null, "cnonce 必须存在")
+        // 三次调用 cnonce 必须各不相同,旧 xorshift+固定种子会全相等
+        assertTrue(c1 != c2, "cnonce 不应重复(c1=$c1 c2=$c2)")
+        assertTrue(c2 != c3, "cnonce 不应重复(c2=$c2 c3=$c3)")
+        assertTrue(c1 != c3, "cnonce 不应重复(c1=$c1 c3=$c3)")
+    }
+
+    @Test fun defaultCnonce_has_sufficient_length() {
+        val challenge = DigestAuth.Challenge(
+            realm = "R", nonce = "N", algorithm = "MD5", qop = "auth", opaque = null
+        )
+        val auth = DigestAuth.buildResponse(challenge, "u", "p", "REGISTER", "sip:x@y")
+        val cnonce = extractCnonce(auth)
+        assertNotNull(cnonce)
+        // 16 字节 → 32 字符 hex,容量 128 bit
+        assertTrue(cnonce.length >= 16, "cnonce 长度应 >= 16(实际 ${cnonce.length})")
+        assertTrue(
+            cnonce.all { it in '0'..'9' || it in 'a'..'f' },
+            "cnonce 应是小写 hex,实际: $cnonce"
+        )
+    }
 }
