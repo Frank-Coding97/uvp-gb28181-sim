@@ -61,8 +61,8 @@ class ManscdpRouterTest {
         scope: CoroutineScope,
         transport: MockSipTransport,
         broadcastInvoker: BroadcastInvoker = NoopBroadcastInvoker,
-        cseqProvider: (() -> Int)? = null,
-        cseqIncrementer: (() -> Int)? = null,
+        identityService: com.uvp.sim.sip.SipDialogIdentityService =
+            com.uvp.sim.sip.DefaultSipDialogIdentityService(localIp = "192.168.1.50"),
     ): ManscdpRouterImpl {
         val deviceControlState = MutableStateFlow(DeviceControlState())
         val cfg = config()
@@ -84,8 +84,7 @@ class ManscdpRouterTest {
             recordingService = NoopRecordingService,
             mockGps = MockGpsSource(cfg.mockPosition),
             stateRegisteredOrInCall = { true },
-            cseqProvider = cseqProvider,
-            cseqIncrementer = cseqIncrementer,
+            identityService = identityService,
         )
     }
 
@@ -158,16 +157,17 @@ class ManscdpRouterTest {
     }
 
     @Test
-    fun t3_1_c_reportSnapshot_uses_injected_cseqIncrementer() = runTest {
+    fun t3_1_c_reportSnapshot_uses_injected_identity_service() = runTest {
         val transport = MockSipTransport()
         transport.connect()
 
-        var sharedCseq = 100
-        val router = newRouter(
-            this, transport,
-            cseqProvider = { sharedCseq },
-            cseqIncrementer = { sharedCseq += 1; sharedCseq },
+        // 注入起始 MessageNotify cseq=100 的 identity service,验证 reportSnapshot
+        // 通过 service.nextMessageNotify() 推进到 101
+        val identityService = com.uvp.sim.sip.DefaultSipDialogIdentityService(
+            localIp = "192.168.1.50",
+            initialMessageNotifyCseq = 100L,
         )
+        val router = newRouter(this, transport, identityService = identityService)
 
         router.reportSnapshot()
         runCurrent()
@@ -176,8 +176,7 @@ class ManscdpRouterTest {
             .firstOrNull { it.method == SipMethod.MESSAGE }
         assertNotNull(msg, "reportSnapshot 应发出 MESSAGE")
         val cseqHeader = msg.firstHeader(SipHeader.CSEQ)
-        assertEquals("101 MESSAGE", cseqHeader, "应用外部 SN 池(100 + 1)")
-        assertEquals(101, sharedCseq, "外部 SN 池应被推进")
+        assertEquals("101 MESSAGE", cseqHeader, "应用注入的 identity service(100 + 1)")
     }
 }
 
