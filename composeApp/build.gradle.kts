@@ -35,8 +35,6 @@ kotlin {
             implementation(libs.compose.ui)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
-            implementation(libs.koin.core)
-            implementation(libs.koin.compose)
         }
         androidMain.dependencies {
             implementation(libs.androidx.activity.compose)
@@ -46,7 +44,6 @@ kotlin {
             implementation(libs.androidx.camera.view)
             implementation(libs.androidx.media3.exoplayer)
             implementation(libs.androidx.media3.ui)
-            implementation(libs.koin.android)
             // 3D rendering — load .glb model
             implementation(libs.filament.android)
             implementation(libs.filament.utils)

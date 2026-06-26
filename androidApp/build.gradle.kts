@@ -81,8 +81,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui)
-    implementation(libs.koin.android)
-    implementation(libs.koin.compose)
     implementation(libs.androidx.camera.view)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.kotlinx.serialization.json)

@@ -37,7 +37,6 @@ kotlin {
             implementation(libs.xmlutil.serialization)
             implementation(libs.ktor.network)
             implementation(libs.ktor.client.core)
-            implementation(libs.koin.core)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
@@ -54,7 +53,6 @@ kotlin {
             implementation(libs.androidx.camera.view)
             implementation(libs.androidx.datastore.preferences)
             implementation(libs.androidx.core.ktx)
-            implementation(libs.koin.android)
             implementation(libs.ktor.client.cio)
         }
     }
