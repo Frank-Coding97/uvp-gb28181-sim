@@ -23,6 +23,7 @@ android {
         targetSdk = 36
         versionCode = 10001
         versionName = "1.0.1"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -69,6 +70,14 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    // Robolectric 需要在 JVM 上跑 Android API,默认 includeAndroidResources=true
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
@@ -88,4 +97,17 @@ dependencies {
     // 7.5 抓拍 HTTP 上传客户端(SipViewModel.attachSnapshotPipeline 用)
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.cio)
+
+    // ---- 测试金字塔(PR-TEST-1) ----
+    // Robolectric 单测(在 JVM 跑 Android API,无需模拟器)
+    testImplementation(libs.junit)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.runner)
+    testImplementation(libs.androidx.test.ext.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+
+    // Espresso 真机/模拟器 instrumentation test
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.espresso.core)
 }
