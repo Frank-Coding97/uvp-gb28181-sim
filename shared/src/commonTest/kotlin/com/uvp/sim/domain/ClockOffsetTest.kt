@@ -58,14 +58,13 @@ class ClockOffsetTest {
 
     @Test
     fun `synced localOffsetMs 计算合法`() {
-        val baseInstant = Instant.parse("2026-06-18T07:30:00Z")
+        // baseInstant 用动态当前时刻(不再硬编码日期),
+        // synced() 内部 recvLocalMs = Clock.System.now().toEpochMilliseconds() 几乎同时取,
+        // offset 应接近 0,严格断言 < 1 分钟既稳定又有意义
+        val baseInstant = Clock.System.now()
         val o = ClockOffset.synced(baseInstant, "raw")
         val offset = o.localOffsetMs()
         assertNotNull(offset)
-        // synced() 内部 recvLocalMs = Clock.System.now().toEpochMilliseconds(),
-        // 跟 baseInstant 的差值 = 平台基准 - 当前本地时刻;
-        // 测试机本地时间 ≈ 真实当前(2026-06-18 15:xx UTC+8 ≈ 07:xx UTC),
-        // 跟 07:30:00 偏差只在分钟级,这里只断言"是个合理 ms 数",不锁绝对值
-        assertTrue(abs(offset) < 24L * 3600_000, "offset=$offset 不应超过 1 天")
+        assertTrue(abs(offset) < 60_000, "offset=$offset 应接近 0(平台基准 ≈ 本地时刻)")
     }
 }
