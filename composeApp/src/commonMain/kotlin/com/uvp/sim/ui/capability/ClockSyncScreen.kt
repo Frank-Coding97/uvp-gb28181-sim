@@ -33,7 +33,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
 import kotlinx.coroutines.delay
@@ -43,7 +42,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
 /**
- * 能力中心 → 设备校时 子屏。展示 [ClockOffset] 全部字段。
+ * 能力中心 → 设备校时 子屏。展示 [com.uvp.sim.ui.model.ClockOffsetDto] 全部字段。
  *
  * - 平台基准时间(注册 200 OK Date 头解析得到)
  * - 本地系统时间(实时刷,1Hz)
