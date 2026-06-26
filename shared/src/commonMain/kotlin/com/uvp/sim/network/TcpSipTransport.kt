@@ -61,6 +61,36 @@ class TcpSipTransport(
     override val localPort: Int
         get() = (socket?.localAddress as? InetSocketAddress)?.port ?: -1
 
+    companion object {
+        /**
+         * H-2 (security-audit §2):TCP SIP 单条消息 body 上限 64 KiB。
+         *
+         * RFC 3261 § 18.1.1 建议 UDP MTU 1300,TCP 无硬上限但典型 SIP/MANSCDP /
+         * SDP body 都在几 KB 内。攻击者可发 `Content-Length: 2147483647`
+         * 让 [readByteArray] 一次性分配 2 GiB → OOM。这里设 64 KiB 上限。
+         */
+        internal const val MAX_SIP_BODY_BYTES: Int = 65_536
+
+        /**
+         * H-2:解析 `Content-Length:` 头一行,做合法性 + 上限校验。
+         *
+         * @return 解析后的字节数(0..MAX_SIP_BODY_BYTES)
+         * @throws SipParseException 负数或超上限 → 视为攻击,关连接
+         */
+        internal fun parseContentLengthOrThrow(headerLine: String): Int {
+            val cl = headerLine.lowercase().substringAfter(':').trim().toIntOrNull() ?: 0
+            if (cl < 0) {
+                throw SipParseException("Content-Length $cl is negative")
+            }
+            if (cl > MAX_SIP_BODY_BYTES) {
+                throw SipParseException(
+                    "Content-Length $cl exceeds max $MAX_SIP_BODY_BYTES — possible DoS"
+                )
+            }
+            return cl
+        }
+    }
+
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return
         // Android 主线程会触发 NetworkOnMainThreadException(ktor tcp().connect() 内部
@@ -149,6 +179,9 @@ class TcpSipTransport(
      *
      * SIP over TCP: read headers line-by-line until blank line (CRLFCRLF),
      * extract Content-Length, then read exactly that many body bytes.
+     *
+     * H-2:Content-Length 上限 [MAX_SIP_BODY_BYTES],超过则抛 [SipParseException]
+     * 触发外层 break(连接关闭),避免攻击者用畸形 CL 触发 OOM。
      */
     private suspend fun readSipMessage(channel: ByteReadChannel): SipMessage? {
         val headerLines = mutableListOf<String>()
@@ -160,7 +193,7 @@ class TcpSipTransport(
             headerLines.add(line)
             val lower = line.lowercase()
             if (lower.startsWith("content-length:") || lower.startsWith("content-length :")) {
-                contentLength = lower.substringAfter(':').trim().toIntOrNull() ?: 0
+                contentLength = parseContentLengthOrThrow(line)
             }
         }
 
