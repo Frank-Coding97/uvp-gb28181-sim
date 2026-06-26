@@ -15,6 +15,7 @@ import com.uvp.sim.recording.RecordingService
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipEvent
 import com.uvp.sim.sip.SipHeader
+import com.uvp.sim.sip.SipHeaderHelpers
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
@@ -218,28 +219,8 @@ internal class InviteCoordinatorImpl(
     }
 
     // ----------------------------------------------------------------
-    // 通用 helper(从 Engine parseUri/parseTag/parseUriUser 1:1 复制)
+    // 通用 helper(InviteCoord 独有的 parseUriHost 留在本类,其它都走 SipHeaderHelpers)
     // ----------------------------------------------------------------
-
-    private fun parseUri(headerValue: String): String {
-        val lt = headerValue.indexOf('<')
-        val gt = headerValue.indexOf('>')
-        return if (lt >= 0 && gt > lt) headerValue.substring(lt + 1, gt)
-        else headerValue.substringBefore(';').trim()
-    }
-
-    private fun parseTag(headerValue: String): String {
-        val idx = headerValue.indexOf(";tag=")
-        if (idx < 0) return ""
-        val rest = headerValue.substring(idx + 5)
-        val end = rest.indexOfAny(charArrayOf(';', ' ', '>', '\r', '\n'))
-        return if (end < 0) rest else rest.substring(0, end)
-    }
-
-    private fun parseUriUser(uri: String): String {
-        val s = uri.substringAfter("sip:", uri).substringBefore('@', "")
-        return s.ifEmpty { config.server.serverId }
-    }
 
     /** 从 `sip:user@host[:port][;params]` 提取 host 段(不含 port / params)。 */
     private fun parseUriHost(uri: String): String {
@@ -259,49 +240,9 @@ internal class InviteCoordinatorImpl(
      */
     private fun isInviteFromAuthorizedPlatform(invite: SipRequest): Boolean {
         val fromHeader = invite.fromHeader() ?: return false
-        val fromUri = parseUri(fromHeader)
+        val fromUri = SipHeaderHelpers.parseUri(fromHeader)
         val fromHost = parseUriHost(fromUri)
         return fromHost == config.server.domain
-    }
-
-    private fun buildSdpMediaSpec(): com.uvp.sim.sip.SdpAnswer.MediaSpec {
-        val v = config.video
-        val videoCodec = when (v.videoCodec) {
-            com.uvp.sim.media.VideoCodec.H264 -> 2
-            com.uvp.sim.media.VideoCodec.H265 -> 5
-        }
-        val resolution = when (v.resolution) {
-            com.uvp.sim.config.VideoResolution.SD_480P -> 4
-            com.uvp.sim.config.VideoResolution.HD_720P -> 5
-            com.uvp.sim.config.VideoResolution.FHD_1080P -> 6
-        }
-        val audioCodec = when (v.audioCodec) {
-            com.uvp.sim.media.AudioCodec.G711A -> 1
-            com.uvp.sim.media.AudioCodec.G711U -> 2
-            com.uvp.sim.media.AudioCodec.AAC -> 11
-        }
-        val audioBitrateKbps = when (v.audioCodec) {
-            com.uvp.sim.media.AudioCodec.G711A,
-            com.uvp.sim.media.AudioCodec.G711U -> 64
-            com.uvp.sim.media.AudioCodec.AAC -> 32
-        }
-        val audioSampleRate = when (v.effectiveAudioSampleRateHz) {
-            8_000 -> 1
-            14_000 -> 2
-            16_000 -> 3
-            32_000 -> 4
-            else -> 3
-        }
-        return com.uvp.sim.sip.SdpAnswer.MediaSpec(
-            videoCodec = videoCodec,
-            resolution = resolution,
-            frameRate = v.frameRate,
-            rateType = 2,
-            videoBitrateKbps = v.bitrateKbps,
-            audioCodec = audioCodec,
-            audioBitrateKbps = audioBitrateKbps,
-            audioSampleRate = audioSampleRate,
-        )
     }
 
     private fun extractInviteTarget(invite: SipRequest): String {
@@ -311,7 +252,7 @@ internal class InviteCoordinatorImpl(
         val user = userHost.substringBefore('@', "").substringBefore(';').trim()
         if (user.isNotEmpty()) return user
         val to = invite.toHeader() ?: return ""
-        return parseUri(to).substringAfter("sip:", "")
+        return SipHeaderHelpers.parseUri(to).substringAfter("sip:", "")
             .substringBefore('@', "")
             .substringBefore(';')
             .trim()
@@ -452,11 +393,14 @@ internal class InviteCoordinatorImpl(
             sessionName = "Play",
             transport = offer.transport,
             tcpSetup = offer.tcpSetup,
-            mediaSpec = buildSdpMediaSpec(),
+            mediaSpec = SipHeaderHelpers.buildSdpMediaSpec(config),
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
         val localToTag = SipBuilders.randomTag()
-        val inviteFromUser = parseUriUser(parseUri(invite.fromHeader() ?: ""))
+        val inviteFromUser = SipHeaderHelpers.parseUriUser(
+            SipHeaderHelpers.parseUri(invite.fromHeader() ?: ""),
+            fallback = config.server.serverId,
+        )
         val response = SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
@@ -472,10 +416,10 @@ internal class InviteCoordinatorImpl(
         val inviteFromHeader = invite.fromHeader() ?: ""
         val inviteToHeader = invite.toHeader() ?: ""
         val inviteContact = invite.firstHeader(SipHeader.CONTACT) ?: ""
-        val remoteUri = parseUri(inviteFromHeader)
-        val remoteTag = parseTag(inviteFromHeader)
-        val localUri = parseUri(inviteToHeader)
-        val remoteTarget = parseUri(inviteContact).ifEmpty { remoteUri }
+        val remoteUri = SipHeaderHelpers.parseUri(inviteFromHeader)
+        val remoteTag = SipHeaderHelpers.parseTag(inviteFromHeader)
+        val localUri = SipHeaderHelpers.parseUri(inviteToHeader)
+        val remoteTarget = SipHeaderHelpers.parseUri(inviteContact).ifEmpty { remoteUri }
         try {
             outbox.send(response).getOrThrow()
         } catch (e: Throwable) {

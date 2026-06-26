@@ -27,6 +27,7 @@ import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.recording.RecordingService
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipHeader
+import com.uvp.sim.sip.SipHeaderHelpers
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
@@ -402,13 +403,6 @@ internal class ManscdpRouterImpl(
         else -> "位置"
     }
 
-    private fun parseUri(headerValue: String): String {
-        val lt = headerValue.indexOf('<')
-        val gt = headerValue.indexOf('>')
-        return if (lt >= 0 && gt > lt) headerValue.substring(lt + 1, gt)
-        else headerValue.substringBefore(';').trim()
-    }
-
     private fun currentLocalIso(): String {
         val ms = clockOffsetProvider().adjustedNowMs()
         val now = Instant.fromEpochMilliseconds(ms)
@@ -560,9 +554,9 @@ internal class ManscdpRouterImpl(
                 sendConfigDownloadResponse(sn, types)
             }
             "MobilePosition" -> sendMobilePositionResponse(com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0")
-            "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
+            "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) })
             "RecordInfo" -> handleRecordInfoQuery(xml)
-            "Broadcast" -> handleBroadcast(xml, fromUri = message.fromHeader()?.let { parseUri(it) })
+            "Broadcast" -> handleBroadcast(xml, fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) })
             else -> Unit
         }
     }
