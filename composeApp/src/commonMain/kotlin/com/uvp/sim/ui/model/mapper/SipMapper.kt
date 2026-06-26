@@ -39,3 +39,35 @@ fun SipMessage.Header.toDto(): SipMessageDto.Header =
 fun SipMethod.toDto(): SipMethodDto = SipMethodDto.valueOf(name)
 
 fun SipState.toDto(): SipStateDto = SipStateDto.valueOf(name)
+
+/**
+ * DTO → shared SipMessage 反向重建(PR-A-3:从 SipLogTab 搬来).
+ *
+ * 当下唯一调用方:`SipLogTab.toFlowEventsForExport()`,需把 [SipMessageDto] 喂给
+ * `SipFlowEvent`(`shared.observability` 域,内部签名仍是 `SipMessage`)。
+ * `SipDialogGrouping.group()` 是纯算法 + UI 不依赖 sip 类型,长期治理可让
+ * `SipFlowEvent` 改用 DTO,届时本反向 helper 可彻底删除。
+ *
+ * 字段无损映射:Request 仅取 method 名做 `SipMethod.valueOf` 反查;`body` 是 UTF-8
+ * decoded String,`encodeToByteArray()` 反向(SDP / MANSCDP+xml 均为 UTF-8 文本,实际无损).
+ */
+fun SipMessageDto.toSipMessage(): SipMessage {
+    val sharedHeaders = headers.map { SipMessage.Header(it.name, it.value) }
+    val bodyBytes = body.encodeToByteArray()
+    return when (this) {
+        is SipMessageDto.Request -> SipRequest(
+            method = SipMethod.valueOf(method.name),
+            requestUri = requestUri,
+            sipVersion = sipVersion,
+            headers = sharedHeaders,
+            body = bodyBytes,
+        )
+        is SipMessageDto.Response -> SipResponse(
+            statusCode = statusCode,
+            reasonPhrase = reasonPhrase,
+            sipVersion = sipVersion,
+            headers = sharedHeaders,
+            body = bodyBytes,
+        )
+    }
+}

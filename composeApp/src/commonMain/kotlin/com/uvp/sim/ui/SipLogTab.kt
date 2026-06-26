@@ -31,6 +31,7 @@ import com.uvp.sim.observability.SipDialogGrouping
 import com.uvp.sim.observability.SipFlowEvent
 import com.uvp.sim.ui.model.SimEventDto
 import com.uvp.sim.ui.model.SipMessageDto
+import com.uvp.sim.ui.model.mapper.toSipMessage
 import com.uvp.sim.ui.model.mapper.toDto
 
 /**
@@ -118,38 +119,6 @@ internal fun List<SimEventDto>.toFlowEventsForExport(): List<SipFlowEvent> {
 
 private fun SipMessageDto.callIdHeader(): String? =
     headers.firstOrNull { it.name.equals("Call-ID", ignoreCase = true) }?.value
-
-/**
- * 反向重建 SipMessage(仅本文件内部使用).T4.3e 接 events: List<SimEventDto> 时,
- * SipDialogGrouping / SipFlowEvent / MediaSegmentEvent 仍是 shared.observability 类型,
- * 需要从 SipMessageDto 反向重建 SipMessage 喂给它们.
- *
- * 字段无损映射:Request 仅取 method 名做 SipMethod.valueOf 反查;body 是 UTF-8 decoded String,
- * encodeToByteArray() 反向(SDP/MANSCDP+XML 均为 UTF-8 文本,实际无损).
- *
- * G8 歧义(老板拍板):此 helper 是 DTO 原则破口,理由 = SipFlowEvent / DialogGrouping
- * 在 shared 不动 PR-A 范围.PR-A-2 切 SipFlowEvent → SipFlowEventDto 后此 helper 可删.
- */
-private fun SipMessageDto.toSipMessage(): com.uvp.sim.sip.SipMessage {
-    val sharedHeaders = headers.map { com.uvp.sim.sip.SipMessage.Header(it.name, it.value) }
-    val bodyBytes = body.encodeToByteArray()
-    return when (this) {
-        is SipMessageDto.Request -> com.uvp.sim.sip.SipRequest(
-            method = com.uvp.sim.sip.SipMethod.valueOf(method.name),
-            requestUri = requestUri,
-            sipVersion = sipVersion,
-            headers = sharedHeaders,
-            body = bodyBytes,
-        )
-        is SipMessageDto.Response -> com.uvp.sim.sip.SipResponse(
-            statusCode = statusCode,
-            reasonPhrase = reasonPhrase,
-            sipVersion = sipVersion,
-            headers = sharedHeaders,
-            body = bodyBytes,
-        )
-    }
-}
 
 private fun List<SimEventDto>.toFlowEvents(): List<SipFlowEvent> = toFlowEventsForExport()
 
