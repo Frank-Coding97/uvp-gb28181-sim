@@ -152,150 +152,74 @@ class SimulatorEngine(
     private val mutex = Mutex()
     private var inboundJob: Job? = null
 
-    // ----------------------------------------------------------------------
-    // 全局 SIP SN 池 / dialog identity(2026-06-23 plan §2.1.1 修订)
-    //
-    // 这三个字段被全部业务路径(reportSnapshot / sendAlarmNotify / Catalog/Position
-    // /Alarm NOTIFY / Invite / Broadcast / 心跳)读写共用,本质是设备端全局 CSeq SN 池
-    // + dialog identity。RegistrationCoordinator 通过构造期 6 个 lambda(provider/setter)
-    // 接入这套池子,REGISTER / 心跳 / OPTIONS 跟业务请求共享同一份单调递增 CSeq,
-    // 跟 4 平台(WVP / EasyGBS / LiveGBS / UVP)的兼容性观感一致。
-    //
-    // 长期治理:见 wiki/projects/uvp-gb28181-sim/research/2026-06-23-cseq-sn-pool-coupling.md
-    // 跟 PR4-PR5 InviteCoordinator 拆出后另起 sip-dialog-store spec。
-    // ----------------------------------------------------------------------
+    // 全局 SIP SN 池 / dialog identity — Coord 6 个 lambda 共享读写,设备端单调 cseq
+    // 详见 wiki/projects/uvp-gb28181-sim/research/2026-06-23-cseq-sn-pool-coupling.md
     private var cseq: Int = 0
     private var callId: String? = null
     private var fromTag: String? = null
 
-    /**
-     * 注册域 Coordinator(PR2 T2.3b)。Engine 把注册 / 心跳 / OPTIONS / 续约 / 重试退避
-     * 全部委派给本实例,自身只保留业务域(snapshot / alarm / invite / playback / broadcast)。
-     * 全局 SN 池通过 6 个 lambda 透传,Reg 跟 Engine 业务路径共享同一份 cseq / callId / fromTag。
-     */
+    /** 注册域 — Engine 委派注册/心跳/OPTIONS/续约/重试,共享 SN 池。 */
     private val registration = RegistrationCoordinatorImpl(
-        config = config,
-        transport = transport,
-        scope = scope,
-        localIpProvider = localIpProvider,
-        localPortProvider = localPortProvider,
-        cseqProvider = { cseq },
-        cseqIncrementer = { cseq += 1; cseq },
-        callIdProvider = { callId },
-        callIdSetter = { callId = it },
-        fromTagProvider = { fromTag },
-        fromTagSetter = { fromTag = it },
+        config = config, transport = transport, scope = scope,
+        localIpProvider = localIpProvider, localPortProvider = localPortProvider,
+        cseqProvider = { cseq }, cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId }, callIdSetter = { callId = it },
+        fromTagProvider = { fromTag }, fromTagSetter = { fromTag = it },
     )
 
-    // 5.14 / activeStream / activePlayback / ackTimeoutJob 全部迁到 InviteCoordinator(PR4 T4.3)
-
-    // M3 语音广播下行(§9.8)— PR5 T5.4:全部迁到 BroadcastCoordinator,Engine 不再持任何 RX / dialog state。
-    // 公开 API(currentBroadcast / broadcastSpeakerOn / stopBroadcast / setBroadcastSpeaker)委派到 broadcast。
-
-    // rtpReceiverFactory / audioSinkFactory 参数直接透传给 BroadcastCoordinatorImpl,Engine 不再 resolve。
-
-    // M2: Subscription registry + mock GPS
     private val subscriptionRegistry = SubscriptionRegistry(scope)
     private val mockGps = MockGpsSource(config.mockPosition)
-    private var notifySn = 0
-    private var catalogNotifySn = 0
-    private var alarmNotifySn = 0
-
-    // M2 Alarm: 本会话报警历史(最近 10 条,不持久化)
     private val alarmHistoryStore = AlarmHistoryStore()
     val alarmHistory: StateFlow<List<AlarmRecord>> = alarmHistoryStore.history
 
-    /**
-     * 当前生效的目录树。初始从 SimConfig.catalogTree 取(为空时用默认),
-     * 用户在 UI 编辑器修改后通过 [updateCatalogTree] 写回。
-     */
+    /** 目录树 — 初始从 config 取,UI 编辑器走 [updateCatalogTree] 写回。 */
     private val _catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(config))
     val catalogTree: StateFlow<List<com.uvp.sim.config.CatalogNode>> = _catalogTree.asStateFlow()
 
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = subscriptionRegistry.subscriptions
 
-    /**
-     * 广播域(PR5 T5.3 GREEN)。InviteCoordinator 已退出广播域,BroadcastInvoker 直接由
-     * BroadcastCoordinator 实现注入给 ManscdpRouter。所有 RX 链 / dialog state / handshake 都在本 Coord 内。
-     */
+    /** 广播域 — RX 链 / dialog state / handshake 全在本 Coord。 */
     private val broadcast: BroadcastCoordinatorImpl = BroadcastCoordinatorImpl(
-        config = config,
-        transport = transport,
-        scope = scope,
-        localIpProvider = localIpProvider,
-        localPortProvider = localPortProvider,
-        rtpReceiverFactory = rtpReceiverFactory,
-        audioSinkFactory = audioSinkFactory,
+        config = config, transport = transport, scope = scope,
+        localIpProvider = localIpProvider, localPortProvider = localPortProvider,
+        rtpReceiverFactory = rtpReceiverFactory, audioSinkFactory = audioSinkFactory,
         simEventEmit = { ev -> _events.emit(ev) },
-        cseqProvider = { cseq },
-        cseqIncrementer = { cseq += 1; cseq },
-        callIdProvider = { callId },
-        callIdSetter = { callId = it },
-        fromTagProvider = { fromTag },
-        fromTagSetter = { fromTag = it },
+        cseqProvider = { cseq }, cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId }, callIdSetter = { callId = it },
+        fromTagProvider = { fromTag }, fromTagSetter = { fromTag = it },
     )
 
-    /**
-     * 回放域(PR5 T5.2 GREEN)。InviteCoordinator 退出回放域,PLAYBACK / DOWNLOAD INVITE +
-     * INFO MANSRTSP 由本 Coord 接管。
-     */
+    /** 回放域 — PLAYBACK/DOWNLOAD INVITE + INFO MANSRTSP。 */
     private val playback: PlaybackCoordinatorImpl = PlaybackCoordinatorImpl(
-        config = config,
-        transport = transport,
-        scope = scope,
-        localIpProvider = localIpProvider,
-        localPortProvider = localPortProvider,
-        playbackBuilder = playbackBuilder,
-        recordingService = recordingService,
+        config = config, transport = transport, scope = scope,
+        localIpProvider = localIpProvider, localPortProvider = localPortProvider,
+        playbackBuilder = playbackBuilder, recordingService = recordingService,
         simEventEmit = { ev -> _events.emit(ev) },
-        cseqProvider = { cseq },
-        cseqIncrementer = { cseq += 1; cseq },
-        callIdProvider = { callId },
-        callIdSetter = { callId = it },
-        fromTagProvider = { fromTag },
-        fromTagSetter = { fromTag = it },
+        cseqProvider = { cseq }, cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId }, callIdSetter = { callId = it },
+        fromTagProvider = { fromTag }, fromTagSetter = { fromTag = it },
     )
 
-    /**
-     * 主叫直播域(PR4 T4.3 + PR5 T5.4)。PR5 后 Invite 退出广播 / 回放域,只管直播 INVITE。
-     */
+    /** 主叫直播域 — PR5 后只管直播 INVITE。 */
     private val invite: InviteCoordinatorImpl = InviteCoordinatorImpl(
-        config = config,
-        transport = transport,
-        scope = scope,
-        localIpProvider = localIpProvider,
-        localPortProvider = localPortProvider,
-        cameraCapture = cameraCapture,
-        audioCapture = audioCapture,
-        rtpSenderFactory = rtpSenderFactory,
-        catalogTree = _catalogTree,
-        clockOffsetProvider = { _clockOffset.value },
-        mutableSipState = _state,
-        simEventEmit = { ev -> _events.emit(ev) },
-        cseqProvider = { cseq },
-        cseqIncrementer = { cseq += 1; cseq },
-        callIdProvider = { callId },
-        callIdSetter = { callId = it },
-        fromTagProvider = { fromTag },
-        fromTagSetter = { fromTag = it },
+        config = config, transport = transport, scope = scope,
+        localIpProvider = localIpProvider, localPortProvider = localPortProvider,
+        cameraCapture = cameraCapture, audioCapture = audioCapture, rtpSenderFactory = rtpSenderFactory,
+        catalogTree = _catalogTree, clockOffsetProvider = { _clockOffset.value },
+        mutableSipState = _state, simEventEmit = { ev -> _events.emit(ev) },
+        cseqProvider = { cseq }, cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId }, callIdSetter = { callId = it },
+        fromTagProvider = { fromTag }, fromTagSetter = { fromTag = it },
     )
 
-    /**
-     * MANSCDP 路由域(PR3 T3.3+T3.4)。
-     *
-     * BroadcastInvoker 实装(PR5 T5.4):BroadcastCoordinatorImpl 实例直接调,取代 PR4 InviteCoordinator 实现。
-     */
+    /** MANSCDP 路由域 — DeviceControl + Subscribe + 主动业务 NOTIFY。 */
     private val manscdp: ManscdpRouterImpl = ManscdpRouterImpl(
-        config = config,
-        transport = transport,
-        scope = scope,
-        localIpProvider = localIpProvider,
-        localPortProvider = localPortProvider,
+        config = config, transport = transport, scope = scope,
+        localIpProvider = localIpProvider, localPortProvider = localPortProvider,
         subscriptionRegistry = subscriptionRegistry,
         catalogTree = _catalogTree,
         alarmHistoryStore = alarmHistoryStore,
         mutableDeviceControlState = _deviceControlState,
-        // deviceControlDispatcher 已在 Manscdp 内部装配(followup A)
         rebootCallback = ::rebootForDeviceControl,
         requestKeyFrameCallback = { cameraCapture?.requestKeyFrame() },
         startUpgradeCallback = ::startUpgradeForDeviceControl,
@@ -303,17 +227,12 @@ class SimulatorEngine(
         recordingService = recordingService,
         mockGps = mockGps,
         clockOffsetProvider = { _clockOffset.value },
-        stateRegisteredOrInCall = {
-            _state.value == SipState.Registered || _state.value == SipState.InCall
-        },
+        stateRegisteredOrInCall = { _state.value == SipState.Registered || _state.value == SipState.InCall },
         broadcastBusy = { broadcast.current.value != null },
         simEventEmit = { ev -> _events.emit(ev) },
-        cseqProvider = { cseq },
-        cseqIncrementer = { cseq += 1; cseq },
-        callIdProvider = { callId },
-        callIdSetter = { callId = it },
-        fromTagProvider = { fromTag },
-        fromTagSetter = { fromTag = it },
+        cseqProvider = { cseq }, cseqIncrementer = { cseq += 1; cseq },
+        callIdProvider = { callId }, callIdSetter = { callId = it },
+        fromTagProvider = { fromTag }, fromTagSetter = { fromTag = it },
     )
 
     /** 当前推流通道的显示名 — 委派给 InviteCoordinator(PR4 T4.3)。 */
