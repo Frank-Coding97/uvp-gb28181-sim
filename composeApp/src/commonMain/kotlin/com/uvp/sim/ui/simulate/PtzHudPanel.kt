@@ -47,9 +47,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.DeviceControlState
-import com.uvp.sim.domain.LastDeviceCommand
-import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.ui.model.DeviceControlDto
+import com.uvp.sim.ui.model.LastDeviceCommandDto
+import com.uvp.sim.ui.model.PtzPoseDto
 import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.ui.UvpColor
 
@@ -75,7 +75,7 @@ enum class HudTab(val title: String) {
 
     companion object {
         /** 根据 lastCommand 类型 + rawHex 标记决定该切到哪个 Tab,null 表示不切. */
-        fun fromCommand(cmd: LastDeviceCommand?): HudTab? {
+        fun fromCommand(cmd: LastDeviceCommandDto?): HudTab? {
             if (cmd == null) return null
             return when (cmd.type) {
                 "PTZCmd" -> {
@@ -98,7 +98,7 @@ enum class HudTab(val title: String) {
 
 @Composable
 fun PtzHudPanel(
-    state: DeviceControlState,
+    state: DeviceControlDto,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by remember { mutableStateOf(HudTab.Ptz) }
@@ -253,7 +253,7 @@ private fun TabItem(
 // ─────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun PtzTabContent(state: DeviceControlState) {
+private fun PtzTabContent(state: DeviceControlDto) {
     Column {
         Row(
             modifier = Modifier
@@ -275,7 +275,7 @@ private fun PtzTabContent(state: DeviceControlState) {
         val cmd = state.lastCommand
         val ptz = cmd?.ptz
         val focusActive = cmd?.type == "PTZCmd" && ptz != null &&
-            ptz.focusDirection != com.uvp.sim.gb28181.FocusDirection.NONE
+            ptz.focusDirection != com.uvp.sim.ui.model.FocusDirectionDto.NONE
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -385,7 +385,7 @@ private fun LevelBar(
 // ─────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun StatusTabContent(state: DeviceControlState) {
+private fun StatusTabContent(state: DeviceControlDto) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BigStatusLamp(
@@ -472,7 +472,7 @@ private fun BigStatusLamp(
 // ─────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun ImageTabContent(state: DeviceControlState) {
+private fun ImageTabContent(state: DeviceControlDto) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // GB-2022 §9.13 在线升级进度条(优先于其他事件显示)
         val upgrade = state.upgradeProgress
@@ -515,16 +515,16 @@ private fun ImageTabContent(state: DeviceControlState) {
 
 /** GB-2022 §9.13 在线升级进度条 — 平台 DeviceUpgrade 触发,5s 假进度 0/30/60/100. */
 @Composable
-private fun UpgradeProgressRow(upgrade: com.uvp.sim.domain.UpgradeProgress) {
+private fun UpgradeProgressRow(upgrade: com.uvp.sim.ui.model.UpgradeProgressDto) {
     val statusText = when (upgrade.result) {
-        com.uvp.sim.domain.UpgradeResult.InProgress -> "升级中"
-        com.uvp.sim.domain.UpgradeResult.Success -> "升级成功"
-        com.uvp.sim.domain.UpgradeResult.Failure -> "升级失败"
+        com.uvp.sim.ui.model.UpgradeResultDto.InProgress -> "升级中"
+        com.uvp.sim.ui.model.UpgradeResultDto.Success -> "升级成功"
+        com.uvp.sim.ui.model.UpgradeResultDto.Failure -> "升级失败"
     }
     val statusColor = when (upgrade.result) {
-        com.uvp.sim.domain.UpgradeResult.InProgress -> UvpColor.Primary
-        com.uvp.sim.domain.UpgradeResult.Success -> UvpColor.Success
-        com.uvp.sim.domain.UpgradeResult.Failure -> UvpColor.Danger
+        com.uvp.sim.ui.model.UpgradeResultDto.InProgress -> UvpColor.Primary
+        com.uvp.sim.ui.model.UpgradeResultDto.Success -> UvpColor.Success
+        com.uvp.sim.ui.model.UpgradeResultDto.Failure -> UvpColor.Danger
     }
     Column(
         modifier = Modifier
@@ -612,7 +612,7 @@ private fun ImageEventRow(
 // ─────────────────────────────────────────────────────────────────────
 
 @Composable
-private fun AuxTabContent(state: DeviceControlState) {
+private fun AuxTabContent(state: DeviceControlDto) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -777,7 +777,7 @@ private fun formatPose(value: Float, unit: String): String {
 }
 
 @Composable
-private fun PresetChipRow(presets: Map<Int, PtzPose>, currentIndex: Int?) {
+private fun PresetChipRow(presets: Map<Int, PtzPoseDto>, currentIndex: Int?) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp)

@@ -8,13 +8,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.UvpColor
 
 /** iOS 占位:cinterop SceneKit 留下次. */
 @Composable
 actual fun CameraGlbView(
-    state: DeviceControlState,
+    state: DeviceControlDto,
     onPoseTick: (Float, Float, Float) -> Unit,
     modifier: Modifier
 ) {

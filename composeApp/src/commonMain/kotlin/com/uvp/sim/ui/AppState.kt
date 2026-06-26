@@ -3,8 +3,6 @@ package com.uvp.sim.ui
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.SimConfig
-import com.uvp.sim.domain.AlarmRecord
-import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.network.NetworkState
@@ -13,6 +11,10 @@ import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
 import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
+import com.uvp.sim.ui.model.AlarmPayloadDto
+import com.uvp.sim.ui.model.AlarmRecordDto
+import com.uvp.sim.ui.model.ClockOffsetDto
+import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.SipStateDto
 
 /**
@@ -37,7 +39,7 @@ data class AppUiState(
      * M2 设备控制运行时状态(AppEngine.deviceControlState 快照).
      * 由 SimulateScreen 的 PtzHudPanel + Camera3DView 订阅消费.
      */
-    val deviceControl: DeviceControlState = DeviceControlState(),
+    val deviceControl: DeviceControlDto = DeviceControlDto(),
     /**
      * 录像状态快照。HomeScreen 录像 ActionTile 读这个判红点 / 计时器,
      * RecordingScreen 列表 读 files。M2 默认空,引擎接通后实时刷。
@@ -58,7 +60,7 @@ data class AppUiState(
      * 本会话已发报警历史(最近若干条,不持久化,重启清空)。
      * 能力页报警卡角标读 size 显示报警次数,子页历史折叠区读列表。
      */
-    val alarmHistory: List<AlarmRecord> = emptyList(),
+    val alarmHistory: List<AlarmRecordDto> = emptyList(),
     /**
      * 报警发送模式(spec G2)。主页"一点即发"按此模式走。本会话内存。
      */
@@ -66,7 +68,7 @@ data class AppUiState(
     /**
      * 指定模式下用户保存的固定报警单(null = 还没存,退化随机)。本会话内存。
      */
-    val fixedAlarmTemplate: AlarmPayload? = null,
+    val fixedAlarmTemplate: AlarmPayloadDto? = null,
     /**
      * M3 语音广播下行(平台喊话设备)状态。isReceiving=true 时主屏挂「对讲中」标签。
      */
@@ -86,7 +88,7 @@ data class AppUiState(
      * 能力中心「设备校时」tile + ClockSyncScreen 读这个,
      * 显示平台基准时间 / 偏移 / 原始 Date 头。
      */
-    val clockOffset: com.uvp.sim.domain.ClockOffset = com.uvp.sim.domain.ClockOffset.Empty
+    val clockOffset: ClockOffsetDto = ClockOffsetDto.Empty
 )
 
 /**

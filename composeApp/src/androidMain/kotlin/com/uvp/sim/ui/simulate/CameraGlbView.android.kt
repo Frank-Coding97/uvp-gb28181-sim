@@ -38,9 +38,9 @@ import com.google.android.filament.LightManager
 import com.google.android.filament.Renderer
 import com.google.android.filament.utils.ModelViewer
 import com.google.android.filament.utils.Utils
-import com.uvp.sim.domain.DeviceControlState
-import com.uvp.sim.domain.DeviceEffect
-import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.ui.model.DeviceControlDto
+import com.uvp.sim.ui.model.DeviceEffectDto
+import com.uvp.sim.ui.model.PtzPoseDto
 import com.uvp.sim.ui.UvpColor
 import java.nio.ByteBuffer
 import kotlin.math.PI
@@ -63,7 +63,7 @@ import kotlin.math.sin
  */
 @Composable
 actual fun CameraGlbView(
-    state: DeviceControlState,
+    state: DeviceControlDto,
     onPoseTick: (Float, Float, Float) -> Unit,
     modifier: Modifier
 ) {
@@ -78,10 +78,10 @@ actual fun CameraGlbView(
     // 由 SimulateScreen 层订阅(全屏闪/角标/snackbar),consumeEffect() 也由 SimulateScreen 兜底清零.
     LaunchedEffect(state.pendingEffect) {
         when (val e = state.pendingEffect) {
-            is DeviceEffect.Reboot -> sceneState.restartSelfTest()
-            is DeviceEffect.HomePositionReturn -> sceneState.easeToPose(e.targetPose)
-            is DeviceEffect.PresetRecall -> sceneState.easeToPose(e.targetPose)
-            is DeviceEffect.PrecisePoseGoto -> sceneState.easeToPose(e.targetPose)
+            is DeviceEffectDto.Reboot -> sceneState.restartSelfTest()
+            is DeviceEffectDto.HomePositionReturn -> sceneState.easeToPose(e.targetPose)
+            is DeviceEffectDto.PresetRecall -> sceneState.easeToPose(e.targetPose)
+            is DeviceEffectDto.PrecisePoseGoto -> sceneState.easeToPose(e.targetPose)
             else -> {}
         }
     }
@@ -117,7 +117,7 @@ actual fun CameraGlbView(
 
 internal class GlbSceneState {
     private var modelViewer: ModelViewer? = null
-    private var stateProvider: (() -> DeviceControlState)? = null
+    private var stateProvider: (() -> DeviceControlDto)? = null
     private var poseSink: ((Float, Float, Float) -> Unit)? = null
     private var lastPoseSinkNanos: Long = 0L
     private var light: Int = 0
@@ -143,10 +143,10 @@ internal class GlbSceneState {
     private var easeAnimActive: Boolean = false
     private var easeAnimStartNanos: Long = 0L
     private var easeAnimDurationMs: Long = 1200L
-    private var easeAnimFrom: PtzPose = PtzPose(0f, 0f, 1f)
-    private var easeAnimTo: PtzPose = PtzPose(0f, 0f, 1f)
+    private var easeAnimFrom: PtzPoseDto = PtzPoseDto(0f, 0f, 1f)
+    private var easeAnimTo: PtzPoseDto = PtzPoseDto(0f, 0f, 1f)
 
-    var pose by mutableStateOf(PtzPose(0f, 0f, 1f))
+    var pose by mutableStateOf(PtzPoseDto(0f, 0f, 1f))
         private set
 
     private val frameCallback = object : Choreographer.FrameCallback {
@@ -159,7 +159,7 @@ internal class GlbSceneState {
     fun attach(
         context: android.content.Context,
         textureView: TextureView,
-        provider: () -> DeviceControlState,
+        provider: () -> DeviceControlDto,
         poseSink: (Float, Float, Float) -> Unit = { _, _, _ -> },
     ) {
         Utils.init()
@@ -312,7 +312,7 @@ internal class GlbSceneState {
             tiltAngle = (tiltAngle + s.tiltSpeed * dt).coerceIn(-90f, 90f)
             zoomLevel = (zoomLevel + s.zoomSpeed * dt).coerceIn(1f, 16f)
         }
-        pose = PtzPose(panAngle, tiltAngle, zoomLevel)
+        pose = PtzPoseDto(panAngle, tiltAngle, zoomLevel)
 
         val tm = viewer.engine.transformManager
         val panTransform = inspectionRotation(InspectionAxis.YawZ, panAngle)
@@ -403,9 +403,9 @@ internal class GlbSceneState {
 
     /** HomePosition / PresetRecall / PrecisePoseGoto effect 触发: 平滑过渡到 target.
      *  自检期间忽略(等自检结束再让平台命令接管). */
-    fun easeToPose(target: PtzPose, durationMs: Long = 1200L) {
+    fun easeToPose(target: PtzPoseDto, durationMs: Long = 1200L) {
         if (selfTestActive) return
-        easeAnimFrom = PtzPose(panAngle, tiltAngle, zoomLevel)
+        easeAnimFrom = PtzPoseDto(panAngle, tiltAngle, zoomLevel)
         easeAnimTo = target
         easeAnimDurationMs = durationMs
         easeAnimStartNanos = 0L
@@ -536,7 +536,7 @@ private data class PtzPivot(
 @Composable
 private fun PtzThumbnail(
     bitmap: ImageBitmap,
-    pose: PtzPose,
+    pose: PtzPoseDto,
     modifier: Modifier = Modifier
 ) {
     Surface(

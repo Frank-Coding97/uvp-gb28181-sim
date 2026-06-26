@@ -48,9 +48,9 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.DeviceControlState
-import com.uvp.sim.domain.DeviceEffect
-import com.uvp.sim.domain.DragZoomRect
+import com.uvp.sim.ui.model.DeviceControlDto
+import com.uvp.sim.ui.model.DeviceEffectDto
+import com.uvp.sim.ui.model.DragZoomRectDto
 import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
@@ -81,23 +81,23 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
     // 5 个 effect 订阅(Reboot / HomePosition / PresetRecall / PrecisePoseGoto 由 CameraGlbView 内部消费)
     LaunchedEffect(deviceControl.pendingEffect) {
         when (val e = deviceControl.pendingEffect) {
-            is DeviceEffect.SnapshotFlash -> {
+            is DeviceEffectDto.SnapshotFlash -> {
                 snapshotFlashAlpha.snapTo(0.85f)
                 delay(80)
                 snapshotFlashAlpha.animateTo(0f, animationSpec = tween(80))
             }
-            is DeviceEffect.IFrameFlash -> {
+            is DeviceEffectDto.IFrameFlash -> {
                 iframeChipVisible = true
                 delay(700)  // 入 150 + 维持 250 + 出 300
                 iframeChipVisible = false
             }
-            is DeviceEffect.ConfigChanged -> {
+            is DeviceEffectDto.ConfigChanged -> {
                 snackbarHostState.showSnackbar("配置已更新: ${e.changedFields.joinToString(", ")}")
             }
-            is DeviceEffect.DeviceUpgradeRequested -> {
+            is DeviceEffectDto.DeviceUpgradeRequested -> {
                 snackbarHostState.showSnackbar("收到设备升级请求(模拟): v${e.firmware}")
             }
-            is DeviceEffect.FormatSDCardRequested -> {
+            is DeviceEffectDto.FormatSDCardRequested -> {
                 snackbarHostState.showSnackbar("格式化 SD 卡(模拟): card ${e.cardIndex}")
             }
             else -> { /* 余下交给 CameraGlbView 处理 */ }
@@ -153,7 +153,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
 
 @Composable
 private fun MonitoringStage(
-    state: DeviceControlState,
+    state: DeviceControlDto,
     iframeChipVisible: Boolean,
     onPoseTick: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier,
@@ -235,7 +235,7 @@ private fun MonitoringStage(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // IFameCmd 关键帧角标(右上角)— DeviceEffect.IFrameFlash 触发,250ms 维持
+            // IFameCmd 关键帧角标(右上角)— DeviceEffectDto.IFrameFlash 触发,250ms 维持
             if (iframeChipVisible) {
                 IFrameChip(
                     modifier = Modifier
@@ -258,7 +258,7 @@ private fun MonitoringStage(
  * 多个 Aux 同时 ON 不冲突,叠加显示.
  */
 @Composable
-private fun AuxFeedbackOverlay(state: DeviceControlState, modifier: Modifier = Modifier) {
+private fun AuxFeedbackOverlay(state: DeviceControlDto, modifier: Modifier = Modifier) {
     val wiperOn = state.auxStates[AuxFunction.Wiper.index] == true
     val irOn = state.auxStates[AuxFunction.InfraredLight.index] == true
 
@@ -402,7 +402,7 @@ private fun GuardOverlay(isGuarded: Boolean, modifier: Modifier = Modifier) {
  * 映射到 3D 区像素时按 size.width/1000 缩放.
  */
 @Composable
-private fun DragZoomOverlay(rect: DragZoomRect?, modifier: Modifier = Modifier) {
+private fun DragZoomOverlay(rect: DragZoomRectDto?, modifier: Modifier = Modifier) {
     if (rect == null) return
     var alpha by remember(rect) { mutableStateOf(0f) }
     var scale by remember(rect) { mutableStateOf(1f) }
@@ -479,7 +479,7 @@ private fun IFrameChip(modifier: Modifier = Modifier) {
  * 优先级: 远程重启中 > 开机自检中 > 预置位调用 > PTZ 运动中 > 刚收到平台命令 (3s 内) > 等待中.
  */
 @Composable
-private fun StatusHeadline(state: DeviceControlState) {
+private fun StatusHeadline(state: DeviceControlDto) {
     val nowMs = useTickingNow(intervalMs = 500L)
     val mountMs = remember { currentTimeMs() }
     val selfTesting = (nowMs - mountMs) in 0..6_500
@@ -488,11 +488,11 @@ private fun StatusHeadline(state: DeviceControlState) {
     val effect = state.pendingEffect
 
     val (text, color, dotColor) = when {
-        effect is DeviceEffect.Reboot -> Triple("远程重启中", UvpColor.Primary, UvpColor.Primary)
+        effect is DeviceEffectDto.Reboot -> Triple("远程重启中", UvpColor.Primary, UvpColor.Primary)
         selfTesting -> Triple("开机自检中", UvpColor.Primary, UvpColor.Primary)
-        effect is DeviceEffect.PresetRecall ->
+        effect is DeviceEffectDto.PresetRecall ->
             Triple("预置位 P${effect.index} 调用中", UvpColor.Primary, UvpColor.Primary)
-        effect is DeviceEffect.PrecisePoseGoto ->
+        effect is DeviceEffectDto.PrecisePoseGoto ->
             Triple("精确控制 → ${formatSignedAngle(effect.targetPose.pan)} / ${formatSignedAngle(effect.targetPose.tilt)}",
                 UvpColor.Primary, UvpColor.Primary)
         hasMotion(state) -> Triple("PTZ 运动中", UvpColor.Primary, UvpColor.Primary)
@@ -540,7 +540,7 @@ internal fun useTickingNow(intervalMs: Long): Long {
 
 private fun currentTimeMs(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
 
-internal fun hasMotion(state: DeviceControlState): Boolean {
+internal fun hasMotion(state: DeviceControlDto): Boolean {
     return state.panSpeed != 0f || state.tiltSpeed != 0f || state.zoomSpeed != 0f
 }
 
@@ -609,7 +609,7 @@ private fun FrostedGlassOverlay(modifier: Modifier = Modifier) {
  */
 @Composable
 expect fun CameraGlbView(
-    state: DeviceControlState,
+    state: DeviceControlDto,
     onPoseTick: (Float, Float, Float) -> Unit,
     modifier: Modifier
 )

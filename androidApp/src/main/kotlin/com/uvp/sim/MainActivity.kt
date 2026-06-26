@@ -169,16 +169,16 @@ class MainActivity : ComponentActivity() {
                 systemEvents = sysLogs,
                 sessionMarker = SessionTracker.current,
                 subscriptions = subscriptions,
-                deviceControl = deviceControl,
+                deviceControl = deviceControl.toDto(),
                 recording = recordingStatus,
                 catalogTree = catalogTree,
                 lastCatalogSavedAt = lastCatalogSavedAt,
-                alarmHistory = alarmHistory,
+                alarmHistory = alarmHistory.map { it.toDto() },
                 alarmFireMode = alarmFireMode,
-                fixedAlarmTemplate = fixedAlarm,
+                fixedAlarmTemplate = fixedAlarm?.toDto(),
                 broadcast = broadcast,
                 networkRuntimeState = networkState,
-                clockOffset = clockOffset,
+                clockOffset = clockOffset.toDto(),
             )
             val actions = object : AppActions {
                 override fun onConnect() {
