@@ -67,7 +67,7 @@ import kotlin.coroutines.resumeWithException
 class AndroidCameraStreamer(
     private val context: Context,
     private val mainExecutor: Executor,
-    private val config: CaptureConfig,
+    config: CaptureConfig,
     /**
      * OSD 视频叠加层配置 — null 关闭 OSD(走原 CameraX 直连 MediaCodec 路径)。
      *
@@ -77,6 +77,15 @@ class AndroidCameraStreamer(
      */
     private val osdConfigFlow: kotlinx.coroutines.flow.StateFlow<OsdConfig>? = null
 ) {
+    /**
+     * Current capture config — `var` so [applyCaptureConfig] can swap it on the
+     * fly without rebuilding the whole streamer instance. The next `stream()`
+     * pass picks up the new width / height / bitrate / codec via [MediaFormat]
+     * construction; if an encoder is already active when the swap lands, we
+     * release it so the next collect rebuilds.
+     */
+    @Volatile private var config: CaptureConfig = config
+
     /**
      * Self-driven lifecycle pinned to STARTED. Avoids being torn down by Activity
      * onStop / process backgrounding. Released only on [release].
@@ -463,6 +472,35 @@ class AndroidCameraStreamer(
     fun setFacing(facing: CameraFacing) {
         if (currentFacing == facing) return
         currentFacing = facing
+        runOnMain { rebind() }
+    }
+
+    /**
+     * 替换 capture config(PR-USER-BUG-1)— 用户改 分辨率 / 帧率 / 码率 / 编解码器后,
+     * 旧实现走 `lazy` / `?: new()` 单例式 fallback,encoder 已经起来后改不掉。
+     *
+     * 流程:
+     * 1. 同值 short-circuit
+     * 2. 写入新 config,后续 [stream] 自动走新 MediaFormat
+     * 3. 当前 encoder 在跑就 release —— 上层 collector 监 close 会触发 awaitClose,
+     *    重新 collect 下一轮 stream 自动用新 config 起 codec
+     * 4. cameraFacing 顺带跟随(setFacing 也会重新 rebind)
+     *
+     * 调用方:[com.uvp.sim.SipViewModel.updateConfig] / MainActivity attachStreamer 路径
+     * 在 videoConfigVersion bump 时连带调。
+     */
+    fun applyCaptureConfig(new: CaptureConfig) {
+        if (config == new) return
+        config = new
+        // 当前 encoder 还在跑 → 强制 release,callbackFlow 会走 awaitClose
+        runCatching { encoder?.stop() }
+        runCatching { encoder?.release() }
+        runCatching { encoderInputSurface?.release() }
+        encoder = null
+        encoderInputSurface = null
+        if (currentFacing != new.cameraFacing) {
+            currentFacing = new.cameraFacing
+        }
         runOnMain { rebind() }
     }
 
