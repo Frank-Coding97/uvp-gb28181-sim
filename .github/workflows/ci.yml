@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, ci/setup]  # ci/setup 临时项,T7 合 main 前去掉(见 overnight 报告 G1)
 
 permissions:
   contents: read
