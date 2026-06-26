@@ -44,8 +44,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
-import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.ui.model.SessionMarkerDto
+import com.uvp.sim.ui.model.SystemLogDto
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -61,7 +61,7 @@ import kotlinx.datetime.toLocalDateTime
  */
 @Composable
 fun SystemLogTab(
-    logs: List<SystemLog>,
+    logs: List<SystemLogDto>,
     sessionMarker: SessionMarkerDto?,
     paused: Boolean = false,
     onPausedChange: (Boolean) -> Unit = {}
@@ -302,7 +302,7 @@ private fun TagChip(label: String, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit) {
+private fun SystemLogRow(log: SystemLogDto, expanded: Boolean, onClick: () -> Unit) {
     val levelColor = when (log.level) {
         LogLevel.Debug -> UvpColor.TextHint
         LogLevel.Info -> UvpColor.Primary
@@ -414,7 +414,7 @@ private fun SystemLogRow(log: SystemLog, expanded: Boolean, onClick: () -> Unit)
     }
 }
 
-internal fun formatLogForCopy(log: SystemLog): String = buildString {
+internal fun formatLogForCopy(log: SystemLogDto): String = buildString {
     append('[').append(formatHms(log.timestampMs)).append("] ")
     append('[').append(log.level.short).append("] ")
     append('[').append(log.tag.display).append("] ")

@@ -5,7 +5,6 @@ import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
-import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
 import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
@@ -16,6 +15,7 @@ import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.NetworkStateDto
 import com.uvp.sim.ui.model.SessionMarkerDto
 import com.uvp.sim.ui.model.SipStateDto
+import com.uvp.sim.ui.model.SystemLogDto
 
 /**
  * Read-only view of the simulator state for the UI layer.
@@ -28,7 +28,7 @@ data class AppUiState(
     val sip: SipStateDto,
     val config: SimConfig,
     val events: List<SimEvent>,
-    val systemEvents: List<SystemLog> = emptyList(),
+    val systemEvents: List<SystemLogDto> = emptyList(),
     val sessionMarker: SessionMarkerDto? = null,
     /**
      * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 AppEngine 推。

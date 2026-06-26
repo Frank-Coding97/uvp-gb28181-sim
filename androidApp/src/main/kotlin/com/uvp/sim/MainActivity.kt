@@ -166,7 +166,7 @@ class MainActivity : ComponentActivity() {
                 sip = sipState.toDto(),
                 config = config,
                 events = events,
-                systemEvents = sysLogs,
+                systemEvents = sysLogs.map { it.toDto() },
                 sessionMarker = SessionTracker.current?.toDto(),
                 subscriptions = subscriptions,
                 deviceControl = deviceControl.toDto(),
