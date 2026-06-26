@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * P1-2: handleInvite 按 channelId 类型路由 — 不支持的类型立即 488。
@@ -97,7 +98,7 @@ class InviteRoutingTest {
     @Test
     fun inviteVideoChannelIsAccepted() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -116,7 +117,7 @@ class InviteRoutingTest {
     @Test
     fun inviteAlarmChannelIsRejectedWith488() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -134,7 +135,7 @@ class InviteRoutingTest {
     @Test
     fun inviteDeviceRootIsRejectedWith488() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -152,7 +153,7 @@ class InviteRoutingTest {
     @Test
     fun inviteBusinessGroupIsRejectedWith488() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -170,7 +171,7 @@ class InviteRoutingTest {
     @Test
     fun inviteVirtualOrgIsRejectedWith488() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(fullTree()), transport, this, localIpProvider = { "192.168.10.112" })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -190,7 +191,7 @@ class InviteRoutingTest {
         // 兼容性:不在 catalogTree 里的 channelId(老版本 SimConfig.device.videoChannelId 等)
         // 不应被 488 拒绝 — 走原 INVITE 路径(rtpSenderFactory null 场景下早 return)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(emptyList()), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(emptyList()), transport, this, localIpProvider = { "192.168.10.112" })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -207,7 +208,7 @@ class InviteRoutingTest {
 
     /** 注入真实 jvm RtpSender + jvm CameraCapture stub,使首路 INVITE 能建出 activeStream。 */
     private fun mediaEngine(transport: MockSipTransport, scope: kotlinx.coroutines.CoroutineScope) =
-        SimulatorEngine(
+        TestEngine.create(
             cfg(fullTree()), transport, scope, localIpProvider = { "192.168.10.112" },
             cameraCapture = com.uvp.sim.camera.CameraCapture(com.uvp.sim.camera.CaptureConfig()),
             rtpSenderFactory = { host, port, mode ->

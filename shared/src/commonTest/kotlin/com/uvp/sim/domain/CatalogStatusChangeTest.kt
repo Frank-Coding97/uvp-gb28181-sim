@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * M5 batch2 §7.10 — 通道在线状态切换 + 简化 NOTIFY fan-out 集成测试。
@@ -84,7 +85,7 @@ class CatalogStatusChangeTest {
     @Test fun toggle_updatesStatusFieldInTree() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
 
@@ -106,7 +107,7 @@ class CatalogStatusChangeTest {
     @Test fun toggle_fanoutSimplifiedNotifyToCatalogSubscriber() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
 
@@ -135,7 +136,7 @@ class CatalogStatusChangeTest {
     @Test fun toggle_noSubscribers_updatesTreeButSendsNoPacket() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -155,7 +156,7 @@ class CatalogStatusChangeTest {
     @Test fun toggle_unknownChannelId_noChangeNoPacket() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
 
@@ -178,7 +179,7 @@ class CatalogStatusChangeTest {
     @Test fun toggle_sameStatus_noNotifySpam() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.deliver(catalogSubscribeRequest())

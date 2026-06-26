@@ -3,20 +3,34 @@ package com.uvp.sim.app
 import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.BroadcastDialog
 import com.uvp.sim.domain.BroadcastEndReason
+import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.EngineCoordinators
+import com.uvp.sim.domain.EngineHolders
+import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
+import com.uvp.sim.domain.SipSnPool
+import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.SubscriptionSnapshot
+import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
+import com.uvp.sim.domain.coord.InviteCoordinatorImpl
+import com.uvp.sim.domain.coord.ManscdpRouterImpl
+import com.uvp.sim.domain.coord.PlaybackCoordinatorImpl
+import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.RemoteEndpoint
+import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.network.UdpSipTransport
+import com.uvp.sim.sip.SipOutboxImpl
 import com.uvp.sim.sip.SipState
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
@@ -27,24 +41,16 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
- * AppEngine — 装配根(PR6 T6.3 GREEN)。
+ * AppEngine — 装配根(P1.5 真下沉)。
  *
- * commonMain 持 Engine 实例 + transport 装配 + 12 个 StateFlow / events 桥接。
+ * commonMain 持 Engine 实例 + transport 装配 + 5 Coord buildCoordinators + 8 holder buildHolders。
+ * Engine 退化为「5 Coord 引用 + 路由 + bridge」,装配链全在 AppEngine。
  * Android/iOS ViewModel 退化成薄转发,不再持装配逻辑。
  *
- * 决策(plan §1):
- *   - 决策 1 选 A:Engine 实例完全 internal,公开 API 全在 AppEngine
- *   - 决策 2:attachSnapshotPipeline 由 AppEngine 自动调,基于 resources 三件套有无判断
- *   - 决策 3:9 StateFlow 用本地缓存 MutableStateFlow,connect 时 collect engine flow
- *     (跟 ViewModel 当前模式一致,而非 flatMapLatest — 简化迁移)
- *   - 决策 4:ConfigStore interface(plan §1 修订),Android DataStore / iOS NSUserDefaults
- *   - 决策 5:ViewModel 收缩部分,本 PR 只确保 ViewModel 可委派给 AppEngine
- *   - 决策 6:iOS actual 全 null/no-op,M1.1 接 iOS 实现
- *   - 决策 7:handleNetworkChange 暴露 AppEngine,networkController 留 ViewModel
+ * 公开 API 签名保持(避让轨 3 PR-B AppActions 拆切口)。
  */
 class AppEngine(
     private val resources: AndroidResources,
@@ -63,30 +69,29 @@ class AppEngine(
     private var engine: SimulatorEngine? = null
     private var snapshotHttp: HttpClient? = null
 
-    // 9 个 StateFlow + 1 events SharedFlow(Engine 投影到本地)
-    private val _state = MutableStateFlow(SipState.Disconnected)
-    val state: StateFlow<SipState> = _state.asStateFlow()
+    /** holders 在 AppEngine own,Engine 通过构造接引用 — 公开 StateFlow 直读 holder,免去 9 个 collect bridge。 */
+    private val holders: EngineHolders = EngineHolders(
+        state = MutableStateFlow(SipState.Disconnected),
+        events = MutableSharedFlow(extraBufferCapacity = 64),
+        deviceControlState = MutableStateFlow(DeviceControlState()),
+        catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(initialConfig)),
+        clockOffset = MutableStateFlow(ClockOffset.Empty),
+        alarmHistoryStore = AlarmHistoryStore(),
+        subscriptionRegistry = SubscriptionRegistry(engineScope),
+        mockGps = MockGpsSource(initialConfig.mockPosition),
+        snPool = SipSnPool(),
+    )
 
-    private val _events = MutableSharedFlow<SimEvent>(extraBufferCapacity = 64)
-    val events: SharedFlow<SimEvent> = _events.asSharedFlow()
-
-    private val _subscriptions = MutableStateFlow<Map<String, SubscriptionSnapshot>>(emptyMap())
-    val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = _subscriptions.asStateFlow()
-
-    private val _deviceControlState = MutableStateFlow(DeviceControlState())
-    val deviceControlState: StateFlow<DeviceControlState> = _deviceControlState.asStateFlow()
-
-    private val _catalogTree = MutableStateFlow<List<CatalogNode>>(emptyList())
-    val catalogTree: StateFlow<List<CatalogNode>> = _catalogTree.asStateFlow()
-
-    private val _alarmHistory = MutableStateFlow<List<AlarmRecord>>(emptyList())
-    val alarmHistory: StateFlow<List<AlarmRecord>> = _alarmHistory.asStateFlow()
+    val state: StateFlow<SipState> = holders.state.asStateFlow()
+    val events: SharedFlow<SimEvent> = holders.events.asSharedFlow()
+    val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = holders.subscriptionRegistry.subscriptions
+    val deviceControlState: StateFlow<DeviceControlState> = holders.deviceControlState.asStateFlow()
+    val catalogTree: StateFlow<List<CatalogNode>> = holders.catalogTree.asStateFlow()
+    val alarmHistory: StateFlow<List<AlarmRecord>> = holders.alarmHistoryStore.history
+    val clockOffset: StateFlow<ClockOffset> = holders.clockOffset.asStateFlow()
 
     private val _currentChannelName = MutableStateFlow(initialConfig.device.videoChannelName)
     val currentChannelName: StateFlow<String> = _currentChannelName.asStateFlow()
-
-    private val _clockOffset = MutableStateFlow(ClockOffset.Empty)
-    val clockOffset: StateFlow<ClockOffset> = _clockOffset.asStateFlow()
 
     private val _currentBroadcast = MutableStateFlow<BroadcastDialog?>(null)
     val currentBroadcast: StateFlow<BroadcastDialog?> = _currentBroadcast.asStateFlow()
@@ -94,27 +99,21 @@ class AppEngine(
     private val _broadcastSpeakerOn = MutableStateFlow(true)
     val broadcastSpeakerOn: StateFlow<Boolean> = _broadcastSpeakerOn.asStateFlow()
 
-    /** 初始化 catalogTree(从 SimConfig.catalogTree 取)。connect 后 engine 流覆盖。 */
-    init {
-        _catalogTree.value = com.uvp.sim.domain.CatalogTreeStore.effectiveTree(initialConfig)
-    }
-
     /**
-     * 连接平台(替代 ViewModel.connect 装配)。
-     * 关键时序:transport / Engine / snapshotPipeline / 9 collect 桥接 / register。
+     * 连接平台。装配链:transport → buildHolders(已 lazy)→ buildCoordinators → Engine →
+     * Coord<->Engine 反向 ref → snapshot pipeline → bridge(currentChannelName/currentBroadcast/broadcastSpeakerOn 3 个 invite/broadcast 专属)→ register。
      */
     suspend fun connect() {
-        // 已有 engine 时,Disconnected/Failed 走 retry 路径(同 ViewModel 当前行为)
         val existing = engine
         if (existing != null) {
-            when (_state.value) {
+            when (holders.state.value) {
                 SipState.Registering, SipState.Registered, SipState.InCall -> return
                 SipState.Disconnected, SipState.Failed -> {
                     try {
                         transport?.connect()
                         existing.register()
                     } catch (e: Throwable) {
-                        _events.emit(SimEvent.TransportError("register retry: ${e.message}"))
+                        holders.events.emit(SimEvent.TransportError("register retry: ${e.message}"))
                     }
                     return
                 }
@@ -134,31 +133,13 @@ class AppEngine(
         }
         transport = tx
 
-        // RtpSender factory 用 resources 工厂封装一层补 scope
-        val rtpFactory: ((String, Int, com.uvp.sim.network.RtpMode) -> com.uvp.sim.network.RtpSender)? =
-            resources.rtpSenderFactory?.let { f -> { host, port, mode -> f(host, port, engineScope, mode) } }
-
-        val playbackBuilder = resources.playbackBuilderFactory?.let { factory ->
-            rtpFactory?.let { rtp -> factory(engineScope, cfg.recording.playbackAudioCodec, rtp) }
-        }
-
-        val eng = SimulatorEngine(
-            config = cfg,
-            transport = tx,
-            scope = engineScope,
-            localIpProvider = resources.localIpProvider,
-            localPortProvider = { tx.localPort.takeIf { it > 0 } ?: 5060 },
-            cameraCapture = resources.cameraCapture,
-            audioCapture = resources.audioCapture,
-            rtpSenderFactory = rtpFactory,
-            recordingService = resources.recordingService,
-            playbackBuilder = playbackBuilder,
-            rtpReceiverFactory = resources.rtpReceiverFactory,
-            audioSinkFactory = resources.audioSinkFactory,
-        )
+        val outbox = SipOutboxImpl(tx) { ev -> holders.events.emit(ev) }
+        var engineRef: SimulatorEngine? = null
+        val coords = buildCoordinators(cfg, tx, outbox) { engineRef }
+        val eng = SimulatorEngine(cfg, tx, engineScope, resources, coords, holders)
         engine = eng
+        engineRef = eng
 
-        // Snapshot pipeline 三件套都有时自动 attach
         val capture = resources.snapshotCapture
         val cache = resources.snapshotCache
         val httpEngine = resources.httpEngineFactory?.invoke()
@@ -169,15 +150,8 @@ class AppEngine(
             engineScope.launch { runCatching { cache.gc() } }
         }
 
-        // 9 个 collect 桥接(从 ViewModel.connect 迁过来)
-        engineScope.launch { eng.state.collect { _state.value = it } }
-        engineScope.launch { eng.events.collect { _events.emit(it) } }
-        engineScope.launch { eng.subscriptions.collect { _subscriptions.value = it } }
-        engineScope.launch { eng.deviceControlState.collect { _deviceControlState.value = it } }
-        engineScope.launch { eng.catalogTree.collect { _catalogTree.value = it } }
-        engineScope.launch { eng.alarmHistory.collect { _alarmHistory.value = it } }
+        // 3 个 invite/broadcast 专属 StateFlow 仍 collect 桥接(它们的 source-of-truth 在 Coord 内部 — 不在 holders)
         engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
-        engineScope.launch { eng.clockOffset.collect { _clockOffset.value = it } }
         engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
         engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
 
@@ -185,8 +159,81 @@ class AppEngine(
             tx.connect()
             eng.register()
         } catch (e: Throwable) {
-            _events.emit(SimEvent.TransportError("connect: ${e::class.simpleName}: ${e.message}"))
+            holders.events.emit(SimEvent.TransportError("connect: ${e::class.simpleName}: ${e.message}"))
         }
+    }
+
+    private fun buildCoordinators(
+        cfg: SimConfig,
+        tx: SipTransport,
+        outbox: com.uvp.sim.sip.SipOutbox,
+        engineRefProvider: () -> SimulatorEngine?,
+    ): EngineCoordinators {
+        val localPortProvider: () -> Int = { tx.localPort.takeIf { it > 0 } ?: 5060 }
+        val rtpFactory: ((String, Int, RtpMode) -> com.uvp.sim.network.RtpSender)? =
+            resources.rtpSenderFactory?.let { f -> { host, port, mode -> f(host, port, engineScope, mode) } }
+        val playbackBuilder = resources.playbackBuilderFactory?.let { factory ->
+            rtpFactory?.let { rtp -> factory(engineScope, cfg.recording.playbackAudioCodec, rtp) }
+        }
+        val snPool = holders.snPool
+
+        val registration = RegistrationCoordinatorImpl(
+            config = cfg, transport = tx, scope = engineScope, outbox = outbox,
+            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
+            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
+            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+        )
+        val broadcast = BroadcastCoordinatorImpl(
+            config = cfg, transport = tx, scope = engineScope, outbox = outbox,
+            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            rtpReceiverFactory = resources.rtpReceiverFactory, audioSinkFactory = resources.audioSinkFactory,
+            simEventEmit = { ev -> holders.events.emit(ev) },
+            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
+            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
+            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+        )
+        val playback = PlaybackCoordinatorImpl(
+            config = cfg, transport = tx, outbox = outbox, scope = engineScope,
+            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            playbackBuilder = playbackBuilder, recordingService = resources.recordingService,
+            simEventEmit = { ev -> holders.events.emit(ev) },
+            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
+            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
+            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+        )
+        val invite = InviteCoordinatorImpl(
+            config = cfg, transport = tx, outbox = outbox, scope = engineScope,
+            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            cameraCapture = resources.cameraCapture, audioCapture = resources.audioCapture,
+            rtpSenderFactory = rtpFactory,
+            catalogTree = holders.catalogTree, clockOffsetProvider = { holders.clockOffset.value },
+            mutableSipState = holders.state, simEventEmit = { ev -> holders.events.emit(ev) },
+            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
+            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
+            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+        )
+        val manscdp = ManscdpRouterImpl(
+            config = cfg, transport = tx, outbox = outbox, scope = engineScope,
+            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            subscriptionRegistry = holders.subscriptionRegistry,
+            catalogTree = holders.catalogTree,
+            alarmHistoryStore = holders.alarmHistoryStore,
+            mutableDeviceControlState = holders.deviceControlState,
+            rebootCallback = { engineRefProvider()?.rebootForDeviceControl() ?: Unit },
+            requestKeyFrameCallback = { resources.cameraCapture?.requestKeyFrame() },
+            broadcastInvoker = broadcast,
+            recordingService = resources.recordingService,
+            mockGps = holders.mockGps,
+            clockOffsetProvider = { holders.clockOffset.value },
+            stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
+            broadcastBusy = { broadcast.current.value != null },
+            simEventEmit = { ev -> holders.events.emit(ev) },
+            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
+            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
+            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+        )
+        return EngineCoordinators(registration, broadcast, playback, invite, manscdp)
     }
 
     suspend fun cancelConnect() {
@@ -239,7 +286,7 @@ class AppEngine(
         engine?.setBroadcastSpeaker(on) ?: run { _broadcastSpeakerOn.value = on }
     }
     suspend fun updateCatalogTree(tree: List<CatalogNode>) {
-        _catalogTree.value = tree
+        holders.catalogTree.value = tree
         engine?.updateCatalogTree(tree)
     }
     suspend fun pushCatalogNotify() { engine?.pushCatalogNotify() }

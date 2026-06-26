@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * T10 — SimulatorEngine.handleAlarmCmd(平台反向复位)+ localResetAlarm(本地复位)。
@@ -98,7 +99,7 @@ class SimulatorEngineAlarmCmdTest {
     fun alarmCmd0SendsOkAndResetsAndEmitsRemote() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         // 先制造报警中状态
@@ -129,7 +130,7 @@ class SimulatorEngineAlarmCmdTest {
     fun alarmCmd0WithSubscriberPushesResetNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.deliver(alarmSubscribeRequest("alm-r@plat"))
@@ -152,7 +153,7 @@ class SimulatorEngineAlarmCmdTest {
     fun alarmCmd1SendsOkButNoResetNoNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.deliver(alarmSubscribeRequest("alm-g@plat"))
@@ -179,7 +180,7 @@ class SimulatorEngineAlarmCmdTest {
     fun localResetAlarmDoesNotSendSip() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         engine.reportAlarm(com.uvp.sim.gb28181.AlarmPayload(deviceId = "34020000001340000001"))

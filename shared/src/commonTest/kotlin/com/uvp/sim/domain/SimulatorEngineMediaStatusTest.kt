@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * C2 — SimulatorEngine.triggerMediaStatusAbnormal(notifyType) 演示触发口
@@ -105,7 +106,7 @@ class SimulatorEngineMediaStatusTest {
     fun c2_t1_trigger122_emitsOneMessageWithNotifyType122() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -124,7 +125,7 @@ class SimulatorEngineMediaStatusTest {
     fun c2_t2_trigger123_emitsNotifyType123() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -143,7 +144,7 @@ class SimulatorEngineMediaStatusTest {
     fun c2_t3_invalidNotifyTypeIsIgnored() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -161,7 +162,7 @@ class SimulatorEngineMediaStatusTest {
     fun c2_t4_alarmSubscribers_fanOutToBoth() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -197,7 +198,7 @@ class SimulatorEngineMediaStatusTest {
     fun c2_t5_notRegisteredIsIgnored() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         // 不调 register
         engine.triggerMediaStatusAbnormal(122)
@@ -214,7 +215,7 @@ class SimulatorEngineMediaStatusTest {
     fun c2_t6_emitsMediaStatusSent() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()

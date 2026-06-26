@@ -9,6 +9,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * T4 测试:`localIpProvider` 改造正确性。
@@ -39,7 +40,7 @@ class SimulatorEngineLocalIpProviderTest {
     @Test
     fun `default provider returns 0_0_0_0`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this)
+        val engine = TestEngine.create(cfg(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -58,7 +59,7 @@ class SimulatorEngineLocalIpProviderTest {
     @Test
     fun `provider supplies IP into Contact and Via headers`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             localIpProvider = { "10.20.30.40" },
         )
@@ -81,7 +82,7 @@ class SimulatorEngineLocalIpProviderTest {
     fun `provider value change reflects in next register cycle`() = runTest {
         val transport = MockSipTransport()
         var ip = "1.1.1.1"
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { ip })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { ip })
         try {
             transport.connect()
             engine.register()
@@ -122,7 +123,7 @@ class SimulatorEngineLocalIpProviderTest {
     fun `within one register dialog all headers use the same IP`() = runTest {
         val transport = MockSipTransport()
         var calls = 0
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             localIpProvider = {
                 calls++

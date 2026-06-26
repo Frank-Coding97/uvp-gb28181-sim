@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * B2 — SimulatorEngine.handleMessage 路由 AlarmStatusQuery 集成测试
@@ -113,7 +114,7 @@ class AlarmStatusQueryTest {
     fun b2_t1_queryTriggersResponse() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -133,7 +134,7 @@ class AlarmStatusQueryTest {
     fun b2_t2_snPassthrough() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -152,7 +153,7 @@ class AlarmStatusQueryTest {
     fun b2_t3_topDeviceIdMatchesConfig() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -172,7 +173,7 @@ class AlarmStatusQueryTest {
     fun b2_t4_alarmingStateMapsToAlarm() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -195,7 +196,7 @@ class AlarmStatusQueryTest {
     fun b2_t5_afterResetMapsToOffduty() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this,
+        val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
@@ -221,7 +222,7 @@ class AlarmStatusQueryTest {
     fun b2_t6_gb2016UsesNotNumber() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(GbVersion.V2016), transport, this,
+        val engine = TestEngine.create(config(GbVersion.V2016), transport, this,
             localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()

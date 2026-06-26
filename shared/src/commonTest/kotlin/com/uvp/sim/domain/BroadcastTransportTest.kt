@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /** 对讲媒体传输模式(UDP / TCP 主动 / TCP 被动)的 engine 接线。 */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -104,7 +105,7 @@ a=setup:passive
     fun tcpActiveOffersTcpAndConnectsToPlatform() = runTest {
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(AudioTransportType.TCP_ACTIVE), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { fakeRx }
         )
@@ -135,7 +136,7 @@ a=setup:passive
     fun udpOffersUdpAndDoesNotConnect() = runTest {
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(AudioTransportType.UDP), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { fakeRx }
         )
@@ -161,7 +162,7 @@ a=setup:passive
     fun tcpPassiveOffersPassiveAndDoesNotConnect() = runTest {
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(AudioTransportType.TCP_PASSIVE), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { fakeRx }
         )

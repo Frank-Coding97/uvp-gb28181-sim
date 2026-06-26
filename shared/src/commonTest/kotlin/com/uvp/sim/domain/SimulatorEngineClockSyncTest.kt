@@ -20,6 +20,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * M5 §4.15 SIP Date 校时:注册 200 OK 解析 Date 头 + currentLocalIso 跟随。
@@ -64,7 +65,7 @@ class SimulatorEngineClockSyncTest {
 
     @Test fun `200 OK 带合法 RFC1123 Date 头校时成功`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -86,7 +87,7 @@ class SimulatorEngineClockSyncTest {
 
     @Test fun `200 OK 无 Date 头不校时但注册仍成功`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -102,7 +103,7 @@ class SimulatorEngineClockSyncTest {
 
     @Test fun `200 OK Date 头乱码不校时仍注册`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -119,7 +120,7 @@ class SimulatorEngineClockSyncTest {
 
     @Test fun `ISO8601 Date 头也兼容`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -137,7 +138,7 @@ class SimulatorEngineClockSyncTest {
 
     @Test fun `未校时 currentLocalIso 跟本地墙钟近似`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             // 不调 register,clockOffset 保持 Empty
             assertFalse(engine.clockOffset.value.isSynced)

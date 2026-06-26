@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /** T7 — RX 链路串联(handleRxPacket:PT 校验 → G711 decode → channel → 统计 / BroadcastStarted)。 */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -98,7 +99,7 @@ a=sendonly
     }
 
     private fun engineTo(transport: MockSipTransport, scope: kotlinx.coroutines.CoroutineScope) =
-        SimulatorEngine(cfg(), transport, scope, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        TestEngine.create(cfg(), transport, scope, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
 
     private suspend fun lastInvite(transport: MockSipTransport): SipRequest =
         transport.sent.filterIsInstance<SipRequest>().last { it.method == SipMethod.INVITE }

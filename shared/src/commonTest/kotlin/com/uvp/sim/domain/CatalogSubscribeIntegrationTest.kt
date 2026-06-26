@@ -20,6 +20,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CatalogSubscribeIntegrationTest {
@@ -91,7 +92,7 @@ class CatalogSubscribeIntegrationTest {
     fun catalogSubscribeReturns200AndInitialNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -120,7 +121,7 @@ class CatalogSubscribeIntegrationTest {
     fun catalogSubscribeDoesNotPushPeriodicNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -143,7 +144,7 @@ class CatalogSubscribeIntegrationTest {
     fun pushCatalogNotifySendsExtraNotifyToActiveSubscribers() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -165,7 +166,7 @@ class CatalogSubscribeIntegrationTest {
     fun pushCatalogNotifyWithoutSubscriberIsNoop() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -183,7 +184,7 @@ class CatalogSubscribeIntegrationTest {
     fun updateCatalogTreeReflectsInNextNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
 
@@ -227,7 +228,7 @@ class CatalogSubscribeIntegrationTest {
         }
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             config(catalogTree = largeTree), transport, this,
             localIpProvider = { "192.168.1.50" }
         )
@@ -271,7 +272,7 @@ class CatalogSubscribeIntegrationTest {
         }
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             config(catalogTree = oldTree), transport, this,
             localIpProvider = { "192.168.1.50" }
         )
@@ -310,7 +311,7 @@ class CatalogSubscribeIntegrationTest {
         }
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             config(catalogTree = largeTree), transport, this,
             localIpProvider = { "192.168.1.50" }
         )
@@ -346,7 +347,7 @@ class CatalogSubscribeIntegrationTest {
         )
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             config(catalogTree = tree), transport, this,
             localIpProvider = { "192.168.1.50" }
         )
@@ -369,7 +370,7 @@ class CatalogSubscribeIntegrationTest {
     fun catalogAndMobilePositionCoexist() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -409,7 +410,7 @@ class CatalogSubscribeIntegrationTest {
     fun catalogSubscribeRefreshDoesNotRepushInitial() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()

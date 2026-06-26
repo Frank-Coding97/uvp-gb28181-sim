@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /** T9 — audioChannel consumer + AudioPlayback lifecycle(start / stop 随 dialog 生灭)。 */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -97,7 +98,7 @@ a=sendonly
     fun playbackStartsOnTalkingAndStopsOnLocalStop() = runTest {
         val transport = MockSipTransport()
         val fakeSink = FakeAudioSink()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
             audioSinkFactory = { _, _ -> fakeSink }
@@ -122,7 +123,7 @@ a=sendonly
     fun rxPacketReachesPlaybackWrite() = runTest {
         val transport = MockSipTransport()
         val fakeSink = FakeAudioSink()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
             audioSinkFactory = { _, _ -> fakeSink }
@@ -150,7 +151,7 @@ a=sendonly
     fun mutedSpeakerSkipsWrite() = runTest {
         val transport = MockSipTransport()
         val fakeSink = FakeAudioSink()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
             audioSinkFactory = { _, _ -> fakeSink }

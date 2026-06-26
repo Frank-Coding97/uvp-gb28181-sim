@@ -18,6 +18,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * T04 — emit 接入验证(LIFECYCLE 路径)。
@@ -79,7 +80,7 @@ class EmitLifecycleTest {
     @Test fun registerStartEmitsLifecycleInfo() = runTest {
         SystemLogger.bindScope(this)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -101,7 +102,7 @@ class EmitLifecycleTest {
     @Test fun registerSuccessEmitsLifecycleInfo() = runTest {
         SystemLogger.bindScope(this)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -124,7 +125,7 @@ class EmitLifecycleTest {
     @Test fun registerRejectionEmitsLifecycleWarning() = runTest {
         SystemLogger.bindScope(this)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -147,7 +148,7 @@ class EmitLifecycleTest {
     @Test fun unregisterEmitsLifecycleInfo() = runTest {
         SystemLogger.bindScope(this)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()

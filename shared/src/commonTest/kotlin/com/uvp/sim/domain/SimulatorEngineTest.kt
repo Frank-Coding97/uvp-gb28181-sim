@@ -20,6 +20,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SimulatorEngineTest {
@@ -59,7 +60,7 @@ class SimulatorEngineTest {
 
     @Test fun registerSucceedsAfter401Challenge() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -101,7 +102,7 @@ class SimulatorEngineTest {
         // the rest — otherwise each 401 spawns a new REGISTER, the platform rate-limits
         // ("register N times in 3 seconds"), and the device never registers.
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -138,7 +139,7 @@ class SimulatorEngineTest {
 
     @Test fun registerImmediate200Goes_Registered() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -154,7 +155,7 @@ class SimulatorEngineTest {
 
     @Test fun registerWith403Forbidden_goesFailed() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -170,7 +171,7 @@ class SimulatorEngineTest {
 
     @Test fun unregisterSendsRegisterWithExpires0() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -195,7 +196,7 @@ class SimulatorEngineTest {
 
     @Test fun registerTimeoutMovesToFailedAfterEightSeconds() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -224,7 +225,7 @@ class SimulatorEngineTest {
     @Test fun heartbeatStartsAfterRegistered() = runTest {
         val cfg = config().copy(keepaliveIntervalSeconds = 1)
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg, transport, this)
+        val engine = TestEngine.create(cfg, transport, this)
         try {
             transport.connect()
             engine.register()
@@ -250,7 +251,7 @@ class SimulatorEngineTest {
 
     @Test fun registerTimeoutCancelledOn200Ok() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -272,7 +273,7 @@ class SimulatorEngineTest {
 
     @Test fun registerTimeoutResetOn401SoFullAuthFlowFits() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
             engine.register()
@@ -304,7 +305,7 @@ class SimulatorEngineTest {
 
     @Test fun cancelRegisterReturnsToDisconnected() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             transport.connect()
             engine.register()
@@ -366,7 +367,7 @@ class SimulatorEngineTest {
 
     @Test fun deviceControlPtzCmdUpdatesStateAndEmits() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         val received = mutableListOf<SimEvent>()
         val sub = launch { engine.events.collect { received += it } }
         try {
@@ -393,7 +394,7 @@ class SimulatorEngineTest {
 
     @Test fun deviceControlIFameCmdRequestsKeyFrameAndEffect() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(config(), transport, this)
+        val engine = TestEngine.create(config(), transport, this)
         try {
             registerAnd200(transport, engine)
             val xml = "<Control><CmdType>DeviceControl</CmdType>" +

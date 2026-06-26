@@ -26,6 +26,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * Mock CameraCapture that emits a fixed list of pre-built frames.
@@ -95,7 +96,7 @@ class StreamingEngineTest {
 
     @Test fun inviteWithoutMediaPlumbingStillTransitionsToInCall() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" })
         try {
             transport.connect()
             engine.register()
@@ -124,7 +125,7 @@ class StreamingEngineTest {
             // fail silently (we don't assert RTP delivery in commonTest).
             RtpSender(host, port, this, mode)
         }
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             localIpProvider = { "192.168.10.112" },
             cameraCapture = capture,
@@ -162,7 +163,7 @@ class StreamingEngineTest {
         val rtpFactory: (String, Int, com.uvp.sim.network.RtpMode) -> RtpSender = { host, port, mode ->
             RtpSender(host, port, this, mode)
         }
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             localIpProvider = { "192.168.10.112" },
             cameraCapture = capture,

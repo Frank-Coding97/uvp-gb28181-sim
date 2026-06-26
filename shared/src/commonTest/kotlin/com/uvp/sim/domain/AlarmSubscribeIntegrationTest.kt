@@ -19,6 +19,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * T11 — Event:Alarm 订阅生命周期(activate / 不发 initial / refresh / cancel / 自然过期)。
@@ -83,7 +84,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeReturns200NoInitialNotifyEmitsSubscribed() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.sent.clear()
@@ -114,7 +115,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeRefreshKeepsSingleDialogNoNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.deliver(alarmSub("ref@plat"))
@@ -136,7 +137,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeExpires0CancelsImmediately() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
         transport.deliver(alarmSub("cancel@plat"))
@@ -161,7 +162,7 @@ class AlarmSubscribeIntegrationTest {
     fun alarmSubscribeNaturalExpiryEmitsExpired() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine, this)
         runCurrent()
 

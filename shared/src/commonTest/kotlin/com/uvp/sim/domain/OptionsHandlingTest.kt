@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
+import com.uvp.sim.testing.TestEngine
 
 /**
  * A2 — SimulatorEngine.handleOptions 路由(M5 平台兼容性补漏 batch1).
@@ -65,7 +66,7 @@ class OptionsHandlingTest {
         val transport = MockSipTransport()
         transport.connect()
         return transport to transport
-            .let { tr -> tr to SimulatorEngine(config(), tr, kotlinx.coroutines.GlobalScope) }
+            .let { tr -> tr to TestEngine.create(config(), tr, kotlinx.coroutines.GlobalScope) }
             .second
     }
 
@@ -73,7 +74,7 @@ class OptionsHandlingTest {
     fun a2_t1_probeOptionsReturns200() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         // 触发 inbound job 启动(register 后才订阅 transport.incoming)
         engine.register()
         runCurrent()
@@ -93,7 +94,7 @@ class OptionsHandlingTest {
     fun a2_t2_responseHasAllowHeaderWithAllExpectedMethods() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         engine.register()
         runCurrent()
         transport.sent.clear()
@@ -117,7 +118,7 @@ class OptionsHandlingTest {
     fun a2_t3_allowDoesNotIncludeRegister() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         engine.register()
         runCurrent()
         transport.sent.clear()
@@ -140,7 +141,7 @@ class OptionsHandlingTest {
     fun a2_t4_optionsDoesNotInterfereWithOtherTransactions() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         engine.register()
         runCurrent()
         transport.sent.clear()

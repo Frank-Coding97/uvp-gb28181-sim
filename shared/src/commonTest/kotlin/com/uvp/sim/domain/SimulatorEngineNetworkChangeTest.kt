@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * T5 测试:`handleNetworkChange` 编排正确性。
@@ -75,7 +76,7 @@ class SimulatorEngineNetworkChangeTest {
     @Test
     fun `Bound triggers unregister and register when SIP Registered`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
         try {
             transport.connect()
             engine.register()
@@ -107,7 +108,7 @@ class SimulatorEngineNetworkChangeTest {
     @Test
     fun `Bound does NOT trigger reregister when SIP Disconnected`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
         try {
             transport.connect()
             assertEquals(SipState.Disconnected, engine.state.value, "前置:Disconnected")
@@ -130,7 +131,7 @@ class SimulatorEngineNetworkChangeTest {
     @Test
     fun `Unavailable emits NetworkUnavailable event without unregister`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
         val collected = mutableListOf<SimEvent>()
         val job = launch {
             engine.events.collect { collected.add(it) }
@@ -170,7 +171,7 @@ class SimulatorEngineNetworkChangeTest {
     @Test
     fun `Switching state is a no-op for the engine`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
         try {
             transport.connect()
             engine.register()
@@ -196,7 +197,7 @@ class SimulatorEngineNetworkChangeTest {
     @Test
     fun `Auto triggers reregister when SIP Registered`() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "1.1.1.1" })
         try {
             transport.connect()
             engine.register()

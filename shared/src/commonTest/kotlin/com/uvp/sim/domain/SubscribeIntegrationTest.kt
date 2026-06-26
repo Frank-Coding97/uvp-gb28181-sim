@@ -19,6 +19,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SubscribeIntegrationTest {
@@ -81,7 +82,7 @@ class SubscribeIntegrationTest {
     fun subscribeResponds200AndSendsInitialNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -107,7 +108,7 @@ class SubscribeIntegrationTest {
     fun periodicNotifyFiresAfterInterval() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -129,7 +130,7 @@ class SubscribeIntegrationTest {
     fun cancelSubscribeStopsNotify() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
 
@@ -153,7 +154,7 @@ class SubscribeIntegrationTest {
     fun subscriptionsFlowReflectsActiveState() = runTest {
         val transport = MockSipTransport()
         transport.connect()
-        val engine = SimulatorEngine(config(), transport, this, localIpProvider = { "192.168.1.50" })
+        val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
         runCurrent()
 

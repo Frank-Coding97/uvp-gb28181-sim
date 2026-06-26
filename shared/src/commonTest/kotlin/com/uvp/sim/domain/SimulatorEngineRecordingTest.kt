@@ -26,6 +26,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class SimulatorEngineRecordingTest {
@@ -169,7 +170,7 @@ y=0123456789
     @Test fun deviceControl_record_callsRecordingServiceStart() = runTest {
         val transport = MockSipTransport()
         val rec = FakeRecordingService()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec
         )
@@ -197,7 +198,7 @@ y=0123456789
     @Test fun deviceControl_stopRecord_callsRecordingServiceStop() = runTest {
         val transport = MockSipTransport()
         val rec = FakeRecordingService()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec
         )
@@ -214,7 +215,7 @@ y=0123456789
     @Test fun deviceControl_unknown_isNoop() = runTest {
         val transport = MockSipTransport()
         val rec = FakeRecordingService()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             recordingService = rec
         )
@@ -232,7 +233,7 @@ y=0123456789
     @Test fun recordInfo_zeroFiles_emits200_thenEmptyNotify() = runTest {
         val transport = MockSipTransport()
         val rec = FakeRecordingService()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             recordingService = rec
         )
@@ -266,7 +267,7 @@ y=0123456789
         }
         val transport = MockSipTransport()
         val rec = FakeRecordingService(initialFiles = files)
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this,
             recordingService = rec
         )
@@ -285,7 +286,7 @@ y=0123456789
 
     @Test fun playbackInvite_noPlaybackBuilder_returns487() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = NoopRecordingService,
             playbackBuilder = null
@@ -313,7 +314,7 @@ y=0123456789
                 ssrc: String
             ): PlaybackSession? { built = true; return null }
         }
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec,
             playbackBuilder = builder
@@ -357,7 +358,7 @@ y=0123456789
                 return session
             }
         }
-        val engine = SimulatorEngine(
+        val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = rec,
             playbackBuilder = builder

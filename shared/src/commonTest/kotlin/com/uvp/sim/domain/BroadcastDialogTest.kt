@@ -19,6 +19,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import com.uvp.sim.testing.TestEngine
 
 /**
  * T3 — 反向 INVITE + broadcast dialog 状态机
@@ -135,7 +136,7 @@ a=sendonly
     @Test
     fun broadcastMessageTriggersInviteAndInvitingState() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -154,7 +155,7 @@ a=sendonly
     @Test
     fun ok200WithG711LeadsToTalkingAndAck() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage())
@@ -174,7 +175,7 @@ a=sendonly
     @Test
     fun invite488ClearsDialogWithInviteFailed() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         val ended = mutableListOf<SimEvent.BroadcastEnded>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastEnded) ended += it } }
         bootRegistered(transport, engine)
@@ -194,7 +195,7 @@ a=sendonly
     @Test
     fun codec96RejectedWithByeAndCodecRejected() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         val ended = mutableListOf<SimEvent.BroadcastEnded>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastEnded) ended += it } }
         bootRegistered(transport, engine)
@@ -216,7 +217,7 @@ a=sendonly
     @Test
     fun userStopBroadcastSendsByeAndClears() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage())
@@ -236,7 +237,7 @@ a=sendonly
     @Test
     fun platformByeRepliesOkAndClears() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         val ended = mutableListOf<SimEvent.BroadcastEnded>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastEnded) ended += it } }
         bootRegistered(transport, engine)
@@ -262,7 +263,7 @@ a=sendonly
     @Test
     fun secondBroadcastWhileTalkingRepliesBusyWithoutInvite() = runTest {
         val transport = MockSipTransport()
-        val engine = SimulatorEngine(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage(callId = "bc-1@plat", sn = "1"))
