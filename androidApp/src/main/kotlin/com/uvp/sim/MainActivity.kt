@@ -177,7 +177,7 @@ class MainActivity : ComponentActivity() {
                 alarmFireMode = alarmFireMode,
                 fixedAlarmTemplate = fixedAlarm?.toDto(),
                 broadcast = broadcast,
-                networkRuntimeState = networkState,
+                networkRuntimeState = networkState.toDto(),
                 clockOffset = clockOffset.toDto(),
             )
             val actions = object : AppActions {

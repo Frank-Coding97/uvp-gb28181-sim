@@ -36,7 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.NetworkPreference
-import com.uvp.sim.network.NetworkState
+import com.uvp.sim.ui.model.NetworkStateDto
 
 /**
  * 设置 → 网络 子页:三选一 RadioGroup + 当前运行时状态诊断卡。
@@ -142,7 +142,7 @@ private fun NetworkOptionCard(
 }
 
 @Composable
-private fun NetworkRuntimeStateCard(runtime: NetworkState) {
+private fun NetworkRuntimeStateCard(runtime: NetworkStateDto) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -159,10 +159,10 @@ private fun NetworkRuntimeStateCard(runtime: NetworkState) {
             color = UvpColor.TextSecondary
         )
         when (runtime) {
-            NetworkState.Auto -> {
+            NetworkStateDto.Auto -> {
                 Text("自动 · 由系统路由表决定", fontSize = 13.sp, color = UvpColor.Text)
             }
-            is NetworkState.Bound -> {
+            is NetworkStateDto.Bound -> {
                 Text(
                     "✓ 已绑定到 ${runtime.preference.name}",
                     fontSize = 13.sp,
@@ -172,7 +172,7 @@ private fun NetworkRuntimeStateCard(runtime: NetworkState) {
                 Text("接口: ${runtime.interfaceName}", fontSize = 12.sp, color = UvpColor.TextSecondary)
                 Text("IP: ${runtime.localIp}", fontSize = 12.sp, color = UvpColor.TextSecondary)
             }
-            is NetworkState.Unavailable -> {
+            is NetworkStateDto.Unavailable -> {
                 Text(
                     "⚠️ ${runtime.reason}",
                     fontSize = 13.sp,
@@ -185,7 +185,7 @@ private fun NetworkRuntimeStateCard(runtime: NetworkState) {
                     color = UvpColor.TextSecondary
                 )
             }
-            is NetworkState.Switching -> {
+            is NetworkStateDto.Switching -> {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(14.dp),

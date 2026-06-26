@@ -20,13 +20,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.network.NetworkState
+import com.uvp.sim.ui.model.NetworkStateDto
 
 /**
  * 顶部网络不可用 banner。
  *
  * 显示规则:
- * - networkRuntimeState 是 [NetworkState.Unavailable] → 红色 banner + 跳转设置入口
+ * - networkRuntimeState 是 [NetworkStateDto.Unavailable] → 红色 banner + 跳转设置入口
  * - 其余状态 → 不渲染(0 高度,不占空间)
  *
  * 设计原因(plan U3):状态卡显示原因 + 主屏顶 banner 双重提醒,
@@ -34,10 +34,10 @@ import com.uvp.sim.network.NetworkState
  */
 @Composable
 fun NetworkUnavailableBanner(
-    runtime: NetworkState,
+    runtime: NetworkStateDto,
     onClick: () -> Unit,
 ) {
-    if (runtime !is NetworkState.Unavailable) return
+    if (runtime !is NetworkStateDto.Unavailable) return
 
     Row(
         modifier = Modifier

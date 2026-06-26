@@ -5,7 +5,6 @@ import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
-import com.uvp.sim.network.NetworkState
 import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
@@ -15,6 +14,7 @@ import com.uvp.sim.ui.model.AlarmPayloadDto
 import com.uvp.sim.ui.model.AlarmRecordDto
 import com.uvp.sim.ui.model.ClockOffsetDto
 import com.uvp.sim.ui.model.DeviceControlDto
+import com.uvp.sim.ui.model.NetworkStateDto
 import com.uvp.sim.ui.model.SipStateDto
 
 /**
@@ -82,7 +82,7 @@ data class AppUiState(
      * - 设置 → 网络子页诊断区显示接口名 / IP
      * - 主屏顶 banner:Unavailable 时显示红 banner 提示老板
      */
-    val networkRuntimeState: NetworkState = NetworkState.Auto,
+    val networkRuntimeState: NetworkStateDto = NetworkStateDto.Auto,
     /**
      * M5 batch2 §4.15 — SIP Date 校时偏移快照(AppEngine.clockOffset 投影)。
      * 能力中心「设备校时」tile + ClockSyncScreen 读这个,
