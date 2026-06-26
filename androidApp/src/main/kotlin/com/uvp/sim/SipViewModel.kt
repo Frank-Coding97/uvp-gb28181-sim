@@ -449,20 +449,3 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 }
-
-
-/**
- * Glues the cross-platform [SimulatorEngine] to Android lifecycle.
- *
- * Holds the live SimConfig so the Config screen can save updates. On config
- * change while connected, [updateConfig] tears down + reconnects with the new
- * settings; while disconnected, it just stores the new config for next connect.
- */
-
-private inline fun <T> MutableStateFlow<T>.update(transform: (T) -> T) {
-    while (true) {
-        val prev = value
-        val next = transform(prev)
-        if (compareAndSet(prev, next)) return
-    }
-}

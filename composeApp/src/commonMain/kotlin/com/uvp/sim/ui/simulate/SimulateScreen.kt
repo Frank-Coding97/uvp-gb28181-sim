@@ -65,11 +65,7 @@ import kotlinx.coroutines.delay
  *   Desktop: 占位)
  * - 下 30%: [PtzHudPanel] 平台控制指令实时解码 HUD
  *
- * 数据源:[AppUiState.deviceControlState] StateFlow 写入,UI 订阅.
- *
- * 注意:T14 临时实现 — AppUiState 还没加 deviceControlState 字段,
- * 这里先用空 default,等 platform shell 接 SimulatorEngine.deviceControlState
- * 时补上(留给 T16 收尾).
+ * 数据源:[AppUiState.deviceControl] StateFlow 写入,UI 订阅.
  */
 @Composable
 fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
