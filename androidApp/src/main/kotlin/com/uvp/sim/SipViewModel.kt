@@ -173,21 +173,25 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     val networkState: StateFlow<com.uvp.sim.network.NetworkState> = networkController.state
 
     init {
-        // 启动期按持久化 preference 应用网络偏好,collect state 推给 AppEngine
-        viewModelScope.launch {
-            networkController.apply(appEngine.config.value.network.preference)
-        }
-        viewModelScope.launch {
-            networkController.state.collect { netState ->
-                appEngine.handleNetworkChange(netState)
-            }
-        }
-        // 冷启动加载持久化 config(走 AppEngine 暴露的 ConfigStore)
+        // 冷启动顺序(PR-USER-BUG-1 修复):
+        // 1. AppEngine 构造时已用 defaultConfig() 装配 holders(loadOnce 等价)
+        // 2. 灌入持久化 config → AppEngine.setConfig 触发 rehydrateHolders,
+        //    catalogTree / mockGps / currentChannelName / clockOffset / subscriptionRegistry 跟随
+        //    新 config 重派生 — 旧实现是直接 _config.value =,holder 不刷,
+        //    用户改的 deviceId / videoChannelName / mockPosition 全被旧 default 盖死
+        // 3. networkController.apply(stored.network.preference) — 应用持久化网络偏好
+        // 4. 之后才启动 networkController.state.collect 推给 AppEngine
         viewModelScope.launch {
             val stored = migrateDualChannel(resources.configStore.loadOnce(defaultConfig()))
             if (stored != appEngine.config.value) {
                 appEngine.setConfig(stored)
                 _videoConfigVersion.value += 1
+            }
+            networkController.apply(stored.network.preference)
+            launch {
+                networkController.state.collect { netState ->
+                    appEngine.handleNetworkChange(netState)
+                }
             }
         }
     }

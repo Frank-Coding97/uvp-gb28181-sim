@@ -106,6 +106,7 @@ dependencies {
     testImplementation(libs.androidx.test.runner)
     testImplementation(libs.androidx.test.ext.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
 
     // Espresso 真机/模拟器 instrumentation test
     androidTestImplementation(libs.androidx.test.ext.junit)
