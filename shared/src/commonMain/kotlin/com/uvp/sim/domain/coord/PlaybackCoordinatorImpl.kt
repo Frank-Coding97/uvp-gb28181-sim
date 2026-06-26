@@ -9,6 +9,7 @@ import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.recording.RecordingService
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipHeader
+import com.uvp.sim.sip.SipHeaderHelpers
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
@@ -126,58 +127,6 @@ internal class PlaybackCoordinatorImpl(
         stopActivePlayback(reason)
     }
 
-    private fun parseUri(headerValue: String): String {
-        val lt = headerValue.indexOf('<')
-        val gt = headerValue.indexOf('>')
-        return if (lt >= 0 && gt > lt) headerValue.substring(lt + 1, gt)
-        else headerValue.substringBefore(';').trim()
-    }
-
-    private fun parseUriUser(uri: String): String {
-        val s = uri.substringAfter("sip:", uri).substringBefore('@', "")
-        return s.ifEmpty { config.server.serverId }
-    }
-
-    private fun buildSdpMediaSpec(): com.uvp.sim.sip.SdpAnswer.MediaSpec {
-        val v = config.video
-        val videoCodec = when (v.videoCodec) {
-            com.uvp.sim.media.VideoCodec.H264 -> 2
-            com.uvp.sim.media.VideoCodec.H265 -> 5
-        }
-        val resolution = when (v.resolution) {
-            com.uvp.sim.config.VideoResolution.SD_480P -> 4
-            com.uvp.sim.config.VideoResolution.HD_720P -> 5
-            com.uvp.sim.config.VideoResolution.FHD_1080P -> 6
-        }
-        val audioCodec = when (v.audioCodec) {
-            com.uvp.sim.media.AudioCodec.G711A -> 1
-            com.uvp.sim.media.AudioCodec.G711U -> 2
-            com.uvp.sim.media.AudioCodec.AAC -> 11
-        }
-        val audioBitrateKbps = when (v.audioCodec) {
-            com.uvp.sim.media.AudioCodec.G711A,
-            com.uvp.sim.media.AudioCodec.G711U -> 64
-            com.uvp.sim.media.AudioCodec.AAC -> 32
-        }
-        val audioSampleRate = when (v.effectiveAudioSampleRateHz) {
-            8_000 -> 1
-            14_000 -> 2
-            16_000 -> 3
-            32_000 -> 4
-            else -> 3
-        }
-        return com.uvp.sim.sip.SdpAnswer.MediaSpec(
-            videoCodec = videoCodec,
-            resolution = resolution,
-            frameRate = v.frameRate,
-            rateType = 2,
-            videoBitrateKbps = v.bitrateKbps,
-            audioCodec = audioCodec,
-            audioBitrateKbps = audioBitrateKbps,
-            audioSampleRate = audioSampleRate,
-        )
-    }
-
     private suspend fun sendSimpleResponse(req: SipRequest, statusCode: Int, reasonPhrase: String) {
         runCatching {
             val resp = SipBuilders.buildSimpleResponse(
@@ -262,10 +211,13 @@ internal class PlaybackCoordinatorImpl(
             localRtpPort = playback.localRtpPort,
             ssrc = ssrc,
             sessionName = sessionName,
-            mediaSpec = buildSdpMediaSpec(),
+            mediaSpec = SipHeaderHelpers.buildSdpMediaSpec(config),
         )
         val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
-        val pbInviteFromUser = parseUriUser(parseUri(invite.fromHeader() ?: ""))
+        val pbInviteFromUser = SipHeaderHelpers.parseUriUser(
+            SipHeaderHelpers.parseUri(invite.fromHeader() ?: ""),
+            fallback = config.server.serverId,
+        )
         val response = SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,

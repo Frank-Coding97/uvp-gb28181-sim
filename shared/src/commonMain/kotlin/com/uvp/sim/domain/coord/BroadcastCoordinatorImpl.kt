@@ -13,6 +13,7 @@ import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipHeader
+import com.uvp.sim.sip.SipHeaderHelpers
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
@@ -262,8 +263,8 @@ internal class BroadcastCoordinatorImpl(
         when (resp.statusCode) {
             in 100..199 -> return
             in 200..299 -> {
-                val remoteTag = parseTag(resp.toHeader() ?: "")
-                val contactUri = resp.firstHeader(SipHeader.CONTACT)?.let { parseUri(it) } ?: bc.sourcePlatformUri
+                val remoteTag = SipHeaderHelpers.parseTag(resp.toHeader() ?: "")
+                val contactUri = resp.firstHeader(SipHeader.CONTACT)?.let { SipHeaderHelpers.parseUri(it) } ?: bc.sourcePlatformUri
                 sendBroadcastAck(bc, contactUri, remoteTag)
                 val answer = runCatching {
                     com.uvp.sim.sip.SdpParser.parseAnswer(resp.body.decodeToString())
@@ -448,20 +449,5 @@ internal class BroadcastCoordinatorImpl(
         rtpReceiver = null
         broadcastLocalAudioPort = 0
         while (audioChannel.tryReceive().isSuccess) { /* drain */ }
-    }
-
-    private fun parseUri(headerValue: String): String {
-        val lt = headerValue.indexOf('<')
-        val gt = headerValue.indexOf('>')
-        return if (lt >= 0 && gt > lt) headerValue.substring(lt + 1, gt)
-        else headerValue.substringBefore(';').trim()
-    }
-
-    private fun parseTag(headerValue: String): String {
-        val idx = headerValue.indexOf(";tag=")
-        if (idx < 0) return ""
-        val rest = headerValue.substring(idx + 5)
-        val end = rest.indexOfAny(charArrayOf(';', ' ', '>', '\r', '\n'))
-        return if (end < 0) rest else rest.substring(0, end)
     }
 }
