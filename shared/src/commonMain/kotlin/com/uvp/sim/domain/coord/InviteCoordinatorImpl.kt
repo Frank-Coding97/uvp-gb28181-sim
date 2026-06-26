@@ -56,6 +56,7 @@ import kotlinx.datetime.Clock
 internal class InviteCoordinatorImpl(
     private val config: SimConfig,
     private val transport: SipTransport,
+    private val outbox: com.uvp.sim.sip.SipOutbox,
     private val scope: CoroutineScope,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
@@ -306,8 +307,7 @@ internal class InviteCoordinatorImpl(
                 reasonPhrase = reasonPhrase,
                 toTag = SipBuilders.randomTag(),
             )
-            transport.send(resp)
-            simEventEmit(SimEvent.MessageSent(resp))
+            outbox.send(resp).getOrThrow()
         }
     }
 
@@ -318,8 +318,7 @@ internal class InviteCoordinatorImpl(
                 toTag = SipBuilders.randomTag(),
                 userAgent = config.userAgent,
             )
-            transport.send(resp)
-            simEventEmit(SimEvent.MessageSent(resp))
+            outbox.send(resp).getOrThrow()
         }
         SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 INVITE → 486 ($reason)")
     }
@@ -331,8 +330,7 @@ internal class InviteCoordinatorImpl(
                 toTag = SipBuilders.randomTag(),
                 userAgent = config.userAgent,
             )
-            transport.send(resp)
-            simEventEmit(SimEvent.MessageSent(resp))
+            outbox.send(resp).getOrThrow()
         }
         SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 INVITE → 487 ($reason)")
     }
@@ -352,8 +350,7 @@ internal class InviteCoordinatorImpl(
                     reasonPhrase = rejection.second,
                     toTag = SipBuilders.randomTag(),
                 )
-                transport.send(resp)
-                simEventEmit(SimEvent.MessageSent(resp))
+                outbox.send(resp).getOrThrow()
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Lifecycle,
                     "拒绝 INVITE: channelId=$channelId → ${rejection.first} ${rejection.second}"
@@ -451,8 +448,7 @@ internal class InviteCoordinatorImpl(
         val localUri = parseUri(inviteToHeader)
         val remoteTarget = parseUri(inviteContact).ifEmpty { remoteUri }
         try {
-            transport.send(response)
-            simEventEmit(SimEvent.MessageSent(response))
+            outbox.send(response).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send 200 OK: ${e.message}"))
             try { rtp.close() } catch (_: Throwable) {}
@@ -616,8 +612,7 @@ internal class InviteCoordinatorImpl(
     private suspend fun handleCancel(cancel: SipRequest) {
         try {
             val ok = SipBuilders.buildSimple200(cancel, userAgent = config.userAgent)
-            transport.send(ok)
-            simEventEmit(SimEvent.MessageSent(ok))
+            outbox.send(ok).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send CANCEL 200: ${e.message}"))
         }
@@ -637,8 +632,7 @@ internal class InviteCoordinatorImpl(
         // 先发 200 OK
         try {
             val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
-            transport.send(ok)
-            simEventEmit(SimEvent.MessageSent(ok))
+            outbox.send(ok).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send BYE 200: ${e.message}"))
         }
@@ -702,8 +696,7 @@ internal class InviteCoordinatorImpl(
                 localIp = localIp,
                 localPort = localPortProvider(),
             )
-            transport.send(bye)
-            simEventEmit(SimEvent.MessageSent(bye))
+            outbox.send(bye).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Lifecycle,
                 "主动 BYE 终止推流: $reason"

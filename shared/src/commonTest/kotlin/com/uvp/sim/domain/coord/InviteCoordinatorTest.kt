@@ -71,6 +71,7 @@ class InviteCoordinatorTest {
         return InviteCoordinatorImpl(
             config = cfg,
             transport = transport,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
             scope = scope,
             localIpProvider = { "192.168.10.112" },
             localPortProvider = { 5060 },

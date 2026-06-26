@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 internal class PlaybackCoordinatorImpl(
     private val config: SimConfig,
     private val transport: SipTransport,
+    private val outbox: com.uvp.sim.sip.SipOutbox,
     private val scope: CoroutineScope,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
@@ -101,8 +102,7 @@ internal class PlaybackCoordinatorImpl(
                 if (pb != null && pb.callId == cid) {
                     runCatching {
                         val ok = SipBuilders.buildSimple200(req, userAgent = config.userAgent)
-                        transport.send(ok)
-                        simEventEmit(SimEvent.MessageSent(ok))
+                        outbox.send(ok).getOrThrow()
                     }
                     stopActivePlayback("remote BYE")
                     simEventEmit(SimEvent.CallEnded(cid, "remote BYE"))
@@ -184,8 +184,7 @@ internal class PlaybackCoordinatorImpl(
                 req, statusCode = statusCode, reasonPhrase = reasonPhrase,
                 toTag = SipBuilders.randomTag(),
             )
-            transport.send(resp)
-            simEventEmit(SimEvent.MessageSent(resp))
+            outbox.send(resp).getOrThrow()
         }
     }
 
@@ -196,8 +195,7 @@ internal class PlaybackCoordinatorImpl(
                 toTag = SipBuilders.randomTag(),
                 userAgent = config.userAgent,
             )
-            transport.send(resp)
-            simEventEmit(SimEvent.MessageSent(resp))
+            outbox.send(resp).getOrThrow()
         }
         SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 PLAYBACK INVITE → 486 ($reason)")
     }
@@ -209,8 +207,7 @@ internal class PlaybackCoordinatorImpl(
                 toTag = SipBuilders.randomTag(),
                 userAgent = config.userAgent,
             )
-            transport.send(resp)
-            simEventEmit(SimEvent.MessageSent(resp))
+            outbox.send(resp).getOrThrow()
         }
         SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 PLAYBACK INVITE → 487 ($reason)")
     }
@@ -282,8 +279,7 @@ internal class PlaybackCoordinatorImpl(
             ),
         )
         try {
-            transport.send(response)
-            simEventEmit(SimEvent.MessageSent(response))
+            outbox.send(response).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send ${sessionName.uppercase()} 200: ${e.message}"))
             playback.cancel()
@@ -390,8 +386,7 @@ internal class PlaybackCoordinatorImpl(
                 ),
                 body = ByteArray(0),
             )
-            transport.send(byeReq)
-            simEventEmit(SimEvent.MessageSent(byeReq))
+            outbox.send(byeReq).getOrThrow()
         }
     }
 
@@ -409,8 +404,7 @@ internal class PlaybackCoordinatorImpl(
                 localPort = localPortProvider(),
                 sn = notifySn,
             )
-            transport.send(req)
-            simEventEmit(SimEvent.MessageSent(req))
+            outbox.send(req).getOrThrow()
         }.onFailure {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Media,

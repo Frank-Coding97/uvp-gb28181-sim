@@ -140,7 +140,7 @@ class SimulatorEngine(
 
     /** 回放域 — PLAYBACK/DOWNLOAD INVITE + INFO MANSRTSP。 */
     private val playback: PlaybackCoordinatorImpl = PlaybackCoordinatorImpl(
-        config = config, transport = transport, scope = scope,
+        config = config, transport = transport, outbox = outbox, scope = scope,
         localIpProvider = localIpProvider, localPortProvider = localPortProvider,
         playbackBuilder = playbackBuilder, recordingService = recordingService,
         simEventEmit = { ev -> _events.emit(ev) },
@@ -151,7 +151,7 @@ class SimulatorEngine(
 
     /** 主叫直播域 — PR5 后只管直播 INVITE。 */
     private val invite: InviteCoordinatorImpl = InviteCoordinatorImpl(
-        config = config, transport = transport, scope = scope,
+        config = config, transport = transport, outbox = outbox, scope = scope,
         localIpProvider = localIpProvider, localPortProvider = localPortProvider,
         cameraCapture = cameraCapture, audioCapture = audioCapture, rtpSenderFactory = rtpSenderFactory,
         catalogTree = _catalogTree, clockOffsetProvider = { _clockOffset.value },
