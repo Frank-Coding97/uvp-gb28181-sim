@@ -238,43 +238,27 @@ class SimulatorEngine(
     /** 当前推流通道的显示名 — 委派给 InviteCoordinator(PR4 T4.3)。 */
     val currentChannelName: StateFlow<String> get() = invite.currentChannelName
 
-    /**
-     * 注册域桥接 job(PR2 T2.3b):把 Coordinator 自管的 [registration.state] 单向直写到
-     * Engine 的 [_state],并把 [registration.events] 翻译成 [SimEvent] 转发给 UI。
-     * Engine 仍然在某些路径直接写 [_state](INVITE / BYE 等),完整 derived state 留 PR4/PR5。
-     *
-     * 单向语义:Coord 是注册栈的"真相源",Engine 不反向写 registration.state。
-     * shutdown 时 cancel 一次性收掉。
-     */
+    /** Engine 不在 InCall 时,把 registration.state 单向直写到 _state(InCall 由业务路径维护)。 */
     private val registrationStateBridge: Job = scope.launch {
         registration.state.collect { regState ->
             val mapped = when (regState) {
                 RegistrationState.Disconnected -> SipState.Disconnected
-                RegistrationState.Registering -> SipState.Registering
+                RegistrationState.Registering, RegistrationState.RetryBackoff -> SipState.Registering
                 RegistrationState.Registered -> SipState.Registered
-                RegistrationState.RetryBackoff -> SipState.Registering
                 RegistrationState.Failed -> SipState.Failed
             }
-            // 单向直写:仅当 Engine 当前不在 InCall 时同步,InCall 由业务路径维护
-            if (_state.value != SipState.InCall) {
-                _state.value = mapped
-            }
+            if (_state.value != SipState.InCall) _state.value = mapped
         }
     }
     private val registrationEventBridge: Job = scope.launch {
         registration.events.collect { ev ->
-            val sim = when (ev) {
-                is RegistrationEvent.Registered ->
+            val sim: SimEvent? = when (ev) {
+                is RegistrationEvent.Registered, is RegistrationEvent.Renewed ->
                     SimEvent.RegistrationSucceeded(config.expiresSeconds)
-                is RegistrationEvent.Renewed ->
-                    SimEvent.RegistrationSucceeded(config.expiresSeconds)
-                is RegistrationEvent.AuthChallenged ->
-                    SimEvent.RegistrationChallenged(ev.realm)
-                is RegistrationEvent.Unauthorized ->
-                    SimEvent.RegistrationFailed(ev.reason)
+                is RegistrationEvent.AuthChallenged -> SimEvent.RegistrationChallenged(ev.realm)
+                is RegistrationEvent.Unauthorized -> SimEvent.RegistrationFailed(ev.reason)
                 is RegistrationEvent.NetworkSwitchedReregister -> null
                 is RegistrationEvent.AutoReregisterTriggered -> {
-                    // PR4 T4.3:活跃流停止委派给 InviteCoordinator
                     invite.stopStream("auto re-register triggered")
                     SimEvent.AutoReregisterTriggered(ev.reason)
                 }
@@ -378,71 +362,40 @@ class SimulatorEngine(
         scope.cancel()
     }
 
-    /**
-     * T15 — Snapshot upload (主动业务: 抓拍上报). PR3 T3.4 委派给 ManscdpRouter.
-     */
-    suspend fun reportSnapshot() = manscdp.reportSnapshot()
+    // ---- 主动业务 + 配置 / 状态委派 — 全部委派给对应 Coord ----
 
+    suspend fun reportSnapshot() = manscdp.reportSnapshot()
     fun attachSnapshotPipeline(
         capture: com.uvp.sim.snapshot.SnapshotCapture,
         cache: com.uvp.sim.snapshot.JpegLocalCache,
         httpClient: io.ktor.client.HttpClient,
-    ) {
-        manscdp.attachSnapshotPipeline(capture, cache, httpClient)
-    }
+    ) = manscdp.attachSnapshotPipeline(capture, cache, httpClient)
 
-    /** M2 Alarm — 主动发起报警(PR3 T3.4 委派). */
     suspend fun reportAlarm(payload: AlarmPayload) = manscdp.reportAlarm(payload)
-
-    /** M2 Alarm — 用户本地复位(PR3 T3.4 委派). */
     suspend fun localResetAlarm() = manscdp.localResetAlarm()
-
-    /** M5 batch1 §C2 — 主动通知平台异常媒体状态(PR3 T3.4 委派). */
     suspend fun triggerMediaStatusAbnormal(notifyType: Int) = manscdp.triggerMediaStatusAbnormal(notifyType)
 
-    /** Catalog 树更新 + 增量/全量 NOTIFY fan-out(PR3 T3.4 委派). */
-    suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) =
-        manscdp.updateCatalogTree(tree)
-
-    /** Catalog 全量 NOTIFY fan-out(PR3 T3.4 委派). */
+    suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) = manscdp.updateCatalogTree(tree)
     suspend fun pushCatalogNotify() = manscdp.pushCatalogNotify()
-
-    /** Catalog 增量 NOTIFY fan-out(PR3 T3.4 委派). */
     suspend fun pushCatalogIncremental(events: List<com.uvp.sim.config.CatalogChangeEvent>) =
         manscdp.pushCatalogIncremental(events)
-
-    /** 通道在线状态切换 + 简化 NOTIFY fan-out(PR3 T3.4 委派). */
     suspend fun toggleChannelStatus(channelId: String, online: Boolean) =
         manscdp.toggleChannelStatus(channelId, online)
 
-    private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
-
-    /** 5.5 device-initiated BYE — PR4 T4.3 委派给 InviteCoordinator(决策 2 选 A)。 */
+    /** 5.5 device-initiated BYE — Invite 域。 */
     suspend fun stopStream(reason: String = "user stop") = invite.stopStream(reason)
 
-    // ---- PR5 T5.4:Broadcast public API 全部委派给 BroadcastCoordinator ----
-
-    /** 当前广播 dialog state — 委派给 BroadcastCoordinator(PR5)。 */
+    // Broadcast 域公开 API — 全部委派 BroadcastCoordinator
     val currentBroadcast: StateFlow<BroadcastDialog?> get() = broadcast.current
-
-    /** 扬声器开关 — 委派给 BroadcastCoordinator(PR5)。 */
     val broadcastSpeakerOn: StateFlow<Boolean> get() = broadcast.speakerOn
-
-    /** 切换语音对讲扬声器(静音不影响 RTP 接收 / dialog,只 gate 写 AudioTrack)。 */
     fun setBroadcastSpeaker(on: Boolean) = broadcast.setSpeaker(on)
+    suspend fun stopBroadcast(reason: BroadcastEndReason = BroadcastEndReason.Local) = broadcast.stop(reason)
 
-    /** 用户主动停止语音广播(UI ✕)。 */
-    suspend fun stopBroadcast(reason: BroadcastEndReason = BroadcastEndReason.Local) =
-        broadcast.stop(reason)
-
-    /** 测试可见:RX 热计数(绕过每秒节流直接读)。 */
+    /** test-only hooks — 绕节流读 RX 计数 / 直注 RTP 包,避免真 socket。 */
     internal fun rxPacketCountForTest(): Long = broadcast.debugSnapshot().rxPacketCount
     internal fun decodeErrorCountForTest(): Long = broadcast.debugSnapshot().decodeErrorCount
     internal fun isRxActive(): Boolean = broadcast.debugSnapshot().rxActive
-
-    /** 测试可见:test 直注 RTP 包(绕过真 socket)。 */
-    internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) =
-        broadcast.handleRxPacket(rtp)
+    internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) = broadcast.handleRxPacket(rtp)
 
 
     private fun startInboundIfNeeded() {
@@ -633,30 +586,5 @@ class SimulatorEngine(
             "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
         )
         scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
-    }
-
-
-    companion object {
-        const val REGISTER_TIMEOUT_MS: Long = 8_000L
-        const val MEDIA_STATS_INTERVAL_MS: Long = 30_000L
-        const val MAX_REGISTER_RETRIES: Int = 3
-        const val INITIAL_RETRY_DELAY_MS: Long = 2_000L
-        /** RFC 3261 § 17.2.1 Timer H = 64*T1 = 32s for ACK reception window. */
-        const val ACK_TIMEOUT_MS: Long = 32_000L
-        /** 语音广播接收统计节流间隔。 */
-        const val BROADCAST_STATS_INTERVAL_MS: Long = 1_000L
-
-        /** M5 batch3 §9.9 RTCP SR 周期(RFC3550 § 6.2 推荐 5%-10% 带宽,5s 是经典值)。 */
-        const val RTCP_SR_INTERVAL_MS: Long = 5_000L
-
-        /**
-         * RFC 3261 §11 OPTIONS Allow 头集 — sim 真实支持(可被路由处理)的方法.
-         * REGISTER 设备只发不收,故不在 Allow.顺序按 [SipMethod] 枚举声明顺序,跟代码自洽.
-         */
-        val ALLOWED_OPTIONS_METHODS: List<SipMethod> = listOf(
-            SipMethod.INVITE, SipMethod.ACK, SipMethod.BYE, SipMethod.MESSAGE,
-            SipMethod.SUBSCRIBE, SipMethod.NOTIFY, SipMethod.CANCEL,
-            SipMethod.INFO, SipMethod.OPTIONS
-        )
     }
 }
