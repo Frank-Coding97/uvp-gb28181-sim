@@ -26,22 +26,22 @@ import com.uvp.sim.ui.model.UpgradeResultDto
 import com.uvp.sim.ui.model.ZoomDirectionDto
 
 /** PR-A T3.2 实现. */
-internal fun DeviceControlState.toDto(): DeviceControlDto = TODO("PR-A T3.2")
+fun DeviceControlState.toDto(): DeviceControlDto = TODO("PR-A T3.2")
 
-internal fun PtzPose.toDto(): PtzPoseDto = TODO("PR-A T3.2")
+fun PtzPose.toDto(): PtzPoseDto = TODO("PR-A T3.2")
 
-internal fun DragZoomRect.toDto(): DragZoomRectDto = TODO("PR-A T3.2")
+fun DragZoomRect.toDto(): DragZoomRectDto = TODO("PR-A T3.2")
 
-internal fun LastDeviceCommand.toDto(): LastDeviceCommandDto = TODO("PR-A T3.2")
+fun LastDeviceCommand.toDto(): LastDeviceCommandDto = TODO("PR-A T3.2")
 
-internal fun PtzCommand.toDto(): PtzCommandDto = TODO("PR-A T3.2")
+fun PtzCommand.toDto(): PtzCommandDto = TODO("PR-A T3.2")
 
-internal fun UpgradeProgress.toDto(): UpgradeProgressDto = TODO("PR-A T3.2")
+fun UpgradeProgress.toDto(): UpgradeProgressDto = TODO("PR-A T3.2")
 
-internal fun UpgradeResult.toDto(): UpgradeResultDto = TODO("PR-A T3.2")
+fun UpgradeResult.toDto(): UpgradeResultDto = TODO("PR-A T3.2")
 
-internal fun PanDirection.toDto(): PanDirectionDto = TODO("PR-A T3.2")
-internal fun TiltDirection.toDto(): TiltDirectionDto = TODO("PR-A T3.2")
-internal fun ZoomDirection.toDto(): ZoomDirectionDto = TODO("PR-A T3.2")
-internal fun FocusDirection.toDto(): FocusDirectionDto = TODO("PR-A T3.2")
-internal fun IrisDirection.toDto(): IrisDirectionDto = TODO("PR-A T3.2")
+fun PanDirection.toDto(): PanDirectionDto = TODO("PR-A T3.2")
+fun TiltDirection.toDto(): TiltDirectionDto = TODO("PR-A T3.2")
+fun ZoomDirection.toDto(): ZoomDirectionDto = TODO("PR-A T3.2")
+fun FocusDirection.toDto(): FocusDirectionDto = TODO("PR-A T3.2")
+fun IrisDirection.toDto(): IrisDirectionDto = TODO("PR-A T3.2")

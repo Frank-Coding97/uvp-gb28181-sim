@@ -10,10 +10,10 @@ import com.uvp.sim.ui.model.RecordingStateDto
 import com.uvp.sim.ui.model.RecordSourceDto
 
 /** PR-A T4.2 实现. */
-internal fun RecordingFile.toDto(): RecordingFileDto = TODO("PR-A T4.2")
+fun RecordingFile.toDto(): RecordingFileDto = TODO("PR-A T4.2")
 
-internal fun RecordingFilter.toDto(): RecordingFilterDto = TODO("PR-A T4.2")
+fun RecordingFilter.toDto(): RecordingFilterDto = TODO("PR-A T4.2")
 
-internal fun RecordSource.toDto(): RecordSourceDto = TODO("PR-A T4.2")
+fun RecordSource.toDto(): RecordSourceDto = TODO("PR-A T4.2")
 
-internal fun RecordingState.toDto(): RecordingStateDto = TODO("PR-A T4.2")
+fun RecordingState.toDto(): RecordingStateDto = TODO("PR-A T4.2")

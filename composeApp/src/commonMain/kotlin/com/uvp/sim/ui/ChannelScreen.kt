@@ -36,7 +36,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.sip.SipState
+import com.uvp.sim.ui.model.SipStateDto
 
 /**
  * 通道页 — 双真实通道(前置 / 后置摄像头)展示 + 通道配置编辑。
@@ -48,8 +48,8 @@ import com.uvp.sim.sip.SipState
 @Composable
 fun ChannelScreen(state: AppUiState, actions: AppActions) {
     val toast = LocalToastHost.current
-    val online = state.sip == SipState.Registered || state.sip == SipState.InCall
-    val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
+    val online = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
+    val locked = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
     val scroll = rememberScrollState()
     val dev = state.config.device
     val hasFront = dev.frontChannelId.isNotBlank()

@@ -12,12 +12,12 @@ import com.uvp.sim.ui.model.AlarmRecordDto
 import com.uvp.sim.ui.model.AlarmTypeDto
 
 /** PR-A T3.2 实现. */
-internal fun AlarmPayload.toDto(): AlarmPayloadDto = TODO("PR-A T3.2")
+fun AlarmPayload.toDto(): AlarmPayloadDto = TODO("PR-A T3.2")
 
-internal fun AlarmRecord.toDto(): AlarmRecordDto = TODO("PR-A T3.2")
+fun AlarmRecord.toDto(): AlarmRecordDto = TODO("PR-A T3.2")
 
-internal fun AlarmType.toDto(): AlarmTypeDto = TODO("PR-A T3.2")
+fun AlarmType.toDto(): AlarmTypeDto = TODO("PR-A T3.2")
 
-internal fun AlarmPriority.toDto(): AlarmPriorityDto = TODO("PR-A T3.2")
+fun AlarmPriority.toDto(): AlarmPriorityDto = TODO("PR-A T3.2")
 
-internal fun AlarmMethod.toDto(): AlarmMethodDto = TODO("PR-A T3.2")
+fun AlarmMethod.toDto(): AlarmMethodDto = TODO("PR-A T3.2")

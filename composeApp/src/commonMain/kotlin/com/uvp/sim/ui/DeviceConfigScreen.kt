@@ -31,7 +31,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.GbVersion
-import com.uvp.sim.sip.SipState
+import com.uvp.sim.ui.model.SipStateDto
 
 /**
  * 设备配置 — 集中所有"设备级"参数,跟"通道""音视频"分开。
@@ -48,7 +48,7 @@ import com.uvp.sim.sip.SipState
 @Composable
 fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
     val toast = LocalToastHost.current
-    val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
+    val locked = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
     val scroll = rememberScrollState()
 
     var gbVersion by remember(state.config) { mutableStateOf(state.config.gbVersion) }

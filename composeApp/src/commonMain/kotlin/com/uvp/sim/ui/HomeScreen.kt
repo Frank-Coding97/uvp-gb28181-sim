@@ -67,7 +67,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.AudioTransportType
 import com.uvp.sim.gb28181.AlarmPayload
-import com.uvp.sim.sip.SipState
+import com.uvp.sim.ui.model.SipStateDto
 
 /**
  * 主屏 Home — 产品经理视角重构。
@@ -108,22 +108,22 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
 @Composable
 private fun StatusBanner(state: AppUiState) {
     val spec = when (state.sip) {
-        SipState.Registered, SipState.InCall -> BannerSpec(
+        SipStateDto.Registered, SipStateDto.InCall -> BannerSpec(
             UvpColor.SuccessBg, UvpColor.SuccessBorder, UvpColor.Success,
             "设备已注册", UvpColor.SuccessText,
             "心跳 ${state.config.keepaliveIntervalSeconds}s"
         )
-        SipState.Registering -> BannerSpec(
+        SipStateDto.Registering -> BannerSpec(
             UvpColor.WarningBg, UvpColor.WarningBorder, UvpColor.Warning,
             "正在注册…", UvpColor.Warning, "等待平台响应"
         )
-        SipState.Disconnected -> BannerSpec(
+        SipStateDto.Disconnected -> BannerSpec(
             UvpColor.BorderLight, UvpColor.Border, UvpColor.TextHint,
             "未连接", UvpColor.TextSecondary,
             if (state.config.isReadyToRegister) "编辑配置 → 注册"
             else "请先填写 SIP 配置"
         )
-        SipState.Failed -> {
+        SipStateDto.Failed -> {
             val reason = state.events.filterIsInstance<com.uvp.sim.domain.SimEvent.RegistrationFailed>()
                 .firstOrNull()?.reason ?: "未知原因"
             BannerSpec(
@@ -146,8 +146,8 @@ private fun StatusBanner(state: AppUiState) {
         Spacer(Modifier.weight(1f))
         // 推流状态(原视频框右上角 chip 上移到此):仅注册后显示
         val streamLabel = when (state.sip) {
-            SipState.InCall -> "1280×720 · 25fps · LIVE"
-            SipState.Registered -> "1280×720 · 预览"
+            SipStateDto.InCall -> "1280×720 · 25fps · LIVE"
+            SipStateDto.Registered -> "1280×720 · 预览"
             else -> null
         }
         if (streamLabel != null) {
@@ -232,7 +232,7 @@ private fun BroadcastStatsSheet(bc: BroadcastState, onDismiss: () -> Unit) {
 
 @Composable
 private fun CameraPreviewBox(state: AppUiState) {
-    val showPreview = state.sip == SipState.Registered || state.sip == SipState.InCall
+    val showPreview = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
     val isRecording = state.recording.isRecording
     Box(
         modifier = Modifier
@@ -399,7 +399,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
     var domain by remember(state.config) { mutableStateOf(state.config.server.domain) }
     var domainManuallyEdited by remember(state.config) { mutableStateOf(false) }
 
-    val locked = state.sip == SipState.Registered || state.sip == SipState.InCall
+    val locked = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
     if (locked && editing) editing = false
 
     fun resetFromConfig() {
@@ -568,7 +568,7 @@ private fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (S
 
 @Composable
 private fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
-    val canFire = state.sip == SipState.Registered || state.sip == SipState.InCall
+    val canFire = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
     val toast = LocalToastHost.current
     val navigator = LocalAppNavigator.current
     var detailFor by remember { mutableStateOf<SubscriptionKind?>(null) }
@@ -858,7 +858,7 @@ private fun DetailKv(key: String, value: String) {
 @Composable
 private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
     when (state.sip) {
-        SipState.Disconnected, SipState.Failed -> {
+        SipStateDto.Disconnected, SipStateDto.Failed -> {
             val ready = state.config.isReadyToRegister
             Button(
                 onClick = {
@@ -882,7 +882,7 @@ private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (S
                 )
             }
         }
-        SipState.Registering -> {
+        SipStateDto.Registering -> {
             OutlinedButton(
                 onClick = {
                     actions.onCancelConnect()
@@ -897,7 +897,7 @@ private fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (S
                     fontWeight = FontWeight.Medium, letterSpacing = 1.sp)
             }
         }
-        SipState.Registered, SipState.InCall -> {
+        SipStateDto.Registered, SipStateDto.InCall -> {
             OutlinedButton(
                 onClick = {
                     actions.onDisconnect()

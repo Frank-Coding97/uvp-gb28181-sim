@@ -13,7 +13,7 @@ import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.recording.RecordSource
 import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
-import com.uvp.sim.sip.SipState
+import com.uvp.sim.ui.model.SipStateDto
 
 /**
  * Read-only view of the simulator state for the UI layer.
@@ -23,7 +23,7 @@ import com.uvp.sim.sip.SipState
  * and bundles them into this snapshot for Compose to render.
  */
 data class AppUiState(
-    val sip: SipState,
+    val sip: SipStateDto,
     val config: SimConfig,
     val events: List<SimEvent>,
     val systemEvents: List<SystemLog> = emptyList(),

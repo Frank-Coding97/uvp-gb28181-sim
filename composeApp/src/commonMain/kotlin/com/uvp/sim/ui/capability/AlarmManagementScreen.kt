@@ -336,7 +336,7 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
             // 高级模拟折叠区 — MediaStatus 122/123 演示(M5 batch1 §7.9)
             // 注册后才允许触发 — 走 engine.triggerMediaStatusAbnormal,
             // 注册中心 MESSAGE + Alarm 订阅人 NOTIFY 同 fan-out。
-            val canSimulate = state.sip == com.uvp.sim.sip.SipState.Registered
+            val canSimulate = state.sip == com.uvp.sim.ui.model.SipStateDto.Registered
             CollapsibleHeader(
                 icon = Icons.Outlined.Code,
                 title = "高级模拟 (调试用)",

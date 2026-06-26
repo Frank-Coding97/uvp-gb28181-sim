@@ -7,8 +7,8 @@ import com.uvp.sim.ui.model.ResetSourceDto
 import com.uvp.sim.ui.model.SimEventDto
 
 /** PR-A T3.2 实现. */
-internal fun SimEvent.toDto(): SimEventDto = TODO("PR-A T3.2")
+fun SimEvent.toDto(): SimEventDto = TODO("PR-A T3.2")
 
-internal fun SimEvent.ResetSource.toDto(): ResetSourceDto = TODO("PR-A T3.2")
+fun SimEvent.ResetSource.toDto(): ResetSourceDto = TODO("PR-A T3.2")
 
-internal fun BroadcastEndReason.toDto(): BroadcastEndReasonDto = TODO("PR-A T3.2")
+fun BroadcastEndReason.toDto(): BroadcastEndReasonDto = TODO("PR-A T3.2")

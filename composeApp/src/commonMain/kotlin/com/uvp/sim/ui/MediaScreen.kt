@@ -47,7 +47,7 @@ import com.uvp.sim.config.AudioCodec
 import com.uvp.sim.config.VideoCodec
 import com.uvp.sim.config.VideoQualityPreset
 import com.uvp.sim.config.VideoResolution
-import com.uvp.sim.sip.SipState
+import com.uvp.sim.ui.model.SipStateDto
 
 /**
  * 音视频设置页 — A 方案:预设卡 + 自定义折叠。
@@ -59,9 +59,9 @@ import com.uvp.sim.sip.SipState
 fun MediaScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
     val toast = LocalToastHost.current
-    val locked = state.sip == SipState.Registered ||
-        state.sip == SipState.InCall ||
-        state.sip == SipState.Registering
+    val locked = state.sip == SipStateDto.Registered ||
+        state.sip == SipStateDto.InCall ||
+        state.sip == SipStateDto.Registering
 
     var resolution by remember(state.config) { mutableStateOf(state.config.video.resolution) }
     var frameRate by remember(state.config) { mutableStateOf(state.config.video.frameRate.toString()) }

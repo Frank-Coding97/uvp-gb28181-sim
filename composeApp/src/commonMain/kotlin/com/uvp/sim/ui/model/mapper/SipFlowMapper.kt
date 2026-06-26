@@ -8,8 +8,8 @@ import com.uvp.sim.ui.model.FlowItemDto
 import com.uvp.sim.ui.model.SipFlowEventDto
 
 /** PR-A T4.2 实现. */
-internal fun SipFlowEvent.toDto(): SipFlowEventDto = TODO("PR-A T4.2")
+fun SipFlowEvent.toDto(): SipFlowEventDto = TODO("PR-A T4.2")
 
-internal fun DialogRow.toDto(): DialogRowDto = TODO("PR-A T4.2")
+fun DialogRow.toDto(): DialogRowDto = TODO("PR-A T4.2")
 
-internal fun FlowItem.toDto(): FlowItemDto = TODO("PR-A T4.2")
+fun FlowItem.toDto(): FlowItemDto = TODO("PR-A T4.2")

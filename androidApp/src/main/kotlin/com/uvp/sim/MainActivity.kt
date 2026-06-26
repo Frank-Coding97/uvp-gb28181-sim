@@ -25,6 +25,7 @@ import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.observability.AndroidSessionStore
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
+import com.uvp.sim.ui.model.mapper.toDto
 import com.uvp.sim.observability.SessionTracker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
@@ -162,7 +163,7 @@ class MainActivity : ComponentActivity() {
                 )
             }
             val uiState = AppUiState(
-                sip = sipState,
+                sip = sipState.toDto(),
                 config = config,
                 events = events,
                 systemEvents = sysLogs,

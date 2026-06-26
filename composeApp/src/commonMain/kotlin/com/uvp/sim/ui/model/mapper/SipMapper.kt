@@ -16,7 +16,7 @@ import com.uvp.sim.ui.model.SipStateDto
  * SipState / SipMethod 是 enum, valueOf(name) 1:1 映射.
  */
 
-internal fun SipMessage.toDto(): SipMessageDto = when (this) {
+fun SipMessage.toDto(): SipMessageDto = when (this) {
     is SipRequest -> SipMessageDto.Request(
         method = method.toDto(),
         requestUri = requestUri,
@@ -33,9 +33,9 @@ internal fun SipMessage.toDto(): SipMessageDto = when (this) {
     )
 }
 
-internal fun SipMessage.Header.toDto(): SipMessageDto.Header =
+fun SipMessage.Header.toDto(): SipMessageDto.Header =
     SipMessageDto.Header(name, value)
 
-internal fun SipMethod.toDto(): SipMethodDto = SipMethodDto.valueOf(name)
+fun SipMethod.toDto(): SipMethodDto = SipMethodDto.valueOf(name)
 
-internal fun SipState.toDto(): SipStateDto = SipStateDto.valueOf(name)
+fun SipState.toDto(): SipStateDto = SipStateDto.valueOf(name)
