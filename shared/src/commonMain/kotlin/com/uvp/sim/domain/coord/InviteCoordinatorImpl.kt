@@ -197,8 +197,19 @@ internal class InviteCoordinatorImpl(
     /**
      * INVITE 路由:SDP probe 后 Playback 类 Skip 给 Engine 路由 PlaybackCoordinator,
      * 直播路径在本类完成。
+     *
+     * H-1:在路由前先校验 From 头,LAN 内任何攻击者伪造的 INVITE 直接 403 拒绝,不进入
+     * 后续 SDP 解析 / 推流流程。
      */
     private suspend fun handleInviteMaybe(req: SipRequest): RoutingResult {
+        if (!isInviteFromAuthorizedPlatform(req)) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 INVITE: From 头未匹配 ${config.server.serverId}@${config.server.domain} → 403"
+            )
+            sendSimpleResponse(req, statusCode = 403, reasonPhrase = "Forbidden")
+            return RoutingResult.Handled
+        }
         val isPlayback = try {
             com.uvp.sim.sip.SdpPlaybackParser.parse(req.body).isPlayback
         } catch (_: Throwable) { false }
@@ -228,6 +239,27 @@ internal class InviteCoordinatorImpl(
     private fun parseUriUser(uri: String): String {
         val s = uri.substringAfter("sip:", uri).substringBefore('@', "")
         return s.ifEmpty { config.server.serverId }
+    }
+
+    /** 从 `sip:user@host[:port][;params]` 提取 host 段(不含 port / params)。 */
+    private fun parseUriHost(uri: String): String {
+        val afterAt = uri.substringAfter("sip:", uri).substringAfter('@', "")
+        return afterAt.substringBefore(':').substringBefore(';').substringBefore('>').trim()
+    }
+
+    /**
+     * H-1 (security-audit §2):INVITE 必须来自登记的平台。
+     *
+     * 校验 From 头里的 SIP URI:user 必须等于 `config.server.serverId`,host 必须等于
+     * `config.server.domain`。任何一项不匹配,认为是 LAN 内伪造,返回 403 Forbidden。
+     */
+    private fun isInviteFromAuthorizedPlatform(invite: SipRequest): Boolean {
+        val fromHeader = invite.fromHeader() ?: return false
+        val fromUri = parseUri(fromHeader)
+        val fromUser = parseUriUser(fromUri)
+        val fromHost = parseUriHost(fromUri)
+        return fromUser == config.server.serverId &&
+            fromHost == config.server.domain
     }
 
     private fun buildSdpMediaSpec(): com.uvp.sim.sip.SdpAnswer.MediaSpec {

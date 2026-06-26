@@ -218,4 +218,90 @@ class InviteCoordinatorTest {
         assertEquals(InviteState.Idle, invite.state.value)
         assertNull(invite.activeStreamSnapshot.value)
     }
+
+    // ---------- H-1 (PR-SEC-1):From 头身份校验 ----------
+
+    private fun inviteWithFrom(
+        channelId: String,
+        fromHeader: String,
+        callId: String = "spoof-$channelId@bad",
+    ): SipRequest {
+        val sdp = """
+            v=0
+            o=server 0 0 IN IP4 192.168.10.222
+            s=Play
+            c=IN IP4 192.168.10.222
+            t=0 0
+            m=video 30000 RTP/AVP 96
+            a=recvonly
+            a=rtpmap:96 PS/90000
+            y=0100000001
+        """.trimIndent().replace("\n", "\r\n")
+        return SipRequest(
+            method = SipMethod.INVITE,
+            requestUri = "sip:$channelId@3502000000",
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 10.1.2.3:6000;branch=z9hG4bK-spoof"),
+                SipMessage.Header(SipHeader.FROM, fromHeader),
+                SipMessage.Header(SipHeader.TO, "<sip:$channelId@3502000000>"),
+                SipMessage.Header(SipHeader.CALL_ID, callId),
+                SipMessage.Header(SipHeader.CSEQ, "1 INVITE"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:attacker@10.1.2.3:6000>"),
+                SipMessage.Header("Content-Type", "application/sdp"),
+            ),
+            body = sdp.encodeToByteArray(),
+        )
+    }
+
+    @Test
+    fun handleInvite_spoofed_from_host_rejected_403() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val invite = newInvite(this, transport)
+        // 攻击者用对的 user 但错的 host(伪造非授权域)
+        val req = inviteWithFrom(
+            channelId = "35020000001320000001",
+            fromHeader = "<sip:35020000002000000001@attacker.bad>;tag=evil",
+        )
+        val result = invite.onIncoming(req)
+        runCurrent()
+        assertEquals(RoutingResult.Handled, result, "伪造 INVITE 应被 Coord 处理(返 403)")
+        val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
+        assertNotNull(resp, "应返回响应")
+        assertEquals(403, resp.statusCode, "伪造 From host 必须 403 Forbidden")
+    }
+
+    @Test
+    fun handleInvite_spoofed_from_user_rejected_403() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val invite = newInvite(this, transport)
+        // 攻击者用对的 host 但错的 user(冒充另一个 platform ID)
+        val req = inviteWithFrom(
+            channelId = "35020000001320000001",
+            fromHeader = "<sip:99999999991111111111@3502000000>;tag=evil",
+        )
+        val result = invite.onIncoming(req)
+        runCurrent()
+        assertEquals(RoutingResult.Handled, result)
+        val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
+        assertNotNull(resp)
+        assertEquals(403, resp.statusCode, "伪造 From user 必须 403 Forbidden")
+    }
+
+    @Test
+    fun handleInvite_authorized_from_proceeds() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val invite = newInvite(this, transport)
+        // 正常配置好的平台 From:user=serverId,host=domain → 走正常流程,不应 403
+        val req = inviteWithFrom(
+            channelId = "35020000001320000001",
+            fromHeader = "<sip:35020000002000000001@3502000000>;tag=plat",
+        )
+        invite.onIncoming(req)
+        runCurrent()
+        val rejections = transport.sent.filterIsInstance<SipResponse>().filter { it.statusCode == 403 }
+        assertEquals(0, rejections.size, "授权平台的 INVITE 不应被 403 拦截")
+    }
 }
