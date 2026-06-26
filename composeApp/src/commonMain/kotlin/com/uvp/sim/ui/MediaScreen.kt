@@ -48,6 +48,7 @@ import com.uvp.sim.config.VideoCodec
 import com.uvp.sim.config.VideoQualityPreset
 import com.uvp.sim.config.VideoResolution
 import com.uvp.sim.ui.media.LockedHint
+import com.uvp.sim.ui.media.PresetCard
 import com.uvp.sim.ui.media.SummaryCard
 import com.uvp.sim.ui.model.SipStateDto
 
@@ -167,89 +168,6 @@ fun MediaScreen(state: AppUiState, actions: AppActions) {
                 letterSpacing = 2.sp
             )
         }
-    }
-}
-
-// ============= Preset card =============
-
-@Composable
-private fun PresetCard(
-    active: VideoQualityPreset?,
-    locked: Boolean,
-    onPick: (VideoQualityPreset) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(UvpColor.Surface, RoundedCornerShape(8.dp))
-            .border(1.dp, UvpColor.Border, RoundedCornerShape(8.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        Text("画质预设", fontSize = 12.sp, color = UvpColor.TextHint,
-            fontWeight = FontWeight.Medium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            VideoQualityPreset.entries.forEach { preset ->
-                PresetTile(
-                    preset = preset,
-                    selected = preset == active,
-                    enabled = !locked,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onPick(preset) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PresetTile(
-    preset: VideoQualityPreset,
-    selected: Boolean,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    val borderColor = when {
-        !enabled -> UvpColor.BorderLight
-        selected -> UvpColor.Primary
-        else -> UvpColor.Border
-    }
-    val bg = when {
-        selected && enabled -> UvpColor.PrimaryLight
-        else -> UvpColor.Surface
-    }
-    val titleColor = when {
-        !enabled -> UvpColor.TextHint
-        selected -> UvpColor.Primary
-        else -> UvpColor.Text
-    }
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(bg)
-            .border(if (selected) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(6.dp))
-            .clickable(enabled = enabled) { onClick() }
-            .padding(vertical = 10.dp, horizontal = 4.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (selected && enabled) {
-                Box(Modifier.size(6.dp).clip(CircleShape).background(UvpColor.Primary))
-                Spacer(Modifier.width(4.dp))
-            }
-            Text(preset.label, fontSize = 13.sp,
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                color = titleColor)
-        }
-        Text(
-            preset.description,
-            fontSize = 9.5.sp,
-            color = if (enabled) UvpColor.TextHint else UvpColor.TextHint.copy(alpha = 0.6f),
-            maxLines = 1,
-            fontFamily = FontFamily.Monospace
-        )
     }
 }
 
