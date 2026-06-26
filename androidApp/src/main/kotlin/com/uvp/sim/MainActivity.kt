@@ -341,7 +341,12 @@ class MainActivity : ComponentActivity() {
 
     private fun attachAudioStreamer() {
         audioStreamer?.let { old ->
-            kotlinx.coroutines.runBlocking { runCatching { old.stop() } }
+            // Activity scope 内异步 stop + 2s 超时,避免 UI 线程阻塞。
+            lifecycleScope.launch {
+                kotlinx.coroutines.withTimeoutOrNull(2_000L) {
+                    runCatching { old.stop() }
+                }
+            }
         }
         val s = AndroidAudioStreamer(viewModel.newAudioCaptureConfig())
         audioStreamer = s

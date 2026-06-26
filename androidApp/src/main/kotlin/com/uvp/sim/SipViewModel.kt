@@ -388,13 +388,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
-        try {
-            kotlinx.coroutines.runBlocking {
-                appEngine.disconnect()
-                camera?.stop()
-                networkController.close()
+        // ViewModel 已销毁,没有更好的 scope。GlobalScope + 5s 超时兜底:
+        // 允许后台清理 5 秒,超过则放弃避免泄漏。
+        @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
+        kotlinx.coroutines.GlobalScope.launch {
+            kotlinx.coroutines.withTimeoutOrNull(5_000L) {
+                runCatching {
+                    appEngine.disconnect()
+                    camera?.stop()
+                    networkController.close()
+                }
             }
-        } catch (_: Throwable) { /* ignore */ }
+        }
     }
 
     fun newCaptureConfig(): CaptureConfig {

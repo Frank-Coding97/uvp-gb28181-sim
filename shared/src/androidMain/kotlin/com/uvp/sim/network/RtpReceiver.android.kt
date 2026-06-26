@@ -2,7 +2,6 @@ package com.uvp.sim.network
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -35,8 +34,10 @@ actual class RtpReceiver actual constructor(
             RtpMode.TCP_ACTIVE -> tcpSocket?.localPort ?: 0
         }
 
-    @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-    private val scope: CoroutineScope get() = parentScope ?: GlobalScope
+    // 父 scope 必须非空,避免 GlobalScope 静默 fallback 导致协程泄漏。
+    // expect 签名保留 nullable 兼容老调用点,actual 在此强制兑现。
+    private val scope: CoroutineScope =
+        parentScope ?: error("RtpReceiver requires non-null parentScope")
 
     actual suspend fun bind(mode: RtpMode): Int = withContext(Dispatchers.IO) {
         this@RtpReceiver.mode = mode
