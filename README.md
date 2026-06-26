@@ -203,6 +203,28 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 # 产物: androidApp/build/outputs/apk/release/androidApp-release.apk
 ```
 
+### 测试金字塔
+
+项目采用三层测试金字塔(底厚顶尖):
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+
+# 1) 共享层 JVM 单测 — 跨平台 SIP / PS / RTP / MANSCDP 核心逻辑(~858 case)
+./gradlew :shared:jvmTest
+
+# 2) UI 单测(Compose Multiplatform commonTest)— Mapper / Composite Actions 等 UI 纯逻辑
+./gradlew :composeApp:testDebugUnitTest
+
+# 3) Android Robolectric 单测(JVM 跑 Android API,无需模拟器)— ViewModel lifecycle / 录像链路 / AppActions composite 绑定
+./gradlew :androidApp:testDebugUnitTest
+
+# 4) Android Instrumentation 测试(需要真机或模拟器)— Activity smoke E2E
+./gradlew :androidApp:connectedAndroidTest
+```
+
+前 3 个跑在纯 JVM 上(~10 秒);第 4 个跑在 ADB 连接的真机/模拟器上,无设备时 task 自动 skip 不报错。
+
 ### CI / 本地复现
 
 GitHub Actions 在 `.github/workflows/ci.yml` 里跑下面 4 个命令(顺序一致):
