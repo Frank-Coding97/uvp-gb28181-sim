@@ -167,7 +167,7 @@ class MainActivity : ComponentActivity() {
                 config = config,
                 events = events,
                 systemEvents = sysLogs,
-                sessionMarker = SessionTracker.current,
+                sessionMarker = SessionTracker.current?.toDto(),
                 subscriptions = subscriptions,
                 deviceControl = deviceControl.toDto(),
                 recording = recordingStatus,

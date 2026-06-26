@@ -44,8 +44,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
-import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
+import com.uvp.sim.ui.model.SessionMarkerDto
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -62,7 +62,7 @@ import kotlinx.datetime.toLocalDateTime
 @Composable
 fun SystemLogTab(
     logs: List<SystemLog>,
-    sessionMarker: SessionMarker?,
+    sessionMarker: SessionMarkerDto?,
     paused: Boolean = false,
     onPausedChange: (Boolean) -> Unit = {}
 ) {
@@ -143,7 +143,7 @@ fun SystemLogTab(
 }
 
 @Composable
-private fun SessionHeader(marker: SessionMarker) {
+private fun SessionHeader(marker: SessionMarkerDto) {
     val time = formatHms(marker.startedAtMs)
     Box(
         modifier = Modifier

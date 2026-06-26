@@ -5,11 +5,11 @@ import com.uvp.sim.observability.DialogRow
 import com.uvp.sim.observability.FlowItem
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
-import com.uvp.sim.observability.SessionMarker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.ui.model.SessionMarkerDto
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -26,7 +26,7 @@ object LogExport {
 
     fun formatSipList(
         events: List<SimEvent>,
-        sessionMarker: SessionMarker?,
+        sessionMarker: SessionMarkerDto?,
         chipFilter: String,
         nowMs: Long
     ): String = buildString {
@@ -45,7 +45,7 @@ object LogExport {
 
     fun formatSipFlow(
         items: List<FlowItem>,
-        sessionMarker: SessionMarker?,
+        sessionMarker: SessionMarkerDto?,
         nowMs: Long
     ): String = buildString {
         appendLine("=== UVP GB28181 Sim — SIP 时序图")
@@ -68,7 +68,7 @@ object LogExport {
 
     fun formatSystemLogs(
         logs: List<SystemLog>,
-        sessionMarker: SessionMarker?,
+        sessionMarker: SessionMarkerDto?,
         levelThreshold: LogLevel,
         tagFilter: LogTag?,
         nowMs: Long
