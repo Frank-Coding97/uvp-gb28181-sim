@@ -70,6 +70,7 @@ class ManscdpRouterTest {
         return ManscdpRouterImpl(
             config = cfg,
             transport = transport,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
             scope = scope,
             localIpProvider = { "192.168.1.50" },
             localPortProvider = { 5060 },

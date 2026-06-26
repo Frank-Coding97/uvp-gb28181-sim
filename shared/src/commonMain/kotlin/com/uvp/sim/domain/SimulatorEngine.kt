@@ -163,7 +163,7 @@ class SimulatorEngine(
 
     /** MANSCDP 路由域 — DeviceControl + Subscribe + 主动业务 NOTIFY。 */
     private val manscdp: ManscdpRouterImpl = ManscdpRouterImpl(
-        config = config, transport = transport, scope = scope,
+        config = config, transport = transport, outbox = outbox, scope = scope,
         localIpProvider = localIpProvider, localPortProvider = localPortProvider,
         subscriptionRegistry = subscriptionRegistry,
         catalogTree = _catalogTree,

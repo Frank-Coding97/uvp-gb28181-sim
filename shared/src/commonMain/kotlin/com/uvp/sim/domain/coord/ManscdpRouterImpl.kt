@@ -68,6 +68,7 @@ import kotlinx.datetime.toLocalDateTime
 internal class ManscdpRouterImpl(
     private val config: SimConfig,
     private val transport: SipTransport,
+    private val outbox: com.uvp.sim.sip.SipOutbox,
     private val scope: CoroutineScope,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
@@ -229,8 +230,7 @@ internal class ManscdpRouterImpl(
             xmlBody = xml,
         )
         try {
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             simEventEmit(SimEvent.SnapshotReported(sn.toString()))
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("snapshot send: ${e.message}"))
@@ -263,8 +263,7 @@ internal class ManscdpRouterImpl(
             xmlBody = body,
         )
         try {
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("alarm MESSAGE send: ${e.message}"))
         }
@@ -331,8 +330,7 @@ internal class ManscdpRouterImpl(
             xmlBody = xmlBody,
         )
         try {
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("MediaStatus MESSAGE send: ${e.message}"))
         }
@@ -512,8 +510,7 @@ internal class ManscdpRouterImpl(
                 message, toTag = SipBuilders.randomTag(),
                 userAgent = config.userAgent,
             )
-            transport.send(ok)
-            simEventEmit(SimEvent.MessageSent(ok))
+            outbox.send(ok).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send MESSAGE 200: ${e.message}"))
         }
@@ -575,8 +572,7 @@ internal class ManscdpRouterImpl(
             is SubscribeIntent.NewSubscription -> {
                 val toTag = SipBuilders.randomTag()
                 val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds, userAgent = config.userAgent)
-                transport.send(ok)
-                simEventEmit(SimEvent.MessageSent(ok))
+                outbox.send(ok).getOrThrow()
 
                 val dialog = SubscriptionDialog(
                     kind = intent.kind,
@@ -640,8 +636,7 @@ internal class ManscdpRouterImpl(
                 val toTag = subscriptionRegistry.currentDialog(intent.callId)?.toTag
                     ?: SipBuilders.randomTag()
                 val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
-                transport.send(ok)
-                simEventEmit(SimEvent.MessageSent(ok))
+                outbox.send(ok).getOrThrow()
                 subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
 
                 val d = subscriptionRegistry.currentDialog(intent.callId)
@@ -661,8 +656,7 @@ internal class ManscdpRouterImpl(
                 val d = subscriptionRegistry.currentDialog(intent.callId)
                 val toTag = d?.toTag ?: SipBuilders.randomTag()
                 val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
-                transport.send(ok)
-                simEventEmit(SimEvent.MessageSent(ok))
+                outbox.send(ok).getOrThrow()
                 subscriptionRegistry.cancel(intent.callId)
 
                 if (d?.kind == "Alarm") {
@@ -691,8 +685,7 @@ internal class ManscdpRouterImpl(
                             c == SipHeader.CALL_ID || c == SipHeader.CSEQ
                     },
                 )
-                transport.send(resp)
-                simEventEmit(SimEvent.MessageSent(resp))
+                outbox.send(resp).getOrThrow()
             }
 
             is SubscribeIntent.Ignored -> Unit
@@ -718,8 +711,7 @@ internal class ManscdpRouterImpl(
             xmlBody = xml,
         )
         try {
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("snapshot notify send: ${e.message}"))
         }
@@ -744,8 +736,7 @@ internal class ManscdpRouterImpl(
             userAgent = config.userAgent,
         )
         try {
-            transport.send(notify)
-            simEventEmit(SimEvent.MessageSent(notify))
+            outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.AlarmNotifySent(sn = sn, subscriber = dialog.subscriberUri))
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send Alarm NOTIFY: ${e::class.simpleName}: ${e.message}"))
@@ -770,8 +761,7 @@ internal class ManscdpRouterImpl(
             userAgent = config.userAgent,
         )
         try {
-            transport.send(notify)
-            simEventEmit(SimEvent.MessageSent(notify))
+            outbox.send(notify).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send MediaStatus NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
@@ -800,8 +790,7 @@ internal class ManscdpRouterImpl(
             transport = config.transport.name,
         )
         try {
-            transport.send(notify)
-            simEventEmit(SimEvent.MessageSent(notify))
+            outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
@@ -831,8 +820,7 @@ internal class ManscdpRouterImpl(
             transport = config.transport.name,
         )
         try {
-            transport.send(notify)
-            simEventEmit(SimEvent.MessageSent(notify))
+            outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
@@ -863,8 +851,7 @@ internal class ManscdpRouterImpl(
             transport = config.transport.name,
         )
         try {
-            transport.send(notify)
-            simEventEmit(SimEvent.MessageSent(notify))
+            outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send Catalog status-only NOTIFY: ${e::class.simpleName}: ${e.message}"))
@@ -899,8 +886,7 @@ internal class ManscdpRouterImpl(
             userAgent = config.userAgent,
         )
         try {
-            transport.send(notify)
-            simEventEmit(SimEvent.MessageSent(notify))
+            outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = notifySn))
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send NOTIFY: ${e::class.simpleName}: ${e.message}"))
@@ -928,8 +914,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send Catalog response: ${e.message}"))
         }
@@ -952,8 +937,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 DeviceInfo → 已应答 sn=$sn")
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send DeviceInfo response: ${e.message}"))
@@ -985,8 +969,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
                 "平台查询 DeviceStatus → 已应答 sn=$sn online=${snapshot.online} record=${snapshot.recording} alarm=${snapshot.alarming}"
@@ -1017,8 +1000,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 AlarmStatus → 已应答 sn=$sn alarm=${snapshot.alarming}")
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send AlarmStatus response: ${e.message}"))
@@ -1047,8 +1029,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 PresetQuery → 已应答(空清单)sn=$sn")
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send PresetQuery response: ${e.message}"))
@@ -1079,8 +1060,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
                 "平台查询 PTZPreciseStatusQuery → 已应答(${pose.pan},${pose.tilt},${pose.zoom}x)sn=$sn"
@@ -1107,8 +1087,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
                 "平台查询 ConfigDownload → 已应答 sn=$sn types=${configTypes.joinToString("/")}"
@@ -1144,8 +1123,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
                 "平台查询 MobilePosition → 已应答 sn=$sn lng=${fix.point.longitude} lat=${fix.point.latitude}"
@@ -1170,8 +1148,7 @@ internal class ManscdpRouterImpl(
             localPort = localPortProvider(),
             xmlBody = xmlBody,
         )
-        transport.send(msg)
-        simEventEmit(SimEvent.MessageSent(msg))
+        outbox.send(msg).getOrThrow()
         SystemLogger.emit(LogLevel.Info, LogTag.Network, "$label → 已应答")
     }
 
@@ -1316,8 +1293,7 @@ internal class ManscdpRouterImpl(
                     localPort = localPortProvider(),
                     xmlBody = xmlBody,
                 )
-                transport.send(msg)
-                simEventEmit(SimEvent.MessageSent(msg))
+                outbox.send(msg).getOrThrow()
             } catch (e: Throwable) {
                 simEventEmit(SimEvent.TransportError("send RecordInfo: ${e.message}"))
             }
@@ -1399,8 +1375,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
         }.onFailure {
             simEventEmit(SimEvent.TransportError("send DeviceControl Response: ${it.message}"))
         }
@@ -1486,8 +1461,7 @@ internal class ManscdpRouterImpl(
                 localPort = localPortProvider(),
                 xmlBody = xmlBody,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
         }.onFailure {
             simEventEmit(SimEvent.TransportError("send Broadcast Response: ${it.message}"))
         }
@@ -1550,8 +1524,7 @@ internal class ManscdpRouterImpl(
                 result = result,
                 percent = percent,
             )
-            transport.send(msg)
-            simEventEmit(SimEvent.MessageSent(msg))
+            outbox.send(msg).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
                 "DeviceUpgradeResult NOTIFY → 进度 $percent% result=$result session=$sessionId"
