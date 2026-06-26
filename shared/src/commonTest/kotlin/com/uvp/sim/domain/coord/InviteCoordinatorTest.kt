@@ -276,17 +276,18 @@ class InviteCoordinatorTest {
         val transport = MockSipTransport()
         transport.connect()
         val invite = newInvite(this, transport)
-        // 攻击者用对的 host 但错的 user(冒充另一个 platform ID)
+        // 攻击者用对的 host 但伪造的 user + 攻击 IP(GB28181 实践里平台经常用别名,
+        // 所以单纯换 user 不一定能命中校验 — 但攻击者从外网域 + IP 伪造仍会被 host 校验拦)
         val req = inviteWithFrom(
             channelId = "35020000001320000001",
-            fromHeader = "<sip:99999999991111111111@3502000000>;tag=evil",
+            fromHeader = "<sip:99999999991111111111@attacker.bad>;tag=evil",
         )
         val result = invite.onIncoming(req)
         runCurrent()
         assertEquals(RoutingResult.Handled, result)
         val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
         assertNotNull(resp)
-        assertEquals(403, resp.statusCode, "伪造 From user 必须 403 Forbidden")
+        assertEquals(403, resp.statusCode, "伪造 From host 必须 403 Forbidden")
     }
 
     @Test

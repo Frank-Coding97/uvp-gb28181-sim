@@ -251,7 +251,7 @@ internal class BroadcastCoordinatorImpl(
             )
         }.onFailure {
             _current.value = null
-            simEventEmit(SimEvent.TransportError("send broadcast INVITE: ${it.message}"))
+            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send broadcast INVITE", it)))
             teardownBroadcastMedia()
         }
     }
@@ -347,7 +347,7 @@ internal class BroadcastCoordinatorImpl(
             )
             outbox.send(ack).getOrThrow()
         }.onFailure {
-            simEventEmit(SimEvent.TransportError("send broadcast ACK: ${it.message}"))
+            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send broadcast ACK", it)))
         }
     }
 
@@ -368,7 +368,7 @@ internal class BroadcastCoordinatorImpl(
             )
             outbox.send(bye).getOrThrow()
         }.onFailure {
-            simEventEmit(SimEvent.TransportError("send broadcast BYE: ${it.message}"))
+            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send broadcast BYE", it)))
         }
     }
 
@@ -377,7 +377,7 @@ internal class BroadcastCoordinatorImpl(
             val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
             outbox.send(ok).getOrThrow()
         }.onFailure {
-            simEventEmit(SimEvent.TransportError("send broadcast BYE 200: ${it.message}"))
+            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send broadcast BYE 200", it)))
         }
         teardownBroadcastMedia()
         val dur = nowMs() - bc.createdAtMs

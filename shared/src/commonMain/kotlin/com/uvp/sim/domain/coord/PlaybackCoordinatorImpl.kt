@@ -226,7 +226,7 @@ internal class PlaybackCoordinatorImpl(
         val offer = try {
             com.uvp.sim.sip.SdpPlaybackParser.parse(invite.body)
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("PLAYBACK SDP parse: ${e.message}"))
+            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("PLAYBACK SDP parse", e)))
             sendNotFoundResponse(invite, "SDP 解析失败")
             return
         }
@@ -281,7 +281,7 @@ internal class PlaybackCoordinatorImpl(
         try {
             outbox.send(response).getOrThrow()
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send ${sessionName.uppercase()} 200: ${e.message}"))
+            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send ${sessionName.uppercase()} 200", e)))
             playback.cancel()
             return
         }
@@ -310,7 +310,7 @@ internal class PlaybackCoordinatorImpl(
                     "${if (offer.isDownload) "下载完成" else "回放完成"} → 主动 BYE"
                 )
             } catch (e: Throwable) {
-                simEventEmit(SimEvent.TransportError("${sessionName.uppercase()} error: ${e.message}"))
+                simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("${sessionName.uppercase()} error", e)))
                 SystemLogger.emit(LogLevel.Error, LogTag.Media, "${sessionName} 异常: ${e.message}")
                 runCatching { playback.cancel() }
             } finally {

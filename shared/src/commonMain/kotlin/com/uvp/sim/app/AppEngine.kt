@@ -113,7 +113,7 @@ class AppEngine(
                         transport?.connect()
                         existing.register()
                     } catch (e: Throwable) {
-                        holders.events.emit(SimEvent.TransportError("register retry: ${e.message}"))
+                        holders.events.emit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("register retry", e)))
                     }
                     return
                 }
@@ -159,7 +159,7 @@ class AppEngine(
             tx.connect()
             eng.register()
         } catch (e: Throwable) {
-            holders.events.emit(SimEvent.TransportError("connect: ${e::class.simpleName}: ${e.message}"))
+            holders.events.emit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("connect", e)))
         }
     }
 
