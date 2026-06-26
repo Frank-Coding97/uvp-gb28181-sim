@@ -26,6 +26,7 @@ import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.recording.RecordingService
 import com.uvp.sim.sip.SipBuilders
+import com.uvp.sim.sip.SipDialogIdentityService
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
@@ -58,7 +59,9 @@ import kotlinx.datetime.toLocalDateTime
  *     deviceControlState(MutableStateFlow)由 Engine 持有注入,Router 是唯一写者;
  *     Engine 只在 unregister/shutdown 调 cancelAll 不构成双写
  *   - 决策 2:fan-out 路径完成后通过 [simEventEmit] lambda 桥接 SimEvent,保证事件顺序
- *   - SN 池跨域共享:6 个 lambda 注入,跟 PR2 RegistrationCoordinator 同模式
+ *   - SN 池跨域共享(2026-06-26 Wave 2 PR-SN-IDENTITY):构造期注入 [SipDialogIdentityService],
+ *     每次出栈 MESSAGE / NOTIFY 调 `identityService.nextMessageNotify()` 取原子 identity,
+ *     不再 cache/reuse callId|fromTag,也不再有 lambda provider 双轨 + 内部 fallback。
  *
  * **stateGuard / clockOffsetProvider / activeStreamHasInvite** 是协议层 guard 依赖:
  *   - stateGuard:reportSnapshot/reportAlarm/triggerMediaStatusAbnormal 仅 Registered/InCall 才发
@@ -86,12 +89,11 @@ internal class ManscdpRouterImpl(
     private val stateRegisteredOrInCall: () -> Boolean = { true },
     private val broadcastBusy: () -> Boolean = { false },
     private val simEventEmit: suspend (SimEvent) -> Unit = {},
-    cseqProvider: (() -> Int)? = null,
-    cseqIncrementer: (() -> Int)? = null,
-    callIdProvider: (() -> String?)? = null,
-    callIdSetter: ((String) -> Unit)? = null,
-    fromTagProvider: (() -> String?)? = null,
-    fromTagSetter: ((String) -> Unit)? = null,
+    /**
+     * Wave 2 PR-SN-IDENTITY(2026-06-26):3 类 dialog identity 显式分离的注入入口。
+     * Manscdp 域所有出栈 MESSAGE / NOTIFY 走 `identityService.nextMessageNotify()`。
+     */
+    private val identityService: SipDialogIdentityService,
 ) : ManscdpRouter {
 
     private val _events = MutableSharedFlow<ManscdpEvent>(extraBufferCapacity = 32)
@@ -99,31 +101,17 @@ internal class ManscdpRouterImpl(
 
     override val deviceControlState: StateFlow<DeviceControlState> = mutableDeviceControlState
 
-    // SN 池 provider 适配(跟 PR2 RegistrationCoordinator 同模式)
-    private var internalCseq = 0
-    private var internalCallId: String? = null
-    private var internalFromTag: String? = null
-
-    private val cseqRead: () -> Int = cseqProvider ?: { internalCseq }
-    private val cseqIncAndRead: () -> Int = cseqIncrementer ?: {
-        internalCseq += 1
-        internalCseq
-    }
-    private val callIdRead: () -> String? = callIdProvider ?: { internalCallId }
-    private val callIdWrite: (String) -> Unit = callIdSetter ?: { internalCallId = it }
-    private val fromTagRead: () -> String? = fromTagProvider ?: { internalFromTag }
-    private val fromTagWrite: (String) -> Unit = fromTagSetter ?: { internalFromTag = it }
-
-    private val cseq: Int get() = cseqRead()
-    private fun cseqInc(): Int = cseqIncAndRead()
-    private val callId: String? get() = callIdRead()
-    private val fromTag: String? get() = fromTagRead()
     private val localIp: String get() = localIpProvider()
 
     // Router 自管的 NOTIFY 序号
     private var notifySn = 0
     private var catalogNotifySn = 0
     private var alarmNotifySn = 0
+    /**
+     * Wave 2 PR-SN-IDENTITY:GB28181 协议 `<SN>` 用,跟 SIP CSeq 解耦。
+     * 原代码 snAllocator 复用全局 SipSnPool.cseqInc(),现在分开。
+     */
+    private var snapshotProtocolSn = 0
 
     // Snapshot pipeline(由 attachSnapshotPipeline 注入)
     private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
@@ -214,10 +202,11 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("snapshot: not registered"))
             return
         }
-        val sn = cseqInc()
+        val id = identityService.nextMessageNotify()
+        val sn = id.cseq.toInt()
         val branch = SipBuilders.randomBranch()
-        val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-        val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+        val callIdNow = id.callId
+        val fromTagNow = id.fromTag
         val xml = com.uvp.sim.gb28181.AlarmNotify.buildSnapshotAlarm(config = config, sn = sn.toString())
         val msg = SipBuilders.buildMessage(
             config = config,
@@ -244,14 +233,15 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("alarm: not registered"))
             return
         }
-        val cseqNow = cseqInc()
+        val id = identityService.nextMessageNotify()
+        val cseqNow = id.cseq.toInt()
         sn = cseqNow.toString()
         val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, payload)
 
         // 路 A — MESSAGE 给注册中心
         val branch = SipBuilders.randomBranch()
-        val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-        val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+        val callIdNow = id.callId
+        val fromTagNow = id.fromTag
         val msg = SipBuilders.buildMessage(
             config = config,
             cseq = cseqNow,
@@ -308,12 +298,13 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("MediaStatus: not registered"))
             return
         }
-        val cseqNow = cseqInc()
+        val id = identityService.nextMessageNotify()
+        val cseqNow = id.cseq.toInt()
         notifySn += 1
 
         val branch = SipBuilders.randomBranch()
-        val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-        val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+        val callIdNow = id.callId
+        val fromTagNow = id.fromTag
         val xmlBody = com.uvp.sim.sip.MediaStatusNotify.buildXml(
             deviceId = config.device.deviceId,
             sn = notifySn,
@@ -362,7 +353,12 @@ internal class ManscdpRouterImpl(
             notifySender = { xml -> sendSnapshotNotify(xml) },
             scope = scope,
             deviceId = config.device.deviceId,
-            snAllocator = { cseqInc().toString() },
+            snAllocator = {
+                // 用 Router 自管的 notifySn 自增,做 GB28181 协议 <SN>,跟 SIP CSeq 解耦
+                // (原代码用 SipSnPool 全局 cseq 当 SN 是历史 conflation,现在 Wave 2 解耦)
+                snapshotProtocolSn += 1
+                snapshotProtocolSn.toString()
+            },
             onProgress = { progress ->
                 scope.launch {
                     when (progress) {
@@ -696,10 +692,11 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("snapshot notify: not registered"))
             return
         }
-        val cseqNow = cseqInc()
+        val id = identityService.nextMessageNotify()
+        val cseqNow = id.cseq.toInt()
         val branch = SipBuilders.randomBranch()
-        val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-        val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+        val callIdNow = id.callId
+        val fromTagNow = id.fromTag
         val msg = SipBuilders.buildMessage(
             config = config,
             cseq = cseqNow,
@@ -895,10 +892,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendCatalogResponse(sn: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val xmlBody = com.uvp.sim.gb28181.CatalogResponse.buildFromTree(
                 config = config,
                 sn = sn,
@@ -922,10 +920,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendDeviceInfoResponse(sn: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val xmlBody = com.uvp.sim.gb28181.DeviceInfoResponse.build(config, sn)
             val msg = SipBuilders.buildMessage(
                 config = config,
@@ -946,10 +945,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendDeviceStatusResponse(sn: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val ctrl = mutableDeviceControlState.value
             val snapshot = com.uvp.sim.gb28181.DeviceStatusSnapshot(
                 online = stateRegisteredOrInCall(),
@@ -981,10 +981,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendAlarmStatusResponse(sn: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val snapshot = com.uvp.sim.gb28181.AlarmStatusSnapshot(
                 alarming = mutableDeviceControlState.value.isAlarming,
                 alarmChannelId = config.device.alarmChannelId,
@@ -1009,10 +1010,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendPresetQueryResponse(sn: String, channelId: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val xmlBody = com.uvp.sim.gb28181.PresetQueryResponse.build(
                 config = config,
                 sn = sn,
@@ -1038,10 +1040,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendPtzPreciseStatusResponse(sn: String, channelId: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val s = mutableDeviceControlState.value
             val pose = s.lastPreciseCtrl ?: PtzPose(s.panAngle, s.tiltAngle, s.zoomLevel)
             val xmlBody = com.uvp.sim.gb28181.PtzPreciseStatusResponse.build(
@@ -1072,10 +1075,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendConfigDownloadResponse(sn: String, configTypes: List<String>) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val xmlBody = com.uvp.sim.gb28181.ConfigDownloadResponse.build(config, sn, configTypes)
             val msg = SipBuilders.buildMessage(
                 config = config,
@@ -1099,10 +1103,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendMobilePositionResponse(sn: String) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val fix = mockGps.next()
             val xmlBody = com.uvp.sim.gb28181.MobilePositionResponse.build(
                 deviceId = config.device.deviceId,
@@ -1134,10 +1139,11 @@ internal class ManscdpRouterImpl(
     }
 
     private suspend fun sendMansResponseMessage(xmlBody: String, label: String) {
-        val cseqNow = cseq  // already incremented by caller (sendHomePosition... etc)
+        val id = identityService.nextMessageNotify()
+        val cseqNow = id.cseq.toInt()
         val branch = SipBuilders.randomBranch()
-        val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-        val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+        val callIdNow = id.callId
+        val fromTagNow = id.fromTag
         val msg = SipBuilders.buildMessage(
             config = config,
             cseq = cseqNow,
@@ -1154,7 +1160,6 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendHomePositionQueryResponse(sn: String, channelId: String) {
         try {
-            cseqInc()
             val s = mutableDeviceControlState.value
             val responseDeviceId = channelId.ifBlank { config.device.deviceId }
             val presetIndex = if (s.homePosition != null) 1 else 0
@@ -1175,7 +1180,6 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendStorageCardStatusResponse(sn: String, channelId: String) {
         try {
-            cseqInc()
             val responseDeviceId = channelId.ifBlank { config.device.deviceId }
             val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
                 "<Response>\r\n" +
@@ -1195,7 +1199,6 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendCruiseTrackListResponse(sn: String, channelId: String) {
         try {
-            cseqInc()
             val s = mutableDeviceControlState.value
             val responseDeviceId = channelId.ifBlank { config.device.deviceId }
             val sumNum = s.cruiseTracks.size
@@ -1220,7 +1223,6 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendCruiseTrackResponse(sn: String, channelId: String, trackNum: Int) {
         try {
-            cseqInc()
             val s = mutableDeviceControlState.value
             val responseDeviceId = channelId.ifBlank { config.device.deviceId }
             val track = s.cruiseTracks[trackNum] ?: emptyList()
@@ -1279,10 +1281,11 @@ internal class ManscdpRouterImpl(
         )
         for (xmlBody in packets) {
             try {
-                val cseqNow = cseqInc()
+                val id = identityService.nextMessageNotify()
+                val cseqNow = id.cseq.toInt()
                 val branch = SipBuilders.randomBranch()
-                val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-                val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+                val callIdNow = id.callId
+                val fromTagNow = id.fromTag
                 val msg = SipBuilders.buildMessage(
                     config = config,
                     cseq = cseqNow,
@@ -1361,10 +1364,11 @@ internal class ManscdpRouterImpl(
             "<Result>$result</Result>\r\n" +
             "</Response>\r\n"
         runCatching {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val msg = SipBuilders.buildMessage(
                 config = config,
                 cseq = cseqNow,
@@ -1384,7 +1388,7 @@ internal class ManscdpRouterImpl(
     private suspend fun pushAlarmResetNotify(by: String?) {
         val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
         if (dialogs.isEmpty()) return
-        val sn = cseqInc().toString()
+        val sn = identityService.nextMessageNotify().cseq.toString()
         val resetPayload = AlarmPayload(
             deviceId = config.device.alarmChannelId,
             description = "报警已复位 (AlarmCmd by ${by ?: "platform"})",
@@ -1447,10 +1451,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun sendBroadcastResponseMessage(xmlBody: String) {
         runCatching {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = callId ?: SipBuilders.randomCallId(localIp).also { callIdWrite(it) }
-            val fromTagNow = fromTag ?: SipBuilders.randomTag().also { fromTagWrite(it) }
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val msg = SipBuilders.buildMessage(
                 config = config,
                 cseq = cseqNow,
@@ -1506,10 +1511,11 @@ internal class ManscdpRouterImpl(
         sessionId: String, firmware: String, percent: Int, result: Int,
     ) {
         try {
-            val cseqNow = cseqInc()
+            val id = identityService.nextMessageNotify()
+            val cseqNow = id.cseq.toInt()
             val branch = SipBuilders.randomBranch()
-            val callIdNow = SipBuilders.randomCallId(localIp)
-            val fromTagNow = SipBuilders.randomTag()
+            val callIdNow = id.callId
+            val fromTagNow = id.fromTag
             val msg = com.uvp.sim.sip.DeviceUpgradeResultNotify.build(
                 config = config,
                 cseq = cseqNow,

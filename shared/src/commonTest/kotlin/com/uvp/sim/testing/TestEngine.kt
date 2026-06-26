@@ -15,8 +15,9 @@ import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.PlaybackBuilder
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
-import com.uvp.sim.domain.SipSnPool
 import com.uvp.sim.domain.SubscriptionRegistry
+import com.uvp.sim.domain.newDefaultIdentityService
+import com.uvp.sim.domain.registerPoolLambdasFrom
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
@@ -81,36 +82,37 @@ internal object TestEngine {
             alarmHistoryStore = AlarmHistoryStore(),
             subscriptionRegistry = SubscriptionRegistry(scope),
             mockGps = MockGpsSource(config.mockPosition),
-            snPool = SipSnPool(),
+            identityService = newDefaultIdentityService(localIpProvider = localIpProvider),
         )
         val outbox = SipOutboxImpl(transport) { ev -> holders.events.emit(ev) }
-        val snPool = holders.snPool
+        val identityService = holders.identityService
+        val pool = registerPoolLambdasFrom(identityService)
         val localPortProvider: () -> Int = { transport.localPort.takeIf { it > 0 } ?: 5060 }
 
         val registration = RegistrationCoordinatorImpl(
             config = config, transport = transport, scope = scope, outbox = outbox,
             localIpProvider = localIpProvider, localPortProvider = localPortProvider,
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val broadcast = BroadcastCoordinatorImpl(
             config = config, transport = transport, scope = scope, outbox = outbox,
             localIpProvider = localIpProvider, localPortProvider = localPortProvider,
             rtpReceiverFactory = rtpReceiverFactory, audioSinkFactory = audioSinkFactory,
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val playback = PlaybackCoordinatorImpl(
             config = config, transport = transport, outbox = outbox, scope = scope,
             localIpProvider = localIpProvider, localPortProvider = localPortProvider,
             playbackBuilder = playbackBuilder, recordingService = recordingService,
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val invite = InviteCoordinatorImpl(
             config = config, transport = transport, outbox = outbox, scope = scope,
@@ -119,9 +121,9 @@ internal object TestEngine {
             rtpSenderFactory = rtpSenderFactory,
             catalogTree = holders.catalogTree, clockOffsetProvider = { holders.clockOffset.value },
             mutableSipState = holders.state, simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         var engineRef: SimulatorEngine? = null
         val manscdp = ManscdpRouterImpl(
@@ -140,9 +142,7 @@ internal object TestEngine {
             stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
             broadcastBusy = { broadcast.current.value != null },
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            identityService = identityService,
         )
         val coords = EngineCoordinators(registration, broadcast, playback, invite, manscdp)
         val engine = SimulatorEngine(config, transport, scope, resources, coords, holders)

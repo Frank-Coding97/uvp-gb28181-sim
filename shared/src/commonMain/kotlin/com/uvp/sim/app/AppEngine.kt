@@ -13,11 +13,13 @@ import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.EngineCoordinators
 import com.uvp.sim.domain.EngineHolders
 import com.uvp.sim.domain.MockGpsSource
+import com.uvp.sim.domain.RegisterPoolLambdas
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
-import com.uvp.sim.domain.SipSnPool
 import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.SubscriptionSnapshot
+import com.uvp.sim.domain.newDefaultIdentityService
+import com.uvp.sim.domain.registerPoolLambdasFrom
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
@@ -79,7 +81,7 @@ class AppEngine(
         alarmHistoryStore = AlarmHistoryStore(),
         subscriptionRegistry = SubscriptionRegistry(engineScope),
         mockGps = MockGpsSource(initialConfig.mockPosition),
-        snPool = SipSnPool(),
+        identityService = newDefaultIdentityService(localIpProvider = resources.localIpProvider),
     )
 
     val state: StateFlow<SipState> = holders.state.asStateFlow()
@@ -175,32 +177,36 @@ class AppEngine(
         val playbackBuilder = resources.playbackBuilderFactory?.let { factory ->
             rtpFactory?.let { rtp -> factory(engineScope, cfg.recording.playbackAudioCodec, rtp) }
         }
-        val snPool = holders.snPool
+        // Wave 2 PR-SN-IDENTITY:Manscdp 直走 identityService;
+        // Reg/Broadcast/Invite/Playback 4 Coord 既有 lambda 入口由 registerPoolLambdasFrom 派生
+        // (过渡桥,Wave 3+ 再迁)。
+        val identityService = holders.identityService
+        val pool: RegisterPoolLambdas = registerPoolLambdasFrom(identityService)
 
         val registration = RegistrationCoordinatorImpl(
             config = cfg, transport = tx, scope = engineScope, outbox = outbox,
             localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val broadcast = BroadcastCoordinatorImpl(
             config = cfg, transport = tx, scope = engineScope, outbox = outbox,
             localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
             rtpReceiverFactory = resources.rtpReceiverFactory, audioSinkFactory = resources.audioSinkFactory,
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val playback = PlaybackCoordinatorImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
             localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
             playbackBuilder = playbackBuilder, recordingService = resources.recordingService,
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val invite = InviteCoordinatorImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
@@ -209,9 +215,9 @@ class AppEngine(
             rtpSenderFactory = rtpFactory,
             catalogTree = holders.catalogTree, clockOffsetProvider = { holders.clockOffset.value },
             mutableSipState = holders.state, simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
+            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
+            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
         )
         val manscdp = ManscdpRouterImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
@@ -229,9 +235,7 @@ class AppEngine(
             stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
             broadcastBusy = { broadcast.current.value != null },
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = snPool.cseqProvider, cseqIncrementer = snPool.cseqIncrementer,
-            callIdProvider = snPool.callIdProvider, callIdSetter = snPool.callIdSetter,
-            fromTagProvider = snPool.fromTagProvider, fromTagSetter = snPool.fromTagSetter,
+            identityService = identityService,
         )
         return EngineCoordinators(registration, broadcast, playback, invite, manscdp)
     }

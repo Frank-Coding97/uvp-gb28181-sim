@@ -68,12 +68,27 @@ internal data class InviteDialogIdentity(
  *               起始 cseq(默认 0,第一次 `nextXxx().cseq == 1`)
  */
 internal class DefaultSipDialogIdentityService(
-    private val localIp: String,
+    private val localIpProvider: () -> String,
     private val random: Random = Random.Default,
     initialRegisterCseq: Long = 0L,
     initialMessageNotifyCseq: Long = 0L,
     initialInviteCseq: Long = 0L,
 ) : SipDialogIdentityService {
+
+    /** 便利构造:固定 localIp(单测用)。 */
+    constructor(
+        localIp: String,
+        random: Random = Random.Default,
+        initialRegisterCseq: Long = 0L,
+        initialMessageNotifyCseq: Long = 0L,
+        initialInviteCseq: Long = 0L,
+    ) : this(
+        localIpProvider = { localIp },
+        random = random,
+        initialRegisterCseq = initialRegisterCseq,
+        initialMessageNotifyCseq = initialMessageNotifyCseq,
+        initialInviteCseq = initialInviteCseq,
+    )
 
     private val registerMutex = Mutex()
     private val notifyMutex = Mutex()
@@ -124,11 +139,15 @@ internal class DefaultSipDialogIdentityService(
     /**
      * 16 字节 hex random + `@<localIp>` — 跟 [SipHeaders.randomCallId] 一致,
      * 但走注入的 [random](默认 SecureRandom 派生),保证测试可控 + 生产强随机。
+     *
+     * [localIpProvider] 是 lazy 派生(transport 没 bind 时返回 `0.0.0.0`),
+     * 任何 throw / null-ish 回退 fallback,不让 callId 生成因 IP 不可用而崩。
      */
     private fun generateCallId(): String {
         val bytes = random.nextBytes(8)
         val hex = bytes.toHex()
-        return "$hex@$localIp"
+        val ip = runCatching { localIpProvider().ifEmpty { "0.0.0.0" } }.getOrElse { "0.0.0.0" }
+        return "$hex@$ip"
     }
 
     /** 10 字节 hex random — 跟 [SipHeaders.randomTag] 一致。 */
