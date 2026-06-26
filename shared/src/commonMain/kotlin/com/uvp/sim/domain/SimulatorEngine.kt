@@ -2,7 +2,6 @@ package com.uvp.sim.domain
 
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
-import com.uvp.sim.domain.coord.BroadcastInvoker
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
 import com.uvp.sim.domain.coord.PlaybackCoordinatorImpl
@@ -10,30 +9,20 @@ import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
 import com.uvp.sim.domain.coord.RegistrationEvent
 import com.uvp.sim.domain.coord.RegistrationState
 import com.uvp.sim.gb28181.AlarmPayload
-import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
-import com.uvp.sim.sip.SipBuilders
-import com.uvp.sim.sip.SipEvent
-import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipState
-import com.uvp.sim.sip.SipStateMachine
-import com.uvp.sim.sip.SubscribeHandler
-import com.uvp.sim.sip.SubscribeIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -44,24 +33,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
 
 /**
- * Top-level orchestrator that wires SIP state machine, transport, auth, and
- * heartbeat together. UI subscribes to [state] and [events]; user actions go
- * through [register], [unregister].
- *
- * The engine is stateful and intentionally single-instance per session.
- *
- * Design notes:
- *   - The transport layer is injected so tests can supply a mock.
- *   - All side effects happen inside the engine; the SIP state machine itself
- *     remains a pure function.
- *   - localIp / localPort are configurable for tests; production code should
- *     resolve them from the bound transport.
+ * Top-level orchestrator — Engine 持 5 Coord(register/broadcast/playback/invite/manscdp)+ 路由 dispatch + bridge,
+ * UI 订阅 [state] / [events],动作走 [register] / [unregister]。Single-instance per session,所有副作用在 Engine 内。
  */
 class SimulatorEngine(
     private val config: SimConfig,
@@ -72,32 +47,12 @@ class SimulatorEngine(
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
     private val audioCapture: com.uvp.sim.camera.AudioCapture? = null,
     private val rtpSenderFactory: ((host: String, port: Int, mode: com.uvp.sim.network.RtpMode) -> com.uvp.sim.network.RtpSender)? = null,
-    /**
-     * 录像引擎(M2 加)。默认 NoopRecordingService,SIP 主路径不会被影响。
-     * Android 下由 ViewModel 注入 [com.uvp.sim.recording.AndroidRecordingService]。
-     */
-    private val recordingService: com.uvp.sim.recording.RecordingService =
-        com.uvp.sim.recording.NoopRecordingService,
-    /**
-     * PLAYBACK 推流构造器(M2 D 块)。null 时引擎收 PLAYBACK INVITE 直接 487。
-     * 真实场景由 ViewModel 注入: 拼装 Mp4DemuxFactory + RtpSink + clock。
-     */
+    private val recordingService: com.uvp.sim.recording.RecordingService = com.uvp.sim.recording.NoopRecordingService,
     private val playbackBuilder: PlaybackBuilder? = null,
-    /**
-     * M3 语音广播 RX 接收器工厂。null 时用默认 expect class(Android = java.net UDP)。
-     * 测试注入 fake 以避免真实 socket。
-     */
     private val rtpReceiverFactory: ((CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource)? = null,
-    /**
-     * M3 语音广播扬声器工厂。null 时用默认(Android = AudioTrack)。测试注入 fake。
-     */
-    private val audioSinkFactory: ((Int, Int) -> com.uvp.sim.media.AudioSink)? = null
+    private val audioSinkFactory: ((Int, Int) -> com.uvp.sim.media.AudioSink)? = null,
 ) {
-    /**
-     * Engine 自有的协程 scope(PR2 T2.3b)。继承外部传入 [scope] 的 dispatcher / job 树,
-     * 但加 [SupervisorJob] 让 Coordinator 内部协程的失败不传染到外部。所有内部 launch /
-     * stateIn / collect 都走这个 scope,[shutdown] 时 cancel 一次性收掉。
-     */
+    /** Engine 自有 scope(SupervisorJob),shutdown 时 cancel 一次性收掉。 */
     private val scope: CoroutineScope = CoroutineScope(scope.coroutineContext + SupervisorJob())
     private val _state = MutableStateFlow(SipState.Disconnected)
     val state: StateFlow<SipState> = _state.asStateFlow()
@@ -129,24 +84,14 @@ class SimulatorEngine(
      * UI 层消费 [DeviceEffect] 后调用以清零 `pendingEffect`,防止重复触发。
      * Compose 层 `LaunchedEffect(pendingEffect)` 处理完动画/snackbar 后调本接口。
      */
+    /** UI 消费 [DeviceEffect] 后清零 pendingEffect 防重复触发(Compose `LaunchedEffect`)。 */
     fun consumeEffect() {
         _deviceControlState.update { it.copy(pendingEffect = null) }
     }
 
-    /**
-     * 渲染层节流回写当前 PTZ 姿态.
-     *
-     * 背景:`DeviceControlState.panAngle/tiltAngle/zoomLevel` 设计上由 UI 渲染层
-     * 维护(每帧基于 panSpeed 等积分)。但 `GlbSceneState`(Filament)以前从未把
-     * 渲染端的 panAngle 推回 state,导致 `handlePtzPreset SET` 取的永远是 0/0/1
-     * → 预置位调用回原点而不是真实位置。
-     *
-     * 本接口由 `GlbSceneState` 每 ~10 帧(166ms)调用一次,推渲染端最新 pose 进 state。
-     */
+    /** GlbSceneState ~10 帧/166ms 回写一次最新 PTZ pose,供预置位 SET 取真实值。 */
     fun updatePoseFromRender(pan: Float, tilt: Float, zoom: Float) {
-        _deviceControlState.update {
-            it.copy(panAngle = pan, tiltAngle = tilt, zoomLevel = zoom)
-        }
+        _deviceControlState.update { it.copy(panAngle = pan, tiltAngle = tilt, zoomLevel = zoom) }
     }
 
     private val mutex = Mutex()
@@ -240,13 +185,7 @@ class SimulatorEngine(
     /** Engine 不在 InCall 时,把 registration.state 单向直写到 _state(InCall 由业务路径维护)。 */
     private val registrationStateBridge: Job = scope.launch {
         registration.state.collect { regState ->
-            val mapped = when (regState) {
-                RegistrationState.Disconnected -> SipState.Disconnected
-                RegistrationState.Registering, RegistrationState.RetryBackoff -> SipState.Registering
-                RegistrationState.Registered -> SipState.Registered
-                RegistrationState.Failed -> SipState.Failed
-            }
-            if (_state.value != SipState.InCall) _state.value = mapped
+            if (_state.value != SipState.InCall) _state.value = mapRegistrationState(regState)
         }
     }
     private val registrationEventBridge: Job = scope.launch {
@@ -283,14 +222,9 @@ class SimulatorEngine(
         syncStateFromRegistration()
     }
 
-    /** Send Unregister and tear down. */
     suspend fun unregister() {
-        // PR4 T4.3:活跃流停止委派给 InviteCoordinator(决策 2 选 A)
         invite.stopStream("user unregister")
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Lifecycle,
-            "用户注销 → 发送 Unregister"
-        )
+        SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "用户注销 → 发送 Unregister")
         subscriptionRegistry.cancelAll()
         registration.unregister()
         syncStateFromRegistration()
@@ -298,23 +232,14 @@ class SimulatorEngine(
 
     /**
      * NetworkController 状态变化驱动重注册,Contact/Via 头刷到新接口 IP。
-     * 软切换:in-flight INVITE 不主动 BYE(java.nio 不迁移,等平台 BYE);
-     * 老 IP 的 Expires=0 unregister 可能发不出去,服务端绑定自然过期。
+     * 软切换:in-flight INVITE 不主动 BYE(java.nio 不迁移,等平台 BYE)。
      */
     suspend fun handleNetworkChange(newState: com.uvp.sim.network.NetworkState) {
         when (newState) {
             is com.uvp.sim.network.NetworkState.Bound -> {
-                _events.emit(
-                    SimEvent.NetworkBound(
-                        preference = newState.preference.name,
-                        interfaceName = newState.interfaceName,
-                        localIp = newState.localIp,
-                    )
-                )
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Network,
-                    "网络已切到 ${newState.preference.name} 接口 ${newState.interfaceName} IP=${newState.localIp},触发重注册"
-                )
+                _events.emit(SimEvent.NetworkBound(newState.preference.name, newState.interfaceName, newState.localIp))
+                SystemLogger.emit(LogLevel.Info, LogTag.Network,
+                    "网络已切到 ${newState.preference.name} 接口 ${newState.interfaceName} IP=${newState.localIp},触发重注册")
                 triggerReregisterIfActive()
             }
             com.uvp.sim.network.NetworkState.Auto -> {
@@ -332,8 +257,8 @@ class SimulatorEngine(
 
     /** 在线时才驱动 unregister → register;Disconnected/Failed 不替老板决定。 */
     private suspend fun triggerReregisterIfActive() {
-        val current = _state.value
-        if (current != SipState.Registered && current != SipState.InCall && current != SipState.Registering) return
+        val cur = _state.value
+        if (cur != SipState.Registered && cur != SipState.InCall && cur != SipState.Registering) return
         runCatching { unregister() }.onFailure {
             SystemLogger.emit(LogLevel.Warning, LogTag.Network, "重注册 unregister 抛错: ${it::class.simpleName}: ${it.message}")
         }
@@ -342,22 +267,16 @@ class SimulatorEngine(
         }
     }
 
-    /** Stop background work. The transport itself is not closed (caller's responsibility). */
+    /** Transport 自身不在这关 — 由 caller 负责。 */
     suspend fun shutdown() {
-        // PR5 T5.4:活跃域全部归 Coordinator,Engine 顺序调 shutdown
-        invite.shutdown()
-        playback.shutdown()
-        broadcast.shutdown()
+        invite.shutdown(); playback.shutdown(); broadcast.shutdown()
         mutex.withLock {
             subscriptionRegistry.cancelAll()
-            inboundJob?.cancel()
-            inboundJob = null
+            inboundJob?.cancel(); inboundJob = null
             _state.value = SipState.Disconnected
         }
         registration.shutdown()
-        registrationStateBridge.cancel()
-        registrationEventBridge.cancel()
-        registrationClockBridge.cancel()
+        registrationStateBridge.cancel(); registrationEventBridge.cancel(); registrationClockBridge.cancel()
         scope.cancel()
     }
 
@@ -403,9 +322,7 @@ class SimulatorEngine(
             try {
                 transport.incoming.collect { msg ->
                     _events.emit(SimEvent.MessageReceived(msg))
-                    try {
-                        handleIncoming(msg)
-                    } catch (e: Throwable) {
+                    try { handleIncoming(msg) } catch (e: Throwable) {
                         _events.emit(SimEvent.TransportError("handleIncoming: ${e::class.simpleName}: ${e.message}"))
                     }
                 }
@@ -415,88 +332,58 @@ class SimulatorEngine(
         }
     }
 
-    private suspend fun handleIncoming(msg: SipMessage) {
-        when (msg) {
-            is SipResponse -> handleResponse(msg)
-            is SipRequest -> handleRequest(msg)
-        }
+    private suspend fun handleIncoming(msg: SipMessage) = when (msg) {
+        is SipResponse -> handleResponse(msg)
+        is SipRequest -> handleRequest(msg)
     }
 
     private suspend fun handleResponse(resp: SipResponse) {
         val cseqHeader = resp.cseqRaw() ?: return
         val cseqMethod = cseqHeader.split(" ").getOrNull(1)?.let { SipMethod.fromString(it) } ?: return
-
         when (cseqMethod) {
-            SipMethod.REGISTER -> {
-                registration.onIncoming(resp)
-                syncStateFromRegistration()
-            }
-            // PR5 T5.4:INVITE 响应(主叫 broadcast)归 BroadcastCoordinator
+            SipMethod.REGISTER -> { registration.onIncoming(resp); syncStateFromRegistration() }
             SipMethod.INVITE -> broadcast.onIncoming(resp)
-            SipMethod.MESSAGE -> {
-                if (resp.statusCode in 200..299) {
-                    registration.onIncoming(resp)
-                    _events.emit(SimEvent.HeartbeatAcknowledged(0))
-                }
+            SipMethod.MESSAGE -> if (resp.statusCode in 200..299) {
+                registration.onIncoming(resp)
+                _events.emit(SimEvent.HeartbeatAcknowledged(0))
             }
             else -> Unit
         }
     }
 
-    /**
-     * 把 [registration] 状态同步映射回 Engine 的 [_state]。InCall 期间不回写,
-     * 保留 Engine 持有的业务状态。仅在路由层调用 — Coord 改完状态后立即拉回,
-     * 避免 bridge 协程时序滞后导致后续消息(如 INVITE)读到陈旧状态。
-     */
+    /** Coord 改完状态后立即同步,避免 bridge 协程时序滞后让后续消息读到陈旧状态。 */
     private fun syncStateFromRegistration() {
         if (_state.value == SipState.InCall) return
-        _state.value = when (registration.state.value) {
-            RegistrationState.Disconnected -> SipState.Disconnected
-            RegistrationState.Registering -> SipState.Registering
-            RegistrationState.Registered -> SipState.Registered
-            RegistrationState.RetryBackoff -> SipState.Registering
-            RegistrationState.Failed -> SipState.Failed
-        }
+        _state.value = mapRegistrationState(registration.state.value)
+    }
+
+    private fun mapRegistrationState(reg: RegistrationState): SipState = when (reg) {
+        RegistrationState.Disconnected -> SipState.Disconnected
+        RegistrationState.Registering, RegistrationState.RetryBackoff -> SipState.Registering
+        RegistrationState.Registered -> SipState.Registered
+        RegistrationState.Failed -> SipState.Failed
     }
 
     private suspend fun handleRequest(req: SipRequest) {
+        val skip = com.uvp.sim.domain.coord.RoutingResult.Skip
         when (req.method) {
-            // PR4 T4.3:INVITE / ACK / CANCEL 委派 InviteCoordinator
-            // PR5 T5.4:INVITE 先试 invite(直播),Skip 时给 playback
-            SipMethod.INVITE -> {
-                if (invite.onIncoming(req) == com.uvp.sim.domain.coord.RoutingResult.Skip) {
-                    playback.onIncoming(req)
-                }
-            }
-            SipMethod.ACK -> invite.onIncoming(req)
-            SipMethod.CANCEL -> invite.onIncoming(req)
-            // BYE:顺序路由 broadcast → invite → playback
+            SipMethod.INVITE -> if (invite.onIncoming(req) == skip) playback.onIncoming(req)
+            SipMethod.ACK, SipMethod.CANCEL -> invite.onIncoming(req)
             SipMethod.BYE -> {
-                var result = broadcast.onIncoming(req)
-                if (result == com.uvp.sim.domain.coord.RoutingResult.Skip) result = invite.onIncoming(req)
-                if (result == com.uvp.sim.domain.coord.RoutingResult.Skip) playback.onIncoming(req)
+                if (broadcast.onIncoming(req) == skip &&
+                    invite.onIncoming(req) == skip) playback.onIncoming(req)
             }
-            // INFO:先 playback(MANSRTSP),Skip 给 manscdp
-            SipMethod.INFO -> {
-                if (playback.onIncoming(req) == com.uvp.sim.domain.coord.RoutingResult.Skip) {
-                    manscdp.onIncoming(req)
-                }
-            }
-            SipMethod.MESSAGE -> manscdp.onIncoming(req)
-            SipMethod.SUBSCRIBE -> manscdp.onIncoming(req)
+            SipMethod.INFO -> if (playback.onIncoming(req) == skip) manscdp.onIncoming(req)
+            SipMethod.MESSAGE, SipMethod.SUBSCRIBE -> manscdp.onIncoming(req)
             SipMethod.OPTIONS -> registration.onIncoming(req)
             else -> Unit
         }
     }
 
-    // handleInfo / sendSimpleResponse / handleAck / handleCancel 全部迁到 InviteCoordinator(PR4 T4.3)
-
     /** DeviceControl TeleBoot 回调(followup A 注入 Manscdp)。 */
     private suspend fun rebootForDeviceControl() {
         SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "TeleBoot → 重新注册")
-        try {
-            unregister()
-        } catch (_: Throwable) { /* 平台可能已不可达 */ }
+        try { unregister() } catch (_: Throwable) { /* 平台可能已不可达 */ }
         delay(1_000L)
         register()
     }
