@@ -9,6 +9,7 @@ import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlDispatcher
+import com.uvp.sim.domain.DeviceControlActions
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.PtzPose
@@ -74,7 +75,10 @@ internal class ManscdpRouterImpl(
     private val catalogTree: MutableStateFlow<List<CatalogNode>>,
     private val alarmHistoryStore: AlarmHistoryStore,
     private val mutableDeviceControlState: MutableStateFlow<DeviceControlState>,
-    private val deviceControlDispatcher: DeviceControlDispatcher,
+    // DeviceControlDispatcher 内部装配(followup A);3 个 callback 注入由 Engine 提供
+    private val rebootCallback: suspend () -> Unit,
+    private val requestKeyFrameCallback: () -> Unit,
+    private val startUpgradeCallback: (sessionId: String, firmware: String, fileUrl: String) -> Unit,
     private val broadcastInvoker: BroadcastInvoker,
     private val recordingService: RecordingService,
     private val mockGps: MockGpsSource,
@@ -124,6 +128,55 @@ internal class ManscdpRouterImpl(
     // Snapshot pipeline(由 attachSnapshotPipeline 注入)
     private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
     private var snapshotCachePipeline: com.uvp.sim.snapshot.JpegLocalCache? = null
+
+    /**
+     * DeviceControl 命令分发器(followup A 迁入 Manscdp 域)。
+     *
+     * 5 个副作用通过 3 个 callback + 本类自有方法解耦:
+     *  - reboot:[rebootCallback](Engine 自己 unregister + register)
+     *  - snapshot:本类 [reportSnapshot]
+     *  - requestKeyFrame:[requestKeyFrameCallback](Engine 透传 cameraCapture)
+     *  - triggerSnapshotConfig:本类 [snapshotPipeline]
+     *  - startUpgrade:[startUpgradeCallback](Engine 启动 DeviceUpgrade 假进度,E 动作再迁入本类)
+     */
+    private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
+        DeviceControlDispatcher(
+            state = mutableDeviceControlState,
+            config = config,
+            actions = object : DeviceControlActions {
+                override suspend fun reboot() {
+                    rebootCallback()
+                }
+                override suspend fun snapshot() {
+                    reportSnapshot()
+                }
+                override fun requestKeyFrame() {
+                    requestKeyFrameCallback()
+                }
+                override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
+                    val pipeline = snapshotPipeline
+                    if (pipeline == null) {
+                        SystemLogger.emit(
+                            LogLevel.Warning,
+                            LogTag.Lifecycle,
+                            "SnapShotConfig 收到但抓拍管线未挂(平台壳未调 attachSnapshotPipeline);忽略 SessionID=${cfg.sessionId}"
+                        )
+                        return
+                    }
+                    SystemLogger.emit(
+                        LogLevel.Info,
+                        LogTag.Lifecycle,
+                        "SnapShotConfig 派发 SessionID=${cfg.sessionId} N=${cfg.snapNum} interval=${cfg.intervalMs}ms"
+                    )
+                    pipeline.start(cfg)
+                }
+                override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
+                    startUpgradeCallback(sessionId, firmware, fileUrl)
+                }
+            },
+            scope = scope
+        )
+    }
 
     override suspend fun onIncoming(msg: SipMessage): RoutingResult {
         return when (msg) {

@@ -7,8 +7,6 @@ import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.CatalogTreeStore
-import com.uvp.sim.domain.DeviceControlActions
-import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.MockSipTransport
@@ -67,13 +65,6 @@ class ManscdpRouterTest {
         cseqIncrementer: (() -> Int)? = null,
     ): ManscdpRouterImpl {
         val deviceControlState = MutableStateFlow(DeviceControlState())
-        val noopActions = object : DeviceControlActions {
-            override suspend fun reboot() {}
-            override suspend fun snapshot() {}
-            override fun requestKeyFrame() {}
-            override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {}
-            override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {}
-        }
         val cfg = config()
         val tree = MutableStateFlow(CatalogTreeStore.effectiveTree(cfg))
         return ManscdpRouterImpl(
@@ -86,12 +77,9 @@ class ManscdpRouterTest {
             catalogTree = tree,
             alarmHistoryStore = AlarmHistoryStore(),
             mutableDeviceControlState = deviceControlState,
-            deviceControlDispatcher = DeviceControlDispatcher(
-                state = deviceControlState,
-                config = cfg,
-                actions = noopActions,
-                scope = scope,
-            ),
+            rebootCallback = {},
+            requestKeyFrameCallback = {},
+            startUpgradeCallback = { _, _, _ -> },
             broadcastInvoker = broadcastInvoker,
             recordingService = NoopRecordingService,
             mockGps = MockGpsSource(cfg.mockPosition),

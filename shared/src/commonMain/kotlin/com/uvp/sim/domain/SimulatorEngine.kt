@@ -149,63 +149,8 @@ class SimulatorEngine(
         }
     }
 
-    private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
-        DeviceControlDispatcher(
-            state = _deviceControlState,
-            config = config,
-            actions = object : DeviceControlActions {
-                override suspend fun reboot() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "TeleBoot → 重新注册")
-                    try {
-                        unregister()
-                    } catch (_: Throwable) { /* 平台可能已不可达 */ }
-                    delay(1_000L)
-                    register()
-                }
-                override suspend fun snapshot() {
-                    reportSnapshot()
-                }
-                override fun requestKeyFrame() {
-                    cameraCapture?.requestKeyFrame()
-                }
-                override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
-                    val pipeline = snapshotPipeline
-                    if (pipeline == null) {
-                        SystemLogger.emit(
-                            LogLevel.Warning,
-                            LogTag.Lifecycle,
-                            "SnapShotConfig 收到但抓拍管线未挂(平台壳未调 attachSnapshotPipeline);忽略 SessionID=${cfg.sessionId}"
-                        )
-                        return
-                    }
-                    SystemLogger.emit(
-                        LogLevel.Info,
-                        LogTag.Lifecycle,
-                        "SnapShotConfig 派发 SessionID=${cfg.sessionId} N=${cfg.snapNum} interval=${cfg.intervalMs}ms"
-                    )
-                    pipeline.start(cfg)
-                }
-                override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.Lifecycle,
-                        "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
-                    )
-                    scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
-                }
-            },
-            scope = scope
-        )
-    }
-
     private val mutex = Mutex()
     private var inboundJob: Job? = null
-
-    /**
-     * 7.5 抓拍管线(GB-2022 §9.5)。Android 壳启动时通过 [attachSnapshotPipeline] 注入真实例,
-     * 注入前 [DeviceControlActions.triggerSnapshotConfig] 收到 SnapShotConfig 直接 warn 忽略。
-     */
-    private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
-    private var snapshotCachePipeline: com.uvp.sim.snapshot.JpegLocalCache? = null
 
     // ----------------------------------------------------------------------
     // 全局 SIP SN 池 / dialog identity(2026-06-23 plan §2.1.1 修订)
@@ -350,7 +295,10 @@ class SimulatorEngine(
         catalogTree = _catalogTree,
         alarmHistoryStore = alarmHistoryStore,
         mutableDeviceControlState = _deviceControlState,
-        deviceControlDispatcher = deviceControlDispatcher,
+        // deviceControlDispatcher 已在 Manscdp 内部装配(followup A)
+        rebootCallback = ::rebootForDeviceControl,
+        requestKeyFrameCallback = { cameraCapture?.requestKeyFrame() },
+        startUpgradeCallback = ::startUpgradeForDeviceControl,
         broadcastInvoker = broadcast,
         recordingService = recordingService,
         mockGps = mockGps,
@@ -557,7 +505,6 @@ class SimulatorEngine(
         cache: com.uvp.sim.snapshot.JpegLocalCache,
         httpClient: io.ktor.client.HttpClient,
     ) {
-        snapshotCachePipeline = cache
         manscdp.attachSnapshotPipeline(capture, cache, httpClient)
     }
 
@@ -784,6 +731,25 @@ class SimulatorEngine(
         } catch (e: Throwable) {
             _events.emit(SimEvent.TransportError("send DeviceUpgradeResult NOTIFY: ${e.message}"))
         }
+    }
+
+    /** DeviceControl TeleBoot 回调(followup A 注入 Manscdp)。 */
+    private suspend fun rebootForDeviceControl() {
+        SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "TeleBoot → 重新注册")
+        try {
+            unregister()
+        } catch (_: Throwable) { /* 平台可能已不可达 */ }
+        delay(1_000L)
+        register()
+    }
+
+    /** DeviceControl DeviceUpgrade 回调(followup A 注入 Manscdp;E 动作再迁内部)。 */
+    private fun startUpgradeForDeviceControl(sessionId: String, firmware: String, fileUrl: String) {
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
+        )
+        scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
     }
 
 
