@@ -18,6 +18,16 @@ class MockGpsSource(startPoint: GeoPoint, private val random: Random = Random.De
         val altitude: Double = 0.0
     )
 
+    /**
+     * 重置起点 — SimConfig.mockPosition 变更时调,把内部 lat/lng 拨回新起点,
+     * 方向重新随机。引用语义保留,Coord 不需要换 holder ref。
+     */
+    fun reset(startPoint: GeoPoint) {
+        lat = startPoint.latitude
+        lng = startPoint.longitude
+        direction = random.nextDouble(360.0)
+    }
+
     fun next(): PositionFix {
         direction = (direction + random.nextDouble(-30.0, 30.0)).mod(360.0)
         val speed = random.nextDouble(0.0, 30.0)

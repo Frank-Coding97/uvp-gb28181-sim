@@ -98,7 +98,7 @@ class MainActivity : ComponentActivity() {
             recordingServiceRef = com.uvp.sim.recording.AndroidRecordingService(
                 context = applicationContext,
                 executor = ContextCompat.getMainExecutor(applicationContext),
-                deviceId = viewModel.config.value.device.deviceId,
+                deviceIdSupplier = { viewModel.config.value.device.deviceId },
                 scope = AppScope.scope,
                 osdConfigSupplier = { viewModel.osdConfig },
                 encoderConfigSupplier = {
@@ -111,7 +111,7 @@ class MainActivity : ComponentActivity() {
                         keyframeIntervalSeconds = v.keyframeIntervalSeconds
                     )
                 },
-                profile = viewModel.config.value.recording
+                profileSupplier = { viewModel.config.value.recording }
             )
             viewModel.bindRecordingService(recordingServiceRef!!)
         }
@@ -327,12 +327,34 @@ class MainActivity : ComponentActivity() {
         // streamer 是进程级单例:首次创建,后续 Activity 重建复用同一实例。
         // 这样切后台 / 旋屏时 streamer 的自驱 lifecycle 不被销毁,CameraX 不会
         // 自动 unbind 录像 / 推流的 use cases。
-        val s = streamerRef ?: AndroidCameraStreamer(
-            context = applicationContext,
-            mainExecutor = ContextCompat.getMainExecutor(applicationContext),
-            config = viewModel.newCaptureConfig(),
-            osdConfigFlow = viewModel.osdConfig
-        ).also { streamerRef = it }
+        //
+        // videoConfigVersion bump 时(PR-USER-BUG-1):用户改了分辨率 / 帧率 /
+        // 码率 / 编解码器,必须 release 旧 streamer + new 一个新的,否则旧 encoder
+        // 单例沿用旧 CaptureConfig,用户改了配置看不到效果。
+        val captureCfg = viewModel.newCaptureConfig()
+        val versionBumped = viewModel.videoConfigVersion.value > 0
+        val existing = streamerRef
+        val s = if (existing != null && versionBumped) {
+            runCatching { existing.release() }
+            val fresh = AndroidCameraStreamer(
+                context = applicationContext,
+                mainExecutor = ContextCompat.getMainExecutor(applicationContext),
+                config = captureCfg,
+                osdConfigFlow = viewModel.osdConfig
+            )
+            streamerRef = fresh
+            fresh
+        } else {
+            existing ?: AndroidCameraStreamer(
+                context = applicationContext,
+                mainExecutor = ContextCompat.getMainExecutor(applicationContext),
+                config = captureCfg,
+                osdConfigFlow = viewModel.osdConfig
+            ).also { streamerRef = it }
+        }
+        // 即便复用旧 streamer 也把最新 CaptureConfig 推给它 — applyCaptureConfig
+        // 同值 short-circuit 不抖,值变会 release 当前 encoder 让下一轮 stream 起新 codec。
+        s.applyCaptureConfig(captureCfg)
         cameraCapture.setStreamer(s)
         CameraPreviewBinder.setBinder { view ->
             if (view != null) s.attachPreviewView(view) else s.detachPreviewView()

@@ -2,11 +2,13 @@ package com.uvp.sim
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import app.cash.turbine.test
 import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -83,24 +85,30 @@ class SipViewModelLifecycleTest {
     }
 
     @Test
-    @org.junit.Ignore(
-        "TODO: applyNetworkPreference 走 viewModelScope.launch → appEngine.updateConfig(suspend) " +
-        "异步路径,UnconfinedTestDispatcher + setMain 仍因 DataStore loadOnce suspend 让 init 段先回来覆盖 default config。" +
-        "需要切真 TestScope.runTest + advanceUntilIdle + DataStore mock,或改用 Turbine 等 Flow emit。本 PR 暂跳过,follow-up 单独治理。"
-    )
     fun applyNetworkPreference_updates_config() = runTest(testDispatcher) {
         val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
+        // 等 init 的 loadOnce + setConfig + apply(stored.preference) 都跑完,
+        // 否则 DataStore loadOnce(suspend)晚到会盖掉测试期间设置的值
+        advanceUntilIdle()
 
-        assertEquals(NetworkPreference.AUTO, vm.config.value.network.preference)
+        vm.config.test {
+            // 初始 config(loadOnce 完成后)preference 应为 AUTO(冷启动空 DataStore)
+            assertEquals(NetworkPreference.AUTO, awaitItem().network.preference)
 
-        vm.applyNetworkPreference(NetworkPreference.WIFI)
-        assertEquals(NetworkPreference.WIFI, vm.config.value.network.preference)
+            vm.applyNetworkPreference(NetworkPreference.WIFI)
+            advanceUntilIdle()
+            assertEquals(NetworkPreference.WIFI, awaitItem().network.preference)
 
-        vm.applyNetworkPreference(NetworkPreference.CELLULAR)
-        assertEquals(NetworkPreference.CELLULAR, vm.config.value.network.preference)
+            vm.applyNetworkPreference(NetworkPreference.CELLULAR)
+            advanceUntilIdle()
+            assertEquals(NetworkPreference.CELLULAR, awaitItem().network.preference)
 
-        vm.applyNetworkPreference(NetworkPreference.AUTO)
-        assertEquals(NetworkPreference.AUTO, vm.config.value.network.preference)
+            vm.applyNetworkPreference(NetworkPreference.AUTO)
+            advanceUntilIdle()
+            assertEquals(NetworkPreference.AUTO, awaitItem().network.preference)
+
+            cancelAndIgnoreRemainingEvents()
+        }
     }
 
     @Test

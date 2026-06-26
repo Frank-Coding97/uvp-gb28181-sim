@@ -45,22 +45,27 @@ import java.util.concurrent.Executor
  *   各消费者独立分辨率 P1-D 后续支持(letterbox)
  * - profile.quality 字段保留为占位,实际不读
  *
- * 依赖:
+ * 依赖(全 supplier 化,PR-USER-BUG-1):
  * - [osdConfigSupplier] OSD 实时配置(UI 改字段反映到下一帧)
  * - [encoderConfigSupplier] (width, height, frameRate, bitrateBps, gopSec)
- * - 不再依赖 streamerSupplier(VideoCapture 路径已删)
+ * - [deviceIdSupplier] / [profileSupplier] — 跟随 SimConfig 改动同步,
+ *   旧实现把 deviceId / profile 缓存在构造期,用户改了 deviceId / recording.segmentMinutes 后
+ *   仍写旧路径 / 用旧切片周期,这就是 user-visible bug。
  */
 class AndroidRecordingService(
     private val context: Context,
     private val executor: Executor,
-    private val deviceId: String,
+    private val deviceIdSupplier: () -> String,
     private val scope: CoroutineScope,
     private val osdConfigSupplier: () -> StateFlow<OsdConfig>,
     private val encoderConfigSupplier: () -> EncoderConfig,
-    private val profile: com.uvp.sim.config.RecordingProfile = com.uvp.sim.config.RecordingProfile(),
+    private val profileSupplier: () -> com.uvp.sim.config.RecordingProfile = { com.uvp.sim.config.RecordingProfile() },
     private val clock: Clock = Clock.System,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault()
 ) : RecordingService {
+
+    private val deviceId: String get() = deviceIdSupplier()
+    private val profile: com.uvp.sim.config.RecordingProfile get() = profileSupplier()
 
     /** 录像 encoder 配置 — 跟直播 SimConfig.video 共享。 */
     data class EncoderConfig(
