@@ -51,6 +51,7 @@ internal class BroadcastCoordinatorImpl(
     private val config: SimConfig,
     private val transport: SipTransport,
     private val scope: CoroutineScope,
+    private val outbox: com.uvp.sim.sip.SipOutbox,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
     rtpReceiverFactory: ((CoroutineScope) -> com.uvp.sim.network.BroadcastRxSource)? = null,
@@ -242,8 +243,7 @@ internal class BroadcastCoordinatorImpl(
         )
         _state.value = BroadcastDialogState.Inviting
         runCatching {
-            transport.send(invite)
-            simEventEmit(SimEvent.MessageSent(invite))
+            outbox.send(invite).getOrThrow()
             simEventEmit(SimEvent.BroadcastInvited(platformUri, boundPort))
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
@@ -345,8 +345,7 @@ internal class BroadcastCoordinatorImpl(
                 localIp = localIp,
                 localPort = localPortProvider(),
             )
-            transport.send(ack)
-            simEventEmit(SimEvent.MessageSent(ack))
+            outbox.send(ack).getOrThrow()
         }.onFailure {
             simEventEmit(SimEvent.TransportError("send broadcast ACK: ${it.message}"))
         }
@@ -367,8 +366,7 @@ internal class BroadcastCoordinatorImpl(
                 localIp = localIp,
                 localPort = localPortProvider(),
             )
-            transport.send(bye)
-            simEventEmit(SimEvent.MessageSent(bye))
+            outbox.send(bye).getOrThrow()
         }.onFailure {
             simEventEmit(SimEvent.TransportError("send broadcast BYE: ${it.message}"))
         }
@@ -377,8 +375,7 @@ internal class BroadcastCoordinatorImpl(
     private suspend fun handleBroadcastBye(bye: SipRequest, bc: BroadcastDialog) {
         runCatching {
             val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
-            transport.send(ok)
-            simEventEmit(SimEvent.MessageSent(ok))
+            outbox.send(ok).getOrThrow()
         }.onFailure {
             simEventEmit(SimEvent.TransportError("send broadcast BYE 200: ${it.message}"))
         }

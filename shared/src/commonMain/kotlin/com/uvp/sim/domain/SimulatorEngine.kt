@@ -103,9 +103,13 @@ class SimulatorEngine(
     private var callId: String? = null
     private var fromTag: String? = null
 
+    /** SIP 出站抽象(saga #5):所有 Coord 调 outbox.send,自动 emit MessageSent。 */
+    private val outbox: com.uvp.sim.sip.SipOutbox =
+        com.uvp.sim.sip.SipOutboxImpl(transport) { ev -> _events.emit(ev) }
+
     /** 注册域 — Engine 委派注册/心跳/OPTIONS/续约/重试,共享 SN 池。 */
     private val registration = RegistrationCoordinatorImpl(
-        config = config, transport = transport, scope = scope,
+        config = config, transport = transport, scope = scope, outbox = outbox,
         localIpProvider = localIpProvider, localPortProvider = localPortProvider,
         cseqProvider = { cseq }, cseqIncrementer = { cseq += 1; cseq },
         callIdProvider = { callId }, callIdSetter = { callId = it },
@@ -125,7 +129,7 @@ class SimulatorEngine(
 
     /** 广播域 — RX 链 / dialog state / handshake 全在本 Coord。 */
     private val broadcast: BroadcastCoordinatorImpl = BroadcastCoordinatorImpl(
-        config = config, transport = transport, scope = scope,
+        config = config, transport = transport, scope = scope, outbox = outbox,
         localIpProvider = localIpProvider, localPortProvider = localPortProvider,
         rtpReceiverFactory = rtpReceiverFactory, audioSinkFactory = audioSinkFactory,
         simEventEmit = { ev -> _events.emit(ev) },

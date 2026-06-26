@@ -16,6 +16,7 @@ import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.sip.SipOutbox
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -54,6 +55,7 @@ internal class RegistrationCoordinatorImpl(
     private val config: SimConfig,
     private val transport: SipTransport,
     private val scope: CoroutineScope,
+    private val outbox: SipOutbox,
     private val localIpProvider: () -> String = { "0.0.0.0" },
     private val localPortProvider: () -> Int = { 5060 },
     cseqProvider: (() -> Int)? = null,
@@ -161,7 +163,7 @@ internal class RegistrationCoordinatorImpl(
                 "开始注册到 ${config.server.ip}:${config.server.port}",
             )
             try {
-                transport.send(req)
+                outbox.send(req).getOrThrow()
                 armRegisterTimeout()
             } catch (e: Throwable) {
                 _state.value = RegistrationState.Failed
@@ -207,7 +209,7 @@ internal class RegistrationCoordinatorImpl(
                 config, cseq, callIdNow, branch, fromTagNow, localIp, localPortProvider(),
             )
             try {
-                transport.send(req)
+                outbox.send(req).getOrThrow()
             } catch (_: Throwable) {
                 // 网络不可达时发不出去是正常的(旧网卡已断 / NetworkUnavailable)
             }
@@ -346,7 +348,7 @@ internal class RegistrationCoordinatorImpl(
             pendingRegister = req
             _state.value = RegistrationState.Registering
             try {
-                transport.send(req)
+                outbox.send(req).getOrThrow()
                 armRegisterTimeout()
             } catch (e: Throwable) {
                 scheduleRetryOrFail("transport.send: ${e.message}")
@@ -438,7 +440,7 @@ internal class RegistrationCoordinatorImpl(
                 val newBranch = SipBuilders.randomBranch()
                 val authedReq = SipBuilders.addAuthorization(pending, authHeader, cseq, newBranch)
                 pendingRegister = authedReq
-                transport.send(authedReq)
+                outbox.send(authedReq).getOrThrow()
                 armRegisterTimeout()
             }
 
@@ -458,7 +460,7 @@ internal class RegistrationCoordinatorImpl(
                 allowedMethods = ALLOWED_OPTIONS_METHODS,
                 userAgent = config.userAgent,
             )
-            transport.send(resp)
+            outbox.send(resp).getOrThrow()
         }.onFailure {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Lifecycle,
@@ -501,7 +503,7 @@ internal class RegistrationCoordinatorImpl(
                 localPort = localPortProvider(),
             )
             try {
-                transport.send(msg)
+                outbox.send(msg).getOrThrow()
             } catch (e: Throwable) {
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Lifecycle,
@@ -567,7 +569,7 @@ internal class RegistrationCoordinatorImpl(
                     "Expires 续约: 发送 REGISTER(剩余 ${config.expiresSeconds * 200 / 1000}s)",
                 )
                 try {
-                    transport.send(req)
+                    outbox.send(req).getOrThrow()
                     armRegisterTimeout()
                 } catch (e: Throwable) {
                     isRenewal = false

@@ -57,6 +57,7 @@ class RegistrationCoordinatorTest {
             config = config(),
             transport = transport,
             scope = scope,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
             localIpProvider = { "192.168.1.50" },
             localPortProvider = { 5060 },
         )
@@ -271,6 +272,7 @@ class RegistrationCoordinatorTest {
             config = config(),
             transport = transport,
             scope = this,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
             localIpProvider = { "192.168.1.50" },
             localPortProvider = { 5060 },
             cseqProvider = { sharedCseq },
@@ -304,6 +306,7 @@ class RegistrationCoordinatorTest {
             config = config(),
             transport = transport,
             scope = this,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
             localIpProvider = { "192.168.1.50" },
             localPortProvider = { 5060 },
             cseqProvider = { sharedCseq },
