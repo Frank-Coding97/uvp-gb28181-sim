@@ -280,7 +280,7 @@ private fun CameraPreviewBox(state: AppUiState) {
 @Composable
 private fun RecordingBadge(
     startMs: Long?,
-    source: com.uvp.sim.recording.RecordSource?,
+    source: com.uvp.sim.ui.model.RecordSourceDto?,
     modifier: Modifier = Modifier
 ) {
     val transition = androidx.compose.animation.core.rememberInfiniteTransition(label = "rec-pulse")
@@ -306,7 +306,7 @@ private fun RecordingBadge(
     val mm = (elapsedSec / 60).toString().padStart(2, '0')
     val ss = (elapsedSec % 60).toString().padStart(2, '0')
     val sourceLabel = when (source) {
-        com.uvp.sim.recording.RecordSource.PlatformCmd -> "REC·平台"
+        com.uvp.sim.ui.model.RecordSourceDto.PlatformCmd -> "REC·平台"
         else -> "REC"
     }
     Row(

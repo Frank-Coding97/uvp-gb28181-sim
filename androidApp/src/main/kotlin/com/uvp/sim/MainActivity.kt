@@ -155,11 +155,11 @@ class MainActivity : ComponentActivity() {
                 val failed = recordingState as? com.uvp.sim.recording.RecordingState.Failed
                 com.uvp.sim.ui.RecordingStatus(
                     isRecording = rec != null,
-                    source = rec?.source,
+                    source = rec?.source?.toDto(),
                     startMs = rec?.startMs,
                     segmentIndex = rec?.segmentIndex ?: 0,
                     lastError = failed?.reason,
-                    files = recordingFiles
+                    files = recordingFiles.map { it.toDto() }
                 )
             }
             val uiState = AppUiState(

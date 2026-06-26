@@ -41,8 +41,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
+import com.uvp.sim.ui.model.RecordSourceDto
+import com.uvp.sim.ui.model.RecordingFileDto
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
@@ -63,8 +64,8 @@ import kotlinx.datetime.toLocalDateTime
 @Composable
 fun RecordingScreen(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
     val tz = remember { TimeZone.currentSystemDefault() }
-    var playingFile by remember { mutableStateOf<RecordingFile?>(null) }
-    var deletingFile by remember { mutableStateOf<RecordingFile?>(null) }
+    var playingFile by remember { mutableStateOf<RecordingFileDto?>(null) }
+    var deletingFile by remember { mutableStateOf<RecordingFileDto?>(null) }
     var showFilterSheet by remember { mutableStateOf(false) }
     // 默认空筛选(显全量),老板按"本周"按钮才生效
     var filter by remember { mutableStateOf<RecordingFilter?>(null) }
@@ -72,7 +73,7 @@ fun RecordingScreen(state: AppUiState, actions: AppActions, modifier: Modifier =
     val files = state.recording.files
     val filtered = remember(files, filter) {
         val f = filter ?: return@remember files
-        f.apply(files)
+        f.applyToDto(files)
     }
     val grouped = remember(filtered) { groupByDate(filtered, tz) }
     val filterLabel = filter?.let { describeFilter(it, tz) } ?: "全部"
@@ -234,7 +235,7 @@ private fun FilterBar(
 }
 
 @Composable
-private fun SummaryBar(files: List<RecordingFile>) {
+private fun SummaryBar(files: List<RecordingFileDto>) {
     val totalBytes = files.sumOf { it.sizeBytes }
     val totalDurationMs = files.sumOf { it.durationMs }
     val sizeText = formatBytes(totalBytes)
@@ -275,7 +276,7 @@ private fun formatDurationShort(ms: Long): String {
 private fun FilterSheet(
     initial: RecordingFilter?,
     tz: TimeZone,
-    allFiles: List<RecordingFile>,
+    allFiles: List<RecordingFileDto>,
     onApply: (RecordingFilter) -> Unit,
     onReset: () -> Unit,
     onDismiss: () -> Unit
@@ -504,7 +505,7 @@ private fun DateHeader(date: String) {
 
 @Composable
 private fun RecordingCard(
-    file: RecordingFile,
+    file: RecordingFileDto,
     onClick: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -610,9 +611,9 @@ private fun EmptyHint(title: String, subtitle: String) {
     }
 }
 
-private fun groupByDate(files: List<RecordingFile>, tz: TimeZone): List<Pair<String, List<RecordingFile>>> {
+private fun groupByDate(files: List<RecordingFileDto>, tz: TimeZone): List<Pair<String, List<RecordingFileDto>>> {
     val sorted = files.sortedByDescending { it.startTimeMs }
-    val result = linkedMapOf<String, MutableList<RecordingFile>>()
+    val result = linkedMapOf<String, MutableList<RecordingFileDto>>()
     for (f in sorted) {
         val date = Instant.fromEpochMilliseconds(f.startTimeMs).toLocalDateTime(tz).date
         val key = formatDate(date)
@@ -670,7 +671,19 @@ private fun utcDayStartToLocalDayEnd(utcMs: Long, tz: TimeZone): Long {
     return nextDay.atStartOfDayIn(tz).toEpochMilliseconds() - 1
 }
 
-private fun com.uvp.sim.recording.RecordSource.label(): String = when (this) {
-    com.uvp.sim.recording.RecordSource.Manual -> "手动"
-    com.uvp.sim.recording.RecordSource.PlatformCmd -> "平台"
+private fun RecordSourceDto.label(): String = when (this) {
+    RecordSourceDto.Manual -> "手动"
+    RecordSourceDto.PlatformCmd -> "平台"
+}
+
+private fun RecordingFilter.applyToDto(files: List<RecordingFileDto>): List<RecordingFileDto> {
+    val keyword = channelKeyword.trim()
+    return files.asSequence()
+        .filter { startMs <= it.endTimeMs && endMs >= it.startTimeMs }
+        .filter {
+            keyword.isEmpty() ||
+                it.channelId.contains(keyword, ignoreCase = true)
+        }
+        .sortedBy { it.startTimeMs }
+        .toList()
 }

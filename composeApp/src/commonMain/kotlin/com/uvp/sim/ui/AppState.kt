@@ -5,14 +5,14 @@ import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
-import com.uvp.sim.recording.RecordSource
-import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.model.AlarmPayloadDto
 import com.uvp.sim.ui.model.AlarmRecordDto
 import com.uvp.sim.ui.model.ClockOffsetDto
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.NetworkStateDto
+import com.uvp.sim.ui.model.RecordSourceDto
+import com.uvp.sim.ui.model.RecordingFileDto
 import com.uvp.sim.ui.model.SessionMarkerDto
 import com.uvp.sim.ui.model.SipStateDto
 import com.uvp.sim.ui.model.SystemLogDto
@@ -148,11 +148,11 @@ data class SubscriptionStatus(
  */
 data class RecordingStatus(
     val isRecording: Boolean = false,
-    val source: RecordSource? = null,
+    val source: RecordSourceDto? = null,
     val startMs: Long? = null,
     val segmentIndex: Int = 0,
     val lastError: String? = null,
-    val files: List<RecordingFile> = emptyList()
+    val files: List<RecordingFileDto> = emptyList()
 )
 
 /**
