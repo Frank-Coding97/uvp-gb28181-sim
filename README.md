@@ -203,6 +203,20 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 # 产物: androidApp/build/outputs/apk/release/androidApp-release.apk
 ```
 
+### CI / 本地复现
+
+GitHub Actions 在 `.github/workflows/ci.yml` 里跑下面 4 个命令(顺序一致):
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+./gradlew :shared:compileKotlinMetadata --stacktrace   # KMP 元数据 fast-fail
+./gradlew :shared:jvmTest --stacktrace                  # 共享层 JVM 单测(858 个)
+./gradlew :androidApp:testDebugUnitTest --stacktrace    # Android 单测
+./gradlew :androidApp:assembleDebug --stacktrace        # Android Debug APK
+```
+
+提 PR 到 main 前,本地 4 个命令全绿 = CI 八成绿。CI 失败会上传 test-reports 到 Actions Artifacts(retention 7 天)。
+
 ### 5 分钟联调(配 WVP-Pro 上级平台)
 
 最快的国标平台落地方式是用 [WVP-Pro 官方 docker 镜像](https://github.com/648540858/wvp-GB28181-pro):
