@@ -49,6 +49,10 @@ kotlin {
             implementation(libs.filament.utils)
             implementation(libs.gltfio.android)
         }
+        commonTest.dependencies {
+            implementation(libs.kotlin.test)
+            implementation(libs.kotlinx.coroutines.test)
+        }
     }
 }
 
