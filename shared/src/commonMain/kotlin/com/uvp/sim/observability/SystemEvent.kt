@@ -3,31 +3,22 @@ package com.uvp.sim.observability
 /**
  * 系统日志级别。Debug < Info < Warning < Error。
  *
+ * PR-A T1.3: 定义已搬到 [com.uvp.sim.api.LogLevel] 作为 UI 友好公开 API.
+ * 这里保留 typealias 兜底, shared 内部 import com.uvp.sim.observability.LogLevel
+ * 仍可解析, 无需触发大面积修改.
+ *
  * UI level 阈值过滤:选 X 显示 X 及以上(spec Q8)。
  */
-enum class LogLevel(val priority: Int, val short: String) {
-    Debug(0, "DBG"),
-    Info(1, "INF"),
-    Warning(2, "WRN"),
-    Error(3, "ERR");
-
-    companion object {
-        /** P0 默认阈值 = Info(隐藏 Debug,但保留采集) */
-        val Default = Info
-    }
-}
+typealias LogLevel = com.uvp.sim.api.LogLevel
 
 /**
  * 系统日志分类标签。SIP 故意不在这里 — SIP 事件走 SimEvent,系统日志只记非协议层关注点。
+ *
+ * PR-A T1.3: 定义已搬到 [com.uvp.sim.api.LogTag] 作为 UI 友好公开 API.
+ * 这里保留 typealias 兜底, shared 内部 import com.uvp.sim.observability.LogTag
+ * 仍可解析, 无需触发大面积修改.
  */
-enum class LogTag(val display: String) {
-    Network("NETWORK"),
-    Media("MEDIA"),
-    Lifecycle("LIFECYCLE"),
-    Resource("RESOURCE"),
-    User("USER"),
-    Subscription("SUBSCRIPTION")
-}
+typealias LogTag = com.uvp.sim.api.LogTag
 
 /**
  * 单条系统日志。

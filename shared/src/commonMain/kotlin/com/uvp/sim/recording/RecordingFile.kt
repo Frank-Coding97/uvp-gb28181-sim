@@ -16,13 +16,12 @@ enum class RecordSource { Manual, PlatformCmd }
  * - Manual_:手动录像(GB token "manual";Kotlin 标识符不能与 [RecordSource.Manual] 重名,加下划线)
  *
  * gb28181Token 用在 RecordInfo Notify XML <Type> 字段。
+ *
+ * PR-A T1.3: 定义已搬到 [com.uvp.sim.api.RecordType] 作为 UI 友好公开 API.
+ * 这里保留 typealias 兜底, shared 内部 import com.uvp.sim.recording.RecordType
+ * 仍可解析, 无需触发大面积修改.
  */
-@Serializable
-enum class RecordType(val gb28181Token: String) {
-    Time("time"),
-    Alarm("alarm"),
-    Manual_("manual")
-}
+typealias RecordType = com.uvp.sim.api.RecordType
 
 /**
  * 一段录像的完整元数据,落在 index.json,也喂给 RecordInfo Notify。

@@ -5,20 +5,14 @@ import kotlinx.serialization.Serializable
 /**
  * 用户网络偏好 — 决定 SIP/RTP socket 走哪张网卡。
  *
+ * PR-A T1.3: 定义已搬到 [com.uvp.sim.api.NetworkPreference] 作为 UI 友好公开 API.
+ * 这里保留 typealias 兜底, shared 内部代码 import com.uvp.sim.config.NetworkPreference
+ * 仍可解析, 无需触发大面积修改.
+ *
  * Android 上由 `NetworkController` 通过 `ConnectivityManager.bindProcessToNetwork`
  * 进程级绑定生效;iOS 上不支持(no-op,实际值始终是 AUTO 的行为)。
  */
-@Serializable
-enum class NetworkPreference {
-    /** 不绑定,系统路由表决定 — 等价于历史行为。 */
-    AUTO,
-
-    /** 强制走 Wi-Fi 网卡;无 Wi-Fi 时 UI 报"不可用",不静默回落。 */
-    WIFI,
-
-    /** 强制走蜂窝网卡;无 SIM / 飞行模式时 UI 报"不可用",不静默回落。 */
-    CELLULAR,
-}
+typealias NetworkPreference = com.uvp.sim.api.NetworkPreference
 
 /**
  * 网络选择配置 — 跟 [DeviceConfig] / [ServerConfig] / [OsdConfig] 并列,
