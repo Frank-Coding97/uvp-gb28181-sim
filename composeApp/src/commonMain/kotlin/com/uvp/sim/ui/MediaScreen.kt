@@ -47,6 +47,8 @@ import com.uvp.sim.config.AudioCodec
 import com.uvp.sim.config.VideoCodec
 import com.uvp.sim.config.VideoQualityPreset
 import com.uvp.sim.config.VideoResolution
+import com.uvp.sim.ui.media.LockedHint
+import com.uvp.sim.ui.media.SummaryCard
 import com.uvp.sim.ui.model.SipStateDto
 
 /**
@@ -165,90 +167,6 @@ fun MediaScreen(state: AppUiState, actions: AppActions) {
                 letterSpacing = 2.sp
             )
         }
-    }
-}
-
-// ============= Summary =============
-
-@Composable
-private fun SummaryCard(
-    preset: VideoQualityPreset?,
-    resolution: VideoResolution,
-    frameRate: Int,
-    bitrateKbps: Int,
-    videoCodec: VideoCodec,
-    audioCodec: AudioCodec,
-    audioSampleRate: Int
-) {
-    val gradient = Brush.linearGradient(
-        colors = listOf(
-            UvpColor.Primary.copy(alpha = 0.10f),
-            UvpColor.Primary.copy(alpha = 0.04f)
-        ),
-        start = Offset(0f, 0f),
-        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY)
-    )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(gradient, RoundedCornerShape(10.dp))
-            .border(
-                1.5.dp,
-                UvpColor.Primary.copy(alpha = 0.5f),
-                RoundedCornerShape(10.dp)
-            )
-            .padding(horizontal = 14.dp, vertical = 14.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(UvpColor.Primary)
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    preset?.label ?: "自定义",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            Text("当前画质", fontSize = 12.sp, color = UvpColor.TextSecondary,
-                fontWeight = FontWeight.Medium)
-        }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "${resolution.label} · ${frameRate}fps · ${bitrateKbps}kbps",
-            fontSize = 15.sp, color = UvpColor.Text,
-            fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold
-        )
-        Spacer(Modifier.height(4.dp))
-        val audioRateLabel = when (audioCodec) {
-            AudioCodec.G711A, AudioCodec.G711U -> "8000Hz"
-            AudioCodec.AAC -> "${audioSampleRate}Hz"
-        }
-        Text(
-            "视频 ${videoCodec.label} · 音频 ${audioCodec.label} · $audioRateLabel",
-            fontSize = 11.5.sp, color = UvpColor.TextSecondary
-        )
-    }
-}
-
-// ============= Locked hint =============
-
-@Composable
-private fun LockedHint() {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(UvpColor.WarningBg, RoundedCornerShape(6.dp))
-            .border(1.dp, UvpColor.WarningBorder, RoundedCornerShape(6.dp))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text("已注册时不可修改音视频参数,注销后再调整",
-            fontSize = 12.sp, color = UvpColor.Warning)
     }
 }
 
