@@ -55,7 +55,7 @@ import kotlinx.coroutines.launch
  * 公开 API 签名保持(避让轨 3 PR-B AppActions 拆切口)。
  */
 class AppEngine(
-    private val resources: AndroidResources,
+    private val resources: PlatformResources,
     initialConfig: SimConfig,
     parentScope: CoroutineScope,
 ) {

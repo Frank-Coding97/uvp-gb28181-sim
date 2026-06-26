@@ -3,7 +3,7 @@ package com.uvp.sim
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.uvp.sim.app.AndroidResourcesAndroid
+import com.uvp.sim.app.PlatformResourcesAndroid
 import com.uvp.sim.app.AppEngine
 import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
@@ -48,7 +48,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     private var audio: AudioCapture? = null
     private var recordingService: RecordingService? = null
 
-    private val resources: AndroidResourcesAndroid = AndroidResourcesAndroid(
+    private val resources: PlatformResourcesAndroid = PlatformResourcesAndroid(
         context = application,
         cameraSupplier = { camera },
         audioSupplier = { audio },

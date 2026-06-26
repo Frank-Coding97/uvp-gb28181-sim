@@ -16,7 +16,7 @@ import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
 
 /**
- * iOS 占位资源(PR6 T6.2)。
+ * iOS 占位资源(PR6 T6.2;Wave 3 P3-4 重命名 AndroidResourcesIos → PlatformResourcesIos)。
  *
  * 全部字段 null/no-op,M1.1 接入 iOS 实现:
  *   - cameraCapture / audioCapture:CameraCapture 已有 iOS expect/actual,但 PR6 仅占位
@@ -26,7 +26,7 @@ import kotlinx.coroutines.CoroutineScope
  *
  * 当前 PR 目标只是让 commonMain 能编译过 iosArm64 / iosX64,iOS 实际跑 PR6 不在范围。
  */
-class AndroidResourcesIos : AndroidResources {
+class PlatformResourcesIos : PlatformResources {
     override val cameraCapture: CameraCapture? = null
     override val audioCapture: AudioCapture? = null
     override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null

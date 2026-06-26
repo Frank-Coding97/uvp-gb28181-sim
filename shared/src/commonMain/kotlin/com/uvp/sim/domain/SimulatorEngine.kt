@@ -36,7 +36,7 @@ class SimulatorEngine internal constructor(
     private val config: SimConfig,
     private val transport: SipTransport,
     scope: CoroutineScope,
-    @Suppress("unused") private val resources: com.uvp.sim.app.AndroidResources,
+    @Suppress("unused") private val resources: com.uvp.sim.app.PlatformResources,
     private val coordinators: EngineCoordinators,
     private val holders: EngineHolders,
 ) {

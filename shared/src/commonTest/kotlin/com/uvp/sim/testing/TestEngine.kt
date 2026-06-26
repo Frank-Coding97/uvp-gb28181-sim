@@ -1,6 +1,6 @@
 package com.uvp.sim.testing
 
-import com.uvp.sim.app.AndroidResources
+import com.uvp.sim.app.PlatformResources
 import com.uvp.sim.app.ConfigStore
 import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.CameraCapture
@@ -44,7 +44,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
  *
  * 保留 7 个测试常用命名参数(localIpProvider / rtpReceiverFactory / recordingService /
  * playbackBuilder / audioSinkFactory / cameraCapture / audioCapture / rtpSenderFactory),
- * 默认值跟生产 AndroidResources 一致(全 null / Noop)。
+ * 默认值跟生产 PlatformResources 一致(全 null / Noop)。
  *
  * 跟生产 AppEngine.buildCoordinators 完全同款装配链,只是 resources 用 TestResources 占位。
  */
@@ -164,7 +164,7 @@ internal class TestResources(
     override val httpEngineFactory: (() -> HttpClientEngine)? = null,
     override val playbackBuilderFactory: ((CoroutineScope, com.uvp.sim.media.AudioCodec, (String, Int, RtpMode) -> RtpSender) -> PlaybackBuilder)? = null,
     override val configStore: ConfigStore = NoopConfigStore,
-) : AndroidResources
+) : PlatformResources
 
 internal object NoopConfigStore : ConfigStore {
     override suspend fun loadOnce(fallback: SimConfig): SimConfig = fallback
