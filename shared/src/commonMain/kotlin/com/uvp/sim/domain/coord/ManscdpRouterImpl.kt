@@ -75,10 +75,9 @@ internal class ManscdpRouterImpl(
     private val catalogTree: MutableStateFlow<List<CatalogNode>>,
     private val alarmHistoryStore: AlarmHistoryStore,
     private val mutableDeviceControlState: MutableStateFlow<DeviceControlState>,
-    // DeviceControlDispatcher 内部装配(followup A);3 个 callback 注入由 Engine 提供
+    // DeviceControlDispatcher 内部装配(followup A);2 个 callback 注入由 Engine 提供
     private val rebootCallback: suspend () -> Unit,
     private val requestKeyFrameCallback: () -> Unit,
-    private val startUpgradeCallback: (sessionId: String, firmware: String, fileUrl: String) -> Unit,
     private val broadcastInvoker: BroadcastInvoker,
     private val recordingService: RecordingService,
     private val mockGps: MockGpsSource,
@@ -137,7 +136,7 @@ internal class ManscdpRouterImpl(
      *  - snapshot:本类 [reportSnapshot]
      *  - requestKeyFrame:[requestKeyFrameCallback](Engine 透传 cameraCapture)
      *  - triggerSnapshotConfig:本类 [snapshotPipeline]
-     *  - startUpgrade:[startUpgradeCallback](Engine 启动 DeviceUpgrade 假进度,E 动作再迁入本类)
+     *  - startUpgrade:本类 [runUpgradeProgressFlow](followup E,5s 内 4 条 DeviceUpgradeResult NOTIFY 0/30/60/100)
      */
     private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
         DeviceControlDispatcher(
@@ -171,7 +170,11 @@ internal class ManscdpRouterImpl(
                     pipeline.start(cfg)
                 }
                 override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
-                    startUpgradeCallback(sessionId, firmware, fileUrl)
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Lifecycle,
+                        "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
+                    )
+                    scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
                 }
             },
             scope = scope
@@ -1487,6 +1490,74 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.MessageSent(msg))
         }.onFailure {
             simEventEmit(SimEvent.TransportError("send Broadcast Response: ${it.message}"))
+        }
+    }
+
+    /**
+     * GB-2022 §9.13 设备升级假进度 — 5s 内每秒推一次 DeviceUpgradeResult NOTIFY (0/30/60/100).
+     * 完成时推 result=1 + percent=100,同步写 mutableDeviceControlState.upgradeProgress.
+     * (followup E 从 Engine 迁入)
+     */
+    private suspend fun runUpgradeProgressFlow(sessionId: String, firmware: String) {
+        try {
+            val steps = listOf(0, 30, 60, 100)
+            for ((i, percent) in steps.withIndex()) {
+                mutableDeviceControlState.update {
+                    it.copy(
+                        upgradeProgress = UpgradeProgress(
+                            sessionId = sessionId,
+                            firmware = firmware,
+                            percent = percent,
+                            result = if (percent < 100) UpgradeResult.InProgress else UpgradeResult.Success,
+                        )
+                    )
+                }
+                sendDeviceUpgradeResultNotify(
+                    sessionId = sessionId, firmware = firmware, percent = percent,
+                    result = if (percent < 100)
+                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_IN_PROGRESS
+                    else
+                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_SUCCESS,
+                )
+                if (i < steps.lastIndex) delay(1_500L)
+            }
+            delay(5_000L)
+            mutableDeviceControlState.update { it.copy(upgradeProgress = null) }
+        } catch (e: Throwable) {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Lifecycle, "DeviceUpgrade 假进度异常: ${e.message}")
+        }
+    }
+
+    private suspend fun sendDeviceUpgradeResultNotify(
+        sessionId: String, firmware: String, percent: Int, result: Int,
+    ) {
+        try {
+            val cseqNow = cseqInc()
+            val branch = SipBuilders.randomBranch()
+            val callIdNow = SipBuilders.randomCallId(localIp)
+            val fromTagNow = SipBuilders.randomTag()
+            val msg = com.uvp.sim.sip.DeviceUpgradeResultNotify.build(
+                config = config,
+                cseq = cseqNow,
+                callId = callIdNow,
+                branch = branch,
+                fromTag = fromTagNow,
+                localIp = localIp,
+                localPort = localPortProvider(),
+                sn = (cseqNow and 0xFFFF),
+                sessionId = sessionId,
+                firmware = firmware,
+                result = result,
+                percent = percent,
+            )
+            transport.send(msg)
+            simEventEmit(SimEvent.MessageSent(msg))
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "DeviceUpgradeResult NOTIFY → 进度 $percent% result=$result session=$sessionId"
+            )
+        } catch (e: Throwable) {
+            simEventEmit(SimEvent.TransportError("send DeviceUpgradeResult NOTIFY: ${e.message}"))
         }
     }
 }

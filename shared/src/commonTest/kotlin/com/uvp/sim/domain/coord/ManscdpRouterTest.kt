@@ -79,7 +79,6 @@ class ManscdpRouterTest {
             mutableDeviceControlState = deviceControlState,
             rebootCallback = {},
             requestKeyFrameCallback = {},
-            startUpgradeCallback = { _, _, _ -> },
             broadcastInvoker = broadcastInvoker,
             recordingService = NoopRecordingService,
             mockGps = MockGpsSource(cfg.mockPosition),

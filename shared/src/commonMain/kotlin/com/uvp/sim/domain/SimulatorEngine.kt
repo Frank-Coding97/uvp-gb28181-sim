@@ -222,7 +222,6 @@ class SimulatorEngine(
         mutableDeviceControlState = _deviceControlState,
         rebootCallback = ::rebootForDeviceControl,
         requestKeyFrameCallback = { cameraCapture?.requestKeyFrame() },
-        startUpgradeCallback = ::startUpgradeForDeviceControl,
         broadcastInvoker = broadcast,
         recordingService = recordingService,
         mockGps = mockGps,
@@ -492,83 +491,6 @@ class SimulatorEngine(
 
     // handleInfo / sendSimpleResponse / handleAck / handleCancel 全部迁到 InviteCoordinator(PR4 T4.3)
 
-    /** 把已构造的 Broadcast Response MANSCDP body 包成 MESSAGE 发给平台(第二条,200 OK 之外)。 */
-    /**
-     * GB-2022 §9.13 设备升级假进度 — 5s 内每秒推一次 DeviceUpgradeResult NOTIFY (0/30/60/100).
-     * 完成时推 result=1 + percent=100,同步写 _deviceControlState.upgradeProgress.
-     */
-    private suspend fun runUpgradeProgressFlow(sessionId: String, firmware: String) {
-        try {
-            val steps = listOf(0, 30, 60, 100)
-            for ((i, percent) in steps.withIndex()) {
-                _deviceControlState.update {
-                    it.copy(
-                        upgradeProgress = UpgradeProgress(
-                            sessionId = sessionId,
-                            firmware = firmware,
-                            percent = percent,
-                            result = if (percent < 100) UpgradeResult.InProgress else UpgradeResult.Success,
-                        )
-                    )
-                }
-                sendDeviceUpgradeResultNotify(
-                    sessionId = sessionId,
-                    firmware = firmware,
-                    percent = percent,
-                    result = if (percent < 100)
-                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_IN_PROGRESS
-                    else
-                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_SUCCESS,
-                )
-                if (i < steps.lastIndex) delay(1_500L)  // 步间隔
-            }
-            // 完成后保留 5s 让 UI 显示成功状态,然后清零
-            delay(5_000L)
-            _deviceControlState.update { it.copy(upgradeProgress = null) }
-        } catch (e: Throwable) {
-            SystemLogger.emit(
-                LogLevel.Warning, LogTag.Lifecycle,
-                "DeviceUpgrade 假进度异常: ${e.message}"
-            )
-        }
-    }
-
-    private suspend fun sendDeviceUpgradeResultNotify(
-        sessionId: String,
-        firmware: String,
-        percent: Int,
-        result: Int,
-    ) {
-        try {
-            cseq += 1
-            val branch = com.uvp.sim.sip.SipBuilders.randomBranch()
-            val callIdNow = com.uvp.sim.sip.SipBuilders.randomCallId(localIp)
-            val fromTagNow = com.uvp.sim.sip.SipBuilders.randomTag()
-            val msg = com.uvp.sim.sip.DeviceUpgradeResultNotify.build(
-                config = config,
-                cseq = cseq,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                sn = (cseq and 0xFFFF),
-                sessionId = sessionId,
-                firmware = firmware,
-                result = result,
-                percent = percent,
-            )
-            transport.send(msg)
-            _events.emit(SimEvent.MessageSent(msg))
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Network,
-                "DeviceUpgradeResult NOTIFY → 进度 $percent% result=$result session=$sessionId"
-            )
-        } catch (e: Throwable) {
-            _events.emit(SimEvent.TransportError("send DeviceUpgradeResult NOTIFY: ${e.message}"))
-        }
-    }
-
     /** DeviceControl TeleBoot 回调(followup A 注入 Manscdp)。 */
     private suspend fun rebootForDeviceControl() {
         SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "TeleBoot → 重新注册")
@@ -577,14 +499,5 @@ class SimulatorEngine(
         } catch (_: Throwable) { /* 平台可能已不可达 */ }
         delay(1_000L)
         register()
-    }
-
-    /** DeviceControl DeviceUpgrade 回调(followup A 注入 Manscdp;E 动作再迁内部)。 */
-    private fun startUpgradeForDeviceControl(sessionId: String, firmware: String, fileUrl: String) {
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Lifecycle,
-            "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
-        )
-        scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
     }
 }
