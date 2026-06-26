@@ -13,6 +13,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 /**
  * Engine 装配契约(P1.5):AppEngine 装配后注入 Engine,Engine 不再 own。
  * 解耦「装配」与「编排」职责,Engine 退化为「5 Coord 引用 + 路由 + bridge」。
+ *
+ * holders 实例 SimConfig 变更时通过 AppEngine.rehydrateHolders 就地更新内部状态
+ * (不替换实例引用 — 已有 Coord 持构造期 snapshot)。新增 Coord 在 reconnect 路径自然
+ * 拿到 fresh 状态。
  */
 internal class EngineHolders(
     val state: MutableStateFlow<SipState>,

@@ -260,9 +260,16 @@ class AppEngine(
 
     /**
      * 替换 SimConfig + 持久化。已连接时自动 disconnect → connect cycle。
+     *
+     * Bug 修复(PR-USER-BUG-1):rehydrate holders 让 catalogTree / mockGps /
+     * currentChannelName / clockOffset / subscriptionRegistry 这些"派生自 SimConfig
+     * 或承载运行期状态"的 holder 立刻反映新配置 — 否则即便 SimConfig 切了,
+     * 单例 holders 还沿用旧值,用户改 deviceId / videoChannelId 后会看到旧 catalog tree、
+     * 旧通道名等假象。
      */
     suspend fun updateConfig(new: SimConfig) {
         _config.value = new
+        rehydrateHolders(new)
         runCatching { resources.configStore.save(new) }
         if (engine != null) {
             disconnect()
@@ -299,9 +306,35 @@ class AppEngine(
         engine?.updatePoseFromRender(pan, tilt, zoom)
     }
 
-    /** ViewModel 用来更新 SimConfig 的 in-memory 视图(外部 save 后调,避免重复持久化)。 */
+    /** ViewModel 用来更新 SimConfig 的 in-memory 视图(外部 save 后调,避免重复持久化)。
+     *
+     * Bug 修复(PR-USER-BUG-1):同步走 [rehydrateHolders] 重派生 catalogTree / mockGps /
+     * currentChannelName / clockOffset / subscriptionRegistry 这些"派生自 SimConfig 或
+     * 跟随旧配置生命周期的"holder。否则单例 holder 沿用旧值,用户改了 deviceId、
+     * videoChannelName、mockPosition 等会看到旧值假象。
+     */
     fun setConfig(new: SimConfig) {
         _config.value = new
+        rehydrateHolders(new)
+    }
+
+    /**
+     * 把 holder 内部状态从 [new] SimConfig 重新派生 — 不替换 holder 实例引用,
+     * 已绑给 Coord 的 holder 通过内部 setter / reset 同步刷新。
+     *
+     * - catalogTree:重算 effectiveTree(new) 写入
+     * - mockGps:reset 起点 = new.mockPosition
+     * - currentChannelName:回写 new.device.videoChannelName(无 engine 状态时直接写;
+     *   有 engine 时下一轮 connect 由 InviteCoordinator 接管)
+     * - clockOffset:清空(旧 Date 头基准跟旧 server 绑定,换 server 后必须重新校时)
+     * - subscriptionRegistry:cancelAll(旧订阅 callId 由旧 server / deviceId 路由,无效)
+     */
+    private fun rehydrateHolders(new: SimConfig) {
+        holders.catalogTree.value = CatalogTreeStore.effectiveTree(new)
+        holders.mockGps.reset(new.mockPosition)
+        _currentChannelName.value = new.device.videoChannelName
+        holders.clockOffset.value = ClockOffset.Empty
+        holders.subscriptionRegistry.cancelAll()
     }
 
     /**
@@ -309,4 +342,10 @@ class AppEngine(
      * 生产代码不应依赖。
      */
     internal fun engineForTest(): SimulatorEngine? = engine
+
+    /** 测试可见 — mockGps 实例(单测验证 rehydrate 后起点)。 */
+    internal fun mockGpsForTest(): MockGpsSource = holders.mockGps
+
+    /** 测试可见 — subscriptionRegistry 实例(单测验证 rehydrate 触发 cancelAll)。 */
+    internal fun subscriptionRegistryForTest(): SubscriptionRegistry = holders.subscriptionRegistry
 }

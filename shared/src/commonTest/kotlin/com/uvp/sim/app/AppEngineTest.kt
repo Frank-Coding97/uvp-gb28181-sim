@@ -2,8 +2,10 @@ package com.uvp.sim.app
 
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
+import com.uvp.sim.config.GeoPoint
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -11,6 +13,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -100,5 +103,88 @@ class AppEngineTest {
         runCurrent()
         // 无 engine 时所有 public API 是 no-op,不抛错
         assertTrue(app.state.value == SipState.Disconnected)
+    }
+
+    /**
+     * P3-5(PR-USER-BUG-1):setConfig 切换后,从 SimConfig 派生的 holders 必须重新派生,
+     * 不能沿用旧值。覆盖:catalogTree / mockGps / currentChannelName / clockOffset /
+     * subscriptionRegistry 五个 holder。
+     */
+    @Test
+    fun setConfig_rehydrates_holders() = runTest {
+        val app = newApp(this)
+        runCurrent()
+
+        // ---- 初始基线 ----
+        val initialChannelName = app.currentChannelName.value
+        val initialCatalogIds = app.catalogTree.value.map { it.id }.toSet()
+        assertTrue(initialCatalogIds.isNotEmpty(), "catalogTree 初始非空(默认 3-4 节点)")
+
+        // 模拟运行期 holder 落了脏数据:订阅注册 + clockOffset 校了时
+        val registry = app.subscriptionRegistryForTest()
+        registry.activate(
+            com.uvp.sim.domain.SubscriptionDialog(
+                kind = "MobilePosition",
+                subscriberUri = "sip:platform@10.0.0.1:5060",
+                callId = "stale-call@host",
+                fromTag = "ft", toTag = "tt",
+                intervalSeconds = 60, expiresSeconds = 3600, remainingSeconds = 3600
+            )
+        ) {}
+        runCurrent()
+        assertTrue(registry.subscriptions.value["MobilePosition"]?.active == true, "脏数据写进 registry 成功")
+
+        // ---- 切新配置 ----
+        val newConfig = config().copy(
+            device = config().device.copy(
+                deviceId = "99020000001310000099",
+                videoChannelId = "99020000001320000099",
+                videoChannelName = "新装通道名"
+            ),
+            mockPosition = GeoPoint(longitude = 121.473, latitude = 31.230) // 上海
+        )
+        app.setConfig(newConfig)
+        runCurrent()
+
+        // ---- 验证 holder 全部重派生 ----
+        // 1. currentChannelName 跟 new device 一致
+        assertEquals(
+            "新装通道名", app.currentChannelName.value,
+            "currentChannelName 必须跟随新 device.videoChannelName"
+        )
+        assertNotEquals(initialChannelName, app.currentChannelName.value)
+
+        // 2. catalogTree 已重新生成(包含新 deviceId 节点)
+        val newCatalogIds = app.catalogTree.value.map { it.id }.toSet()
+        assertTrue(
+            "99020000001310000099" in newCatalogIds,
+            "catalogTree 必须包含新 deviceId 节点,实际=$newCatalogIds"
+        )
+        assertNotEquals(initialCatalogIds, newCatalogIds)
+
+        // 3. mockGps 起点已 reset(下一帧 .next() 落到新起点附近)
+        val fix = app.mockGpsForTest().next()
+        // 新起点 (121.473, 31.230)。next() 每帧最大走 0.0001 度,远离北京默认 (116.404, 39.915)
+        assertTrue(
+            fix.point.longitude > 120.0 && fix.point.longitude < 123.0,
+            "mockGps 必须从新起点开始,实际经度=${fix.point.longitude}"
+        )
+        assertTrue(
+            fix.point.latitude > 30.0 && fix.point.latitude < 32.0,
+            "mockGps 必须从新起点开始,实际纬度=${fix.point.latitude}"
+        )
+
+        // 4. clockOffset 已清空(rehydrate 重置为 Empty)
+        assertEquals(
+            ClockOffset.Empty.platformBaselineMs, app.clockOffset.value.platformBaselineMs,
+            "clockOffset.platformBaselineMs 必须清空"
+        )
+        assertEquals(false, app.clockOffset.value.isSynced, "clockOffset.isSynced 必须 false")
+
+        // 5. subscriptionRegistry 已 cancelAll(旧 stale-call 已清掉)
+        assertTrue(
+            registry.subscriptions.value.isEmpty(),
+            "subscriptionRegistry 必须 cancelAll,实际=${registry.subscriptions.value}"
+        )
     }
 }
