@@ -360,7 +360,7 @@ internal class GlbSceneState {
             hideEntity(viewer, entity)
         }
 
-        // 节流回写 pose 到 SimulatorEngine.deviceControlState(每 ~166ms 一次).
+        // 节流回写 pose 到 AppEngine.deviceControlState(每 ~166ms 一次).
         // 这样平台 SetPreset 取 state.panAngle/tiltAngle/zoomLevel 时能拿到真实姿态.
         if (frameTimeNanos - lastPoseSinkNanos > 166_000_000L) {
             poseSink?.invoke(panAngle, tiltAngle, zoomLevel)

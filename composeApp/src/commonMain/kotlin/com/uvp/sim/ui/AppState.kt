@@ -19,7 +19,7 @@ import com.uvp.sim.sip.SipState
  * Read-only view of the simulator state for the UI layer.
  *
  * The platform-specific shell (Android MainActivity, iOS UIViewController)
- * collects [SimulatorEngine.state] / [SimulatorEngine.events] / its config
+ * collects [AppEngine.state] / [AppEngine.events] / its config
  * and bundles them into this snapshot for Compose to render.
  */
 data class AppUiState(
@@ -29,12 +29,12 @@ data class AppUiState(
     val systemEvents: List<SystemLog> = emptyList(),
     val sessionMarker: SessionMarker? = null,
     /**
-     * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 SimulatorEngine 推。
+     * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 AppEngine 推。
      * 主屏「位置订阅」「目录订阅」状态卡读这个 map 做活/灰判定。
      */
     val subscriptions: Map<SubscriptionKind, SubscriptionStatus> = emptyMap(),
     /**
-     * M2 设备控制运行时状态(SimulatorEngine.deviceControlState 快照).
+     * M2 设备控制运行时状态(AppEngine.deviceControlState 快照).
      * 由 SimulateScreen 的 PtzHudPanel + Camera3DView 订阅消费.
      */
     val deviceControl: DeviceControlState = DeviceControlState(),
@@ -48,7 +48,7 @@ data class AppUiState(
      */
     val playback: PlaybackStatus = PlaybackStatus(),
     /**
-     * 当前生效的目录树。SimulatorEngine.catalogTree 投影,
+     * 当前生效的目录树。AppEngine.catalogTree 投影,
      * 「能力」Tab 的目录管理界面读这个 list 做编辑入口的初始 draft。
      */
     val catalogTree: List<CatalogNode> = emptyList(),
@@ -82,7 +82,7 @@ data class AppUiState(
      */
     val networkRuntimeState: NetworkState = NetworkState.Auto,
     /**
-     * M5 batch2 §4.15 — SIP Date 校时偏移快照(SimulatorEngine.clockOffset 投影)。
+     * M5 batch2 §4.15 — SIP Date 校时偏移快照(AppEngine.clockOffset 投影)。
      * 能力中心「设备校时」tile + ClockSyncScreen 读这个,
      * 显示平台基准时间 / 偏移 / 原始 Date 头。
      */
@@ -247,20 +247,20 @@ interface AppActions {
     /**
      * 网络偏好变更(设置 → 网络子页)。
      * Android: SipViewModel 持久化 config + 调 NetworkController.apply(pref)
-     *          → state flow 自动驱动 SimulatorEngine.handleNetworkChange
+     *          → state flow 自动驱动 AppEngine.handleNetworkChange
      * iOS / JVM: no-op(子页入口已灰显拦截,这里兜底)
      */
     fun onNetworkPreferenceChange(preference: NetworkPreference) {}
 
     /**
      * UI 层消费完 [com.uvp.sim.domain.DeviceEffect] 后调用,
-     * 把 SimulatorEngine 的 pendingEffect 置 null 防止重复触发。
+     * 把 AppEngine 的 pendingEffect 置 null 防止重复触发。
      * SimulateScreen 在 LaunchedEffect(pendingEffect) 处理完动画/snackbar 后兜底调用。
      */
     fun onConsumeDeviceEffect() {}
 
     /**
-     * 渲染层(GlbSceneState)节流回写当前 PTZ 姿态到 SimulatorEngine.deviceControlState。
+     * 渲染层(GlbSceneState)节流回写当前 PTZ 姿态到 AppEngine.deviceControlState。
      * 由 Filament 渲染线程每 ~10 帧调用一次(166ms),
      * 让 SetPreset 入库的是真实当前姿态而不是 0/0/1。
      */
