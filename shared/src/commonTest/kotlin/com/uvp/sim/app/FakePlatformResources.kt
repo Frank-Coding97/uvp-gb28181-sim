@@ -15,8 +15,8 @@ import com.uvp.sim.snapshot.SnapshotCapture
 import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
 
-/** 单测用 fake AndroidResources(全空)。 */
-internal class FakeAndroidResources(
+/** 单测用 fake PlatformResources(全空)。 */
+internal class FakePlatformResources(
     override val cameraCapture: CameraCapture? = null,
     override val audioCapture: AudioCapture? = null,
     override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null,
@@ -29,7 +29,7 @@ internal class FakeAndroidResources(
     override val snapshotCache: JpegLocalCache? = null,
     override val httpEngineFactory: (() -> HttpClientEngine)? = null,
     override val configStore: ConfigStore = FakeConfigStore(),
-) : AndroidResources
+) : PlatformResources
 
 internal class FakeConfigStore(
     private var stored: SimConfig? = null,

@@ -26,7 +26,7 @@ import org.robolectric.annotation.Config
  * PR-TEST-1 T2 — SipViewModel lifecycle smoke 测试。
  *
  * 验证目标:
- *   1. SipViewModel 可在 Robolectric 上下文中构造 — AppEngine + AndroidResourcesAndroid +
+ *   1. SipViewModel 可在 Robolectric 上下文中构造 — AppEngine + PlatformResourcesAndroid +
  *      NetworkController.attach 链路在 JVM 起得来,不依赖真机服务
  *   2. 初始 state 是 Disconnected,subscriptions 为空 map,events 为空 list
  *   3. connect() 在空 server ip 配置下走 catch-then-emit-TransportError 路径,不抛异常
