@@ -35,6 +35,12 @@ import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.CameraPreviewBinder
+import com.uvp.sim.ui.actions.CapabilityActions
+import com.uvp.sim.ui.actions.HomeActions
+import com.uvp.sim.ui.actions.NetworkActions
+import com.uvp.sim.ui.actions.RecordingActions
+import com.uvp.sim.ui.actions.logged
+import com.uvp.sim.ui.actions.loggedR
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -180,126 +186,85 @@ class MainActivity : ComponentActivity() {
                 networkRuntimeState = networkState.toDto(),
                 clockOffset = clockOffset.toDto(),
             )
-            val actions = object : AppActions {
-                override fun onConnect() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击注册")
-                    viewModel.connect()
-                }
-                override fun onCancelConnect() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击取消注册")
-                    viewModel.cancelConnect()
-                }
-                override fun onDisconnect() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击注销")
-                    viewModel.disconnect()
-                }
-                override fun onSnapshot() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击抓拍")
-                    viewModel.reportSnapshot()
-                }
-                override fun onConfigSave(updated: com.uvp.sim.config.SimConfig) {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.User,
-                        "配置已更新 device=${updated.device.deviceId} server=${updated.server.ip}:${updated.server.port}"
-                    )
-                    viewModel.updateConfig(updated)
-                }
-                override fun onRecordingStart() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击开始录像")
-                    viewModel.startRecording()
-                }
-                override fun onRecordingStop() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户点击停止录像")
-                    viewModel.stopRecording()
-                }
-                override fun onRecordingDelete(id: String) {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户删除录像 $id")
-                    viewModel.deleteRecording(id)
-                }
-                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>): String? {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.User,
-                        "保存目录树 节点数=${tree.size}"
-                    )
-                    val result = viewModel.saveCatalogTree(tree)
-                    return if (result is com.uvp.sim.domain.ValidationResult.Invalid) {
-                        result.message
-                    } else null
-                }
-                override fun onToggleChannelStatus(channelId: String, online: Boolean) {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.User,
-                        "用户切换通道状态 ${channelId} → ${if (online) "ON" else "OFF"}"
-                    )
-                    viewModel.toggleChannelStatus(channelId, online)
-                }
-                override fun onAlarmFire(payload: com.uvp.sim.gb28181.AlarmPayload) {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.User,
-                        "用户发送报警 type=${payload.type.label} priority=${payload.priority.label}"
-                    )
-                    viewModel.fireAlarm(payload)
-                }
-                override fun onAlarmReset() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户本地复位报警")
-                    viewModel.resetAlarm()
-                }
-                override fun onAlarmFireDefault() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "主页一键报警(模式驱动)")
-                    viewModel.fireAlarmDefault()
-                }
-                override fun onSetAlarmFireMode(mode: com.uvp.sim.ui.AlarmFireMode) {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "切换报警模式 → $mode")
-                    viewModel.setAlarmFireMode(mode)
-                }
-                override fun onSaveFixedAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "保存固定报警单 type=${payload.type.label}")
-                    viewModel.saveFixedAlarm(payload)
-                }
-                override fun onSimulateMediaStatusAbnormal(notifyType: Int) {
-                    val label = when (notifyType) {
-                        122 -> "录像异常"
-                        123 -> "存储满"
-                        else -> "未知($notifyType)"
-                    }
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.User,
-                        "高级模拟 → MediaStatus NotifyType=$notifyType ($label)"
-                    )
-                    viewModel.simulateMediaStatusAbnormal(notifyType)
-                }
-                override fun onClearSipLogs() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户清除 SIP 日志")
-                    viewModel.clearSipEvents()
-                }
+            val homeActions = object : HomeActions {
+                override fun onConnect() = logged("用户点击注册") { viewModel.connect() }
+                override fun onCancelConnect() = logged("用户点击取消注册") { viewModel.cancelConnect() }
+                override fun onDisconnect() = logged("用户点击注销") { viewModel.disconnect() }
+                override fun onConfigSave(updated: com.uvp.sim.config.SimConfig) = logged(
+                    "配置已更新 device=${updated.device.deviceId} server=${updated.server.ip}:${updated.server.port}"
+                ) { viewModel.updateConfig(updated) }
+                override fun onClearSipLogs() = logged("用户清除 SIP 日志") { viewModel.clearSipEvents() }
                 override fun onClearSystemLogs() {
                     // emit 先入队,Clear 在后,actor 串行处理后这条 emit 会随旧 buffer 一起被清掉。
                     // 故意保留 emit 是为了让 logcat bridge 留下一条审计记录(开发者可查)。
                     SystemLogger.emit(LogLevel.Info, LogTag.User, "用户清除系统日志")
                     SystemLogger.clear()
                 }
-                override fun onBroadcastStop() {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户停止语音对讲")
-                    viewModel.stopBroadcast()
+                override fun onConsumeDeviceEffect() { viewModel.consumeDeviceEffect() }
+            }
+            val capabilityActions = object : CapabilityActions {
+                override fun onSnapshot() = logged("用户点击抓拍") { viewModel.reportSnapshot() }
+                override fun onAlarmFire(payload: com.uvp.sim.gb28181.AlarmPayload) = logged(
+                    "用户发送报警 type=${payload.type.label} priority=${payload.priority.label}"
+                ) { viewModel.fireAlarm(payload) }
+                override fun onAlarmReset() = logged("用户本地复位报警") { viewModel.resetAlarm() }
+                override fun onAlarmFireDefault() = logged("主页一键报警(模式驱动)") {
+                    viewModel.fireAlarmDefault()
                 }
-                override fun onBroadcastToggleSpeaker(on: Boolean) {
-                    SystemLogger.emit(LogLevel.Info, LogTag.User, "用户${if (on) "开启" else "静音"}对讲扬声器")
-                    viewModel.setBroadcastSpeaker(on)
+                override fun onSetAlarmFireMode(mode: com.uvp.sim.ui.AlarmFireMode) = logged(
+                    "切换报警模式 → $mode"
+                ) { viewModel.setAlarmFireMode(mode) }
+                override fun onSaveFixedAlarm(payload: com.uvp.sim.gb28181.AlarmPayload) = logged(
+                    "保存固定报警单 type=${payload.type.label}"
+                ) { viewModel.saveFixedAlarm(payload) }
+                override fun onSimulateMediaStatusAbnormal(notifyType: Int) {
+                    val label = when (notifyType) {
+                        122 -> "录像异常"
+                        123 -> "存储满"
+                        else -> "未知($notifyType)"
+                    }
+                    logged("高级模拟 → MediaStatus NotifyType=$notifyType ($label)") {
+                        viewModel.simulateMediaStatusAbnormal(notifyType)
+                    }
                 }
-                override fun onNetworkPreferenceChange(preference: com.uvp.sim.config.NetworkPreference) {
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.User,
-                        "用户切换网络偏好 → ${preference.name}"
-                    )
-                    viewModel.applyNetworkPreference(preference)
-                }
-                override fun onConsumeDeviceEffect() {
-                    viewModel.consumeDeviceEffect()
-                }
+                override fun onBroadcastStop() = logged("用户停止语音对讲") { viewModel.stopBroadcast() }
+                override fun onBroadcastToggleSpeaker(on: Boolean) = logged(
+                    "用户${if (on) "开启" else "静音"}对讲扬声器"
+                ) { viewModel.setBroadcastSpeaker(on) }
+                override fun onCatalogTreeSave(tree: List<com.uvp.sim.config.CatalogNode>): String? =
+                    loggedR("保存目录树 节点数=${tree.size}") {
+                        val result = viewModel.saveCatalogTree(tree)
+                        if (result is com.uvp.sim.domain.ValidationResult.Invalid) result.message else null
+                    }
+                override fun onToggleChannelStatus(channelId: String, online: Boolean) = logged(
+                    "用户切换通道状态 $channelId → ${if (online) "ON" else "OFF"}"
+                ) { viewModel.toggleChannelStatus(channelId, online) }
                 override fun onPoseTick(pan: Float, tilt: Float, zoom: Float) {
                     viewModel.updatePoseFromRender(pan, tilt, zoom)
                 }
             }
+            val recordingActions = object : RecordingActions {
+                override fun onRecordingStart() = logged("用户点击开始录像") { viewModel.startRecording() }
+                override fun onRecordingStop() = logged("用户点击停止录像") { viewModel.stopRecording() }
+                override fun onRecordingDelete(id: String) = logged("用户删除录像 $id") {
+                    viewModel.deleteRecording(id)
+                }
+                override fun onRecordingFilterApply(filter: com.uvp.sim.recording.RecordingFilter) {
+                    // M3 后续:用 GB28181 RecordInfo 查询 + 服务端过滤。
+                    // 当前 RecordingScreen 是本地索引筛选(纯 UI),不需要落 ViewModel。
+                }
+            }
+            val networkActions = object : NetworkActions {
+                override fun onNetworkPreferenceChange(preference: com.uvp.sim.config.NetworkPreference) =
+                    logged("用户切换网络偏好 → ${preference.name}") {
+                        viewModel.applyNetworkPreference(preference)
+                    }
+            }
+            val actions = object : AppActions,
+                HomeActions by homeActions,
+                CapabilityActions by capabilityActions,
+                RecordingActions by recordingActions,
+                NetworkActions by networkActions {}
             // Rebuild encoder/streamer whenever video profile bumps.
             LaunchedEffect(videoVersion) {
                 if (videoVersion > 0) {
