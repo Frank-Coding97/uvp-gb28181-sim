@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx5g -Dfile.encoding=UTF-8"
+  JAVA_TOOL_OPTIONS: "-Xmx5g"
+
+jobs:
+  build-test:
+    name: Build & Test (ubuntu / jdk17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Java 17 (temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle (with wrapper validation)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-35
+            build-tools;35.0.0
+
+      - name: Cache Konan (KMP iOS prebuilt)
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-kotlin-2.1.0-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-${{ runner.os }}-kotlin-2.1.0-
+            konan-${{ runner.os }}-
+
+      - name: Compile shared metadata (KMP fast-fail)
+        run: ./gradlew :shared:compileKotlinMetadata --stacktrace
+
+      - name: Run shared JVM tests
+        run: ./gradlew :shared:jvmTest --stacktrace
+
+      - name: Run androidApp Debug unit tests
+        run: ./gradlew :androidApp:testDebugUnitTest --stacktrace
+
+      - name: Build androidApp Debug APK
+        run: ./gradlew :androidApp:assembleDebug --stacktrace
+
+      - name: Upload test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**/*.xml
+            **/build/outputs/logs/**
+          retention-days: 7
+          if-no-files-found: ignore
