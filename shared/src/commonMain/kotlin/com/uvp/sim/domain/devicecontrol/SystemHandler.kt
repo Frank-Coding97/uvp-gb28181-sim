@@ -2,7 +2,7 @@ package com.uvp.sim.domain.devicecontrol
 
 import com.uvp.sim.domain.DeviceControlActions
 import com.uvp.sim.domain.DeviceControlAck
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.UpgradeProgress
@@ -36,7 +36,7 @@ interface SystemHandler {
 }
 
 internal class DefaultSystemHandler(
-    private val state: MutableStateFlow<DeviceControlState>,
+    private val state: MutableStateFlow<DeviceControlModel>,
     private val actions: DeviceControlActions,
     private val scope: CoroutineScope?,
 ) : SystemHandler {

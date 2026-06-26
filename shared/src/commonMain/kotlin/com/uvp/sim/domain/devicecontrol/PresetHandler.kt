@@ -1,6 +1,6 @@
 package com.uvp.sim.domain.devicecontrol
 
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
@@ -24,7 +24,7 @@ interface PresetHandler {
 }
 
 internal class DefaultPresetHandler(
-    private val state: MutableStateFlow<DeviceControlState>,
+    private val state: MutableStateFlow<DeviceControlModel>,
     override val maxPresetIndex: Int = 8,
 ) : PresetHandler {
 

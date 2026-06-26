@@ -65,7 +65,7 @@ data class DeviceControlAck(
  * 输出:更新 [DeviceControlState],并通过 [DeviceControlActions] 触发副作用.
  */
 class DeviceControlDispatcher(
-    private val state: MutableStateFlow<DeviceControlState>,
+    private val state: MutableStateFlow<DeviceControlModel>,
     private val config: SimConfig,
     private val actions: DeviceControlActions,
     private val scope: CoroutineScope? = null,

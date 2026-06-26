@@ -10,7 +10,9 @@ import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlActions
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DerivedDeviceControlStateFlow
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.PtzPose
 import com.uvp.sim.domain.SimEvent
@@ -79,7 +81,7 @@ internal class ManscdpRouterImpl(
     private val subscriptionRegistry: SubscriptionRegistry,
     private val catalogTree: MutableStateFlow<List<CatalogNode>>,
     private val alarmHistoryStore: AlarmHistoryStore,
-    private val mutableDeviceControlState: MutableStateFlow<DeviceControlState>,
+    private val mutableDeviceControlState: MutableStateFlow<DeviceControlModel>,
     // DeviceControlDispatcher 内部装配(followup A);2 个 callback 注入由 Engine 提供
     private val rebootCallback: suspend () -> Unit,
     private val requestKeyFrameCallback: () -> Unit,
@@ -100,7 +102,9 @@ internal class ManscdpRouterImpl(
     private val _events = MutableSharedFlow<ManscdpEvent>(extraBufferCapacity = 32)
     override val events: SharedFlow<ManscdpEvent> = _events.asSharedFlow()
 
-    override val deviceControlState: StateFlow<DeviceControlState> = mutableDeviceControlState
+    @Suppress("DEPRECATION")
+    override val deviceControlState: StateFlow<DeviceControlState> =
+        DerivedDeviceControlStateFlow(mutableDeviceControlState)
 
     private val localIp: String get() = localIpProvider()
 

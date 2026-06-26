@@ -21,7 +21,7 @@ class SimulatorEnginePresetQueryTest {
     fun `consumeEffect 清零 pendingEffect`() {
         // Arrange: 模拟 effect 已 emit
         val flow = MutableStateFlow(
-            DeviceControlState(pendingEffect = DeviceEffect.IFrameFlash)
+            DeviceControlModel(pendingEffect = DeviceEffect.IFrameFlash)
         )
         assertNotNull(flow.value.pendingEffect)
 
@@ -34,7 +34,7 @@ class SimulatorEnginePresetQueryTest {
 
     @Test
     fun `consumeEffect 多次调用幂等`() {
-        val flow = MutableStateFlow(DeviceControlState())
+        val flow = MutableStateFlow(DeviceControlModel())
         flow.update { it.copy(pendingEffect = null) }
         flow.update { it.copy(pendingEffect = null) }
         assertNull(flow.value.pendingEffect)

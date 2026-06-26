@@ -3,74 +3,136 @@ package com.uvp.sim.domain
 import com.uvp.sim.gb28181.PtzCommand
 
 /**
- * 设备控制运行时状态.
+ * Wave 3 PR-DC-DECOUPLE(2026-06-26)兼容包装层。
  *
- * 由 [DeviceControlDispatcher] 在收到平台 DeviceControl MESSAGE 后写入,
- * UI 3D 渲染层(SimulateScreen)通过 StateFlow 订阅消费.
+ * 历史:本类原是单一 25 字段 data class,业务 + 渲染字段混在一起,导致:
+ *   - UI rerender 频繁(任何字段变都触发)
+ *   - 单测要 mock rawHex / timestampMs 等纯渲染字段
  *
- * 设计:
- * - panAngle/tiltAngle/zoomLevel 是积累量,由 UI 层每帧基于 panSpeed 等积分得到,
- *   shared 层不主动驱动动画(否则需要协程 / Choreographer 跨平台抽象).
- * - panSpeed 为带方向有符号速率(负=左/下,正=右/上),零=停止.
- * - pendingEffect 是一次性事件,UI 消费后 emit 清零(setPendingEffect(null)).
+ * 现在:状态被拆成 [DeviceControlModel](业务)+ [DeviceControlRenderState](渲染派生)。
+ * 本类降级为兼容 wrapper,实现:
+ *   1. 通过 [model] 持有 single source of truth
+ *   2. [render] 字段由 [deriveRenderState] 从 model 派生(纯函数)
+ *   3. **属性委托**:暴露原 25 字段访问器 `state.panAngle / state.lastCommand / state.pendingEffect / ...`,
+ *      让 UI Mapper / 老代码不改也能编过
+ *   4. 兼容构造器接受原 25 命名参数,让既有测试 `DeviceControlState(panAngle = X)` 仍能构造
+ *
+ * 轨 ③(PR-UI-PROTOCOL-FIX)负责:
+ *   - 把 composeApp/.../ui/model/mapper/DeviceControlMapper.kt 切到读 `state.model.xxx / state.render.xxx`
+ *   - 删除本兼容 wrapper 的属性委托与命名参数构造器,只保留 `data class(model, render)` 二字段 shape
+ *
+ * **不要**在新代码中读写本类。新业务路径请直接用 [DeviceControlModel];新 UI 路径请直接用 [DeviceControlRenderState]。
  */
-data class DeviceControlState(
-    // PTZ 当前姿态(累积量,UI 层维护)
-    val panAngle: Float = 0f,
-    val tiltAngle: Float = 0f,
-    val zoomLevel: Float = 1f,
-    val irisLevel: Float = 0.5f,
-    val focusLevel: Float = 0.5f,
-
-    // PTZ 实时速率(由 PTZCmd 写入,UI 层每帧消费)
-    val panSpeed: Float = 0f,
-    val tiltSpeed: Float = 0f,
-    val zoomSpeed: Float = 0f,
-
-    // 状态灯
-    val isRecording: Boolean = false,
-    val isGuarded: Boolean = false,
-    val isAlarming: Boolean = false,
-    val isRebooting: Boolean = false,
-
-    // DragZoom 区域(平台拉框聚焦)
-    val dragZoomRect: DragZoomRect? = null,
-
-    // 预置位 (HomePosition)
-    val presets: Map<Int, PtzPose> = emptyMap(),
-    val currentPresetIndex: Int? = null,
-
-    // GB-2022 看守位 — 设备唯一一个"无人时回到的默认位置",跟预置位是不同概念
-    val homePosition: PtzPose? = null,
-    val homePositionEnabled: Boolean = true,
-
-    // GB-2022 §9.5.3 巡航轨迹 — 一组预置位序列 + 停留时长 + 速度
-    // key = 轨迹号 1-N,value = 该轨迹的有序预置位编号列表
-    val cruiseTracks: Map<Int, List<Int>> = emptyMap(),
-    /** 当前正在执行的巡航轨迹号(null 表示未巡航) */
-    val activeCruiseTrack: Int? = null,
-
-    // 辅助控制状态(GB-2022 §F.3 byte3=0x89/0x8A Aux On/Off)
-    // key = AuxFunction.index(1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷)
-    // value = true=ON / false=OFF
-    val auxStates: Map<Int, Boolean> = emptyMap(),
-    /** 辅助开关最近一次状态变更的时间戳(ms),供 UI 显示运行时长. */
-    val auxTimestamps: Map<Int, Long> = emptyMap(),
-
-    // 最近一次平台控制命令(HUD 显示用)
-    val lastCommand: LastDeviceCommand? = null,
-
-    // GB-2022 §9.3.4 PTZPreciseCtrl 收到的最近一次精确控制指令,
-    // 供 §9.5.3 PTZ 精准状态查询(A.2.4.13)回包用。null 表示从未收过。
-    val lastPreciseCtrl: PtzPose? = null,
-
-    // GB-2022 §9.13 设备升级进度(in-progress/success/failure + percent),
-    // null 表示当前没有升级任务。
-    val upgradeProgress: UpgradeProgress? = null,
-
-    // 一次性效果触发器,UI 消费后置 null
-    val pendingEffect: DeviceEffect? = null,
+@Deprecated(
+    message = "Wave 3 拆分:业务路径用 DeviceControlModel,UI 路径用 DeviceControlRenderState。" +
+        "本兼容 wrapper 留待 PR-UI-PROTOCOL-FIX(轨 ③)删除。",
+    level = DeprecationLevel.WARNING,
 )
+class DeviceControlState(
+    /** 业务模型 — 全部 25 个原字段都在这里. */
+    val model: DeviceControlModel = DeviceControlModel(),
+) {
+    /** UI 渲染派生 — 从 model 计算得到. */
+    val render: DeviceControlRenderState = deriveRenderState(model)
+
+    // 兼容性命名参数构造器:让既有测试 `DeviceControlState(panAngle = ..., pendingEffect = ...)` 仍可构造。
+    @Suppress("LongParameterList", "DEPRECATION")
+    constructor(
+        panAngle: Float = 0f,
+        tiltAngle: Float = 0f,
+        zoomLevel: Float = 1f,
+        irisLevel: Float = 0.5f,
+        focusLevel: Float = 0.5f,
+        panSpeed: Float = 0f,
+        tiltSpeed: Float = 0f,
+        zoomSpeed: Float = 0f,
+        isRecording: Boolean = false,
+        isGuarded: Boolean = false,
+        isAlarming: Boolean = false,
+        isRebooting: Boolean = false,
+        dragZoomRect: DragZoomRect? = null,
+        presets: Map<Int, PtzPose> = emptyMap(),
+        currentPresetIndex: Int? = null,
+        homePosition: PtzPose? = null,
+        homePositionEnabled: Boolean = true,
+        cruiseTracks: Map<Int, List<Int>> = emptyMap(),
+        activeCruiseTrack: Int? = null,
+        auxStates: Map<Int, Boolean> = emptyMap(),
+        auxTimestamps: Map<Int, Long> = emptyMap(),
+        lastCommand: LastDeviceCommand? = null,
+        lastPreciseCtrl: PtzPose? = null,
+        upgradeProgress: UpgradeProgress? = null,
+        pendingEffect: DeviceEffect? = null,
+    ) : this(
+        DeviceControlModel(
+            panAngle = panAngle,
+            tiltAngle = tiltAngle,
+            zoomLevel = zoomLevel,
+            irisLevel = irisLevel,
+            focusLevel = focusLevel,
+            panSpeed = panSpeed,
+            tiltSpeed = tiltSpeed,
+            zoomSpeed = zoomSpeed,
+            isRecording = isRecording,
+            isGuarded = isGuarded,
+            isAlarming = isAlarming,
+            isRebooting = isRebooting,
+            dragZoomRect = dragZoomRect,
+            presets = presets,
+            currentPresetIndex = currentPresetIndex,
+            homePosition = homePosition,
+            homePositionEnabled = homePositionEnabled,
+            cruiseTracks = cruiseTracks,
+            activeCruiseTrack = activeCruiseTrack,
+            auxStates = auxStates,
+            auxTimestamps = auxTimestamps,
+            lastCommand = lastCommand,
+            lastPreciseCtrl = lastPreciseCtrl,
+            upgradeProgress = upgradeProgress,
+            pendingEffect = pendingEffect,
+        )
+    )
+
+    // ----- 属性委托:让 UI Mapper / 老代码 `state.panAngle` 写法继续工作 -----
+    val panAngle: Float get() = model.panAngle
+    val tiltAngle: Float get() = model.tiltAngle
+    val zoomLevel: Float get() = model.zoomLevel
+    val irisLevel: Float get() = model.irisLevel
+    val focusLevel: Float get() = model.focusLevel
+    val panSpeed: Float get() = model.panSpeed
+    val tiltSpeed: Float get() = model.tiltSpeed
+    val zoomSpeed: Float get() = model.zoomSpeed
+    val isRecording: Boolean get() = model.isRecording
+    val isGuarded: Boolean get() = model.isGuarded
+    val isAlarming: Boolean get() = model.isAlarming
+    val isRebooting: Boolean get() = model.isRebooting
+    val dragZoomRect: DragZoomRect? get() = model.dragZoomRect
+    val presets: Map<Int, PtzPose> get() = model.presets
+    val currentPresetIndex: Int? get() = model.currentPresetIndex
+    val homePosition: PtzPose? get() = model.homePosition
+    val homePositionEnabled: Boolean get() = model.homePositionEnabled
+    val cruiseTracks: Map<Int, List<Int>> get() = model.cruiseTracks
+    val activeCruiseTrack: Int? get() = model.activeCruiseTrack
+    val auxStates: Map<Int, Boolean> get() = model.auxStates
+    val auxTimestamps: Map<Int, Long> get() = model.auxTimestamps
+    val lastCommand: LastDeviceCommand? get() = model.lastCommand
+    val lastPreciseCtrl: PtzPose? get() = model.lastPreciseCtrl
+    val upgradeProgress: UpgradeProgress? get() = model.upgradeProgress
+    val pendingEffect: DeviceEffect? get() = model.pendingEffect
+
+    // equals / hashCode / toString 委托给 model(render 是 model 的纯函数派生,无独立身份)
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is DeviceControlState) return false
+        return model == other.model
+    }
+
+    override fun hashCode(): Int = model.hashCode()
+
+    override fun toString(): String = "DeviceControlState($model)"
+}
+
+// 以下五个类型保持原位置(commonMain 域层),被 Model + RenderState + UI Mapper 复用。
 
 /** GB-2022 §9.13 设备升级进度状态. */
 data class UpgradeProgress(

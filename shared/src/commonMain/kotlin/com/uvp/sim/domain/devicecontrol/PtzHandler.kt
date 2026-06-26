@@ -1,6 +1,6 @@
 package com.uvp.sim.domain.devicecontrol
 
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.DragZoomRect
 import com.uvp.sim.domain.LastDeviceCommand
@@ -35,7 +35,7 @@ interface PtzHandler {
 }
 
 internal class DefaultPtzHandler(
-    private val state: MutableStateFlow<DeviceControlState>,
+    private val state: MutableStateFlow<DeviceControlModel>,
 ) : PtzHandler {
 
     override fun handlePtz(xml: String, presetHandler: PresetHandler, auxHandler: AuxHandler) {

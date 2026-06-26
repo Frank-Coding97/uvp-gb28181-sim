@@ -23,7 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 internal class EngineHolders(
     val state: MutableStateFlow<SipState>,
     val events: MutableSharedFlow<SimEvent>,
-    val deviceControlState: MutableStateFlow<DeviceControlState>,
+    val deviceControlState: MutableStateFlow<DeviceControlModel>,
     val catalogTree: MutableStateFlow<List<CatalogNode>>,
     val clockOffset: MutableStateFlow<ClockOffset>,
     val alarmHistoryStore: AlarmHistoryStore,
