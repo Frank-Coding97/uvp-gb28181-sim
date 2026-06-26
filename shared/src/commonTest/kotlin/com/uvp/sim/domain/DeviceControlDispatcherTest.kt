@@ -30,7 +30,7 @@ class DeviceControlDispatcherTest {
         )
     )
 
-    private fun newState() = MutableStateFlow(DeviceControlState())
+    private fun newState() = MutableStateFlow(DeviceControlModel())
 
     private class FakeEngineActions : DeviceControlActions {
         var rebootCalled = 0
@@ -58,7 +58,7 @@ class DeviceControlDispatcherTest {
     }
 
     private fun newDispatcher(
-        state: MutableStateFlow<DeviceControlState> = newState(),
+        state: MutableStateFlow<DeviceControlModel> = newState(),
         actions: DeviceControlActions = FakeEngineActions(),
         scope: CoroutineScope? = null
     ) = DeviceControlDispatcher(state, config, actions, scope)
@@ -120,7 +120,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 6 — RecordCmd StopRecord 关录像`() {
-        val state = MutableStateFlow(DeviceControlState(isRecording = true))
+        val state = MutableStateFlow(DeviceControlModel(isRecording = true))
         val d = newDispatcher(state)
         d.dispatch("<C><RecordCmd>StopRecord</RecordCmd></C>")
         assertFalse(state.value.isRecording)
@@ -136,7 +136,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 8 — GuardCmd ResetGuard`() {
-        val state = MutableStateFlow(DeviceControlState(isGuarded = true))
+        val state = MutableStateFlow(DeviceControlModel(isGuarded = true))
         val d = newDispatcher(state)
         d.dispatch("<C><GuardCmd>ResetGuard</GuardCmd></C>")
         assertFalse(state.value.isGuarded)
@@ -144,7 +144,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 9 — AlarmCmd ResetAlarm`() {
-        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val state = MutableStateFlow(DeviceControlModel(isAlarming = true))
         val d = newDispatcher(state)
         d.dispatch("<C><AlarmCmd>ResetAlarm</AlarmCmd></C>")
         assertFalse(state.value.isAlarming)
@@ -152,7 +152,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 9a — AlarmCmd 0 复位 → alarmReset ack + isAlarming false`() {
-        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val state = MutableStateFlow(DeviceControlModel(isAlarming = true))
         val d = newDispatcher(state)
         val ack = d.dispatch("<C><AlarmCmd>0</AlarmCmd></C>", fromUri = "sip:plat@host")
         assertTrue(ack.alarmReset)
@@ -163,7 +163,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 9b — AlarmCmd 1 布防 → 不切 isAlarming 不 reset`() {
-        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val state = MutableStateFlow(DeviceControlModel(isAlarming = true))
         val d = newDispatcher(state)
         val ack = d.dispatch("<C><AlarmCmd>1</AlarmCmd></C>")
         assertFalse(ack.alarmReset)
@@ -174,7 +174,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 9c — AlarmCmd 2 撤防 → alarmReset + isAlarming false`() {
-        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val state = MutableStateFlow(DeviceControlModel(isAlarming = true))
         val d = newDispatcher(state)
         val ack = d.dispatch("<C><AlarmCmd>2</AlarmCmd></C>")
         assertTrue(ack.alarmReset)
@@ -183,7 +183,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `case 9d — AlarmCmd 99 未知值 → 回 200 不 reset 不切 isAlarming`() {
-        val state = MutableStateFlow(DeviceControlState(isAlarming = true))
+        val state = MutableStateFlow(DeviceControlModel(isAlarming = true))
         val d = newDispatcher(state)
         val ack = d.dispatch("<C><AlarmCmd>99</AlarmCmd></C>")
         assertTrue(ack.needSipResponse)
@@ -210,7 +210,7 @@ class DeviceControlDispatcherTest {
     @Test
     fun `case 11 — HomePosition 首次 → 存入当前 pose`() {
         val state = MutableStateFlow(
-            DeviceControlState(panAngle = 30f, tiltAngle = -10f, zoomLevel = 2f)
+            DeviceControlModel(panAngle = 30f, tiltAngle = -10f, zoomLevel = 2f)
         )
         val d = newDispatcher(state)
         d.dispatch("<C><HomePosition><Enabled>1</Enabled><PresetIndex>1</PresetIndex></HomePosition></C>")
@@ -224,7 +224,7 @@ class DeviceControlDispatcherTest {
     @Test
     fun `case 12 — HomePosition 已存在 → 触发回归 effect`() {
         val target = PtzPose(pan = 45f, tilt = 0f, zoom = 1f)
-        val state = MutableStateFlow(DeviceControlState(presets = mapOf(1 to target)))
+        val state = MutableStateFlow(DeviceControlModel(presets = mapOf(1 to target)))
         val d = newDispatcher(state)
         d.dispatch("<C><HomePosition><Enabled>1</Enabled><PresetIndex>1</PresetIndex></HomePosition></C>")
         val eff = state.value.pendingEffect
@@ -350,7 +350,7 @@ class DeviceControlDispatcherTest {
     @Test
     fun `T3_1 — SetPreset 把当前 pose 入库`() {
         val state = MutableStateFlow(
-            DeviceControlState(panAngle = 10f, tiltAngle = 20f, zoomLevel = 1.5f)
+            DeviceControlModel(panAngle = 10f, tiltAngle = 20f, zoomLevel = 1.5f)
         )
         val d = newDispatcher(state)
         d.dispatch("<C><PTZCmd>${presetHex(0x81, 3)}</PTZCmd></C>")
@@ -364,7 +364,7 @@ class DeviceControlDispatcherTest {
     @Test
     fun `T3_2 — CallPreset 已存在 → emit PresetRecall effect`() {
         val target = PtzPose(45f, 0f, 2f)
-        val state = MutableStateFlow(DeviceControlState(presets = mapOf(2 to target)))
+        val state = MutableStateFlow(DeviceControlModel(presets = mapOf(2 to target)))
         val d = newDispatcher(state)
         d.dispatch("<C><PTZCmd>${presetHex(0x82, 2)}</PTZCmd></C>")
         val s = state.value
@@ -385,7 +385,7 @@ class DeviceControlDispatcherTest {
     @Test
     fun `T3_4 — DelPreset 移除 + 清当前索引`() {
         val state = MutableStateFlow(
-            DeviceControlState(
+            DeviceControlModel(
                 presets = mapOf(1 to PtzPose(0f, 0f, 1f), 2 to PtzPose(10f, 0f, 1f)),
                 currentPresetIndex = 1,
             )
@@ -566,7 +566,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `Aux_2 — 加热 OFF 写 auxStates 3=false`() {
-        val state = MutableStateFlow(DeviceControlState(auxStates = mapOf(3 to true)))
+        val state = MutableStateFlow(DeviceControlModel(auxStates = mapOf(3 to true)))
         val d = newDispatcher(state)
         d.dispatch("<C><PTZCmd>${auxHex(false, 3)}</PTZCmd></C>")
         val s = state.value
@@ -597,7 +597,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `Focus_1 — Near 累减 focusLevel`() {
-        val state = MutableStateFlow(DeviceControlState(focusLevel = 0.5f))
+        val state = MutableStateFlow(DeviceControlModel(focusLevel = 0.5f))
         val d = newDispatcher(state)
         // speed=10 → step = 10*0.005 = 0.05 → 0.5-0.05=0.45
         d.dispatch("<C><PTZCmd>${focusHex(near = true, focusSpeed = 10)}</PTZCmd></C>")
@@ -606,7 +606,7 @@ class DeviceControlDispatcherTest {
 
     @Test
     fun `Focus_2 — Far 累加 focusLevel + clamp 上限`() {
-        val state = MutableStateFlow(DeviceControlState(focusLevel = 0.96f))
+        val state = MutableStateFlow(DeviceControlModel(focusLevel = 0.96f))
         val d = newDispatcher(state)
         // speed=15 → step = 0.075,0.96+0.075 = 1.035 → clamp 到 1.0
         d.dispatch("<C><PTZCmd>${focusHex(near = false, focusSpeed = 15)}</PTZCmd></C>")

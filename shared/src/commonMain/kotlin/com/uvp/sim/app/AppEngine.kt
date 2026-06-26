@@ -9,6 +9,8 @@ import com.uvp.sim.domain.BroadcastDialog
 import com.uvp.sim.domain.BroadcastEndReason
 import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
+import com.uvp.sim.domain.DerivedDeviceControlStateFlow
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.EngineCoordinators
 import com.uvp.sim.domain.EngineHolders
@@ -75,7 +77,7 @@ class AppEngine(
     private val holders: EngineHolders = EngineHolders(
         state = MutableStateFlow(SipState.Disconnected),
         events = MutableSharedFlow(extraBufferCapacity = 64),
-        deviceControlState = MutableStateFlow(DeviceControlState()),
+        deviceControlState = MutableStateFlow(DeviceControlModel()),
         catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(initialConfig)),
         clockOffset = MutableStateFlow(ClockOffset.Empty),
         alarmHistoryStore = AlarmHistoryStore(),
@@ -87,7 +89,17 @@ class AppEngine(
     val state: StateFlow<SipState> = holders.state.asStateFlow()
     val events: SharedFlow<SimEvent> = holders.events.asSharedFlow()
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = holders.subscriptionRegistry.subscriptions
-    val deviceControlState: StateFlow<DeviceControlState> = holders.deviceControlState.asStateFlow()
+    /**
+     * Wave 3 PR-DC-DECOUPLE:UI 仍订阅 [DeviceControlState] 兼容 wrapper,内部 holder 已切到
+     * [DeviceControlModel];这里同步派生 wrapper(model + render),保持 UI 契约不破。
+     * 用 [DerivedDeviceControlStateFlow] 零协程映射,避免 `stateIn(Eagerly)` 污染调用方 scope。
+     * 轨 ③ PR-UI-PROTOCOL-FIX 改 Mapper 后,可改成直接暴露 [deviceControlModel]。
+     */
+    @Suppress("DEPRECATION")
+    val deviceControlState: StateFlow<DeviceControlState> =
+        DerivedDeviceControlStateFlow(holders.deviceControlState.asStateFlow())
+    /** 业务 / 测试新路径:直接订阅 [DeviceControlModel] 流(无 render 派生开销)。 */
+    val deviceControlModel: StateFlow<DeviceControlModel> = holders.deviceControlState.asStateFlow()
     val catalogTree: StateFlow<List<CatalogNode>> = holders.catalogTree.asStateFlow()
     val alarmHistory: StateFlow<List<AlarmRecord>> = holders.alarmHistoryStore.history
     val clockOffset: StateFlow<ClockOffset> = holders.clockOffset.asStateFlow()

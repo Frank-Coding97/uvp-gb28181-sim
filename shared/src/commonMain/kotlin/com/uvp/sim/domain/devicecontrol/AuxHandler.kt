@@ -1,6 +1,6 @@
 package com.uvp.sim.domain.devicecontrol
 
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.gb28181.PtzInstruction
@@ -16,7 +16,7 @@ interface AuxHandler {
 }
 
 internal class DefaultAuxHandler(
-    private val state: MutableStateFlow<DeviceControlState>,
+    private val state: MutableStateFlow<DeviceControlModel>,
 ) : AuxHandler {
 
     /**

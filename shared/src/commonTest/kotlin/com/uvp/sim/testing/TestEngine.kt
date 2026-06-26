@@ -8,7 +8,7 @@ import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.EngineCoordinators
 import com.uvp.sim.domain.EngineHolders
 import com.uvp.sim.domain.MockGpsSource
@@ -76,7 +76,7 @@ internal object TestEngine {
         val holders = EngineHolders(
             state = MutableStateFlow(SipState.Disconnected),
             events = MutableSharedFlow(extraBufferCapacity = 64),
-            deviceControlState = MutableStateFlow(DeviceControlState()),
+            deviceControlState = MutableStateFlow(DeviceControlModel()),
             catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(config)),
             clockOffset = MutableStateFlow(ClockOffset.Empty),
             alarmHistoryStore = AlarmHistoryStore(),

@@ -7,7 +7,7 @@ import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.CatalogTreeStore
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.MockSipTransport
 import com.uvp.sim.domain.SubscriptionRegistry
@@ -64,7 +64,7 @@ class ManscdpRouterTest {
         identityService: com.uvp.sim.sip.SipDialogIdentityService =
             com.uvp.sim.sip.DefaultSipDialogIdentityService(localIp = "192.168.1.50"),
     ): ManscdpRouterImpl {
-        val deviceControlState = MutableStateFlow(DeviceControlState())
+        val deviceControlState = MutableStateFlow(DeviceControlModel())
         val cfg = config()
         val tree = MutableStateFlow(CatalogTreeStore.effectiveTree(cfg))
         return ManscdpRouterImpl(
