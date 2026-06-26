@@ -3,7 +3,6 @@ package com.uvp.sim.ui
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.SimConfig
-import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.model.AlarmPayloadDto
@@ -14,6 +13,7 @@ import com.uvp.sim.ui.model.NetworkStateDto
 import com.uvp.sim.ui.model.RecordSourceDto
 import com.uvp.sim.ui.model.RecordingFileDto
 import com.uvp.sim.ui.model.SessionMarkerDto
+import com.uvp.sim.ui.model.SimEventDto
 import com.uvp.sim.ui.model.SipStateDto
 import com.uvp.sim.ui.model.SystemLogDto
 
@@ -27,7 +27,7 @@ import com.uvp.sim.ui.model.SystemLogDto
 data class AppUiState(
     val sip: SipStateDto,
     val config: SimConfig,
-    val events: List<SimEvent>,
+    val events: List<SimEventDto>,
     val systemEvents: List<SystemLogDto> = emptyList(),
     val sessionMarker: SessionMarkerDto? = null,
     /**

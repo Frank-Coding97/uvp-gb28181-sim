@@ -165,7 +165,7 @@ class MainActivity : ComponentActivity() {
             val uiState = AppUiState(
                 sip = sipState.toDto(),
                 config = config,
-                events = events,
+                events = events.map { it.toDto() },
                 systemEvents = sysLogs.map { it.toDto() },
                 sessionMarker = SessionTracker.current?.toDto(),
                 subscriptions = subscriptions,

@@ -1,14 +1,13 @@
 package com.uvp.sim.ui
 
-import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.observability.DialogRow
 import com.uvp.sim.observability.FlowItem
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
-import com.uvp.sim.sip.SipMessage
-import com.uvp.sim.sip.SipRequest
-import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.ui.model.ResetSourceDto
 import com.uvp.sim.ui.model.SessionMarkerDto
+import com.uvp.sim.ui.model.SimEventDto
+import com.uvp.sim.ui.model.SipMessageDto
 import com.uvp.sim.ui.model.SystemLogDto
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
@@ -25,7 +24,7 @@ import kotlinx.datetime.toLocalDateTime
 object LogExport {
 
     fun formatSipList(
-        events: List<SimEvent>,
+        events: List<SimEventDto>,
         sessionMarker: SessionMarkerDto?,
         chipFilter: String,
         nowMs: Long
@@ -118,61 +117,61 @@ object LogExport {
         }
     }
 
-    private fun formatSipEventLine(ev: SimEvent): String = when (ev) {
-        is SimEvent.RegistrationStarted -> "→ REGISTER  sip:${ev.server}"
-        is SimEvent.RegistrationChallenged -> "← 401      认证挑战"
-        is SimEvent.RegistrationSucceeded -> "← 200      OK · expires=${ev.expiresSeconds}s"
-        is SimEvent.RegistrationFailed -> "← FAIL     ${ev.reason}"
-        is SimEvent.HeartbeatSent -> "→ MSG      Keepalive CSeq ${ev.sequence}"
-        is SimEvent.HeartbeatAcknowledged -> "← 200      心跳确认 #${ev.sequence}"
-        is SimEvent.IncomingInvite -> "← INVITE   ${ev.callId}"
-        is SimEvent.StreamStarted -> "→ 200      OK · RTP → ${ev.remoteHost}:${ev.remotePort} ssrc=${ev.ssrc}"
-        is SimEvent.StreamStopped -> "■ STOP     ${ev.frameCount}f / ${ev.packetCount}p · ${ev.reason}"
-        is SimEvent.StreamStats -> "· STATS    ${ev.frameCount}f / ${ev.packetCount}p"
-        is SimEvent.CallEnded -> "← BYE      ${ev.reason}"
-        is SimEvent.SnapshotReported -> "→ ALARM    抓拍 SN=${ev.sn}"
-        is SimEvent.SnapshotUploaded -> "→ SNAP     上传 ${ev.count}/${ev.total} · ${ev.snapShotId}"
-        is SimEvent.SnapshotUploadFailed -> "⚠ SNAP     上传失败 · ${ev.snapShotId}"
-        is SimEvent.MediaStatusSent -> "→ STATUS   MediaStatus ${ev.notifyType} · ${ev.subscriberCount} 订阅"
-        is SimEvent.MessageSent -> "→ ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
-        is SimEvent.MessageReceived -> "← ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
-        is SimEvent.TransportError -> "⚠ ERROR    ${ev.description}"
-        is SimEvent.DeviceControlReceived -> "← CONTROL  ${ev.commandType} ${ev.detail}"
-        is SimEvent.SubscribeReceived -> "← SUBSCRIBE ${ev.kind} from=${ev.subscriber}"
-        is SimEvent.NotifySent -> "→ NOTIFY   ${ev.kind} SN=${ev.sn}"
-        is SimEvent.SubscribeExpired -> "· EXPIRED  ${ev.kind} ${ev.subscriber}"
-        is SimEvent.SubscribeRefreshed -> "← REFRESH  expires=${ev.newExpiresSeconds}s"
-        is SimEvent.HeartbeatTimeoutDetected -> "⚠ HB-LOST  心跳连续 ${ev.missedCount}/${ev.maxAllowed} 未响应"
-        is SimEvent.AutoReregisterTriggered -> "↻ RE-REG   自动重注册 · ${ev.reason}"
-        is SimEvent.RegistrationRetryScheduled -> "↻ RETRY    第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后"
-        is SimEvent.InviteAckTimeout -> "⚠ ACK-TO   平台 ACK 未到达 · ${ev.callId}"
-        is SimEvent.DeviceControlReceived -> "← CTRL     ${ev.commandType} · ${ev.detail}"
-        is SimEvent.AlarmFired -> "→ ALARM    ${ev.type.label}/${ev.priority.label} · ${ev.description}"
-        is SimEvent.AlarmReset -> "· RESET    报警复位 · " + when (val b = ev.by) {
-            is SimEvent.ResetSource.Local -> "本地"
-            is SimEvent.ResetSource.Remote -> "平台 ${b.subscriber}"
+    private fun formatSipEventLine(ev: SimEventDto): String = when (ev) {
+        is SimEventDto.RegistrationStarted -> "→ REGISTER  sip:${ev.server}"
+        is SimEventDto.RegistrationChallenged -> "← 401      认证挑战"
+        is SimEventDto.RegistrationSucceeded -> "← 200      OK · expires=${ev.expiresSeconds}s"
+        is SimEventDto.RegistrationFailed -> "← FAIL     ${ev.reason}"
+        is SimEventDto.HeartbeatSent -> "→ MSG      Keepalive CSeq ${ev.sequence}"
+        is SimEventDto.HeartbeatAcknowledged -> "← 200      心跳确认 #${ev.sequence}"
+        is SimEventDto.IncomingInvite -> "← INVITE   ${ev.callId}"
+        is SimEventDto.StreamStarted -> "→ 200      OK · RTP → ${ev.remoteHost}:${ev.remotePort} ssrc=${ev.ssrc}"
+        is SimEventDto.StreamStopped -> "■ STOP     ${ev.frameCount}f / ${ev.packetCount}p · ${ev.reason}"
+        is SimEventDto.StreamStats -> "· STATS    ${ev.frameCount}f / ${ev.packetCount}p"
+        is SimEventDto.CallEnded -> "← BYE      ${ev.reason}"
+        is SimEventDto.SnapshotReported -> "→ ALARM    抓拍 SN=${ev.sn}"
+        is SimEventDto.SnapshotUploaded -> "→ SNAP     上传 ${ev.count}/${ev.total} · ${ev.snapShotId}"
+        is SimEventDto.SnapshotUploadFailed -> "⚠ SNAP     上传失败 · ${ev.snapShotId}"
+        is SimEventDto.MediaStatusSent -> "→ STATUS   MediaStatus ${ev.notifyType} · ${ev.subscriberCount} 订阅"
+        is SimEventDto.MessageSent -> "→ ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
+        is SimEventDto.MessageReceived -> "← ${msgShort(ev.message).padEnd(8)} ${msgLine(ev.message)}"
+        is SimEventDto.TransportError -> "⚠ ERROR    ${ev.description}"
+        is SimEventDto.DeviceControlReceived -> "← CONTROL  ${ev.commandType} ${ev.detail}"
+        is SimEventDto.SubscribeReceived -> "← SUBSCRIBE ${ev.kind} from=${ev.subscriber}"
+        is SimEventDto.NotifySent -> "→ NOTIFY   ${ev.kind} SN=${ev.sn}"
+        is SimEventDto.SubscribeExpired -> "· EXPIRED  ${ev.kind} ${ev.subscriber}"
+        is SimEventDto.SubscribeRefreshed -> "← REFRESH  expires=${ev.newExpiresSeconds}s"
+        is SimEventDto.HeartbeatTimeoutDetected -> "⚠ HB-LOST  心跳连续 ${ev.missedCount}/${ev.maxAllowed} 未响应"
+        is SimEventDto.AutoReregisterTriggered -> "↻ RE-REG   自动重注册 · ${ev.reason}"
+        is SimEventDto.RegistrationRetryScheduled -> "↻ RETRY    第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后"
+        is SimEventDto.InviteAckTimeout -> "⚠ ACK-TO   平台 ACK 未到达 · ${ev.callId}"
+        is SimEventDto.DeviceControlReceived -> "← CTRL     ${ev.commandType} · ${ev.detail}"
+        is SimEventDto.AlarmFired -> "→ ALARM    ${ev.type.label}/${ev.priority.label} · ${ev.description}"
+        is SimEventDto.AlarmReset -> "· RESET    报警复位 · " + when (val b = ev.by) {
+            is ResetSourceDto.Local -> "本地"
+            is ResetSourceDto.Remote -> "平台 ${b.subscriber}"
         }
-        is SimEvent.AlarmSubscribed -> "← SUB      报警订阅 from=${ev.subscriber} expires=${ev.expires}s"
-        is SimEvent.AlarmNotifySent -> "→ NOTIFY   报警 SN=${ev.sn} → ${ev.subscriber}"
-        is SimEvent.AlarmSubscriptionExpired -> "· EXPIRED  报警订阅 ${ev.subscriber}"
-        is SimEvent.BroadcastReceived -> "← BROADCAST 语音广播请求 source=${ev.sourceId}"
-        is SimEvent.BroadcastInvited -> "→ INVITE   反向 INVITE → ${ev.platformUri} 本地端口 ${ev.localPort}"
-        is SimEvent.BroadcastStarted -> "♪ RX       对讲音频开始 首包 ${ev.firstPacketDelayMs}ms"
-        is SimEvent.BroadcastPacketRx -> "♪ RX       ${ev.codec} ${ev.rxPackets}包 / ${ev.rxBytes}字节"
-        is SimEvent.BroadcastEnded -> "■ END      对讲结束 ${ev.reason} ${ev.durationMs}ms"
-        is SimEvent.NetworkBound -> "↔ NET-UP   ${ev.preference} · ${ev.interfaceName} · ${ev.localIp}"
-        is SimEvent.NetworkUnavailable -> "⚠ NET-OFF  ${ev.reason}"
-        SimEvent.NetworkAuto -> "↔ NET-AUTO 系统路由"
+        is SimEventDto.AlarmSubscribed -> "← SUB      报警订阅 from=${ev.subscriber} expires=${ev.expires}s"
+        is SimEventDto.AlarmNotifySent -> "→ NOTIFY   报警 SN=${ev.sn} → ${ev.subscriber}"
+        is SimEventDto.AlarmSubscriptionExpired -> "· EXPIRED  报警订阅 ${ev.subscriber}"
+        is SimEventDto.BroadcastReceived -> "← BROADCAST 语音广播请求 source=${ev.sourceId}"
+        is SimEventDto.BroadcastInvited -> "→ INVITE   反向 INVITE → ${ev.platformUri} 本地端口 ${ev.localPort}"
+        is SimEventDto.BroadcastStarted -> "♪ RX       对讲音频开始 首包 ${ev.firstPacketDelayMs}ms"
+        is SimEventDto.BroadcastPacketRx -> "♪ RX       ${ev.codec} ${ev.rxPackets}包 / ${ev.rxBytes}字节"
+        is SimEventDto.BroadcastEnded -> "■ END      对讲结束 ${ev.reason} ${ev.durationMs}ms"
+        is SimEventDto.NetworkBound -> "↔ NET-UP   ${ev.preference} · ${ev.interfaceName} · ${ev.localIp}"
+        is SimEventDto.NetworkUnavailable -> "⚠ NET-OFF  ${ev.reason}"
+        SimEventDto.NetworkAuto -> "↔ NET-AUTO 系统路由"
     }
 
-    private fun msgShort(m: SipMessage): String = when (m) {
-        is SipRequest -> m.method.name.take(8)
-        is SipResponse -> m.statusCode.toString()
+    private fun msgShort(m: SipMessageDto): String = when (m) {
+        is SipMessageDto.Request -> m.method.name.take(8)
+        is SipMessageDto.Response -> m.statusCode.toString()
     }
 
-    private fun msgLine(m: SipMessage): String = when (m) {
-        is SipRequest -> "${m.method.name} ${m.requestUri}"
-        is SipResponse -> "${m.statusCode} ${m.reasonPhrase}"
+    private fun msgLine(m: SipMessageDto): String = when (m) {
+        is SipMessageDto.Request -> "${m.method.name} ${m.requestUri}"
+        is SipMessageDto.Response -> "${m.statusCode} ${m.reasonPhrase}"
     }
 
     fun filename(kind: String, nowMs: Long): String {

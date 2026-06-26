@@ -39,11 +39,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.SimEvent
-import com.uvp.sim.sip.SipMessage
-import com.uvp.sim.sip.SipMethod
-import com.uvp.sim.sip.SipRequest
-import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.ui.model.ResetSourceDto
+import com.uvp.sim.ui.model.SimEventDto
+import com.uvp.sim.ui.model.SipMessageDto
+import com.uvp.sim.ui.model.SipMethodDto
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -54,7 +53,7 @@ import kotlinx.datetime.toLocalDateTime
  * 来源:从原 LogScreen.kt(249 行)拆出 — LogScreen 改成 SIP/系统双 tab 容器。
  */
 @Composable
-fun SipLogListView(events: List<SimEvent>) {
+fun SipLogListView(events: List<SimEventDto>) {
     var activeFilter by remember { mutableStateOf("全部") }
     var expandedIndex by remember { mutableStateOf<Int?>(null) }
     val filtered = filterEvents(events, activeFilter)  // events 已是最新在前(SipViewModel prepend),无需再 reverse
@@ -114,7 +113,7 @@ private fun SipChip(label: String, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
+private fun LogRow(ev: SimEventDto, expanded: Boolean, onClick: () -> Unit) {
     val spec = logRowSpec(ev) ?: return
     val time = formatHmsList(ev.timestampMs)
     val clipboard = LocalClipboardManager.current
@@ -203,21 +202,21 @@ private fun LogRow(ev: SimEvent, expanded: Boolean, onClick: () -> Unit) {
     }
 }
 
-private fun rawSipBody(ev: SimEvent): String {
+private fun rawSipBody(ev: SimEventDto): String {
     val msg = when (ev) {
-        is SimEvent.MessageSent -> ev.message
-        is SimEvent.MessageReceived -> ev.message
+        is SimEventDto.MessageSent -> ev.message
+        is SimEventDto.MessageReceived -> ev.message
         else -> return ""
     }
     return buildString {
         when (msg) {
-            is SipRequest -> appendLine("${msg.method} ${msg.requestUri} SIP/2.0")
-            is SipResponse -> appendLine("SIP/2.0 ${msg.statusCode} ${msg.reasonPhrase}")
+            is SipMessageDto.Request -> appendLine("${msg.method} ${msg.requestUri} SIP/2.0")
+            is SipMessageDto.Response -> appendLine("SIP/2.0 ${msg.statusCode} ${msg.reasonPhrase}")
         }
         msg.headers.forEach { appendLine("${it.name}: ${it.value}") }
         if (msg.body.isNotEmpty()) {
             appendLine()
-            append(msg.body.decodeToString().take(800))
+            append(msg.body.take(800))
         }
     }
 }
@@ -245,187 +244,187 @@ private data class LogRowSpec(
     val category: String = ""
 )
 
-private fun logRowSpec(ev: SimEvent): LogRowSpec? = when (ev) {
-    is SimEvent.RegistrationStarted -> LogRowSpec(
+private fun logRowSpec(ev: SimEventDto): LogRowSpec? = when (ev) {
+    is SimEventDto.RegistrationStarted -> LogRowSpec(
         "", "→", true, "REG", UvpColor.Primary, "sip:${ev.server}", category = "REGISTER"
     )
-    is SimEvent.RegistrationChallenged -> LogRowSpec(
+    is SimEventDto.RegistrationChallenged -> LogRowSpec(
         "", "←", false, "401", UvpColor.Warning, "认证挑战", category = "REGISTER"
     )
-    is SimEvent.RegistrationSucceeded -> LogRowSpec(
+    is SimEventDto.RegistrationSucceeded -> LogRowSpec(
         "", "←", false, "200", UvpColor.Success, "OK · 注册成功 expires=${ev.expiresSeconds}s", category = "REGISTER"
     )
-    is SimEvent.RegistrationFailed -> LogRowSpec(
+    is SimEventDto.RegistrationFailed -> LogRowSpec(
         "", "←", false, "ERR", UvpColor.Danger, ev.reason, category = "REGISTER"
     )
-    is SimEvent.HeartbeatSent -> LogRowSpec(
+    is SimEventDto.HeartbeatSent -> LogRowSpec(
         "", "→", true, "MSG", UvpColor.Info, "Keepalive · CSeq ${ev.sequence}", category = "MESSAGE"
     )
-    is SimEvent.HeartbeatAcknowledged -> LogRowSpec(
+    is SimEventDto.HeartbeatAcknowledged -> LogRowSpec(
         "", "←", false, "200", UvpColor.Success, "OK · 心跳确认", category = "MESSAGE"
     )
-    is SimEvent.IncomingInvite -> LogRowSpec(
+    is SimEventDto.IncomingInvite -> LogRowSpec(
         "", "←", false, "INV", UvpColor.Warning, "SDP m=video · ${ev.callId.take(20)}",
         highlight = true, category = "INVITE"
     )
-    is SimEvent.StreamStarted -> LogRowSpec(
+    is SimEventDto.StreamStarted -> LogRowSpec(
         "", "→", true, "200", UvpColor.Success, "OK · SDP answer → RTP ${ev.remoteHost}:${ev.remotePort}",
         category = "INVITE"
     )
-    is SimEvent.StreamStopped -> LogRowSpec(
+    is SimEventDto.StreamStopped -> LogRowSpec(
         "", "■", true, "END", UvpColor.TextHint, "${ev.frameCount}f / ${ev.packetCount}p · ${ev.reason}",
         category = "BYE"
     )
-    is SimEvent.StreamStats -> null  // 时序图 MediaSegment 显示,列表不重复
-    is SimEvent.CallEnded -> LogRowSpec(
+    is SimEventDto.StreamStats -> null  // 时序图 MediaSegment 显示,列表不重复
+    is SimEventDto.CallEnded -> LogRowSpec(
         "", "←", false, "BYE", UvpColor.Danger, ev.reason, category = "BYE"
     )
-    is SimEvent.SnapshotReported -> LogRowSpec(
+    is SimEventDto.SnapshotReported -> LogRowSpec(
         "", "→", true, "ALM", UvpColor.Warning, "抓拍 SN=${ev.sn}", category = "MESSAGE"
     )
-    is SimEvent.SnapshotUploaded -> LogRowSpec(
+    is SimEventDto.SnapshotUploaded -> LogRowSpec(
         "", "→", true, "SNP", UvpColor.Success,
         "抓拍上传 ${ev.count}/${ev.total} · ${ev.snapShotId}",
         category = "MESSAGE"
     )
-    is SimEvent.SnapshotUploadFailed -> LogRowSpec(
+    is SimEventDto.SnapshotUploadFailed -> LogRowSpec(
         "", "⚠", true, "SNP", UvpColor.Danger,
         "抓拍上传失败 · ${ev.snapShotId}",
         highlight = true,
         category = "MESSAGE"
     )
-    is SimEvent.MediaStatusSent -> LogRowSpec(
+    is SimEventDto.MediaStatusSent -> LogRowSpec(
         "", "→", true, "STA", UvpColor.Info,
         "MediaStatus ${ev.notifyType} · ${ev.subscriberCount} 订阅",
         category = "MESSAGE"
     )
-    is SimEvent.MessageSent -> LogRowSpec(
+    is SimEventDto.MessageSent -> LogRowSpec(
         "", "→", true, msgMethodShort(ev.message), UvpColor.Primary,
         msgContent(ev.message), category = msgCategory(ev.message)
     )
-    is SimEvent.MessageReceived -> LogRowSpec(
+    is SimEventDto.MessageReceived -> LogRowSpec(
         "", "←", false, msgMethodShort(ev.message), UvpColor.Success,
         msgContent(ev.message), category = msgCategory(ev.message)
     )
-    is SimEvent.TransportError -> LogRowSpec(
+    is SimEventDto.TransportError -> LogRowSpec(
         "", "⚠", true, "ERR", UvpColor.Danger, ev.description, category = ""
     )
-    is SimEvent.DeviceControlReceived -> LogRowSpec(
+    is SimEventDto.DeviceControlReceived -> LogRowSpec(
         "", "←", false, "CTL", UvpColor.Info,
         "${ev.commandType} · ${ev.detail.take(40)}",
         category = "CONTROL"
     )
-    is SimEvent.SubscribeReceived -> LogRowSpec(
+    is SimEventDto.SubscribeReceived -> LogRowSpec(
         "", "←", false, "SUB", UvpColor.Info, "${ev.kind} · from=${ev.subscriber}", category = "SUBSCRIBE"
     )
-    is SimEvent.NotifySent -> LogRowSpec(
+    is SimEventDto.NotifySent -> LogRowSpec(
         "", "→", true, "NTF", UvpColor.Primary, "${ev.kind} · SN=${ev.sn}", category = "NOTIFY"
     )
-    is SimEvent.SubscribeExpired -> LogRowSpec(
+    is SimEventDto.SubscribeExpired -> LogRowSpec(
         "", "·", true, "EXP", UvpColor.TextHint, "${ev.kind} 过期", category = "SUBSCRIBE"
     )
-    is SimEvent.SubscribeRefreshed -> LogRowSpec(
+    is SimEventDto.SubscribeRefreshed -> LogRowSpec(
         "", "←", false, "REF", UvpColor.Success, "续订 expires=${ev.newExpiresSeconds}s", category = "SUBSCRIBE"
     )
-    is SimEvent.HeartbeatTimeoutDetected -> LogRowSpec(
+    is SimEventDto.HeartbeatTimeoutDetected -> LogRowSpec(
         "", "⚠", true, "HB!", UvpColor.Danger,
         "心跳连续 ${ev.missedCount}/${ev.maxAllowed} 未响应",
         highlight = true, category = "MESSAGE"
     )
-    is SimEvent.AutoReregisterTriggered -> LogRowSpec(
+    is SimEventDto.AutoReregisterTriggered -> LogRowSpec(
         "", "↻", true, "RE", UvpColor.Warning, "自动重注册 · ${ev.reason}",
         highlight = true, category = "REGISTER"
     )
-    is SimEvent.RegistrationRetryScheduled -> LogRowSpec(
+    is SimEventDto.RegistrationRetryScheduled -> LogRowSpec(
         "", "↻", true, "TRY", UvpColor.Info,
         "第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后", category = "REGISTER"
     )
-    is SimEvent.InviteAckTimeout -> LogRowSpec(
+    is SimEventDto.InviteAckTimeout -> LogRowSpec(
         "", "⚠", true, "ACK", UvpColor.Warning,
         "平台 ACK 未到达 · ${ev.callId.take(20)}",
         highlight = true, category = "INVITE"
     )
-    is SimEvent.DeviceControlReceived -> LogRowSpec(
+    is SimEventDto.DeviceControlReceived -> LogRowSpec(
         "", "←", false, "CTRL", UvpColor.Info,
         "设备控制 · ${ev.commandType} · ${ev.detail.take(30)}",
         category = "CONTROL"
     )
-    is SimEvent.AlarmFired -> LogRowSpec(
+    is SimEventDto.AlarmFired -> LogRowSpec(
         "", "→", true, "ALM", UvpColor.Warning,
         "报警 · ${ev.type.label}/${ev.priority.label} · ${ev.description.take(30)}",
         highlight = true, category = "ALARM"
     )
-    is SimEvent.AlarmReset -> LogRowSpec(
+    is SimEventDto.AlarmReset -> LogRowSpec(
         "", "·", true, "RST", UvpColor.Info,
         "报警复位 · ${alarmResetBy(ev.by)}", category = "ALARM"
     )
-    is SimEvent.AlarmSubscribed -> LogRowSpec(
+    is SimEventDto.AlarmSubscribed -> LogRowSpec(
         "", "←", false, "SUB", UvpColor.Info,
         "报警订阅 · from=${ev.subscriber} expires=${ev.expires}s", category = "SUBSCRIBE"
     )
-    is SimEvent.AlarmNotifySent -> LogRowSpec(
+    is SimEventDto.AlarmNotifySent -> LogRowSpec(
         "", "→", true, "NTF", UvpColor.Primary,
         "报警 NOTIFY · SN=${ev.sn} → ${ev.subscriber}", category = "NOTIFY"
     )
-    is SimEvent.AlarmSubscriptionExpired -> LogRowSpec(
+    is SimEventDto.AlarmSubscriptionExpired -> LogRowSpec(
         "", "·", true, "EXP", UvpColor.TextHint,
         "报警订阅过期 · ${ev.subscriber}", category = "SUBSCRIBE"
     )
-    is SimEvent.BroadcastReceived -> LogRowSpec(
+    is SimEventDto.BroadcastReceived -> LogRowSpec(
         "", "←", false, "BC", UvpColor.Info,
         "语音广播请求 · source=${ev.sourceId}", highlight = true, category = "BROADCAST"
     )
-    is SimEvent.BroadcastInvited -> LogRowSpec(
+    is SimEventDto.BroadcastInvited -> LogRowSpec(
         "", "→", true, "INV", UvpColor.Primary,
         "反向 INVITE → ${ev.platformUri} · 本地端口 ${ev.localPort}", category = "BROADCAST"
     )
-    is SimEvent.BroadcastStarted -> LogRowSpec(
+    is SimEventDto.BroadcastStarted -> LogRowSpec(
         "", "♪", false, "RX", UvpColor.Success,
         "对讲音频开始 · 首包 ${ev.firstPacketDelayMs}ms", category = "BROADCAST"
     )
-    is SimEvent.BroadcastPacketRx -> null  // 媒体接收统计,不刷 SIP 信令日志(浮动/指示器读 currentBroadcast)
-    is SimEvent.BroadcastEnded -> LogRowSpec(
+    is SimEventDto.BroadcastPacketRx -> null  // 媒体接收统计,不刷 SIP 信令日志(浮动/指示器读 currentBroadcast)
+    is SimEventDto.BroadcastEnded -> LogRowSpec(
         "", "■", true, "END", UvpColor.TextHint,
         "对讲结束 · ${ev.reason} · ${ev.durationMs}ms", category = "BROADCAST"
     )
-    is SimEvent.NetworkBound -> LogRowSpec(
+    is SimEventDto.NetworkBound -> LogRowSpec(
         "", "↔", true, "NET", UvpColor.Info,
         "网络 → ${ev.preference} · ${ev.interfaceName} · ${ev.localIp}", category = "NETWORK"
     )
-    is SimEvent.NetworkUnavailable -> LogRowSpec(
+    is SimEventDto.NetworkUnavailable -> LogRowSpec(
         "", "⚠", true, "NET", UvpColor.Danger,
         "网络不可用 · ${ev.reason}", category = "NETWORK"
     )
-    SimEvent.NetworkAuto -> LogRowSpec(
+    SimEventDto.NetworkAuto -> LogRowSpec(
         "", "↔", true, "NET", UvpColor.TextHint,
         "网络偏好 → 自动(系统路由)", category = "NETWORK"
     )
 }
 
-private fun alarmResetBy(by: SimEvent.ResetSource): String = when (by) {
-    is SimEvent.ResetSource.Local -> "本地"
-    is SimEvent.ResetSource.Remote -> "平台 ${by.subscriber}"
+private fun alarmResetBy(by: ResetSourceDto): String = when (by) {
+    is ResetSourceDto.Local -> "本地"
+    is ResetSourceDto.Remote -> "平台 ${by.subscriber}"
 }
 
-private fun msgMethodShort(m: SipMessage): String = when (m) {
-    is SipRequest -> when (m.method) {
-        SipMethod.REGISTER -> "REG"
-        SipMethod.INVITE -> "INV"
-        SipMethod.MESSAGE -> "MSG"
-        SipMethod.BYE -> "BYE"
+private fun msgMethodShort(m: SipMessageDto): String = when (m) {
+    is SipMessageDto.Request -> when (m.method) {
+        SipMethodDto.REGISTER -> "REG"
+        SipMethodDto.INVITE -> "INV"
+        SipMethodDto.MESSAGE -> "MSG"
+        SipMethodDto.BYE -> "BYE"
         else -> m.method.name.take(3)
     }
-    is SipResponse -> "${m.statusCode}"
+    is SipMessageDto.Response -> "${m.statusCode}"
 }
 
-private fun msgContent(m: SipMessage): String = when (m) {
-    is SipRequest -> "${m.method.name} ${m.requestUri.take(30)}"
-    is SipResponse -> "${m.statusCode} ${m.reasonPhrase}"
+private fun msgContent(m: SipMessageDto): String = when (m) {
+    is SipMessageDto.Request -> "${m.method.name} ${m.requestUri.take(30)}"
+    is SipMessageDto.Response -> "${m.statusCode} ${m.reasonPhrase}"
 }
 
-private fun msgCategory(m: SipMessage): String = when (m) {
-    is SipRequest -> m.method.name
-    is SipResponse -> {
+private fun msgCategory(m: SipMessageDto): String = when (m) {
+    is SipMessageDto.Request -> m.method.name
+    is SipMessageDto.Response -> {
         val cseq = m.headers.firstOrNull {
             it.name.equals("CSeq", ignoreCase = true)
         }?.value ?: ""
@@ -439,7 +438,7 @@ private fun msgCategory(m: SipMessage): String = when (m) {
     }
 }
 
-private fun filterEvents(events: List<SimEvent>, filter: String): List<SimEvent> {
+private fun filterEvents(events: List<SimEventDto>, filter: String): List<SimEventDto> {
     if (filter == "全部") return events
     return events.filter { ev ->
         val spec = logRowSpec(ev) ?: return@filter false

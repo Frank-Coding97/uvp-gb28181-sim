@@ -6,7 +6,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import com.uvp.sim.domain.SimEvent
+import com.uvp.sim.ui.model.ResetSourceDto
+import com.uvp.sim.ui.model.SimEventDto
+import com.uvp.sim.ui.model.SipMessageDto
 
 data class NotificationItem(
     val id: Long,
@@ -24,7 +26,7 @@ class NotificationCenter(private val maxItems: Int = 50) {
 
     private var nextId: Long = 0
 
-    fun ingest(event: SimEvent): NotificationItem? {
+    fun ingest(event: SimEventDto): NotificationItem? {
         return event.toNotification()
     }
 
@@ -32,23 +34,23 @@ class NotificationCenter(private val maxItems: Int = 50) {
         return current.copy(unreadCount = 0)
     }
 
-    private fun SimEvent.toNotification(): NotificationItem? {
+    private fun SimEventDto.toNotification(): NotificationItem? {
         val (title, detail) = when (this) {
-            is SimEvent.IncomingInvite -> "收到 INVITE 点播" to "CallID: $callId"
-            is SimEvent.DeviceControlReceived -> "设备控制: $commandType" to detail
-            is SimEvent.SubscribeReceived -> "收到订阅: $kind" to "来自 $subscriber · 有效期 ${expiresSeconds}s"
-            is SimEvent.BroadcastReceived -> "收到语音广播" to "源 $sourceId → $targetId"
-            is SimEvent.MessageReceived -> {
-                val req = message as? com.uvp.sim.sip.SipRequest ?: return null
+            is SimEventDto.IncomingInvite -> "收到 INVITE 点播" to "CallID: $callId"
+            is SimEventDto.DeviceControlReceived -> "设备控制: $commandType" to detail
+            is SimEventDto.SubscribeReceived -> "收到订阅: $kind" to "来自 $subscriber · 有效期 ${expiresSeconds}s"
+            is SimEventDto.BroadcastReceived -> "收到语音广播" to "源 $sourceId → $targetId"
+            is SimEventDto.MessageReceived -> {
+                val req = message as? SipMessageDto.Request ?: return null
                 val method = req.method.name
                 if (method !in IGNORED_METHODS) {
-                    "收到 $method" to message.callId()
+                    "收到 $method" to message.callIdHeader()
                 } else return null
             }
-            is SimEvent.CallEnded -> "通话结束" to "CallID: $callId · $reason"
-            is SimEvent.AlarmReset -> {
+            is SimEventDto.CallEnded -> "通话结束" to "CallID: $callId · $reason"
+            is SimEventDto.AlarmReset -> {
                 when (val src = by) {
-                    is SimEvent.ResetSource.Remote -> "平台远程复位报警" to "来自 ${src.subscriber}"
+                    is ResetSourceDto.Remote -> "平台远程复位报警" to "来自 ${src.subscriber}"
                     else -> return null
                 }
             }
@@ -62,13 +64,16 @@ class NotificationCenter(private val maxItems: Int = 50) {
         )
     }
 
+    private fun SipMessageDto.callIdHeader(): String? =
+        headers.firstOrNull { it.name.equals("Call-ID", ignoreCase = true) }?.value
+
     companion object {
         private val IGNORED_METHODS = setOf("REGISTER", "ACK", "OPTIONS")
     }
 }
 
 @Composable
-fun rememberNotificationState(events: List<SimEvent>): Pair<NotificationState, () -> Unit> {
+fun rememberNotificationState(events: List<SimEventDto>): Pair<NotificationState, () -> Unit> {
     val center = remember { NotificationCenter() }
     var state by remember { mutableStateOf(NotificationState()) }
     var lastSeenSize by remember { mutableStateOf(0) }

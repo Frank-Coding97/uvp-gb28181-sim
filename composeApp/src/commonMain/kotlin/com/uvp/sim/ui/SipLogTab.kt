@@ -26,17 +26,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.observability.MediaSegmentEvent
 import com.uvp.sim.observability.SipDialogGrouping
 import com.uvp.sim.observability.SipFlowEvent
-import com.uvp.sim.sip.SipMessage
+import com.uvp.sim.ui.model.SimEventDto
+import com.uvp.sim.ui.model.SipMessageDto
 
 /**
  * SIP 日志 tab — 内部切"列表 / 时序图"两种视图(spec §11 sngrep 风格)。
  */
 @Composable
-fun SipLogTab(events: List<SimEvent>) {
+fun SipLogTab(events: List<SimEventDto>) {
     var mode by remember { mutableStateOf(SipViewMode.List) }
 
     val flowItems by remember(events) {
@@ -94,28 +94,63 @@ private fun ToggleChip(label: String, active: Boolean, onClick: () -> Unit) {
 }
 
 /**
- * 把 SimEvent 列表里的 SIP 消息抽出来 → SipFlowEvent。
+ * 把 SimEventDto 列表里的 SIP 消息抽出来 → SipFlowEvent。
  *
- * 用每条 SimEvent.timestampMs(emit 时的真实时间)。
+ * 用每条 SimEventDto.timestampMs(emit 时的真实时间)。
  */
-internal fun List<SimEvent>.toFlowEventsForExport(): List<SipFlowEvent> {
+internal fun List<SimEventDto>.toFlowEventsForExport(): List<SipFlowEvent> {
     return mapNotNull { ev ->
         val (msg, outgoing) = when (ev) {
-            is SimEvent.MessageSent -> ev.message to true
-            is SimEvent.MessageReceived -> ev.message to false
+            is SimEventDto.MessageSent -> ev.message to true
+            is SimEventDto.MessageReceived -> ev.message to false
             else -> return@mapNotNull null
         }
-        val callId = msg.firstHeader("Call-ID") ?: return@mapNotNull null
+        val callId = msg.callIdHeader() ?: return@mapNotNull null
         SipFlowEvent(
             timestampMs = ev.timestampMs,
             outgoing = outgoing,
-            message = msg,
+            message = msg.toSipMessage(),
             callId = callId
         )
     }
 }
 
-private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> = toFlowEventsForExport()
+private fun SipMessageDto.callIdHeader(): String? =
+    headers.firstOrNull { it.name.equals("Call-ID", ignoreCase = true) }?.value
+
+/**
+ * 反向重建 SipMessage(仅本文件内部使用).T4.3e 接 events: List<SimEventDto> 时,
+ * SipDialogGrouping / SipFlowEvent / MediaSegmentEvent 仍是 shared.observability 类型,
+ * 需要从 SipMessageDto 反向重建 SipMessage 喂给它们.
+ *
+ * 字段无损映射:Request 仅取 method 名做 SipMethod.valueOf 反查;body 是 UTF-8 decoded String,
+ * encodeToByteArray() 反向(SDP/MANSCDP+XML 均为 UTF-8 文本,实际无损).
+ *
+ * G8 歧义(老板拍板):此 helper 是 DTO 原则破口,理由 = SipFlowEvent / DialogGrouping
+ * 在 shared 不动 PR-A 范围.PR-A-2 切 SipFlowEvent → SipFlowEventDto 后此 helper 可删.
+ */
+private fun SipMessageDto.toSipMessage(): com.uvp.sim.sip.SipMessage {
+    val sharedHeaders = headers.map { com.uvp.sim.sip.SipMessage.Header(it.name, it.value) }
+    val bodyBytes = body.encodeToByteArray()
+    return when (this) {
+        is SipMessageDto.Request -> com.uvp.sim.sip.SipRequest(
+            method = com.uvp.sim.sip.SipMethod.valueOf(method.name),
+            requestUri = requestUri,
+            sipVersion = sipVersion,
+            headers = sharedHeaders,
+            body = bodyBytes,
+        )
+        is SipMessageDto.Response -> com.uvp.sim.sip.SipResponse(
+            statusCode = statusCode,
+            reasonPhrase = reasonPhrase,
+            sipVersion = sipVersion,
+            headers = sharedHeaders,
+            body = bodyBytes,
+        )
+    }
+}
+
+private fun List<SimEventDto>.toFlowEvents(): List<SipFlowEvent> = toFlowEventsForExport()
 
 /**
  * 把 StreamStarted/Stopped/Stats 配对成 MediaSegmentEvent。
@@ -125,11 +160,11 @@ private fun List<SimEvent>.toFlowEvents(): List<SipFlowEvent> = toFlowEventsForE
  *
  * 简化:M1 至多 1 路并发流,只取最后一路。
  */
-internal fun List<SimEvent>.toMediaSegmentsForExport(): List<MediaSegmentEvent> {
-    val started = filterIsInstance<SimEvent.StreamStarted>().lastOrNull() ?: return emptyList()
-    val stoppedAt = filterIsInstance<SimEvent.StreamStopped>()
+internal fun List<SimEventDto>.toMediaSegmentsForExport(): List<MediaSegmentEvent> {
+    val started = filterIsInstance<SimEventDto.StreamStarted>().lastOrNull() ?: return emptyList()
+    val stoppedAt = filterIsInstance<SimEventDto.StreamStopped>()
         .lastOrNull { it.callId == started.callId }
-    val latestStats = filterIsInstance<SimEvent.StreamStats>()
+    val latestStats = filterIsInstance<SimEventDto.StreamStats>()
         .lastOrNull { it.callId == started.callId }
     val frameCount = stoppedAt?.frameCount ?: latestStats?.frameCount ?: 0
     val packetCount = stoppedAt?.packetCount ?: latestStats?.packetCount ?: 0
@@ -146,4 +181,4 @@ internal fun List<SimEvent>.toMediaSegmentsForExport(): List<MediaSegmentEvent> 
     )
 }
 
-private fun List<SimEvent>.toMediaSegments(): List<MediaSegmentEvent> = toMediaSegmentsForExport()
+private fun List<SimEventDto>.toMediaSegments(): List<MediaSegmentEvent> = toMediaSegmentsForExport()

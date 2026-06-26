@@ -124,7 +124,7 @@ private fun StatusBanner(state: AppUiState) {
             else "请先填写 SIP 配置"
         )
         SipStateDto.Failed -> {
-            val reason = state.events.filterIsInstance<com.uvp.sim.domain.SimEvent.RegistrationFailed>()
+            val reason = state.events.filterIsInstance<com.uvp.sim.ui.model.SimEventDto.RegistrationFailed>()
                 .firstOrNull()?.reason ?: "未知原因"
             BannerSpec(
                 UvpColor.DangerBg, UvpColor.DangerBorder, UvpColor.Danger,
