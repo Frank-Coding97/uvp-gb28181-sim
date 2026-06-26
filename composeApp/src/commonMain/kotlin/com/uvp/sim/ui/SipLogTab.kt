@@ -31,6 +31,7 @@ import com.uvp.sim.observability.SipDialogGrouping
 import com.uvp.sim.observability.SipFlowEvent
 import com.uvp.sim.ui.model.SimEventDto
 import com.uvp.sim.ui.model.SipMessageDto
+import com.uvp.sim.ui.model.mapper.toDto
 
 /**
  * SIP 日志 tab — 内部切"列表 / 时序图"两种视图(spec §11 sngrep 风格)。
@@ -43,7 +44,7 @@ fun SipLogTab(events: List<SimEventDto>) {
         derivedStateOf {
             val flowEvents = events.toFlowEvents()
             val media = events.toMediaSegments()
-            SipDialogGrouping.group(flowEvents, media)
+            SipDialogGrouping.group(flowEvents, media).map { it.toDto() }
         }
     }
 

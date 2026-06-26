@@ -35,12 +35,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.uvp.sim.observability.DialogRow
-import com.uvp.sim.observability.FlowItem
 import com.uvp.sim.observability.Gb28181IdParser
-import com.uvp.sim.sip.SipMethod
-import com.uvp.sim.sip.SipRequest
-import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.ui.model.DialogRowDto
+import com.uvp.sim.ui.model.FlowItemDto
+import com.uvp.sim.ui.model.SipMessageDto
+import com.uvp.sim.ui.model.SipMethodDto
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -56,7 +55,7 @@ import kotlinx.datetime.toLocalDateTime
  * - 折叠默认:Dialog 默认展开,心跳簇默认折叠
  */
 @Composable
-fun SipFlowView(items: List<FlowItem>) {
+fun SipFlowView(items: List<FlowItemDto>) {
     val collapsed = remember { mutableStateOf(setOf<String>()) }
     val expandedClusters = remember { mutableStateOf(setOf<Long>()) }
 
@@ -65,7 +64,7 @@ fun SipFlowView(items: List<FlowItem>) {
     ) {
         itemsIndexed(items) { _, item ->
             when (item) {
-                is FlowItem.Dialog -> DialogCard(
+                is FlowItemDto.Dialog -> DialogCard(
                     item,
                     isCollapsed = item.callId in collapsed.value,
                     onToggle = {
@@ -74,7 +73,7 @@ fun SipFlowView(items: List<FlowItem>) {
                         else collapsed.value + item.callId
                     }
                 )
-                is FlowItem.HeartbeatCluster -> ClusterChip(
+                is FlowItemDto.HeartbeatCluster -> ClusterChip(
                     item,
                     expanded = item.firstAtMs in expandedClusters.value,
                     onToggle = {
@@ -94,7 +93,7 @@ fun SipFlowView(items: List<FlowItem>) {
 
 @Composable
 private fun DialogCard(
-    dialog: FlowItem.Dialog,
+    dialog: FlowItemDto.Dialog,
     isCollapsed: Boolean,
     onToggle: () -> Unit
 ) {
@@ -197,8 +196,8 @@ private fun DialogCard(
             Column(modifier = Modifier.padding(bottom = 6.dp)) {
                 dialog.rows.forEach { row ->
                     when (row) {
-                        is DialogRow.Message -> MessageLine(row)
-                        is DialogRow.MediaSegment -> MediaLine(row)
+                        is DialogRowDto.Message -> MessageLine(row)
+                        is DialogRowDto.MediaSegment -> MediaLine(row)
                     }
                 }
             }
@@ -209,7 +208,7 @@ private fun DialogCard(
 /* ─────────────────────────  消息行(双列 sim ↔ 平台)  ───────────────────────── */
 
 @Composable
-private fun MessageLine(msg: DialogRow.Message) {
+private fun MessageLine(msg: DialogRowDto.Message) {
     val arrowColor = if (msg.outgoing) UvpColor.Primary else UvpColor.Success
     Column(
         modifier = Modifier
@@ -283,7 +282,7 @@ private fun MessageLine(msg: DialogRow.Message) {
 /* ─────────────────────────  RTP 段(虚线条)  ───────────────────────── */
 
 @Composable
-private fun MediaLine(seg: DialogRow.MediaSegment) {
+private fun MediaLine(seg: DialogRowDto.MediaSegment) {
     val active = seg.stoppedAtMs == null
     val color = if (active) UvpColor.Warning else UvpColor.TextHint
     val mb = (seg.packetCount * 1500.0 / 1024 / 1024)  // 估算(每包≈1500B)
@@ -340,7 +339,7 @@ private fun MediaLine(seg: DialogRow.MediaSegment) {
 
 @Composable
 private fun ClusterChip(
-    cluster: FlowItem.HeartbeatCluster,
+    cluster: FlowItemDto.HeartbeatCluster,
     expanded: Boolean,
     onToggle: () -> Unit
 ) {
@@ -387,10 +386,10 @@ private fun ClusterChip(
 
 /* ─────────────────────────  辅助:业务名推断 + 时间格式化  ───────────────────────── */
 
-private fun List<DialogRow>.lastTimestamp(): Long? = mapNotNull {
+private fun List<DialogRowDto>.lastTimestamp(): Long? = mapNotNull {
     when (it) {
-        is DialogRow.Message -> it.timestampMs
-        is DialogRow.MediaSegment -> it.stoppedAtMs ?: it.startedAtMs
+        is DialogRowDto.Message -> it.timestampMs
+        is DialogRowDto.MediaSegment -> it.stoppedAtMs ?: it.startedAtMs
     }
 }.maxOrNull()
 
@@ -400,20 +399,20 @@ private fun List<DialogRow>.lastTimestamp(): Long? = mapNotNull {
  * 启发式:看 Dialog 第一条消息的 SIP method,推断业务类型。
  * 备用:hex 短 hash 后缀作 trace token(老板要 grep 时用)。
  */
-private fun dialogBusinessTitle(dialog: FlowItem.Dialog): String {
-    val first = dialog.rows.firstOrNull() as? DialogRow.Message
+private fun dialogBusinessTitle(dialog: FlowItemDto.Dialog): String {
+    val first = dialog.rows.firstOrNull() as? DialogRowDto.Message
     val token = dialog.callId.substringBefore('@').take(6)
 
     val biz = when (val msg = first?.rawMessage) {
-        is SipRequest -> when (msg.method) {
-            SipMethod.REGISTER -> "📡 注册"
-            SipMethod.INVITE -> {
+        is SipMessageDto.Request -> when (msg.method) {
+            SipMethodDto.REGISTER -> "📡 注册"
+            SipMethodDto.INVITE -> {
                 val parsed = Gb28181IdParser.parseFromRequestUri(msg.requestUri)
                 if (parsed != null) "🎬 视频点播 · ${parsed.label}"
                 else "🎬 视频点播"
             }
-            SipMethod.MESSAGE -> {
-                val body = msg.body.decodeToString()
+            SipMethodDto.MESSAGE -> {
+                val body = msg.body
                 when {
                     "<CmdType>Catalog</CmdType>" in body -> "📂 目录查询"
                     "<CmdType>DeviceInfo</CmdType>" in body -> "📋 设备信息"
@@ -421,10 +420,10 @@ private fun dialogBusinessTitle(dialog: FlowItem.Dialog): String {
                     else -> "💬 MESSAGE"
                 }
             }
-            SipMethod.BYE -> "✋ 结束通话"
+            SipMethodDto.BYE -> "✋ 结束通话"
             else -> msg.method.name
         }
-        is SipResponse -> "↩ ${msg.statusCode}"
+        is SipMessageDto.Response -> "↩ ${msg.statusCode}"
         else -> "Dialog"
     }
     return "$biz  · #$token"
@@ -449,20 +448,20 @@ private fun formatHmsMillis(epochMs: Long): String {
  * 每条消息原样输出 SIP wire 格式(请求行/状态行 + headers + body),
  * 媒体段以 `--- RTP ... ---` 注释形式标注,方便贴到工单或 IDE 里直接看。
  */
-private fun formatDialogForCopy(dialog: FlowItem.Dialog, title: String): String = buildString {
+private fun formatDialogForCopy(dialog: FlowItemDto.Dialog, title: String): String = buildString {
     appendLine("# $title")
     appendLine("# Call-ID: ${dialog.callId}")
     appendLine("# 开始: ${formatHmsMillis(dialog.startedAtMs)}  · 共 ${dialog.rows.size} 条")
     appendLine()
     dialog.rows.forEachIndexed { idx, row ->
         when (row) {
-            is DialogRow.Message -> {
+            is DialogRowDto.Message -> {
                 val arrow = if (row.outgoing) "→ sim → 平台" else "← 平台 → sim"
                 appendLine("--- [${idx + 1}] ${formatHmsMillis(row.timestampMs)} $arrow ${row.title} ---")
                 append(formatSipMessage(row.rawMessage))
                 appendLine()
             }
-            is DialogRow.MediaSegment -> {
+            is DialogRowDto.MediaSegment -> {
                 val end = row.stoppedAtMs?.let { formatHmsMillis(it) } ?: "(推送中)"
                 appendLine("--- [${idx + 1}] RTP ${formatHmsMillis(row.startedAtMs)} → $end ---")
                 appendLine("# 目标: ${row.remoteHost}:${row.remotePort}")
@@ -473,15 +472,15 @@ private fun formatDialogForCopy(dialog: FlowItem.Dialog, title: String): String 
     }
 }
 
-private fun formatSipMessage(msg: com.uvp.sim.sip.SipMessage): String = buildString {
+private fun formatSipMessage(msg: SipMessageDto): String = buildString {
     when (msg) {
-        is SipRequest -> appendLine("${msg.method} ${msg.requestUri} SIP/2.0")
-        is SipResponse -> appendLine("SIP/2.0 ${msg.statusCode} ${msg.reasonPhrase}")
+        is SipMessageDto.Request -> appendLine("${msg.method.name} ${msg.requestUri} ${msg.sipVersion}")
+        is SipMessageDto.Response -> appendLine("${msg.sipVersion} ${msg.statusCode} ${msg.reasonPhrase}")
     }
     msg.headers.forEach { appendLine("${it.name}: ${it.value}") }
     if (msg.body.isNotEmpty()) {
         appendLine()
-        append(msg.body.decodeToString())
+        append(msg.body)
         if (!endsWith('\n')) appendLine()
     }
 }
