@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -18,10 +19,6 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.uvp.sim.camera.AndroidAudioStreamer
-import com.uvp.sim.camera.AndroidCameraStreamer
-import com.uvp.sim.camera.AudioCapture
-import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.observability.AndroidSessionStore
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
@@ -42,32 +39,38 @@ import com.uvp.sim.ui.actions.RecordingActions
 import com.uvp.sim.ui.actions.logged
 import com.uvp.sim.ui.actions.loggedR
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * Android 平台壳 — Wave 4 PR-PLATFORM-RUNTIME 后大瘦身。
+ *
+ * 职责:
+ *   1. observability 接线(SessionTracker / SystemLogger / logcat / toast bridge)
+ *   2. 权限请求(CAMERA / RECORD_AUDIO),拿到后 ensure 媒体已装好(runtime 已在 VM init 时装)
+ *   3. Surface preview 通过 [CameraPreviewBinder] 路由到 [com.uvp.sim.app.PlatformRuntimeAndroid]
+ *   4. videoConfigVersion bump 时调 viewModel.applyCurrentVideoConfig()
+ *   5. Compose UI 注入 AppActions
+ *
+ * 不再做:
+ *   - new CameraCapture / new AudioCapture / new AndroidRecordingService(挪到 PlatformRuntimeAndroid)
+ *   - new AndroidCameraStreamer / new AndroidAudioStreamer(挪到 PlatformRuntimeAndroid)
+ *   - companion sStreamer / sRecordingService 单例(挪到 PlatformRuntimeAndroid 内部 @Volatile)
+ *   - attachStreamer / attachAudioStreamer 9 参装配
+ */
 class MainActivity : ComponentActivity() {
 
     private val viewModel: SipViewModel by viewModels()
-
-    private lateinit var cameraCapture: CameraCapture
-    private lateinit var audioCapture: AudioCapture
-    private var audioStreamer: AndroidAudioStreamer? = null
     private val systemEvents = MutableStateFlow<List<SystemLog>>(emptyList())
-
-    /** 进程级单例,跨 Activity 重建。第一次 onCreate 创建,之后复用。 */
-    private var streamerRef: AndroidCameraStreamer?
-        get() = sStreamer
-        set(value) { sStreamer = value }
-
-    /** 进程级单例,跨 Activity 重建。第一次 onCreate 创建,之后复用。 */
-    private var recordingServiceRef: com.uvp.sim.recording.AndroidRecordingService?
-        get() = sRecordingService
-        set(value) { sRecordingService = value }
 
     private val requestPermissions =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result[Manifest.permission.CAMERA] == true) attachStreamer()
-            if (result[Manifest.permission.RECORD_AUDIO] == true) attachAudioStreamer()
+            // 权限拿到后,触发一次 applyCurrentVideoConfig 让 runtime 把当前 streamer rebind 到 facade
+            // (首次 buildCameraCapture/buildAudioCapture 已在 ViewModel init 跑过,这里只确保用户授权后
+            //  capture facade 拿到的 streamer 状态对齐)
+            if (result[Manifest.permission.CAMERA] == true ||
+                result[Manifest.permission.RECORD_AUDIO] == true) {
+                viewModel.applyCurrentVideoConfig()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,46 +88,21 @@ class MainActivity : ComponentActivity() {
             "应用启动 · 会话 #${SessionTracker.currentId}"
         )
 
-        cameraCapture = CameraCapture(viewModel.newCaptureConfig())
-        audioCapture = AudioCapture(viewModel.newAudioCaptureConfig())
-        viewModel.bindCamera(cameraCapture)
-        viewModel.bindAudio(audioCapture)
-
-        // M2 录像服务 — 与 AndroidCameraStreamer 共享同一 ProcessCameraProvider
-        // 单例 + streamer 的自驱 STARTED LifecycleOwner。
-        // 切后台 / Activity 重建时 streamer 的 lifecycle 仍 STARTED,所以录像和
-        // 实时推流都不会被系统自动 unbind 干掉(切后台不录像 / 预览黑屏的根因)。
-        if (recordingServiceRef == null) {
-            recordingServiceRef = com.uvp.sim.recording.AndroidRecordingService(
-                context = applicationContext,
-                executor = ContextCompat.getMainExecutor(applicationContext),
-                deviceIdSupplier = { viewModel.config.value.device.deviceId },
-                scope = AppScope.scope,
-                osdConfigSupplier = { viewModel.osdConfig },
-                encoderConfigSupplier = {
-                    val v = viewModel.config.value.video
-                    com.uvp.sim.recording.AndroidRecordingService.EncoderConfig(
-                        widthPx = v.resolution.widthPx,
-                        heightPx = v.resolution.heightPx,
-                        frameRate = v.frameRate,
-                        bitrateBps = v.bitrateKbps * 1000,
-                        keyframeIntervalSeconds = v.keyframeIntervalSeconds
-                    )
-                },
-                profileSupplier = { viewModel.config.value.recording }
-            )
-            viewModel.bindRecordingService(recordingServiceRef!!)
+        // Surface 预览路由 — Compose 端 SurfaceView attach/detach 通过 binder 落到 runtime
+        val runtime = viewModel.platformRuntime()
+        CameraPreviewBinder.setBinder { view ->
+            if (view != null) runtime.attachPreviewSurface(view)
+            else runtime.detachPreviewSurface()
         }
 
+        // 权限检查 — 没拿到就请求,拿到后媒体已就绪
         val needs = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
-        ) attachStreamer() else needs += Manifest.permission.CAMERA
-
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
+        ) needs += Manifest.permission.CAMERA
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
-        ) attachAudioStreamer() else needs += Manifest.permission.RECORD_AUDIO
-
+        ) needs += Manifest.permission.RECORD_AUDIO
         if (needs.isNotEmpty()) requestPermissions.launch(needs.toTypedArray())
 
         setContent {
@@ -265,13 +243,16 @@ class MainActivity : ComponentActivity() {
                 CapabilityActions by capabilityActions,
                 RecordingActions by recordingActions,
                 NetworkActions by networkActions {}
-            // Rebuild encoder/streamer whenever video profile bumps.
+            // Video config 变更触发 streamer 真重建 — 委托给 PlatformRuntimeAndroid.applyVideoConfig
             LaunchedEffect(videoVersion) {
                 if (videoVersion > 0) {
                     if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) ==
-                        PackageManager.PERMISSION_GRANTED) attachStreamer()
-                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) ==
-                        PackageManager.PERMISSION_GRANTED) attachAudioStreamer()
+                        PackageManager.PERMISSION_GRANTED ||
+                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) ==
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        viewModel.applyCurrentVideoConfig()
+                    }
                 }
             }
             App(state = uiState, actions = actions)
@@ -323,67 +304,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun attachStreamer() {
-        // streamer 是进程级单例:首次创建,后续 Activity 重建复用同一实例。
-        // 这样切后台 / 旋屏时 streamer 的自驱 lifecycle 不被销毁,CameraX 不会
-        // 自动 unbind 录像 / 推流的 use cases。
-        //
-        // videoConfigVersion bump 时(PR-USER-BUG-1):用户改了分辨率 / 帧率 /
-        // 码率 / 编解码器,必须 release 旧 streamer + new 一个新的,否则旧 encoder
-        // 单例沿用旧 CaptureConfig,用户改了配置看不到效果。
-        val captureCfg = viewModel.newCaptureConfig()
-        val versionBumped = viewModel.videoConfigVersion.value > 0
-        val existing = streamerRef
-        val s = if (existing != null && versionBumped) {
-            runCatching { existing.release() }
-            val fresh = AndroidCameraStreamer(
-                context = applicationContext,
-                mainExecutor = ContextCompat.getMainExecutor(applicationContext),
-                config = captureCfg,
-                osdConfigFlow = viewModel.osdConfig
-            )
-            streamerRef = fresh
-            fresh
-        } else {
-            existing ?: AndroidCameraStreamer(
-                context = applicationContext,
-                mainExecutor = ContextCompat.getMainExecutor(applicationContext),
-                config = captureCfg,
-                osdConfigFlow = viewModel.osdConfig
-            ).also { streamerRef = it }
-        }
-        // 即便复用旧 streamer 也把最新 CaptureConfig 推给它 — applyCaptureConfig
-        // 同值 short-circuit 不抖,值变会 release 当前 encoder 让下一轮 stream 起新 codec。
-        s.applyCaptureConfig(captureCfg)
-        cameraCapture.setStreamer(s)
-        CameraPreviewBinder.setBinder { view ->
-            if (view != null) s.attachPreviewView(view) else s.detachPreviewView()
-        }
-    }
-
-    private fun attachAudioStreamer() {
-        audioStreamer?.let { old ->
-            // Activity scope 内异步 stop + 2s 超时,避免 UI 线程阻塞。
-            lifecycleScope.launch {
-                kotlinx.coroutines.withTimeoutOrNull(2_000L) {
-                    runCatching { old.stop() }
-                }
-            }
-        }
-        val s = AndroidAudioStreamer(viewModel.newAudioCaptureConfig())
-        audioStreamer = s
-        audioCapture.setStreamer(s)
-    }
-
     companion object {
         private const val TAG_SYS = "SystemLogger"
-
-        /** 进程级单例,跨 Activity 重建。 */
-        @Volatile
-        private var sStreamer: AndroidCameraStreamer? = null
-
-        /** 进程级单例,跨 Activity 重建。 */
-        @Volatile
-        private var sRecordingService: com.uvp.sim.recording.AndroidRecordingService? = null
     }
 }
