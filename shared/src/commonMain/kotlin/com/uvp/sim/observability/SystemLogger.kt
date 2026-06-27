@@ -69,7 +69,8 @@ object SystemLogger {
                             level = cmd.level,
                             tag = cmd.tag,
                             message = sanitize(cmd.message),
-                            detail = cmd.detail?.let(::sanitize)
+                            detail = cmd.detail?.let(::sanitize),
+                            category = cmd.category,
                         )
                         buffer.add(log)
                         _flow.emit(log)
@@ -94,9 +95,19 @@ object SystemLogger {
         }
     }
 
-    /** 业务侧 emit 入口 — 非阻塞、非 suspend、可在任意线程调用。 */
-    fun emit(level: LogLevel, tag: LogTag, message: String, detail: String? = null) {
-        channel.trySend(Command.Emit(level, tag, message, detail))
+    /** 业务侧 emit 入口 — 非阻塞、非 suspend、可在任意线程调用。
+     *
+     * [category] 可选 — Error/Warning 级别带上可让结构化日志查询更高效;
+     * Info/Debug 级别 emit 时不强制(默认 null)。老调用点(2/3/4 参 message+detail)继续工作。
+     */
+    fun emit(
+        level: LogLevel,
+        tag: LogTag,
+        message: String,
+        detail: String? = null,
+        category: ErrorCategory? = null,
+    ) {
+        channel.trySend(Command.Emit(level, tag, message, detail, category))
     }
 
     /**
@@ -138,7 +149,8 @@ object SystemLogger {
             val level: LogLevel,
             val tag: LogTag,
             val message: String,
-            val detail: String?
+            val detail: String?,
+            val category: ErrorCategory?,
         ) : Command()
 
         object Clear : Command()

@@ -26,6 +26,8 @@ typealias LogTag = com.uvp.sim.api.LogTag
  * - [seq] 单调递增,buffer 排序与暂停期间累积计数靠它(防时钟回拨)
  * - [sessionId] 进每条 log 而不是只在顶部展示,便于多会话拼合后区分
  * - [detail] 可选长文本(stack / 完整报文等),行展开时显示
+ * - [category] P3-3 加:Error/Warning 级别 emit 时可带分级,Info/Debug 不强制(默认 null)。
+ *   排障时按 category 过滤,补 grep 之外的结构化视图。
  */
 data class SystemLog(
     val seq: Long,
@@ -34,7 +36,8 @@ data class SystemLog(
     val level: LogLevel,
     val tag: LogTag,
     val message: String,
-    val detail: String? = null
+    val detail: String? = null,
+    val category: ErrorCategory? = null,
 )
 
 /**

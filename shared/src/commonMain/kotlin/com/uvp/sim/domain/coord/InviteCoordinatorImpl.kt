@@ -331,7 +331,7 @@ internal class InviteCoordinatorImpl(
                     "拒绝 INVITE: channelId=$channelId → ${rejection.first} ${rejection.second}"
                 )
             } catch (e: Throwable) {
-                simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send INVITE reject", e)))
+                simEventEmit(com.uvp.sim.domain.transportErrorOf("send INVITE reject", e))
             }
             return
         }
@@ -358,7 +358,7 @@ internal class InviteCoordinatorImpl(
         val offer = try {
             com.uvp.sim.sip.SdpParser.parseOffer(invite.body)
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("SDP parse", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("SDP parse", e))
             return
         }
 
@@ -381,7 +381,7 @@ internal class InviteCoordinatorImpl(
         val localRtpPort = try {
             rtp.bindLocalPort()
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("RTP bind", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP bind", e))
             return
         }
 
@@ -423,7 +423,7 @@ internal class InviteCoordinatorImpl(
         try {
             outbox.send(response).getOrThrow()
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send 200 OK", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("send 200 OK", e))
             try { rtp.close() } catch (_: Throwable) {}
             return
         }
@@ -479,7 +479,7 @@ internal class InviteCoordinatorImpl(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("RTP video send", e)))
+                simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP video send", e))
                 scope.launch { stopActiveStream(cid, "video send failed: ${e::class.simpleName}") }
             }
         }
@@ -504,7 +504,7 @@ internal class InviteCoordinatorImpl(
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {
-                    simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("RTP audio send", e)))
+                    simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP audio send", e))
                     scope.launch { stopActiveStream(cid, "audio send failed: ${e::class.simpleName}") }
                 }
             }
@@ -513,7 +513,7 @@ internal class InviteCoordinatorImpl(
         // RTCP SR 反馈
         val rtcp = sender(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP)
         try { rtcp.bindLocalPort() } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("RTCP bind", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTCP bind", e))
         }
         val ssrcInt = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
         val rtcpJob = scope.launch {
@@ -587,7 +587,7 @@ internal class InviteCoordinatorImpl(
             val ok = SipBuilders.buildSimple200(cancel, userAgent = config.userAgent)
             outbox.send(ok).getOrThrow()
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send CANCEL 200", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("send CANCEL 200", e))
         }
         val cid = cancel.callId() ?: ""
         val active = activeStream
@@ -607,7 +607,7 @@ internal class InviteCoordinatorImpl(
             val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
             outbox.send(ok).getOrThrow()
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send BYE 200", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("send BYE 200", e))
         }
         // PR5 T5.4:回放 dialog BYE 由 PlaybackCoordinator 接,本类只处理 activeStream
         stopActiveStream(cid, "remote BYE")
@@ -675,7 +675,7 @@ internal class InviteCoordinatorImpl(
                 "主动 BYE 终止推流: $reason"
             )
         } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("send BYE", e)))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("send BYE", e))
         }
         stopActiveStream(active.callId, reason)
         if (mutableSipState.value == SipState.InCall) {
