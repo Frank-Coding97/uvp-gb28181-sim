@@ -74,6 +74,7 @@ object SipResponseBuilders {
                 else -> Unit
             }
         }
+        newHeaders += SipMessage.Header(SipHeader.DATE, SipHeaders.rfc1123Date())
         return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
     }
 
