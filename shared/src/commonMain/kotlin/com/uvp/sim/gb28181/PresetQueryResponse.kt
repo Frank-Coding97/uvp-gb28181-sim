@@ -49,11 +49,11 @@ object PresetQueryResponse {
     ): String {
         val responseDeviceId = channelId.ifBlank { config.device.deviceId }
         val sumNum = presets.size
-        val sortedItems = presets.toSortedMap()
+        val sortedKeys = presets.keys.sorted()
         val itemsBlock = if (sumNum == 0) {
             "<PresetList Num=\"0\"/>"
         } else {
-            val items = sortedItems.keys.joinToString("\n") { idx ->
+            val items = sortedKeys.joinToString("\n") { idx ->
                 "<Item><PresetID>$idx</PresetID><PresetName>Preset $idx</PresetName></Item>"
             }
             "<PresetList Num=\"$sumNum\">\n$items\n</PresetList>"

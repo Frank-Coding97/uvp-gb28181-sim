@@ -1200,7 +1200,7 @@ internal class ManscdpRouterImpl(
             val s = mutableDeviceControlState.value
             val responseDeviceId = channelId.ifBlank { config.device.deviceId }
             val sumNum = s.cruiseTracks.size
-            val items = s.cruiseTracks.toSortedMap().keys.joinToString("\r\n") { trackNum ->
+            val items = s.cruiseTracks.keys.sorted().joinToString("\r\n") { trackNum ->
                 "<Item><GroupID>$trackNum</GroupID><Name>巡航 $trackNum</Name></Item>"
             }
             val itemsBlock = if (sumNum == 0) "<TrackList Num=\"0\"/>"
