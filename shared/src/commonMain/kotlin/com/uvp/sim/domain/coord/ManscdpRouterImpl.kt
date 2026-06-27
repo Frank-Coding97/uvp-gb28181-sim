@@ -10,8 +10,6 @@ import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlActions
 import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlModel
-import com.uvp.sim.domain.DeviceControlState
-import com.uvp.sim.domain.DerivedDeviceControlStateFlow
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionDialog
@@ -101,9 +99,7 @@ internal class ManscdpRouterImpl(
     private val _events = MutableSharedFlow<ManscdpEvent>(extraBufferCapacity = 32)
     override val events: SharedFlow<ManscdpEvent> = _events.asSharedFlow()
 
-    @Suppress("DEPRECATION")
-    override val deviceControlState: StateFlow<DeviceControlState> =
-        DerivedDeviceControlStateFlow(mutableDeviceControlState)
+    override val deviceControlState: StateFlow<DeviceControlModel> = mutableDeviceControlState
 
     private val localIp: String get() = localIpProvider()
 

@@ -13,7 +13,7 @@ import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionSnapshot
 import com.uvp.sim.network.TransportType
@@ -77,7 +77,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<SipState> get() = appEngine.state
     val config: StateFlow<SimConfig> get() = appEngine.config
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> get() = appEngine.subscriptions
-    val deviceControl: StateFlow<DeviceControlState> get() = appEngine.deviceControlState
+    val deviceControl: StateFlow<DeviceControlModel> get() = appEngine.deviceControlState
     val catalogTree: StateFlow<List<CatalogNode>> get() = appEngine.catalogTree
     val alarmHistory: StateFlow<List<com.uvp.sim.domain.AlarmRecord>> get() = appEngine.alarmHistory
     val clockOffset: StateFlow<com.uvp.sim.domain.ClockOffset> get() = appEngine.clockOffset
