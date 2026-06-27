@@ -68,4 +68,59 @@ class MobilePositionNotifyTest {
         assertTrue(xml.contains("<Speed>25.3</Speed>"))
         assertTrue(xml.contains("<Direction>270.5</Direction>"))
     }
+
+    /**
+     * KMP-purify regression: `"%.6f".format(...)` and `"%.1f".format(...)` were
+     * replaced with a hand-rolled half-up formatter (commonMain has no
+     * String.format on Kotlin/Native). Lock in expected byte-equivalent output
+     * for a representative set of inputs so any future drift fails loudly.
+     *
+     * Cases cover: integer values, plain decimals, half-up rounding boundaries,
+     * trailing-zero padding, negative values (altitude can be below sea level),
+     * and exact-fraction edge cases.
+     */
+    @Test
+    fun buildFormatsNumbersAsExpectedFixtures() {
+        val xml = MobilePositionNotify.build(
+            deviceId = "dev1",
+            sn = 99,
+            point = GeoPoint(longitude = 116.4045678, latitude = -39.9154321),
+            speed = 12.34,           // %.1f → 12.3 (half-down at .34)
+            direction = 0.05,        // %.1f → 0.1 (half-up at .05)
+            altitude = -7.25,        // %.1f → -7.3 (half-up away from zero on neg)
+            timestamp = "2026-06-27T10:00:00"
+        )
+        // Longitude/latitude formatted to 6 decimals, half-up at .5
+        assertTrue(
+            xml.contains("<Longitude>116.404568</Longitude>"),
+            "longitude format mismatch: $xml"
+        )
+        assertTrue(
+            xml.contains("<Latitude>-39.915432</Latitude>"),
+            "latitude format mismatch: $xml"
+        )
+        assertTrue(xml.contains("<Speed>12.3</Speed>"), "speed format mismatch: $xml")
+        assertTrue(xml.contains("<Direction>0.1</Direction>"), "direction format mismatch: $xml")
+        assertTrue(xml.contains("<Altitude>-7.3</Altitude>"), "altitude format mismatch: $xml")
+    }
+
+    @Test
+    fun buildFormatsTrailingZerosWithFixedDecimals() {
+        // Integer-valued inputs must still emit the configured decimal places
+        // (e.g. 1.0 → "1.0" for %.1f, 116.0 → "116.000000" for %.6f).
+        val xml = MobilePositionNotify.build(
+            deviceId = "dev1",
+            sn = 100,
+            point = GeoPoint(longitude = 116.0, latitude = -1.0),
+            speed = 0.0,
+            direction = 360.0,
+            altitude = 0.0,
+            timestamp = "2026-06-27T10:00:00"
+        )
+        assertTrue(xml.contains("<Longitude>116.000000</Longitude>"))
+        assertTrue(xml.contains("<Latitude>-1.000000</Latitude>"))
+        assertTrue(xml.contains("<Speed>0.0</Speed>"))
+        assertTrue(xml.contains("<Direction>360.0</Direction>"))
+        assertTrue(xml.contains("<Altitude>0.0</Altitude>"))
+    }
 }

@@ -1,5 +1,6 @@
 package com.uvp.sim.network
 
+import com.uvp.sim.concurrency.IoDispatcher
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -96,7 +97,7 @@ class TcpSipTransport(
         // Android 主线程会触发 NetworkOnMainThreadException(ktor tcp().connect() 内部
         // 有同步 socket 检测,即便挂 suspend),切到 IO 线程跑。
         // ba7d597 已为 RTP TCP 修过同款问题,现在 SIP TCP 同步治理。
-        withContext(Dispatchers.IO) {
+        withContext(IoDispatcher) {
             val sm = SelectorManager(Dispatchers.Default)
             val sk = try {
                 aSocket(sm)
@@ -143,7 +144,7 @@ class TcpSipTransport(
         val wc = writeChannel ?: error("Transport not connected — call connect() first")
         val payload = message.toBytes()
         // write 在主线程也会撞 NetworkOnMainThreadException,统一在 IO 跑。
-        withContext(Dispatchers.IO) {
+        withContext(IoDispatcher) {
             try {
                 wc.writeByteArray(payload)
             } catch (e: Throwable) {
@@ -163,7 +164,7 @@ class TcpSipTransport(
         writeChannel = null
         // socket.close() / selector.close() 都涉及 fd 释放,在主线程上 strict
         // mode 同样会发火,统一到 IO。
-        withContext(Dispatchers.IO) {
+        withContext(IoDispatcher) {
             socket?.close()
             socket = null
             selector?.close()
@@ -199,8 +200,8 @@ class TcpSipTransport(
 
         if (headerLines.isEmpty()) return null
 
-        val headerBytes = headerLines.joinToString("\r\n").toByteArray(Charsets.UTF_8)
-        val separator = "\r\n\r\n".toByteArray(Charsets.UTF_8)
+        val headerBytes = headerLines.joinToString("\r\n").encodeToByteArray()
+        val separator = "\r\n\r\n".encodeToByteArray()
 
         val bodyBytes = if (contentLength > 0) {
             channel.readByteArray(contentLength)

@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.GeoPoint
+import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
@@ -32,7 +33,7 @@ class MockGpsSource(startPoint: GeoPoint, private val random: Random = Random.De
         direction = (direction + random.nextDouble(-30.0, 30.0)).mod(360.0)
         val speed = random.nextDouble(0.0, 30.0)
         val stepDeg = random.nextDouble(0.00001, 0.0001)
-        val rad = Math.toRadians(direction)
+        val rad = direction * PI / 180.0
         lat += stepDeg * cos(rad)
         lng += stepDeg * sin(rad)
         return PositionFix(
