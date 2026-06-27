@@ -295,6 +295,24 @@ docker run -d --name wvp \
 
 ---
 
+## 架构概览
+
+三层 Kotlin Multiplatform 结构，平台无关核心 + 平台壳：
+
+```
+shared/      KMP commonMain — SIP 信令栈 / PS Muxer / RTP / GB28181 MANSCDP 协议层
+             iosMain 已就位媒体线骨架（v1.1 接入）
+composeApp/  Compose Multiplatform UI（Material 3，跨 Android/iOS 共用）
+androidApp/  Android 壳模块（v1 唯一发版目标，承载 MediaCodec / 权限 / Service）
+dev-env/     Python mock 联调辅助（snapshot-receiver 等）
+```
+
+- **协议层零依赖**：SIP / SDP / PS / RTP / RTCP / MANSCDP 全部在 `shared/commonMain`，纯 Kotlin 无平台 API，~858 个 JVM 单测覆盖。
+- **UI 与领域解耦**：ViewModel 持有 `Model`（业务事实）+ `RenderState`（UI 派生），不让 UI 反向污染领域。
+- **iOS 路径已就绪**：`shared/src/iosMain/` 编译通过（gate `:shared:compileKotlinIosSimulatorArm64`），媒体线接入随 v1.1。
+
+---
+
 ## 联系我
 
 遇到 Bug、想要新功能、做平台兼容性反馈,欢迎提 [Issue](../../issues) 或加微信交流。
