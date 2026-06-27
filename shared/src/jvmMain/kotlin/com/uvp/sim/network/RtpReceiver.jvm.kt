@@ -17,15 +17,21 @@ import java.net.SocketTimeoutException
 /**
  * JVM 实现 — java.net,支持 UDP / TCP 主动 / TCP 被动。
  * TCP 走 RFC 4571 解帧(2 字节大端长度 + RTP 包)。
+ *
+ * M-1 (audit §3) 源验证:UDP 模式接到包后比对 [DatagramPacket.address] 与
+ * [expectedSourceHost],不匹配丢弃 + Warning。TCP 模式因为 connect/accept 已经
+ * 绑定对端,中途换源不可能,只需要走 SSRC 锁。SSRC 锁在首个合法包后锁定。
  */
 actual class RtpReceiver actual constructor(
-    private val parentScope: CoroutineScope?
+    private val parentScope: CoroutineScope?,
+    private val expectedSourceHost: String?,
 ) {
     private var mode: RtpMode = RtpMode.UDP
     private var udp: DatagramSocket? = null
     private var serverSocket: ServerSocket? = null
     private var tcpSocket: Socket? = null
     private val mtu = 1500
+    private val guard = RtpSourceGuard(expectedSourceHost)
 
     actual val localPort: Int
         get() = when (mode) {
@@ -88,6 +94,8 @@ actual class RtpReceiver actual constructor(
                 sock.receive(pkt)
                 val bytes = buf.copyOf(pkt.length)
                 val rtp = RtpPacket.parse(bytes) ?: continue
+                val srcHost = pkt.address?.hostAddress
+                if (!guard.accept(rtp, srcHost)) continue
                 onPacket(rtp)
             } catch (_: SocketTimeoutException) {
                 continue
@@ -102,6 +110,7 @@ actual class RtpReceiver actual constructor(
         try {
             val ins = sock.getInputStream()
             val lenBuf = ByteArray(2)
+            val srcHost = sock.inetAddress?.hostAddress
             while (isActive) {
                 if (!readFully(ins, lenBuf, 2)) break
                 val len = ((lenBuf[0].toInt() and 0xFF) shl 8) or (lenBuf[1].toInt() and 0xFF)
@@ -109,6 +118,7 @@ actual class RtpReceiver actual constructor(
                 val frame = ByteArray(len)
                 if (!readFully(ins, frame, len)) break
                 val rtp = RtpPacket.parse(frame) ?: continue
+                if (!guard.accept(rtp, srcHost)) continue
                 onPacket(rtp)
             }
         } catch (_: SocketException) {
