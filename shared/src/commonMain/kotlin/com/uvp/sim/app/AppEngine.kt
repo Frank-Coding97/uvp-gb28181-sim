@@ -208,10 +208,19 @@ class AppEngine(
         engineRefProvider: () -> SimulatorEngine?,
     ): EngineCoordinators {
         val localPortProvider: () -> Int = { tx.localPort.takeIf { it > 0 } ?: 5060 }
-        val rtpFactory: ((String, Int, RtpMode) -> com.uvp.sim.network.RtpSender)? =
-            resources.rtpSenderFactory?.let { f -> { host, port, mode -> f(host, port, engineScope, mode) } }
+        // P1-5: rtpFactory 透传 expectedClientHost — InviteCoord 在 TCP_PASSIVE 模式下
+        // 传 SDP remote IP 作 accept guard;UDP/TCP_ACTIVE/PlaybackBuilder 传 null。
+        val rtpFactory: ((String, Int, RtpMode, String?) -> com.uvp.sim.network.RtpSender)? =
+            resources.rtpSenderFactory?.let { f ->
+                { host, port, mode, expectedClientHost ->
+                    f(host, port, engineScope, mode, expectedClientHost)
+                }
+            }
+        // PlaybackBuilder 沿用 3 参签名(回放走 UDP,不需 accept guard)。
+        val rtpFactoryForPlayback: ((String, Int, RtpMode) -> com.uvp.sim.network.RtpSender)? =
+            rtpFactory?.let { f -> { host, port, mode -> f(host, port, mode, null) } }
         val playbackBuilder = resources.playbackBuilderFactory?.let { factory ->
-            rtpFactory?.let { rtp -> factory(engineScope, cfg.recording.playbackAudioCodec, rtp) }
+            rtpFactoryForPlayback?.let { rtp -> factory(engineScope, cfg.recording.playbackAudioCodec, rtp) }
         }
         // Wave 2 PR-SN-IDENTITY:Manscdp 直走 identityService;
         // Reg/Broadcast/Invite/Playback 4 Coord 既有 lambda 入口由 registerPoolLambdasFrom 派生

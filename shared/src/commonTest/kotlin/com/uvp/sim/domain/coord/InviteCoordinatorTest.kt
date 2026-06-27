@@ -63,7 +63,7 @@ class InviteCoordinatorTest {
         transport: MockSipTransport,
         catalog: List<CatalogNode> = fullTree(),
         cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
-        rtpSenderFactory: ((String, Int, RtpMode) -> RtpSender)? = null,
+        rtpSenderFactory: ((String, Int, RtpMode, String?) -> RtpSender)? = null,
     ): InviteCoordinatorImpl {
         val cfg = config(catalog)
         val tree = MutableStateFlow(catalog)

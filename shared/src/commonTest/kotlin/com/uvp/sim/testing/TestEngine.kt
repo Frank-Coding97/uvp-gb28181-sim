@@ -56,7 +56,7 @@ internal object TestEngine {
         localIpProvider: () -> String = { "0.0.0.0" },
         cameraCapture: CameraCapture? = null,
         audioCapture: AudioCapture? = null,
-        rtpSenderFactory: ((String, Int, RtpMode) -> RtpSender)? = null,
+        rtpSenderFactory: ((String, Int, RtpMode, String?) -> RtpSender)? = null,
         rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null,
         audioSinkFactory: ((Int, Int) -> AudioSink)? = null,
         recordingService: RecordingService = NoopRecordingService,
@@ -64,7 +64,7 @@ internal object TestEngine {
     ): SimulatorEngine {
         val resources = TestResources(
             rtpSenderFactory = rtpSenderFactory?.let { f ->
-                { host, port, _, mode -> f(host, port, mode) }
+                { host, port, _, mode, expectedClientHost -> f(host, port, mode, expectedClientHost) }
             },
             rtpReceiverFactory = rtpReceiverFactory,
             audioSinkFactory = audioSinkFactory,
@@ -149,7 +149,7 @@ internal object TestEngine {
 }
 
 internal class TestResources(
-    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null,
+    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? = null,
     override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null,
     override val audioSinkFactory: ((Int, Int) -> AudioSink)? = null,
     override val localIpProvider: () -> String = { "0.0.0.0" },

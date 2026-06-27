@@ -1,5 +1,9 @@
 package com.uvp.sim.network
 
+import com.uvp.sim.observability.ErrorCategory
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.BoundDatagramSocket
 import io.ktor.network.sockets.Datagram
@@ -25,12 +29,17 @@ import kotlinx.coroutines.withContext
  *
  * Supports UDP (default) and TCP via RFC 4571 length-prefixed framing
  * (TCP_ACTIVE = device connects out, TCP_PASSIVE = device listens).
+ *
+ * P1-5 (audit §2) TCP_PASSIVE accept guard:
+ *   - [expectedClientHost] 非 null 时,只接受该 IP 连接,其它连接 close + 继续等,
+ *     多次失败(MAX_ACCEPT_MISMATCH)后放弃。
  */
 actual class RtpSender actual constructor(
     actual val remoteHost: String,
     actual val remotePort: Int,
     private val parentScope: CoroutineScope?,
-    actual val mode: RtpMode
+    actual val mode: RtpMode,
+    private val expectedClientHost: String?
 ) {
     private val mutex = Mutex()
     private var udpSocket: BoundDatagramSocket? = null
@@ -84,13 +93,65 @@ actual class RtpSender actual constructor(
         selector = sm
         tcpServer = server
         ownedScope.launch(Dispatchers.IO) {
-            try {
-                val client = server.accept()
-                tcpSocket = client
-                tcpWrite = client.openWriteChannel(autoFlush = true)
-            } catch (_: Throwable) { /* shutdown path */ }
+            var mismatchCount = 0
+            while (mismatchCount < MAX_ACCEPT_MISMATCH) {
+                try {
+                    val client = server.accept()
+                    val clientHost = clientHostOf(client.remoteAddress as? InetSocketAddress)
+
+                    if (!hostMatches(expectedClientHost, clientHost)) {
+                        mismatchCount++
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Network,
+                            "TCP_PASSIVE accepted from unexpected $clientHost, expected $expectedClientHost — dropped (attempt $mismatchCount/$MAX_ACCEPT_MISMATCH)",
+                            category = ErrorCategory.ProtocolViolation
+                        )
+                        runCatching { client.close() }
+                        continue  // 继续等下一个连接
+                    }
+
+                    // 匹配或 expectedClientHost == null,接受连接
+                    tcpSocket = client
+                    tcpWrite = client.openWriteChannel(autoFlush = true)
+                    break
+                } catch (_: Throwable) {
+                    /* shutdown path or accept error */
+                    break
+                }
+            }
+            if (mismatchCount >= MAX_ACCEPT_MISMATCH) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Network,
+                    "TCP_PASSIVE give up after $MAX_ACCEPT_MISMATCH mismatched connection attempts",
+                    category = ErrorCategory.ProtocolViolation
+                )
+            }
         }
         return localPort
+    }
+
+    companion object {
+        private const val MAX_ACCEPT_MISMATCH = 10
+
+        /**
+         * Ktor [InetSocketAddress.hostname] 拿到的 host 在不同平台 / 版本可能是
+         * IP 字面量或 hostname,统一通过 java.net.InetAddress 解析成 IP 后比对。
+         */
+        private fun clientHostOf(address: InetSocketAddress?): String? {
+            val raw = address?.hostname ?: return null
+            return runCatching { java.net.InetAddress.getByName(raw).hostAddress }
+                .getOrDefault(raw)
+        }
+
+        private fun hostMatches(expected: String?, observed: String?): Boolean {
+            if (expected == null) return true   // 不验,任何连接放行
+            if (observed == null) return true   // 拿不到对端 IP,信任已建立连接
+            if (expected == observed) return true
+            // 双向 normalize 一次,处理 "localhost" vs "127.0.0.1" 差异
+            val expectedNormalized = runCatching { java.net.InetAddress.getByName(expected).hostAddress }.getOrNull()
+            val observedNormalized = runCatching { java.net.InetAddress.getByName(observed).hostAddress }.getOrNull()
+            return expectedNormalized != null && observedNormalized != null && expectedNormalized == observedNormalized
+        }
     }
 
     actual suspend fun send(packet: ByteArray) {

@@ -13,7 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 
 /** 单测用 fake PlatformResources(全空)。 */
 internal class FakePlatformResources(
-    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null,
+    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? = null,
     override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null,
     override val audioSinkFactory: ((Int, Int) -> AudioSink)? = null,
     override val playbackBuilderFactory: ((CoroutineScope, AudioCodec, (String, Int, RtpMode) -> RtpSender) -> com.uvp.sim.domain.PlaybackBuilder)? = null,

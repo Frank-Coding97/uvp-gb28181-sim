@@ -25,8 +25,8 @@ class PlatformResourcesAndroid(
     private val networkLocalIp: () -> String? = { null },
 ) : PlatformResources {
 
-    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? =
-        { host, port, scope, mode -> RtpSender(host, port, scope, mode) }
+    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? =
+        { host, port, scope, mode, expectedClientHost -> RtpSender(host, port, scope, mode, expectedClientHost) }
 
     override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? =
         { scope -> com.uvp.sim.network.realBroadcastRxSource(scope) }

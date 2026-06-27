@@ -27,12 +27,17 @@ enum class RtpMode { UDP, TCP_ACTIVE, TCP_PASSIVE }
  *      local port (UDP) or 0 (TCP_ACTIVE; the OS picks an ephemeral). Idempotent.
  *   2. `send(packet)` — push one RTP packet to the configured remote address.
  *   3. `close()` — release the socket.
+ *
+ * P1-5 (audit §2) TCP_PASSIVE accept guard:
+ *   - [expectedClientHost] — 在 TCP_PASSIVE 模式下,只接受来自该 IP 的连接(null = 不验,保旧行为)。
+ *     非匹配连接会被 close 并继续等待,多次失败后放弃并 Error log。
  */
 expect class RtpSender(
     remoteHost: String,
     remotePort: Int,
     parentScope: CoroutineScope? = null,
-    mode: RtpMode = RtpMode.UDP
+    mode: RtpMode = RtpMode.UDP,
+    expectedClientHost: String? = null
 ) {
     val remoteHost: String
     val remotePort: Int
