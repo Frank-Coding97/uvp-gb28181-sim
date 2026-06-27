@@ -47,7 +47,8 @@ class SystemLoggerTest {
         )
         testScheduler.advanceUntilIdle()
         val msg = SystemLogger.snapshot[0].message
-        assertTrue("authorization=****" in msg.lowercase(), "expected redaction, got: $msg")
+        // M-7 (audit §3) — 整个 Authorization 头收敛成 <redacted>,不再走 kv 风格
+        assertTrue("Authorization: <redacted>" in msg, "expected redaction, got: $msg")
         assertTrue("Bearer xxx.yyy.zzz" !in msg, "token leaked: $msg")
         SystemLogger.shutdownForTest()
     }
