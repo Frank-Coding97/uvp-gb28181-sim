@@ -139,7 +139,7 @@ class AppEngine(
                         transport?.connect()
                         existing.register()
                     } catch (e: Throwable) {
-                        holders.events.emit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("register retry", e)))
+                        holders.events.emit(com.uvp.sim.domain.transportErrorOf("register retry", e))
                     }
                     return
                 }
@@ -187,7 +187,7 @@ class AppEngine(
             tx.connect()
             eng.register()
         } catch (e: Throwable) {
-            holders.events.emit(SimEvent.TransportError(com.uvp.sim.domain.mapToUserError("connect", e)))
+            holders.events.emit(com.uvp.sim.domain.transportErrorOf("connect", e))
         }
     }
 

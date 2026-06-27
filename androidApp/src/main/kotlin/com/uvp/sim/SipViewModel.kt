@@ -319,7 +319,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 appEngine.updateCatalogTree(tree)
             } catch (e: Throwable) {
                 _events.update { current ->
-                    (listOf(SimEvent.TransportError(com.uvp.sim.domain.UserErrorMapper.map("save catalog", e))) + current).take(MAX_EVENT_LOG)
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
                 }
             }
         }
@@ -332,7 +332,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 appEngine.toggleChannelStatus(channelId, online)
             } catch (e: Throwable) {
                 _events.update { current ->
-                    (listOf(SimEvent.TransportError(com.uvp.sim.domain.UserErrorMapper.map("toggle channel status", e))) + current).take(MAX_EVENT_LOG)
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("toggle channel status", e)) + current).take(MAX_EVENT_LOG)
                 }
             }
         }
@@ -344,7 +344,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 appEngine.reportSnapshot()
             } catch (e: Throwable) {
                 _events.update { current ->
-                    (listOf(SimEvent.TransportError(com.uvp.sim.domain.UserErrorMapper.map("snapshot", e))) + current).take(MAX_EVENT_LOG)
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("snapshot", e)) + current).take(MAX_EVENT_LOG)
                 }
             }
         }
@@ -360,7 +360,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 appEngine.reportAlarm(payload)
             } catch (e: Throwable) {
                 _events.update { current ->
-                    (listOf(SimEvent.TransportError(com.uvp.sim.domain.UserErrorMapper.map("alarm fire", e))) + current).take(MAX_EVENT_LOG)
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("alarm fire", e)) + current).take(MAX_EVENT_LOG)
                 }
             }
         }
@@ -404,7 +404,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
                 appEngine.triggerMediaStatusAbnormal(notifyType)
             } catch (e: Throwable) {
                 _events.update { current ->
-                    (listOf(SimEvent.TransportError(com.uvp.sim.domain.UserErrorMapper.map("MediaStatus simulate", e))) + current).take(MAX_EVENT_LOG)
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("MediaStatus simulate", e)) + current).take(MAX_EVENT_LOG)
                 }
             }
         }
