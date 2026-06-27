@@ -37,6 +37,7 @@ import com.uvp.sim.network.UdpSipTransport
 import com.uvp.sim.sip.SipOutboxImpl
 import com.uvp.sim.sip.SipState
 import io.ktor.client.HttpClient
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
