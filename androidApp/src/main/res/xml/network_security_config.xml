@@ -1,12 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
     <!--
-        SIP/RTP 是明文 UDP 协议,Android 9+ 默认禁明文 socket,要在这里放开。
-        生产环境也只在 LAN 内连国标平台,不存在公网泄露的问题。
+        GB28181 LAN-only deployment — Network Security Config rationale:
+
+        1. **SIP/RTP cleartext requirement**:
+           GB/T 28181-2022 协议默认明文 UDP/TCP 传输(无 TLS 层定义),
+           Android 9+ 默认禁止明文 socket → cleartextTrafficPermitted=true 必须保留。
+
+        2. **HTTP traffic defense**:
+           本配置也会放开 app 内 HTTP 请求(如 SnapShot 抓拍上传),
+           但 HTTP 业务路径受**应用层 URL 白名单**严格限制:
+           - SnapShotConfig.isValidUploadUrlStrict() 校验上级平台下发的 upload URL
+           - SnapShotConfig.uploadAllowList 仅允许受控 LAN 网段(详见 Wave 7A-2 PR-SNAPSHOT-ALLOWLIST)
+           → 不依赖此 XML 的 domain-config 防御(Android XML schema 不支持 CIDR/IP range 枚举,动态平台 IP 无法收窄)
+
+        3. **User trust anchors**:
+           允许用户安装的 CA 证书(企业 LAN 自签 / 抓包调试证书),
+           便于内网测试场景。debug-overrides 进一步放宽 debug build 的证书校验。
+
+        4. **Threat model boundary**:
+           本模拟器设计场景是**受控局域网**(LAN-only),不建议公网直连部署。
+           详见 SECURITY.md "已知安全边界" 段落 + README "安全使用边界" 段落。
     -->
     <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
+            <certificates src="user" />
         </trust-anchors>
     </base-config>
+
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
 </network-security-config>
