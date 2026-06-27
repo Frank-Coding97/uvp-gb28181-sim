@@ -1,11 +1,9 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.gb28181.PtzCommand
-import kotlinx.coroutines.flow.FlowCollector
-import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Wave 3 PR-DC-DECOUPLE(2026-06-26):把原 [DeviceControlState] 拆成「业务 Model」+ 「UI RenderState」两层。
+ * Wave 3 PR-DC-DECOUPLE(2026-06-26):「业务 Model」+ 「UI RenderState」两层架构。
  *
  * **DeviceControlModel** 承载所有「业务 / 协议层」运行状态:
  *  - PTZ 姿态(panAngle/tiltAngle/zoomLevel) — preset SET 读、PreciseCtrl Query 回包用
@@ -21,9 +19,10 @@ import kotlinx.coroutines.flow.StateFlow
  * 拆分原则(测试驱动反推):凡是 Handler / Dispatcher / Coord / 业务单测**写或读**的字段进 Model;
  * 仅 UI Mapper / Compose 视图**消费**且可由 Model 推导的字段进 RenderState。
  *
- * Handler / Dispatcher / Coord 全部改用 `MutableStateFlow<DeviceControlModel>`;
- * UI 层(AppEngine 出口、SimulatorEngine.deviceControlState 公开 StateFlow)仍暴露
- * [DeviceControlState] 兼容包装(见同名文件),让 PR-UI-PROTOCOL-FIX(轨 ③)逐步迁。
+ * Handler / Dispatcher / Coord 全部用 `MutableStateFlow<DeviceControlModel>`;
+ * UI 层(AppEngine.deviceControlState / SimulatorEngine.deviceControlState)直接暴露
+ * [DeviceControlModel] StateFlow,UI Mapper 在边界处调 [deriveRenderState] 派生
+ * 渲染层语义字段(含 [DeviceCommandCategory]),协议字符串解析压在派生函数里,不漏到 UI。
  */
 data class DeviceControlModel(
     // PTZ 当前姿态(累积量,UI 层维护)
@@ -84,15 +83,29 @@ data class DeviceControlModel(
 )
 
 /**
+ * 平台控制命令的语义分类(GB-2022 §9.3.4 / §F.3 业务大类)。
+ *
+ * UI 用它派 Tab,不再 parse [LastDeviceCommand.rawHex] 字符串(轨 ④ PR-UI-PROTOCOL-FIX)。
+ * 派生逻辑集中在 [deriveCommandCategory],输入 [LastDeviceCommand.type]/[LastDeviceCommand.rawHex],
+ * 输出语义枚举;协议字符串泄露被压缩到这一个函数,不再散落到 Compose 视图里。
+ */
+enum class DeviceCommandCategory {
+    /** PTZ 运动 / 预置位 / 巡航 / 看守位 / 精确定位 / 三维拉框 */
+    Ptz,
+    /** 录像 / 布防 / 报警 / 远程重启 */
+    Status,
+    /** 强制 I 帧 / 抓拍 / 拉框聚焦 / 设备配置 / 在线升级 / 格式化 SD / 目标跟踪 */
+    Image,
+    /** 辅助开关(GB-2022 §F.3 byte3=0x89/0x8A):雨刷 / 红外灯 / 加热 / 除雾 / 制冷 */
+    Aux,
+}
+
+/**
  * UI 渲染派生层 — 仅含「显示用文本 / 时间戳 / 一次性 effect 标志」,由 [deriveRenderState] 从
  * [DeviceControlModel] 纯函数推导(single source of truth = Model)。
  *
  * 设计:UI Mapper / Compose 视图只读 RenderState 里的字段,不再读 Model 内部细节如 lastCommand?.rawHex,
  * 这样 Model 字段调整不破 UI 契约;同时 RenderState 不持有独立可变状态,Model 变 → RenderState 自动跟。
- *
- * **当前过渡阶段**:轨 ② 仅引入 RenderState 类型 + deriveRenderState 函数,UI Mapper 暂仍读
- * [DeviceControlState] 兼容 wrapper 内的旧 shape;轨 ③(PR-UI-PROTOCOL-FIX)把 Mapper 切到读
- * `state.render.xxx` / `state.model.xxx` 干净两段。
  */
 data class DeviceControlRenderState(
     /** 最近一次设备控制命令的类型(显示用),null = 从未收过. */
@@ -103,6 +116,11 @@ data class DeviceControlRenderState(
     val lastRecvAtMs: Long? = null,
     /** 最近一次 PTZ 命令解码后的方向 / 速度(HUD 显示用). */
     val lastCommandPtz: PtzCommand? = null,
+    /**
+     * 最近一次设备控制命令的语义分类(UI Tab 派发用)。null = 从未收过 / 未识别。
+     * **轨 ④ PR-UI-PROTOCOL-FIX**:UI 不再 parse rawHex,直接读它分流 Tab。
+     */
+    val lastCommandCategory: DeviceCommandCategory? = null,
     /** 是否有一次性 effect 待 UI 消费(用于驱动 Snackbar/Flash 动画). */
     val hasPendingEffect: Boolean = false,
     /** 当前一次性 effect(=Model.pendingEffect,UI LaunchedEffect 直接消费). */
@@ -121,29 +139,82 @@ fun deriveRenderState(model: DeviceControlModel): DeviceControlRenderState =
         lastCommandHex = model.lastCommand?.rawHex,
         lastRecvAtMs = model.lastCommand?.timestampMs,
         lastCommandPtz = model.lastCommand?.ptz,
+        lastCommandCategory = model.lastCommand?.let { deriveCommandCategory(it) },
         hasPendingEffect = model.pendingEffect != null,
         pendingEffect = model.pendingEffect,
         auxTimestamps = model.auxTimestamps,
     )
 
 /**
- * Wave 3 PR-DC-DECOUPLE:同步派生 [StateFlow] 包装器。
+ * 把协议层 [LastDeviceCommand] 分到 UI Tab 用的 [DeviceCommandCategory]。
  *
- * 用途:把 `StateFlow<DeviceControlModel>` 映射成 `StateFlow<DeviceControlState>` 兼容 wrapper,
- * **不启动独立 collect 协程**(避免 `stateIn(Eagerly)` 在 `runTest` 环境里触发
- * `UncompletedCoroutinesError`)。
+ * 历史:UI 层在 `PtzHudPanel.HudTab.fromCommand` 用 `rawHex.startsWith("雨刷")` 等中文字符串
+ * 匹配判 Tab,导致协议层 dispatcher 写啥 UI 必须知道。轨 ④ PR-UI-PROTOCOL-FIX 把这段判别压到这里,
+ * UI 只读语义枚举。
  *
- * 实现:`.value` 取值时同步包一层 wrapper;`.collect` 透传给底层 model flow 的 collect,
- * 边界处即时映射成 wrapper 发出。零额外协程,零额外内存。
+ * 规则(同原 HudTab.fromCommand 行为):
+ *   - PTZCmd:rawHex 以"雨刷/红外灯/加热/除雾/制冷/Aux"开头 → [DeviceCommandCategory.Aux];其余 → [Ptz]
+ *   - PTZPreciseCtrl → [Ptz]
+ *   - RecordCmd / GuardCmd / AlarmCmd / TeleBoot → [Status]
+ *   - IFameCmd / SnapShotCmd / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack → [Image]
+ *   - HomePosition → [Ptz](原 HudTab.fromCommand 未列,但 HomePosition 属云台范畴)
+ *   - 其他未知 type → null
  */
-@Suppress("DEPRECATION")
-internal class DerivedDeviceControlStateFlow(
-    private val source: StateFlow<DeviceControlModel>,
-) : StateFlow<DeviceControlState> {
-    override val value: DeviceControlState get() = DeviceControlState(model = source.value)
-    override val replayCache: List<DeviceControlState> get() = listOf(value)
-
-    override suspend fun collect(collector: FlowCollector<DeviceControlState>): Nothing {
-        source.collect { collector.emit(DeviceControlState(model = it)) }
+fun deriveCommandCategory(cmd: LastDeviceCommand): DeviceCommandCategory? = when (cmd.type) {
+    "PTZCmd" -> {
+        val raw = cmd.rawHex
+        val isAux = raw.startsWith("雨刷") || raw.startsWith("红外灯") ||
+            raw.startsWith("加热") || raw.startsWith("除雾") ||
+            raw.startsWith("制冷") || raw.startsWith("Aux")
+        if (isAux) DeviceCommandCategory.Aux else DeviceCommandCategory.Ptz
     }
+    "PTZPreciseCtrl", "HomePosition" -> DeviceCommandCategory.Ptz
+    "RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot" -> DeviceCommandCategory.Status
+    "IFameCmd", "SnapShotCmd", "DeviceConfig",
+    "DeviceUpgrade", "FormatSDCard", "TargetTrack" -> DeviceCommandCategory.Image
+    else -> null
+}
+
+// ----- Model 复用的领域类型(原放在 DeviceControlState.kt,wrapper 删除后挪到这里) -----
+
+/** GB-2022 §9.13 设备升级进度状态. */
+data class UpgradeProgress(
+    val sessionId: String,
+    val firmware: String,
+    val percent: Int,
+    val result: UpgradeResult,
+)
+
+enum class UpgradeResult { InProgress, Success, Failure }
+
+data class PtzPose(val pan: Float, val tilt: Float, val zoom: Float)
+
+data class DragZoomRect(
+    val midX: Int,
+    val midY: Int,
+    val lengthX: Int,
+    val lengthY: Int,
+)
+
+data class LastDeviceCommand(
+    val type: String,
+    val rawHex: String,
+    val timestampMs: Long,
+    val ptz: PtzCommand? = null,
+)
+
+sealed class DeviceEffect {
+    data object IFrameFlash : DeviceEffect()
+    data object Reboot : DeviceEffect()
+    data object SnapshotFlash : DeviceEffect()
+    data class HomePositionReturn(val targetPose: PtzPose) : DeviceEffect()
+    /** 预置位调用 — 跟看守位 [HomePositionReturn] 区分,UI 同时高亮 chip */
+    data class PresetRecall(val index: Int, val targetPose: PtzPose) : DeviceEffect()
+    /** GB-2022 §9.3.4 PTZPreciseCtrl 触发的精确角度跳转 */
+    data class PrecisePoseGoto(val targetPose: PtzPose) : DeviceEffect()
+    data class ConfigChanged(val changedFields: List<String>) : DeviceEffect()
+    /** GB-2022 §9.3.4 DeviceUpgrade — UI snackbar 提示,不真 OTA */
+    data class DeviceUpgradeRequested(val firmware: String) : DeviceEffect()
+    /** GB-2022 §9.3.4 FormatSDCard — UI snackbar 提示,不真格式化 */
+    data class FormatSDCardRequested(val cardIndex: Int) : DeviceEffect()
 }

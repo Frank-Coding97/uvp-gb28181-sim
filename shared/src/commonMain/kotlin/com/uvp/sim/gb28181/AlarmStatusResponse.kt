@@ -5,7 +5,7 @@ import com.uvp.sim.config.SimConfig
 
 /**
  * GB/T 28181 §9.3.3 AlarmStatus 应答的运行期快照。
- * 由 SimulatorEngine 在响应时从 DeviceControlState 抓取。
+ * 由 SimulatorEngine 在响应时从 DeviceControlModel 抓取。
  */
 data class AlarmStatusSnapshot(
     /** 是否处于报警中(对应 4.6 AlarmCmd 的实际状态) */
