@@ -8,7 +8,6 @@ import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
-import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMessageRouter
 import com.uvp.sim.sip.SipMessageRouterImpl
 import com.uvp.sim.sip.SipState
@@ -227,9 +226,9 @@ class SimulatorEngine internal constructor(
         if (inboundJob != null) return
         inboundJob = scope.launch {
             try {
-                transport.incoming.collect { msg ->
-                    holders.events.emit(SimEvent.MessageReceived(msg))
-                    try { handleIncoming(msg) } catch (e: Throwable) {
+                transport.incoming.collect { envelope ->
+                    holders.events.emit(SimEvent.MessageReceived(envelope.message))
+                    try { handleIncoming(envelope) } catch (e: Throwable) {
                         holders.events.emit(SimEvent.TransportError("handleIncoming: ${e::class.simpleName}: ${e.message}"))
                     }
                 }
@@ -239,8 +238,8 @@ class SimulatorEngine internal constructor(
         }
     }
 
-    private suspend fun handleIncoming(msg: SipMessage) {
-        messageRouter.route(msg)
+    private suspend fun handleIncoming(envelope: com.uvp.sim.network.SipEnvelope) {
+        messageRouter.route(envelope)
     }
 
     /** Coord 改完状态后立即同步,避免 bridge 协程时序滞后让后续消息读到陈旧状态。 */

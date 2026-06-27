@@ -104,7 +104,7 @@ class SimulatorEngineMediaStatusTest {
 
     @Test
     fun c2_t1_trigger122_emitsOneMessageWithNotifyType122() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -123,7 +123,7 @@ class SimulatorEngineMediaStatusTest {
 
     @Test
     fun c2_t2_trigger123_emitsNotifyType123() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -142,7 +142,7 @@ class SimulatorEngineMediaStatusTest {
 
     @Test
     fun c2_t3_invalidNotifyTypeIsIgnored() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -160,7 +160,7 @@ class SimulatorEngineMediaStatusTest {
 
     @Test
     fun c2_t4_alarmSubscribers_fanOutToBoth() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -196,7 +196,7 @@ class SimulatorEngineMediaStatusTest {
 
     @Test
     fun c2_t5_notRegisteredIsIgnored() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -213,7 +213,7 @@ class SimulatorEngineMediaStatusTest {
 
     @Test
     fun c2_t6_emitsMediaStatusSent() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })

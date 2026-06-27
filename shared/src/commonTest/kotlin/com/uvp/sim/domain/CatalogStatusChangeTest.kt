@@ -83,7 +83,7 @@ class CatalogStatusChangeTest {
     }
 
     @Test fun toggle_updatesStatusFieldInTree() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -105,7 +105,7 @@ class CatalogStatusChangeTest {
     }
 
     @Test fun toggle_fanoutSimplifiedNotifyToCatalogSubscriber() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -134,7 +134,7 @@ class CatalogStatusChangeTest {
     }
 
     @Test fun toggle_noSubscribers_updatesTreeButSendsNoPacket() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -154,7 +154,7 @@ class CatalogStatusChangeTest {
     }
 
     @Test fun toggle_unknownChannelId_noChangeNoPacket() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -177,7 +177,7 @@ class CatalogStatusChangeTest {
     }
 
     @Test fun toggle_sameStatus_noNotifySpam() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)

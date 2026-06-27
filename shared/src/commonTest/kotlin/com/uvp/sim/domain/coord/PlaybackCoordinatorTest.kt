@@ -11,6 +11,7 @@ import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
@@ -87,7 +88,7 @@ class PlaybackCoordinatorTest {
         val transport = MockSipTransport()
         transport.connect()
         val pb = newPb(this, transport)
-        val result = pb.onIncoming(playbackInvite("pb-1@plat"))
+        val result = pb.onIncoming(playbackInvite("pb-1@plat").asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Handled, result, "Playback INVITE 应被 Coord 吃下")
         val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
@@ -125,7 +126,7 @@ class PlaybackCoordinatorTest {
             ),
             body = sdp.encodeToByteArray(),
         )
-        val result = pb.onIncoming(req)
+        val result = pb.onIncoming(req.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Skip, result, "Play INVITE 必须 Skip 给 Invite")
     }
@@ -147,7 +148,7 @@ class PlaybackCoordinatorTest {
             ),
             body = ByteArray(0),
         )
-        val result = pb.onIncoming(info)
+        val result = pb.onIncoming(info.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Skip, result, "无 activePlayback 必须 Skip 让 Mans 接")
     }

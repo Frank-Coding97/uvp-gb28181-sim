@@ -77,7 +77,7 @@ class SimulatorEngineRecordingTest {
             requestUri = "sip:34020000001110000001@3402000000",
             headers = listOf(
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest"),
-                SipMessage.Header(SipHeader.FROM, "<sip:server@3402000000>;tag=ftag"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=ftag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, "msg-test"),
                 SipMessage.Header(SipHeader.CSEQ, "1 MESSAGE"),
@@ -103,7 +103,7 @@ class SimulatorEngineRecordingTest {
             requestUri = "sip:34020000001110000001@3402000000",
             headers = listOf(
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKquery"),
-                SipMessage.Header(SipHeader.FROM, "<sip:server@3402000000>;tag=qtag"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=qtag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, "query-test"),
                 SipMessage.Header(SipHeader.CSEQ, "1 MESSAGE"),
@@ -130,7 +130,7 @@ y=0123456789
             requestUri = "sip:34020000001320000001@3402000000",
             headers = listOf(
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKplayback"),
-                SipMessage.Header(SipHeader.FROM, "<sip:server@3402000000>;tag=stag"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=stag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001320000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "1 INVITE"),
@@ -168,7 +168,7 @@ y=0123456789
     }
 
     @Test fun deviceControl_record_callsRecordingServiceStart() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
@@ -196,7 +196,7 @@ y=0123456789
     }
 
     @Test fun deviceControl_stopRecord_callsRecordingServiceStop() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
@@ -213,7 +213,7 @@ y=0123456789
     }
 
     @Test fun deviceControl_unknown_isNoop() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this,
@@ -231,7 +231,7 @@ y=0123456789
     }
 
     @Test fun recordInfo_zeroFiles_emits200_thenEmptyNotify() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this,
@@ -265,7 +265,7 @@ y=0123456789
                 type = RecordType.Time
             )
         }
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService(initialFiles = files)
         val engine = TestEngine.create(
             cfg(), transport, this,
@@ -285,7 +285,7 @@ y=0123456789
     }
 
     @Test fun playbackInvite_noPlaybackBuilder_returns487() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = NoopRecordingService,
@@ -304,7 +304,7 @@ y=0123456789
     }
 
     @Test fun playbackInvite_emptyRange_returns487() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService(initialFiles = emptyList())
         var built = false
         val builder = object : PlaybackBuilder {
@@ -341,7 +341,7 @@ y=0123456789
             filePath = "/r/a.mp4",
             sizeBytes = 1024L
         )
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService(initialFiles = listOf(matchingFile))
         val session = object : PlaybackSession {
             override val localRtpPort: Int = 12345

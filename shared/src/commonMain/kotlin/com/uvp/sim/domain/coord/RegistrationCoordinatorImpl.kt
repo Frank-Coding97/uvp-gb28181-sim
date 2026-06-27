@@ -221,7 +221,8 @@ internal class RegistrationCoordinatorImpl(
     // Coordinator 接口
     // ----------------------------------------------------------------------
 
-    override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+    override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
+        val msg = envelope.message
         return when (msg) {
             is SipResponse -> {
                 val msgCallId = msg.firstHeader(SipHeader.CALL_ID)

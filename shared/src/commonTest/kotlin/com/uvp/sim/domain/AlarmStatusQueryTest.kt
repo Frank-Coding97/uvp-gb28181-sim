@@ -112,7 +112,7 @@ class AlarmStatusQueryTest {
     // ---- B2-T1: Query 触发 Response ----
     @Test
     fun b2_t1_queryTriggersResponse() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -132,7 +132,7 @@ class AlarmStatusQueryTest {
     // ---- B2-T2: SN 透传 ----
     @Test
     fun b2_t2_snPassthrough() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -151,7 +151,7 @@ class AlarmStatusQueryTest {
     // ---- B2-T3: DeviceID 顶层 = config.device.deviceId ----
     @Test
     fun b2_t3_topDeviceIdMatchesConfig() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -171,7 +171,7 @@ class AlarmStatusQueryTest {
     // ---- B2-T4: 报警状态联动 — alarming=true → DutyStatus=ALARM ----
     @Test
     fun b2_t4_alarmingStateMapsToAlarm() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -194,7 +194,7 @@ class AlarmStatusQueryTest {
     // ---- B2-T5: 复位后查询 — alarming=false → DutyStatus=OFFDUTY ----
     @Test
     fun b2_t5_afterResetMapsToOffduty() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this,
             localIpProvider = { "192.168.1.50" })
@@ -220,7 +220,7 @@ class AlarmStatusQueryTest {
     // ---- B2-T6: GB-2016 路径 — 扁平 NotNumber ----
     @Test
     fun b2_t6_gb2016UsesNotNumber() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(GbVersion.V2016), transport, this,
             localIpProvider = { "192.168.1.50" })

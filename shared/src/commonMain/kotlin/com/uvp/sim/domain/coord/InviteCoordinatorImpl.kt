@@ -144,10 +144,11 @@ internal class InviteCoordinatorImpl(
     }
 
     // ---- onIncoming 总分发(T4.2 实装,T4.1 stub 已删) ----
-    override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+    override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
+        val msg = envelope.message
         return when (msg) {
             is SipResponse -> handleResponse(msg)
-            is SipRequest -> handleRequest(msg)
+            is SipRequest -> handleRequest(envelope, msg)
         }
     }
 
@@ -176,10 +177,10 @@ internal class InviteCoordinatorImpl(
         return RoutingResult.Skip
     }
 
-    private suspend fun handleRequest(req: SipRequest): RoutingResult {
+    private suspend fun handleRequest(envelope: com.uvp.sim.network.SipEnvelope, req: SipRequest): RoutingResult {
         return when (req.method) {
             // PR5 T5.4:Invite 处理 INVITE,内部 SDP isPlayback 时 Skip 让 Engine 路由给 Playback
-            SipMethod.INVITE -> handleInviteMaybe(req)
+            SipMethod.INVITE -> handleInviteMaybe(envelope, req)
             SipMethod.ACK -> { handleAck(req); RoutingResult.Handled }
             SipMethod.BYE -> {
                 val cid = req.callId() ?: ""
@@ -199,14 +200,16 @@ internal class InviteCoordinatorImpl(
      * INVITE 路由:SDP probe 后 Playback 类 Skip 给 Engine 路由 PlaybackCoordinator,
      * 直播路径在本类完成。
      *
-     * H-1:在路由前先校验 From 头,LAN 内任何攻击者伪造的 INVITE 直接 403 拒绝,不进入
-     * 后续 SDP 解析 / 推流流程。
+     * H-1 + P0-2:在路由前先校验 envelope.sourceIp + From host,LAN 内任何攻击者
+     * 伪造的 INVITE 直接 403 拒绝,不进入后续 SDP 解析 / 推流流程。
+     *
+     * Wave 7B P0-2:guard 改走共享 [PlatformAuthorizer],跟 Playback 复用同一份判定。
      */
-    private suspend fun handleInviteMaybe(req: SipRequest): RoutingResult {
-        if (!isInviteFromAuthorizedPlatform(req)) {
+    private suspend fun handleInviteMaybe(envelope: com.uvp.sim.network.SipEnvelope, req: SipRequest): RoutingResult {
+        if (!com.uvp.sim.sip.PlatformAuthorizer.isInviteFromAuthorizedPlatform(envelope, config)) {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Lifecycle,
-                "拒绝 INVITE: From host 未匹配 ${config.server.domain} → 403"
+                "拒绝 INVITE: 未授权来源(sourceIp=${envelope.sourceIp}, expected domain=${config.server.domain}) → 403"
             )
             sendSimpleResponse(req, statusCode = 403, reasonPhrase = "Forbidden")
             return RoutingResult.Handled
@@ -228,22 +231,7 @@ internal class InviteCoordinatorImpl(
         return afterAt.substringBefore(':').substringBefore(';').substringBefore('>').trim()
     }
 
-    /**
-     * H-1 (security-audit §2):INVITE 必须来自登记的平台。
-     *
-     * 校验 From 头里的 SIP URI host 段(SIP domain)等于 `config.server.domain`。
-     * GB28181 平台 INVITE 的 From 永远是 `sip:<serverId>@<domain>[:<port>]`,
-     * 任何 host 不匹配的 INVITE 都视为 LAN 内伪造,返回 403 Forbidden。
-     *
-     * 仅校验 host(域) — user 段在不同 GB 实现下可能是 serverId / 业务别名 /
-     * "server" 等占位串,过严匹配会误杀合法平台。
-     */
-    private fun isInviteFromAuthorizedPlatform(invite: SipRequest): Boolean {
-        val fromHeader = invite.fromHeader() ?: return false
-        val fromUri = SipHeaderHelpers.parseUri(fromHeader)
-        val fromHost = parseUriHost(fromUri)
-        return fromHost == config.server.domain
-    }
+    // H-1 / P0-2 来源校验已抽到 com.uvp.sim.sip.PlatformAuthorizer,本类不再持有私有 helper。
 
     private fun extractInviteTarget(invite: SipRequest): String {
         val ru = invite.requestUri

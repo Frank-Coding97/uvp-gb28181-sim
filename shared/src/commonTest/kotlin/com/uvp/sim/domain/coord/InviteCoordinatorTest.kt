@@ -15,6 +15,7 @@ import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -117,7 +118,7 @@ class InviteCoordinatorTest {
         val transport = MockSipTransport()
         transport.connect()
         val invite = newInvite(this, transport)
-        val result = invite.onIncoming(inviteFor("35020000001320000001"))
+        val result = invite.onIncoming(inviteFor("35020000001320000001").asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Handled, result, "Play INVITE 应被 Coord 吃下")
         val rejections = transport.sent.filterIsInstance<SipResponse>().filter { it.statusCode == 488 }
@@ -129,7 +130,7 @@ class InviteCoordinatorTest {
         val transport = MockSipTransport()
         transport.connect()
         val invite = newInvite(this, transport)
-        invite.onIncoming(inviteFor("35020000001340000001"))
+        invite.onIncoming(inviteFor("35020000001340000001").asEnvelope())
         runCurrent()
         val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
         assertNotNull(resp)
@@ -141,8 +142,8 @@ class InviteCoordinatorTest {
         val transport = MockSipTransport()
         transport.connect()
         val invite = newInvite(this, transport)
-        invite.onIncoming(inviteFor("35020000001340000001", callId = "first@plat"))
-        invite.onIncoming(inviteFor("35020000001340000001", callId = "second@plat"))
+        invite.onIncoming(inviteFor("35020000001340000001", callId = "first@plat").asEnvelope())
+        invite.onIncoming(inviteFor("35020000001340000001", callId = "second@plat").asEnvelope())
         runCurrent()
         val rejects = transport.sent.filterIsInstance<SipResponse>().filter { it.statusCode == 488 }
         assertEquals(2, rejects.size, "两次 alarm INVITE 都应 488")
@@ -179,7 +180,7 @@ class InviteCoordinatorTest {
             ),
             body = sdp.encodeToByteArray(),
         )
-        val result = invite.onIncoming(req)
+        val result = invite.onIncoming(req.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Skip, result, "Playback INVITE 必须 Skip 让 Engine 路由 PlaybackCoordinator")
     }
@@ -201,7 +202,7 @@ class InviteCoordinatorTest {
             ),
             body = ByteArray(0),
         )
-        val result = invite.onIncoming(ack)
+        val result = invite.onIncoming(ack.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Handled, result, "ACK 必须归 Invite 域(Handled)")
     }
@@ -263,7 +264,7 @@ class InviteCoordinatorTest {
             channelId = "35020000001320000001",
             fromHeader = "<sip:35020000002000000001@attacker.bad>;tag=evil",
         )
-        val result = invite.onIncoming(req)
+        val result = invite.onIncoming(req.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Handled, result, "伪造 INVITE 应被 Coord 处理(返 403)")
         val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
@@ -282,7 +283,7 @@ class InviteCoordinatorTest {
             channelId = "35020000001320000001",
             fromHeader = "<sip:99999999991111111111@attacker.bad>;tag=evil",
         )
-        val result = invite.onIncoming(req)
+        val result = invite.onIncoming(req.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Handled, result)
         val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
@@ -300,7 +301,7 @@ class InviteCoordinatorTest {
             channelId = "35020000001320000001",
             fromHeader = "<sip:35020000002000000001@3502000000>;tag=plat",
         )
-        invite.onIncoming(req)
+        invite.onIncoming(req.asEnvelope())
         runCurrent()
         val rejections = transport.sent.filterIsInstance<SipResponse>().filter { it.statusCode == 403 }
         assertEquals(0, rejections.size, "授权平台的 INVITE 不应被 403 拦截")
