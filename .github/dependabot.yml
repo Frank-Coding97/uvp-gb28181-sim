@@ -1,0 +1,53 @@
+# Dependabot 配置(audit §3 M-4)
+#
+# 每月扫一次 Gradle / GitHub Actions 依赖更新,生成 PR 但不自动合(open-only)。
+# 老板手动 review 后决定合 / drop。
+#
+# 不开启 schedule.interval: daily(噪音太大),按月节奏跟既有 release 周期对齐。
+# 不开启 pip / npm 生态(项目不用)。
+#
+# 详细字段语义:https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+version: 2
+updates:
+  # Gradle (Kotlin / Android / KMP 依赖)
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "gradle"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    reviewers:
+      - "Frank-Coding97"
+    # patch / minor 自动 PR;major bump 仍开 PR 但需要人工 review
+    versioning-strategy: "increase"
+    # 忽略 alpha / beta / rc(避免提前升 KMP / Compose 风险)
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-prerelease"
+
+  # GitHub Actions(workflows 内 uses: 的 pin 更新)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Shanghai"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+    reviewers:
+      - "Frank-Coding97"

@@ -33,7 +33,12 @@ interface SipTransport {
 data class RemoteEndpoint(
     val host: String,
     val port: Int,
-    val transport: TransportType
+    val transport: TransportType,
+    /**
+     * M-6 (audit §3) — 服务器 IP 白名单。空 list = 不强制。transport.connect()
+     * 时通过 [ServerAllowList.enforce] 校验,不命中拒绝 connect。
+     */
+    val allowList: List<String> = emptyList(),
 )
 
 @kotlinx.serialization.Serializable

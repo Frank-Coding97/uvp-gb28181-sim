@@ -90,10 +90,36 @@ class TcpSipTransport(
             }
             return cl
         }
+
+        /**
+         * M-3 (audit §3) — TCP SIP socket option 配置。
+         *
+         * 抽成静态函数方便单测注入 stub 验证 keepAlive 被打开。
+         * NAT 中间设备(家用路由 / 运营商 CGN)对 TCP idle 通常 5-30 分钟回收,
+         * SIP TCP 长连接不开 keepalive 在 NAT 后会变成单边死连(本地认为连着,
+         * 中间设备已断,平台再回包打不通)。
+         *
+         * ktor 跨平台 [SocketOptions.TCPClientSocketOptions.keepAlive] 在 JVM /
+         * Native / iOS Network.framework 都生效;TCP_KEEPIDLE/INTERVAL 仅 JVM
+         * Linux 内核可调(JDK 11+ JEP 350),其它平台用内核默认值(macOS 2h,
+         * Linux 7200s)。SIP 平台多有应用层 keepalive 心跳(GB28181 默认 60s),
+         * 内核 keepalive 主要兜底应用层心跳被卡死。
+         *
+         * 注:ktor 3.0.2 的 [SocketOptions.TCPClientSocketOptions] 构造 `internal`,
+         * 无法在测试里直接构造,所以测试通过 [keepAliveSetting] 标志位 + lambda
+         * 间接验证(单测注入 stub setter,断言被调用)。
+         */
+        internal const val keepAliveSetting: Boolean = true
+
+        internal fun configureKeepAlive(setKeepAlive: (Boolean) -> Unit) {
+            setKeepAlive(keepAliveSetting)
+        }
     }
 
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return
+        // M-6 (audit §3) — 配置白名单不空时,目标 IP 必须命中。
+        ServerAllowList.enforce(remote.host, remote.allowList)
         // Android 主线程会触发 NetworkOnMainThreadException(ktor tcp().connect() 内部
         // 有同步 socket 检测,即便挂 suspend),切到 IO 线程跑。
         // ba7d597 已为 RTP TCP 修过同款问题,现在 SIP TCP 同步治理。
@@ -102,7 +128,9 @@ class TcpSipTransport(
             val sk = try {
                 aSocket(sm)
                     .tcp()
-                    .connect(InetSocketAddress(remote.host, remote.port))
+                    .connect(InetSocketAddress(remote.host, remote.port)) {
+                        configureKeepAlive { keepAlive = it }
+                    }
             } catch (e: Throwable) {
                 sm.close()
                 SystemLogger.emit(
@@ -117,7 +145,7 @@ class TcpSipTransport(
             writeChannel = sk.openWriteChannel(autoFlush = true)
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
-                "TCP connected → ${remote.host}:${remote.port}"
+                "TCP connected → ${remote.host}:${remote.port} keepalive=on"
             )
             receiveJob = ownedScope.launch {
                 val rc = readChannel ?: return@launch
