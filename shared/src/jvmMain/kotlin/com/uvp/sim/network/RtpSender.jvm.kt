@@ -1,5 +1,9 @@
 package com.uvp.sim.network
 
+import com.uvp.sim.observability.ErrorCategory
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.BoundDatagramSocket
 import io.ktor.network.sockets.Datagram
@@ -28,12 +32,17 @@ import kotlinx.coroutines.sync.withLock
  *
  * RFC 4571 framing: each RTP packet is preceded by 2 bytes of big-endian
  * length, then the packet bytes.
+ *
+ * P1-5 (audit §2) TCP_PASSIVE accept guard:
+ *   - [expectedClientHost] 非 null 时,只接受该 IP 连接,其它连接 close + 继续等,
+ *     多次失败(MAX_ACCEPT_MISMATCH)后放弃。
  */
 actual class RtpSender actual constructor(
     actual val remoteHost: String,
     actual val remotePort: Int,
     private val parentScope: CoroutineScope?,
-    actual val mode: RtpMode
+    actual val mode: RtpMode,
+    private val expectedClientHost: String?
 ) {
     private val mutex = Mutex()
     private var udpSocket: BoundDatagramSocket? = null
@@ -86,13 +95,45 @@ actual class RtpSender actual constructor(
         tcpServer = server
         // Accept asynchronously so bindLocalPort returns immediately with the port.
         ownedScope.launch {
-            try {
-                val client = server.accept()
-                tcpSocket = client
-                tcpWrite = client.openWriteChannel(autoFlush = true)
-            } catch (_: Throwable) { /* shutdown path */ }
+            var mismatchCount = 0
+            while (mismatchCount < MAX_ACCEPT_MISMATCH) {
+                try {
+                    val client = server.accept()
+                    val clientHost = (client.remoteAddress as? InetSocketAddress)?.hostname
+
+                    if (expectedClientHost != null && clientHost != null && clientHost != expectedClientHost) {
+                        mismatchCount++
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Network,
+                            "TCP_PASSIVE accepted from unexpected $clientHost, expected $expectedClientHost — dropped (attempt $mismatchCount/$MAX_ACCEPT_MISMATCH)",
+                            category = ErrorCategory.ProtocolViolation
+                        )
+                        runCatching { client.close() }
+                        continue  // 继续等下一个连接
+                    }
+
+                    // 匹配或 expectedClientHost == null,接受连接
+                    tcpSocket = client
+                    tcpWrite = client.openWriteChannel(autoFlush = true)
+                    break
+                } catch (_: Throwable) {
+                    /* shutdown path or accept error */
+                    break
+                }
+            }
+            if (mismatchCount >= MAX_ACCEPT_MISMATCH) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Network,
+                    "TCP_PASSIVE give up after $MAX_ACCEPT_MISMATCH mismatched connection attempts",
+                    category = ErrorCategory.ProtocolViolation
+                )
+            }
         }
         return localPort
+    }
+
+    companion object {
+        private const val MAX_ACCEPT_MISMATCH = 10
     }
 
     actual suspend fun send(packet: ByteArray) {

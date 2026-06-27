@@ -22,12 +22,16 @@ import kotlinx.coroutines.sync.withLock
 /**
  * iOS implementation. Same shape as JVM/Android since Ktor Native sockets
  * cover UDP and TCP on iOS arm64 / x64 / simulator-arm64.
+ *
+ * P1-5 (audit §2) TCP_PASSIVE accept guard:
+ *   - [expectedClientHost] 签名同步,iOS v1.1 实现时镜像 JVM/Android 逻辑。
  */
 actual class RtpSender actual constructor(
     actual val remoteHost: String,
     actual val remotePort: Int,
     private val parentScope: CoroutineScope?,
-    actual val mode: RtpMode
+    actual val mode: RtpMode,
+    private val expectedClientHost: String?
 ) {
     private val mutex = Mutex()
     private var udpSocket: BoundDatagramSocket? = null
@@ -80,6 +84,7 @@ actual class RtpSender actual constructor(
         tcpServer = server
         ownedScope.launch {
             try {
+                // TODO(v1.1): iOS 实现时镜像 JVM/Android 的 expectedClientHost 验证循环
                 val client = server.accept()
                 tcpSocket = client
                 tcpWrite = client.openWriteChannel(autoFlush = true)
