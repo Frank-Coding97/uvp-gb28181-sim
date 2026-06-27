@@ -42,7 +42,11 @@ data class SimConfig(
      * GB §9.3.1 设备目录树。空 list 表示由 CatalogTreeStore 从 device 字段
      * 自动生成默认 3 节点扁平树(老 SimConfig 升级路径)。
      */
-    val catalogTree: List<CatalogNode> = emptyList()
+    val catalogTree: List<CatalogNode> = emptyList(),
+    /**
+     * P2-6 (audit §3) — 图像抓拍上传配置。
+     */
+    val snapshot: SnapshotConfig = SnapshotConfig()
 ) {
     /**
      * 配置是否齐备到可发起 SIP 注册。
@@ -321,3 +325,19 @@ enum class DirectionType(val gbCode: Int, val label: String) {
     Southwest(7, "西南"),
     Northwest(8, "西北")
 }
+
+/**
+ * P2-6 (audit §3) — 图像抓拍上传安全配置。
+ *
+ * [uploadAllowList] 平台下发 SnapShotConfig.uploadUrl 的 host 白名单。
+ * - 空 list = **零信任默认,拒绝任意 URL**(避免真实抓拍接通后立刻 SSRF / 数据外传)
+ * - 非空时仅当 uploadUrl 的 host 精确匹配白名单中某条目时才允许上传
+ * - v1 暂用精确字面量匹配,不支持 CIDR / 通配符
+ *
+ * 典型场景:在配置页手动添加 `["192.168.1.10", "platform.example.com"]`,
+ * 拒绝 loopback / link-local / multicast / 云厂商元数据地址。
+ */
+@Serializable
+data class SnapshotConfig(
+    val uploadAllowList: List<String> = emptyList()
+)
