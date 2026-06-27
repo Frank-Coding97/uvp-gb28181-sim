@@ -171,7 +171,19 @@ data class ServerConfig(
     /** 上级平台编码 / Server ID, e.g. 34020000002000000001 */
     val serverId: String,
     /** SIP domain / realm, e.g. 3402000000 */
-    val domain: String
+    val domain: String,
+    /**
+     * M-6 (audit §3) — 服务器 IP 白名单。
+     *
+     * 空 list = 不强制白名单(默认,保兼容老配置);非空时仅当 [ip] 命中白名单
+     * 才允许 connect,否则 transport.connect() refuse + SystemLogger Error。
+     *
+     * 主要场景:LAN 多平台环境下,把模拟器锁定到只允许接特定平台 IP,
+     * 防止配置错填 / IP 漂移 / DNS 投毒。条目格式:
+     *  - 精确 IP("10.0.0.100")
+     *  - CIDR("10.0.0.0/24")— v1 暂不支持 CIDR,只匹配精确 IP,留 hook 后续扩展
+     */
+    val allowList: List<String> = emptyList(),
 )
 
 @Serializable

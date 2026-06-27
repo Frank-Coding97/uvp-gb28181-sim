@@ -56,6 +56,9 @@ class UdpSipTransport(
 
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return
+        // M-6 (audit §3) — 白名单非空时,目标 IP 必须命中。UDP 虽然不像 TCP 真 connect,
+        // 但 send() 会发到 remote.host,这里在 bind 前就拒绝避免后续误发到非白名单 IP。
+        ServerAllowList.enforce(remote.host, remote.allowList)
         val sm = SelectorManager(Dispatchers.Default)
         val sk = try {
             aSocket(sm)

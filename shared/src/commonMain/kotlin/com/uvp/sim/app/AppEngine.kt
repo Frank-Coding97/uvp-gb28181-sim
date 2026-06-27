@@ -149,11 +149,21 @@ class AppEngine(
         val cfg = _config.value
         val tx: SipTransport = when (cfg.transport) {
             TransportType.TCP -> com.uvp.sim.network.TcpSipTransport(
-                remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.TCP),
+                remote = RemoteEndpoint(
+                    host = cfg.server.ip,
+                    port = cfg.server.port,
+                    transport = TransportType.TCP,
+                    allowList = cfg.server.allowList,
+                ),
                 parentScope = engineScope,
             )
             TransportType.UDP -> UdpSipTransport(
-                remote = RemoteEndpoint(cfg.server.ip, cfg.server.port, TransportType.UDP),
+                remote = RemoteEndpoint(
+                    host = cfg.server.ip,
+                    port = cfg.server.port,
+                    transport = TransportType.UDP,
+                    allowList = cfg.server.allowList,
+                ),
                 parentScope = engineScope,
             )
         }

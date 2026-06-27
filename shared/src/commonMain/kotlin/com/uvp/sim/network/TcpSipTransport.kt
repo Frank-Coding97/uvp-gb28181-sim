@@ -118,6 +118,8 @@ class TcpSipTransport(
 
     override suspend fun connect(): Unit = mutex.withLock {
         if (socket != null) return
+        // M-6 (audit §3) — 配置白名单不空时,目标 IP 必须命中。
+        ServerAllowList.enforce(remote.host, remote.allowList)
         // Android 主线程会触发 NetworkOnMainThreadException(ktor tcp().connect() 内部
         // 有同步 socket 检测,即便挂 suspend),切到 IO 线程跑。
         // ba7d597 已为 RTP TCP 修过同款问题,现在 SIP TCP 同步治理。
