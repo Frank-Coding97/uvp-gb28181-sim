@@ -1,17 +1,20 @@
 package com.uvp.sim.ui.model.mapper
 
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceCommandCategory
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DragZoomRect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
+import com.uvp.sim.domain.deriveRenderState
 import com.uvp.sim.gb28181.FocusDirection
 import com.uvp.sim.gb28181.IrisDirection
 import com.uvp.sim.gb28181.PanDirection
 import com.uvp.sim.gb28181.PtzCommand
 import com.uvp.sim.gb28181.TiltDirection
 import com.uvp.sim.gb28181.ZoomDirection
+import com.uvp.sim.ui.model.DeviceCommandCategoryDto
 import com.uvp.sim.ui.model.FocusDirectionDto
 import com.uvp.sim.ui.model.IrisDirectionDto
 import com.uvp.sim.ui.model.PanDirectionDto
@@ -109,8 +112,8 @@ class DeviceControlMapperTest {
     }
 
     @Test
-    fun deviceControlState_defaults_full_dto() {
-        val dto = DeviceControlState().toDto()
+    fun deviceControlModel_defaults_full_dto() {
+        val dto = DeviceControlModel().toDto()
         assertEquals(0f, dto.panAngle)
         assertEquals(1f, dto.zoomLevel)
         assertEquals(false, dto.isRecording)
@@ -119,20 +122,67 @@ class DeviceControlMapperTest {
         assertNull(dto.dragZoomRect)
         assertNull(dto.upgradeProgress)
         assertNull(dto.pendingEffect)
+        assertNull(dto.lastCommandCategory)
     }
 
     @Test
-    fun deviceControlState_presets_and_cruise_preserved() {
-        val state = DeviceControlState(
+    fun deviceControlModel_presets_and_cruise_preserved() {
+        val model = DeviceControlModel(
             presets = mapOf(1 to PtzPose(1f, 2f, 3f)),
             cruiseTracks = mapOf(1 to listOf(1, 2, 3)),
             auxStates = mapOf(1 to true),
             auxTimestamps = mapOf(1 to 1000L),
         )
-        val dto = state.toDto()
+        val dto = model.toDto()
         assertEquals(PtzPoseDto(1f, 2f, 3f), dto.presets[1])
         assertEquals(listOf(1, 2, 3), dto.cruiseTracks[1])
         assertEquals(true, dto.auxStates[1])
         assertEquals(1000L, dto.auxTimestamps[1])
+    }
+
+    @Test
+    fun deviceCommandCategory_maps_all_entries() {
+        DeviceCommandCategory.entries.forEach {
+            assertEquals(it.name, it.toDto().name)
+        }
+        assertEquals(DeviceCommandCategory.entries.size, DeviceCommandCategoryDto.entries.size)
+    }
+
+    @Test
+    fun mapper_carries_lastCommandCategory_from_render_state() {
+        // PTZCmd 普通运动 → Ptz 分类
+        val ptzModel = DeviceControlModel(
+            lastCommand = LastDeviceCommand("PTZCmd", "A50F0102320000DE", 100L),
+        )
+        assertEquals(DeviceCommandCategoryDto.Ptz, ptzModel.toDto().lastCommandCategory)
+
+        // PTZCmd 辅助 → Aux 分类(rawHex 以 "雨刷 ON" 等中文开头)
+        val auxModel = DeviceControlModel(
+            lastCommand = LastDeviceCommand("PTZCmd", "雨刷 ON", 200L),
+        )
+        assertEquals(DeviceCommandCategoryDto.Aux, auxModel.toDto().lastCommandCategory)
+
+        // SnapShotCmd → Image 分类
+        val snapModel = DeviceControlModel(
+            lastCommand = LastDeviceCommand("SnapShotCmd", "Start", 300L),
+        )
+        assertEquals(DeviceCommandCategoryDto.Image, snapModel.toDto().lastCommandCategory)
+
+        // RecordCmd → Status 分类
+        val recModel = DeviceControlModel(
+            lastCommand = LastDeviceCommand("RecordCmd", "Start", 400L),
+        )
+        assertEquals(DeviceCommandCategoryDto.Status, recModel.toDto().lastCommandCategory)
+    }
+
+    @Test
+    fun mapper_explicit_render_state_overrides_derive() {
+        // 直接走 (model, render) 入口,确认渲染派生层的字段优先于 model 派生
+        val model = DeviceControlModel(
+            lastCommand = LastDeviceCommand("PTZCmd", "A50F", 100L),
+        )
+        val render = deriveRenderState(model)
+        val dto = toDeviceControlDto(model, render)
+        assertEquals(DeviceCommandCategoryDto.Ptz, dto.lastCommandCategory)
     }
 }

@@ -29,8 +29,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.model.DeviceCommandCategoryDto
 import com.uvp.sim.ui.model.DeviceControlDto
-import com.uvp.sim.ui.model.LastDeviceCommandDto
 import com.uvp.sim.ui.simulate.ptz.AuxTabContent
 import com.uvp.sim.ui.simulate.ptz.HudTabRow
 import com.uvp.sim.ui.simulate.ptz.ImageTabContent
@@ -52,6 +52,8 @@ import com.uvp.sim.ui.simulate.ptz.StatusTabContent
  *   辅助: PTZCmd(Aux on/off,byte3=0x89/0x8A)
  *
  * 2026-06-26 PR-F T1:4 Tab 内容拆到 [ptz] 子包,本文件只保留主入口编排.
+ * 2026-06-27 轨 ④ PR-UI-PROTOCOL-FIX:HudTab.fromCommand 不再 parse rawHex,改读
+ * `lastCommandCategory`(语义枚举,派生在 commonMain `deriveCommandCategory`).
  */
 enum class HudTab(val title: String) {
     Ptz("云台"),
@@ -60,24 +62,13 @@ enum class HudTab(val title: String) {
     Aux("辅助");
 
     companion object {
-        /** 根据 lastCommand 类型 + rawHex 标记决定该切到哪个 Tab,null 表示不切. */
-        fun fromCommand(cmd: LastDeviceCommandDto?): HudTab? {
-            if (cmd == null) return null
-            return when (cmd.type) {
-                "PTZCmd" -> {
-                    // 辅助控制的 lastCommand.rawHex 由 dispatcher 写中文(如"雨刷 ON")
-                    val raw = cmd.rawHex
-                    val isAux = raw.startsWith("雨刷") || raw.startsWith("红外灯") ||
-                        raw.startsWith("加热") || raw.startsWith("除雾") ||
-                        raw.startsWith("制冷") || raw.startsWith("Aux")
-                    if (isAux) Aux else Ptz
-                }
-                "PTZPreciseCtrl" -> Ptz
-                "RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot" -> Status
-                "IFameCmd", "SnapShotCmd", "DeviceConfig",
-                "DeviceUpgrade", "FormatSDCard", "TargetTrack" -> Image
-                else -> null
-            }
+        /** 把 UI DTO 的语义分类映成 HudTab,null 表示不切. */
+        fun fromCategory(category: DeviceCommandCategoryDto?): HudTab? = when (category) {
+            DeviceCommandCategoryDto.Ptz -> Ptz
+            DeviceCommandCategoryDto.Status -> Status
+            DeviceCommandCategoryDto.Image -> Image
+            DeviceCommandCategoryDto.Aux -> Aux
+            null -> null
         }
     }
 }
@@ -94,7 +85,7 @@ fun PtzHudPanel(
 
     // 平台命令到达 → 自动切到对应 Tab + 清掉该 Tab 的红点
     LaunchedEffect(state.lastCommand?.timestampMs) {
-        val target = HudTab.fromCommand(state.lastCommand) ?: return@LaunchedEffect
+        val target = HudTab.fromCategory(state.lastCommandCategory) ?: return@LaunchedEffect
         if (target != selectedTab) {
             // 给其他非目标 Tab 留红点(不清掉),目标 Tab 切过去就消红点
             tabBadges.value = tabBadges.value + target
