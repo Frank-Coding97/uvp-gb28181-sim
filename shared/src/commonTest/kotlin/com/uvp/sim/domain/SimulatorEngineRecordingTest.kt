@@ -168,7 +168,7 @@ y=0123456789
     }
 
     @Test fun deviceControl_record_callsRecordingServiceStart() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
@@ -196,7 +196,7 @@ y=0123456789
     }
 
     @Test fun deviceControl_stopRecord_callsRecordingServiceStop() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
@@ -213,7 +213,7 @@ y=0123456789
     }
 
     @Test fun deviceControl_unknown_isNoop() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this,
@@ -231,7 +231,7 @@ y=0123456789
     }
 
     @Test fun recordInfo_zeroFiles_emits200_thenEmptyNotify() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService()
         val engine = TestEngine.create(
             cfg(), transport, this,
@@ -265,7 +265,7 @@ y=0123456789
                 type = RecordType.Time
             )
         }
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService(initialFiles = files)
         val engine = TestEngine.create(
             cfg(), transport, this,
@@ -285,7 +285,7 @@ y=0123456789
     }
 
     @Test fun playbackInvite_noPlaybackBuilder_returns487() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val engine = TestEngine.create(
             cfg(), transport, this, localIpProvider = { "192.168.1.50" },
             recordingService = NoopRecordingService,
@@ -304,7 +304,7 @@ y=0123456789
     }
 
     @Test fun playbackInvite_emptyRange_returns487() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService(initialFiles = emptyList())
         var built = false
         val builder = object : PlaybackBuilder {
@@ -341,7 +341,7 @@ y=0123456789
             filePath = "/r/a.mp4",
             sizeBytes = 1024L
         )
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(cfg())
         val rec = FakeRecordingService(initialFiles = listOf(matchingFile))
         val session = object : PlaybackSession {
             override val localRtpPort: Int = 12345

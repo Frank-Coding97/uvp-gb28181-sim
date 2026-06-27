@@ -82,18 +82,18 @@ internal class PlaybackCoordinatorImpl(
     override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
         val msg = envelope.message
         return when (msg) {
-            is SipRequest -> handleRequest(msg)
+            is SipRequest -> handleRequest(envelope, msg)
             is SipResponse -> RoutingResult.Skip
         }
     }
 
-    private suspend fun handleRequest(req: SipRequest): RoutingResult {
+    private suspend fun handleRequest(envelope: com.uvp.sim.network.SipEnvelope, req: SipRequest): RoutingResult {
         return when (req.method) {
             SipMethod.INVITE -> {
                 val isPlayback = try {
                     com.uvp.sim.sip.SdpPlaybackParser.parse(req.body).isPlayback
                 } catch (_: Throwable) { false }
-                if (isPlayback) { handlePlaybackInvite(req); RoutingResult.Handled }
+                if (isPlayback) { handlePlaybackInvite(envelope, req); RoutingResult.Handled }
                 else RoutingResult.Skip
             }
             SipMethod.INFO -> {
@@ -164,7 +164,18 @@ internal class PlaybackCoordinatorImpl(
         SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 PLAYBACK INVITE → 487 ($reason)")
     }
 
-    private suspend fun handlePlaybackInvite(invite: SipRequest) {
+    private suspend fun handlePlaybackInvite(envelope: com.uvp.sim.network.SipEnvelope, invite: SipRequest) {
+        // P0-2:Playback INVITE 跟实时 INVITE 同款来源校验 — 网络层 + SIP 层。
+        // codex 第二轮 audit:Playback INVITE 路径不复用 H-1 guard,LAN 内攻击者可越过实时
+        // 路径的 403 防线发 Playback INVITE,本类必须自带同款校验。
+        if (!com.uvp.sim.sip.PlatformAuthorizer.isInviteFromAuthorizedPlatform(envelope, config)) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 PLAYBACK INVITE: 未授权来源(sourceIp=${envelope.sourceIp}, expected domain=${config.server.domain}) → 403"
+            )
+            sendSimpleResponse(invite, 403, "Forbidden")
+            return
+        }
         val cid = invite.callId() ?: ""
         if (activePlayback != null) {
             sendBusyResponse(invite, "已有回放进行中")
