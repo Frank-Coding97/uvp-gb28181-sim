@@ -64,6 +64,7 @@ class SnapshotUploadEngineTest {
             scope = scope,
             deviceId = "34020000001320000001",
             snAllocator = { (snCounter++).toString() },
+            uploadAllowList = listOf("h"), // test URL host is "h"
             nowMs = { 1_700_000_000_000L + sentNotifies.size * 1000L + progress.size * 100L },
             onProgress = { progress.add(it) },
             retryDelaysMs = retryDelays
