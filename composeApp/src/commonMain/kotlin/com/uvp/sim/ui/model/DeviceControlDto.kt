@@ -43,6 +43,12 @@ data class LastDeviceCommandDto(
     val ptz: PtzCommandDto? = null,
 )
 
+/**
+ * UI 层 平台控制命令的语义分类. 1:1 映射 com.uvp.sim.domain.DeviceCommandCategory.
+ * **轨 ④ PR-UI-PROTOCOL-FIX**:UI 用它派 Tab,不再 parse rawHex.
+ */
+enum class DeviceCommandCategoryDto { Ptz, Status, Image, Aux }
+
 /** 升级结果. 1:1 映射 com.uvp.sim.domain.UpgradeResult. */
 enum class UpgradeResultDto { InProgress, Success, Failure }
 
@@ -55,8 +61,8 @@ data class UpgradeProgressDto(
 )
 
 /**
- * UI 层 设备控制状态 DTO. 1:1 映射 com.uvp.sim.domain.DeviceControlState.
- * 23 字段全部保留, pendingEffect 嵌套 DeviceEffectDto.
+ * UI 层 设备控制状态 DTO. 1:1 映射 com.uvp.sim.domain.DeviceControlModel + 渲染派生字段.
+ * 25 业务字段 + lastCommandCategory(渲染派生)— Mapper 由 (Model, RenderState) 双入参组装.
  */
 data class DeviceControlDto(
     val panAngle: Float = 0f,
@@ -84,4 +90,9 @@ data class DeviceControlDto(
     val lastPreciseCtrl: PtzPoseDto? = null,
     val upgradeProgress: UpgradeProgressDto? = null,
     val pendingEffect: DeviceEffectDto? = null,
+    /**
+     * 最近一次平台控制命令的语义分类(UI Tab 派发用),由 `deriveRenderState` 派生.
+     * **轨 ④ PR-UI-PROTOCOL-FIX**:UI 视图读这个,不再 parse rawHex.
+     */
+    val lastCommandCategory: DeviceCommandCategoryDto? = null,
 )

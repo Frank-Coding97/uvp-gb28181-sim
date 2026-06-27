@@ -51,15 +51,11 @@ class SimulatorEngine internal constructor(
     val clockOffset: StateFlow<ClockOffset> = holders.clockOffset.asStateFlow()
     val events: SharedFlow<SimEvent> = holders.events.asSharedFlow()
     /**
-     * Wave 3 PR-DC-DECOUPLE:UI 仍订阅 [DeviceControlState] 兼容 wrapper,内部 holder 已切到
-     * [DeviceControlModel];这里同步派生 wrapper(model + render),保持 UI 契约不破。
-     * 用 [DerivedDeviceControlStateFlow] 零协程映射,避免 `stateIn(Eagerly)` 在 runTest 里污染 testScope。
+     * Wave 4 PR-UI-PROTOCOL-FIX:UI 直接订阅 [DeviceControlModel](业务模型),
+     * 渲染层语义字段(含 [DeviceCommandCategory])由 UI Mapper 调 [deriveRenderState] 派生。
+     * 旧 `DeviceControlState` 兼容 wrapper + `DerivedDeviceControlStateFlow` 已删除。
      */
-    @Suppress("DEPRECATION")
-    val deviceControlState: StateFlow<DeviceControlState> =
-        DerivedDeviceControlStateFlow(holders.deviceControlState.asStateFlow())
-    /** 业务 / 测试新路径:直接订阅 [DeviceControlModel] 流(无 render 派生开销)。 */
-    val deviceControlModel: StateFlow<DeviceControlModel> = holders.deviceControlState.asStateFlow()
+    val deviceControlState: StateFlow<DeviceControlModel> = holders.deviceControlState.asStateFlow()
     val alarmHistory: StateFlow<List<AlarmRecord>> = holders.alarmHistoryStore.history
     val catalogTree: StateFlow<List<com.uvp.sim.config.CatalogNode>> = holders.catalogTree.asStateFlow()
     val subscriptions: StateFlow<Map<String, SubscriptionSnapshot>> = holders.subscriptionRegistry.subscriptions

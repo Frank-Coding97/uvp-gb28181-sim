@@ -1,6 +1,6 @@
 package com.uvp.sim.domain.coord
 
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.gb28181.AlarmPayload
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.flow.SharedFlow
@@ -29,7 +29,7 @@ internal interface ManscdpRouter : Coordinator {
     val events: SharedFlow<ManscdpEvent>
 
     /** 5.13 / M2 §F.3 设备控制运行时状态(UI 3D 渲染层订阅)。 */
-    val deviceControlState: StateFlow<DeviceControlState>
+    val deviceControlState: StateFlow<DeviceControlModel>
 
     /** 主动发起 — 报警上报。 */
     suspend fun reportAlarm(payload: AlarmPayload)

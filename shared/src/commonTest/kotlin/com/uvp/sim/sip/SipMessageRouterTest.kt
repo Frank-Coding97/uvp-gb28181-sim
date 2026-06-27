@@ -4,7 +4,7 @@ import com.uvp.sim.domain.BroadcastDialog
 import com.uvp.sim.domain.BroadcastDialogState
 import com.uvp.sim.domain.BroadcastEndReason
 import com.uvp.sim.domain.ClockOffset
-import com.uvp.sim.domain.DeviceControlState
+import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.coord.ActiveStreamSnapshot
 import com.uvp.sim.domain.coord.BroadcastCoordEvent
 import com.uvp.sim.domain.coord.BroadcastCoordinator
@@ -125,9 +125,8 @@ class SipMessageRouterTest {
 
     private class RecordingManscdp : ManscdpRouter {
         val calls = mutableListOf<SipMessage>()
-        @Suppress("DEPRECATION")
-        override val deviceControlState: StateFlow<DeviceControlState> =
-            com.uvp.sim.domain.DerivedDeviceControlStateFlow(MutableStateFlow(com.uvp.sim.domain.DeviceControlModel()))
+        override val deviceControlState: StateFlow<DeviceControlModel> =
+            MutableStateFlow(DeviceControlModel())
         override val events: SharedFlow<ManscdpEvent> = MutableSharedFlow()
         override suspend fun reportSnapshot() {}
         override suspend fun reportAlarm(payload: AlarmPayload) {}

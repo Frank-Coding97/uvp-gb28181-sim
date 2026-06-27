@@ -62,7 +62,7 @@ data class DeviceControlAck(
  * Wave 2 的 ManscdpRouterImpl 不需要任何改动。
  *
  * 输入:平台 SIP MESSAGE 中的 MANSCDP XML 体.
- * 输出:更新 [DeviceControlState],并通过 [DeviceControlActions] 触发副作用.
+ * 输出:更新 [DeviceControlModel],并通过 [DeviceControlActions] 触发副作用.
  */
 class DeviceControlDispatcher(
     private val state: MutableStateFlow<DeviceControlModel>,

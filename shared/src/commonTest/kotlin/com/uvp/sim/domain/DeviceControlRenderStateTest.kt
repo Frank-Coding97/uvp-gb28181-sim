@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
  * 验证目标:
  *  1. `deriveRenderState(model)` 是**纯函数** — 同 model 输入 → 同 RenderState 输出
  *  2. Model 字段变化 → RenderState 派生字段跟随(避免 UI 接到陈旧渲染信息)
- *  3. 兼容 wrapper [DeviceControlState] 暴露 model + render 两段访问器
+ *  3. `deriveCommandCategory` 把协议字符串解析压在派生层,不漏到 UI(轨 ④ PR-UI-PROTOCOL-FIX)
  */
 class DeviceControlRenderStateTest {
 
@@ -92,30 +92,66 @@ class DeviceControlRenderStateTest {
     }
 
     @Test
-    fun `兼容 wrapper DeviceControlState 暴露 model 与 render 两段`() {
-        @Suppress("DEPRECATION")
-        val state = DeviceControlState(
-            DeviceControlModel(
-                panAngle = 30f,
-                pendingEffect = DeviceEffect.SnapshotFlash,
-                lastCommand = LastDeviceCommand("SnapShotCmd", "Start", 42L),
-            )
+    fun `deriveCommandCategory 协议字符串解析压在派生层 - UI 不再 parse rawHex`() {
+        // PTZ 运动 / PreciseCtrl / HomePosition → Ptz
+        assertEquals(
+            DeviceCommandCategory.Ptz,
+            deriveCommandCategory(LastDeviceCommand("PTZCmd", "A50F0102320000DE", 100L))
+        )
+        assertEquals(
+            DeviceCommandCategory.Ptz,
+            deriveCommandCategory(LastDeviceCommand("PTZPreciseCtrl", "set45", 200L))
+        )
+        assertEquals(
+            DeviceCommandCategory.Ptz,
+            deriveCommandCategory(LastDeviceCommand("HomePosition", "Recall#1", 300L))
         )
 
-        // model 段:业务字段
-        assertEquals(30f, state.model.panAngle)
-        assertEquals(DeviceEffect.SnapshotFlash, state.model.pendingEffect)
-        // render 段:派生字段
-        assertEquals("SnapShotCmd", state.render.lastCommandType)
-        assertEquals(42L, state.render.lastRecvAtMs)
-        assertTrue(state.render.hasPendingEffect)
-        // 旧字段访问器:UI Mapper 兼容入口(轨 ③ 接手前过渡)
-        @Suppress("DEPRECATION")
-        run {
-            assertEquals(30f, state.panAngle)
-            assertEquals(DeviceEffect.SnapshotFlash, state.pendingEffect)
-            assertEquals("SnapShotCmd", state.lastCommand?.type)
+        // PTZCmd 辅助(rawHex 中文开头):雨刷 / 红外灯 / 加热 / 除雾 / 制冷 / Aux → Aux
+        listOf("雨刷 ON", "红外灯 OFF", "加热 ON", "除雾 OFF", "制冷 ON", "Aux#7 ON (unmapped)").forEach { raw ->
+            assertEquals(
+                DeviceCommandCategory.Aux,
+                deriveCommandCategory(LastDeviceCommand("PTZCmd", raw, 100L)),
+                "rawHex=$raw 必须归为 Aux",
+            )
         }
+
+        // 状态类:录像 / 布防 / 报警 / 远程重启 → Status
+        listOf("RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot").forEach { type ->
+            assertEquals(
+                DeviceCommandCategory.Status,
+                deriveCommandCategory(LastDeviceCommand(type, "v", 100L)),
+                "type=$type 必须归为 Status",
+            )
+        }
+
+        // 图像类 → Image
+        listOf("IFameCmd", "SnapShotCmd", "DeviceConfig", "DeviceUpgrade", "FormatSDCard", "TargetTrack").forEach { type ->
+            assertEquals(
+                DeviceCommandCategory.Image,
+                deriveCommandCategory(LastDeviceCommand(type, "v", 100L)),
+                "type=$type 必须归为 Image",
+            )
+        }
+
+        // 未知 type → null
+        assertNull(deriveCommandCategory(LastDeviceCommand("UnknownCmd", "v", 100L)))
+    }
+
+    @Test
+    fun `deriveRenderState 把 category 一起带给 UI`() {
+        val auxModel = DeviceControlModel(
+            lastCommand = LastDeviceCommand("PTZCmd", "雨刷 ON", 100L),
+        )
+        assertEquals(DeviceCommandCategory.Aux, deriveRenderState(auxModel).lastCommandCategory)
+
+        val ptzModel = DeviceControlModel(
+            lastCommand = LastDeviceCommand("PTZCmd", "A50F", 200L),
+        )
+        assertEquals(DeviceCommandCategory.Ptz, deriveRenderState(ptzModel).lastCommandCategory)
+
+        // 没收到命令 → null
+        assertNull(deriveRenderState(DeviceControlModel()).lastCommandCategory)
     }
 
     @Test
