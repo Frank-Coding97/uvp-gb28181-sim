@@ -2,6 +2,11 @@ package com.uvp.sim.snapshot
 
 import com.uvp.sim.gb28181.SnapShotConfig
 import com.uvp.sim.gb28181.SnapShotNotifyBuilder
+import com.uvp.sim.gb28181.SnapShotUploadUrlValidator
+import com.uvp.sim.observability.ErrorCategory
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -21,6 +26,10 @@ import kotlinx.datetime.toLocalDateTime
  * 串行执行 [SnapShotConfig.snapNum] 张,张间 [SnapShotConfig.intervalMs] 延迟。
  * 入口 [start] fire-and-forget。
  *
+ * P2-6 (audit §3) — UploadURL 严格校验:
+ *   [start] 前先用 [SnapShotUploadUrlValidator.isValidUploadUrlStrict] 校验 uploadUrl,
+ *   不在 [uploadAllowList] 或属危险地址时拒绝整个序列,记 SystemLogger Error。
+ *
  * 依赖以 lambda 注入便于测试(避免 commonTest 不能 anonymous override expect class):
  *   - [takeJpeg]: 调用 SnapshotCapture.takeJpeg
  *   - [writeCache]: 调用 JpegLocalCache.write,返回 storagePath
@@ -35,12 +44,25 @@ class SnapshotUploadEngine(
     private val scope: CoroutineScope,
     private val deviceId: String,
     private val snAllocator: () -> String,
+    private val uploadAllowList: List<String> = emptyList(),
     private val nowMs: () -> Long = { Clock.System.now().toEpochMilliseconds() },
     private val onProgress: ((SnapshotProgress) -> Unit)? = null,
     private val retryDelaysMs: List<Long> = listOf(1_000L, 2_000L, 4_000L)
 ) {
 
     fun start(cfg: SnapShotConfig): Job = scope.launch {
+        // P2-6: strict allowList check before any upload
+        if (!SnapShotUploadUrlValidator.isValidUploadUrlStrict(cfg.uploadUrl, uploadAllowList)) {
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Network,
+                "UploadURL ${cfg.uploadUrl} not in allow list or is dangerous address — reject SnapShotConfig SessionID=${cfg.sessionId}",
+                category = ErrorCategory.Permanent
+            )
+            onProgress?.invoke(SnapshotProgress.UrlRejected(cfg.sessionId, cfg.uploadUrl))
+            return@launch
+        }
+
         for (idx in 0 until cfg.snapNum) {
             if (idx > 0 && cfg.intervalMs > 0) delay(cfg.intervalMs)
             processOne(cfg, idx)
@@ -139,4 +161,8 @@ sealed class SnapshotProgress {
         val count: Int,
         val total: Int
     ) : SnapshotProgress()
+    /**
+     * P2-6 — UploadURL 未通过 allowList 或属危险地址,整个抓拍序列被拒。
+     */
+    data class UrlRejected(val sessionId: String, val uploadUrl: String) : SnapshotProgress()
 }

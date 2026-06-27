@@ -342,6 +342,7 @@ internal class ManscdpRouterImpl(
                 snapshotProtocolSn += 1
                 snapshotProtocolSn.toString()
             },
+            uploadAllowList = config.snapshot.uploadAllowList,
             onProgress = { progress ->
                 scope.launch {
                     when (progress) {
@@ -365,6 +366,11 @@ internal class ManscdpRouterImpl(
                             SystemLogger.emit(
                                 LogLevel.Warning, LogTag.Media,
                                 "snapshot capture returned null: SessionID=${progress.sessionId} ID=${progress.snapShotId}"
+                            )
+                        is com.uvp.sim.snapshot.SnapshotProgress.UrlRejected ->
+                            SystemLogger.emit(
+                                LogLevel.Error, LogTag.Network,
+                                "SnapShotConfig rejected: URL not in allow list: SessionID=${progress.sessionId} URL=${progress.uploadUrl}"
                             )
                     }
                 }
