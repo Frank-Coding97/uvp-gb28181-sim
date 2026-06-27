@@ -65,7 +65,7 @@ class SimulatorEngineDispatchTest {
     /** 喂 OPTIONS 进来 → Engine 通过 router 派给 RegistrationCoord → 后者出栈 200 OK。 */
     @Test
     fun options_request_routes_through_router_to_registration() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()
@@ -86,7 +86,7 @@ class SimulatorEngineDispatchTest {
     /** 喂 MESSAGE 进来 → Engine 通过 router 派给 ManscdpRouter → 后者出栈 200 OK。 */
     @Test
     fun message_request_routes_through_router_to_manscdp() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         try {
             transport.connect()

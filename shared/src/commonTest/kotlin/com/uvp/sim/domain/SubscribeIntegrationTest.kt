@@ -80,7 +80,7 @@ class SubscribeIntegrationTest {
 
     @Test
     fun subscribeResponds200AndSendsInitialNotify() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -106,7 +106,7 @@ class SubscribeIntegrationTest {
 
     @Test
     fun periodicNotifyFiresAfterInterval() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -128,7 +128,7 @@ class SubscribeIntegrationTest {
 
     @Test
     fun cancelSubscribeStopsNotify() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)
@@ -152,7 +152,7 @@ class SubscribeIntegrationTest {
 
     @Test
     fun subscriptionsFlowReflectsActiveState() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         registerEngine(transport, engine)

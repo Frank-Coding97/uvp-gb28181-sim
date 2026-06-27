@@ -63,7 +63,7 @@ class OptionsHandlingTest {
     )
 
     private suspend fun connectEngine(): Pair<MockSipTransport, SimulatorEngine> {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         return transport to transport
             .let { tr -> tr to TestEngine.create(config(), tr, kotlinx.coroutines.GlobalScope) }
@@ -72,7 +72,7 @@ class OptionsHandlingTest {
 
     @Test
     fun a2_t1_probeOptionsReturns200() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         // 触发 inbound job 启动(register 后才订阅 transport.incoming)
@@ -92,7 +92,7 @@ class OptionsHandlingTest {
 
     @Test
     fun a2_t2_responseHasAllowHeaderWithAllExpectedMethods() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         engine.register()
@@ -116,7 +116,7 @@ class OptionsHandlingTest {
 
     @Test
     fun a2_t3_allowDoesNotIncludeRegister() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         engine.register()
@@ -139,7 +139,7 @@ class OptionsHandlingTest {
 
     @Test
     fun a2_t4_optionsDoesNotInterfereWithOtherTransactions() = runTest {
-        val transport = MockSipTransport()
+        val transport = MockSipTransport(config())
         transport.connect()
         val engine = TestEngine.create(config(), transport, this, localIpProvider = { "192.168.1.50" })
         engine.register()

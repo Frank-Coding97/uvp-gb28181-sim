@@ -77,7 +77,7 @@ class SimulatorEngineRecordingTest {
             requestUri = "sip:34020000001110000001@3402000000",
             headers = listOf(
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKtest"),
-                SipMessage.Header(SipHeader.FROM, "<sip:server@3402000000>;tag=ftag"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=ftag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, "msg-test"),
                 SipMessage.Header(SipHeader.CSEQ, "1 MESSAGE"),
@@ -103,7 +103,7 @@ class SimulatorEngineRecordingTest {
             requestUri = "sip:34020000001110000001@3402000000",
             headers = listOf(
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKquery"),
-                SipMessage.Header(SipHeader.FROM, "<sip:server@3402000000>;tag=qtag"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=qtag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, "query-test"),
                 SipMessage.Header(SipHeader.CSEQ, "1 MESSAGE"),
@@ -130,7 +130,7 @@ y=0123456789
             requestUri = "sip:34020000001320000001@3402000000",
             headers = listOf(
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKplayback"),
-                SipMessage.Header(SipHeader.FROM, "<sip:server@3402000000>;tag=stag"),
+                SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=stag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001320000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "1 INVITE"),

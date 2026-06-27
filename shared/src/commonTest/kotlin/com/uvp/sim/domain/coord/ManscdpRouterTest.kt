@@ -117,7 +117,7 @@ class ManscdpRouterTest {
         val xml = "<?xml version=\"1.0\"?><Query>" +
             "<CmdType>Catalog</CmdType><SN>42</SN>" +
             "<DeviceID>34020000001110000001</DeviceID></Query>"
-        val result = router.onIncoming(incomingMessage("cat-1@plat", xml).asEnvelope())
+        val result = router.onIncoming(incomingMessage("cat-1@plat", xml).asEnvelope(sourceIp = "192.168.1.100"))
         runCurrent()
 
         assertEquals(RoutingResult.Handled, result, "Catalog 查询应被 Router 吃下")
@@ -149,7 +149,7 @@ class ManscdpRouterTest {
             "<CmdType>Broadcast</CmdType><SN>1</SN>" +
             "<SourceID>34020000002000000001</SourceID>" +
             "<TargetID>34020000001110000001</TargetID></Notify>"
-        router.onIncoming(incomingMessage("bc-1@plat", xml).asEnvelope())
+        router.onIncoming(incomingMessage("bc-1@plat", xml).asEnvelope(sourceIp = "192.168.1.100"))
         runCurrent()
 
         assertEquals(1, invoked, "Broadcast 命令必须调 BroadcastInvoker.fireBroadcastInvite")

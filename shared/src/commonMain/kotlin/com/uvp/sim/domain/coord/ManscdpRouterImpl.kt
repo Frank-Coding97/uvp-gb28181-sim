@@ -192,8 +192,29 @@ internal class ManscdpRouterImpl(
         val msg = envelope.message
         return when (msg) {
             is SipRequest -> when (msg.method) {
-                SipMethod.MESSAGE -> { handleMessage(msg); RoutingResult.Handled }
-                SipMethod.SUBSCRIBE -> { handleSubscribe(msg); RoutingResult.Handled }
+                SipMethod.MESSAGE, SipMethod.SUBSCRIBE -> {
+                    // P1-3:MANSCDP MESSAGE / SUBSCRIBE 入口业务级来源授权(codex 第二轮 audit §3)。
+                    //
+                    // 引用:"未授权 MESSAGE/SUBSCRIBE 不应先回 200 再忽略,应返回 403 或直接丢弃"
+                    //       "应在 200 之前 ingress 拦截"
+                    //
+                    // 不通过 → 直接 drop(不发 200 / 403)避免暴露设备存在
+                    // (reconnaissance 防御:LAN 扫描器无法用 200 / 403 区分 MANSCDP-capable 设备)。
+                    if (!com.uvp.sim.sip.PlatformAuthorizer.isManscdpFromAuthorizedPlatform(envelope, config)) {
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Lifecycle,
+                            "丢弃未授权 ${msg.method.name}:sourceIp=${envelope.sourceIp} fromUser=${
+                                msg.fromHeader()?.let { SipHeaderHelpers.parseUriUser(SipHeaderHelpers.parseUri(it), fallback = "") }
+                            }",
+                        )
+                        return RoutingResult.Handled
+                    }
+                    when (msg.method) {
+                        SipMethod.MESSAGE -> { handleMessage(msg); RoutingResult.Handled }
+                        SipMethod.SUBSCRIBE -> { handleSubscribe(msg); RoutingResult.Handled }
+                        else -> RoutingResult.Skip
+                    }
+                }
                 else -> RoutingResult.Skip
             }
             is SipResponse -> RoutingResult.Skip
