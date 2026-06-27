@@ -1,8 +1,6 @@
 package com.uvp.sim.ui.capability
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,8 +19,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Code
-import androidx.compose.material.icons.outlined.ExpandLess
-import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -42,7 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -60,12 +55,13 @@ import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.LocalToastHost
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.UvpColor
-import kotlinx.datetime.toLocalDateTime
 
 /**
  * 报警子页(spec F)— 报警单详细编辑 + 预览 XML + 发送/复位 + 历史 + 订阅人。
  *
  * 进入方式:能力页报警卡点击 / 主屏报警 tile 长按(target)。
+ *
+ * 拆分:小部件在 [AlarmManagementWidgets],高级模拟在 [AlarmAdvancedSimulationSection]。
  */
 @Composable
 fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
@@ -302,7 +298,7 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 } else {
                     state.alarmHistory.asReversed().take(10).forEach { rec ->
                         AlarmHistoryRow(
-                            time = formatClock(rec.firedAtMs),
+                            time = formatAlarmClock(rec.firedAtMs),
                             typeLabel = rec.payload.type.label,
                             desc = rec.payload.description.take(30),
                             subs = rec.notifiedSubscribers
@@ -333,48 +329,13 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 }
             }
 
-            // 高级模拟折叠区 — MediaStatus 122/123 演示(M5 batch1 §7.9)
-            // 注册后才允许触发 — 走 engine.triggerMediaStatusAbnormal,
-            // 注册中心 MESSAGE + Alarm 订阅人 NOTIFY 同 fan-out。
-            val canSimulate = state.sip == com.uvp.sim.ui.model.SipStateDto.Registered
-            CollapsibleHeader(
-                icon = Icons.Outlined.Code,
-                title = "高级模拟 (调试用)",
-                count = 0,
+            // 高级模拟折叠区 — MediaStatus 122/123 演示
+            AlarmAdvancedSimulationSection(
+                sipState = state.sip,
+                actions = actions,
                 expanded = advancedExpanded,
                 onToggle = { advancedExpanded = !advancedExpanded }
             )
-            if (advancedExpanded) {
-                Column(
-                    modifier = Modifier.padding(start = 8.dp, top = 4.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        "GB §9.5.3 异常通知。触发后给注册中心 + Alarm 订阅人各发一条 MediaStatus NOTIFY。",
-                        fontSize = 11.sp, color = UvpColor.TextSecondary
-                    )
-                    OutlinedButton(
-                        onClick = {
-                            actions.onSimulateMediaStatusAbnormal(122)
-                            toast.info("已发送 MediaStatus 122 (录像异常)")
-                        },
-                        enabled = canSimulate,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("模拟录像异常 (NotifyType=122)") }
-                    OutlinedButton(
-                        onClick = {
-                            actions.onSimulateMediaStatusAbnormal(123)
-                            toast.info("已发送 MediaStatus 123 (存储满)")
-                        },
-                        enabled = canSimulate,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("模拟存储满 (NotifyType=123)") }
-                    if (!canSimulate) {
-                        Text("未注册,按钮禁用",
-                            fontSize = 10.sp, color = UvpColor.TextHint)
-                    }
-                }
-            }
 
             Spacer(Modifier.height(12.dp))
         }
@@ -395,129 +356,4 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
             }
         )
     }
-}
-
-@Composable
-private fun FieldLabel(text: String) {
-    Text(text, fontSize = 11.sp, color = UvpColor.TextSecondary, fontWeight = FontWeight.Medium)
-}
-
-/** 历史折叠区(随机模式复用)。 */
-@Composable
-private fun AlarmHistorySection(
-    state: AppUiState,
-    expanded: Boolean,
-    onToggle: () -> Unit
-) {
-    CollapsibleHeader(
-        icon = Icons.Outlined.History,
-        title = "最近 10 条",
-        count = state.alarmHistory.size,
-        expanded = expanded,
-        onToggle = onToggle
-    )
-    if (expanded) {
-        if (state.alarmHistory.isEmpty()) {
-            Text("暂无记录", fontSize = 11.sp, color = UvpColor.TextHint,
-                modifier = Modifier.padding(start = 8.dp))
-        } else {
-            state.alarmHistory.asReversed().take(10).forEach { rec ->
-                AlarmHistoryRow(
-                    time = formatClock(rec.firedAtMs),
-                    typeLabel = rec.payload.type.label,
-                    desc = rec.payload.description.take(30),
-                    subs = rec.notifiedSubscribers
-                )
-            }
-        }
-    }
-}
-
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-@Composable
-private fun <T> SegmentedPicker(
-    options: List<T>,
-    selected: T,
-    labelOf: (T) -> String,
-    onSelect: (T) -> Unit
-) {
-    androidx.compose.foundation.layout.FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        options.forEach { opt ->
-            val sel = opt == selected
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(if (sel) UvpColor.PrimaryLight else Color.Transparent)
-                    .border(1.dp, if (sel) UvpColor.Primary else UvpColor.Border, RoundedCornerShape(6.dp))
-                    .clickable { onSelect(opt) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    labelOf(opt),
-                    fontSize = 12.sp,
-                    fontWeight = if (sel) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (sel) UvpColor.Primary else UvpColor.TextSecondary
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CollapsibleHeader(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    count: Int,
-    expanded: Boolean,
-    onToggle: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            .clickable { onToggle() }
-            .padding(vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(icon, null, tint = UvpColor.TextSecondary, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(6.dp))
-        Text("$title ($count)", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = UvpColor.Text)
-        Spacer(Modifier.weight(1f))
-        Icon(
-            if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-            null, tint = UvpColor.TextSecondary, modifier = Modifier.size(18.dp)
-        )
-    }
-}
-
-@Composable
-private fun AlarmHistoryRow(time: String, typeLabel: String, desc: String, subs: Int) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp, horizontal = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(time, fontSize = 10.sp, color = UvpColor.TextHint, fontFamily = FontFamily.Monospace,
-            modifier = Modifier.width(64.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(typeLabel, fontSize = 11.sp, color = UvpColor.Warning, fontWeight = FontWeight.Medium)
-        Spacer(Modifier.width(6.dp))
-        Text(desc, fontSize = 11.sp, color = UvpColor.TextSecondary, maxLines = 1,
-            modifier = Modifier.weight(1f))
-        if (subs > 0) {
-            Text("${subs}推", fontSize = 10.sp, color = UvpColor.Primary, fontFamily = FontFamily.Monospace)
-        }
-    }
-}
-
-/** epoch ms → HH:mm:ss 本地时间。 */
-private fun formatClock(epochMs: Long): String {
-    val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
-    val ldt = kotlinx.datetime.Instant.fromEpochMilliseconds(epochMs)
-        .toLocalDateTime(tz)
-    fun p2(v: Int) = v.toString().padStart(2, '0')
-    return "${p2(ldt.hour)}:${p2(ldt.minute)}:${p2(ldt.second)}"
 }
