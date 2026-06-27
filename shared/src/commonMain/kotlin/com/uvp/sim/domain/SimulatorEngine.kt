@@ -9,9 +9,8 @@ import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.SipMessage
-import com.uvp.sim.sip.SipMethod
-import com.uvp.sim.sip.SipRequest
-import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.sip.SipMessageRouter
+import com.uvp.sim.sip.SipMessageRouterImpl
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -214,6 +213,20 @@ class SimulatorEngine internal constructor(
     internal fun isRxActive(): Boolean = broadcast.debugSnapshot().rxActive
     internal suspend fun handleRxPacket(rtp: com.uvp.sim.network.RtpPacket) = broadcast.handleRxPacket(rtp)
 
+    /**
+     * SIP 消息中央路由(Wave 4 PR-D / P2-2):Engine 不再 own SIP method 大型 switch,
+     * 全部下放到 [SipMessageRouterImpl]。Engine 在 handleIncoming 里只调一次 route。
+     */
+    private val messageRouter: SipMessageRouter = SipMessageRouterImpl(
+        registration = registration,
+        invite = invite,
+        broadcast = broadcast,
+        playback = playback,
+        manscdp = manscdp,
+        onRegistrationStateChanged = { syncStateFromRegistration() },
+        onMessage2xxAck = { holders.events.emit(SimEvent.HeartbeatAcknowledged(0)) },
+    )
+
     private fun startInboundIfNeeded() {
         if (inboundJob != null) return
         inboundJob = scope.launch {
@@ -230,23 +243,8 @@ class SimulatorEngine internal constructor(
         }
     }
 
-    private suspend fun handleIncoming(msg: SipMessage) = when (msg) {
-        is SipResponse -> handleResponse(msg)
-        is SipRequest -> handleRequest(msg)
-    }
-
-    private suspend fun handleResponse(resp: SipResponse) {
-        val cseqHeader = resp.cseqRaw() ?: return
-        val cseqMethod = cseqHeader.split(" ").getOrNull(1)?.let { SipMethod.fromString(it) } ?: return
-        when (cseqMethod) {
-            SipMethod.REGISTER -> { registration.onIncoming(resp); syncStateFromRegistration() }
-            SipMethod.INVITE -> broadcast.onIncoming(resp)
-            SipMethod.MESSAGE -> if (resp.statusCode in 200..299) {
-                registration.onIncoming(resp)
-                holders.events.emit(SimEvent.HeartbeatAcknowledged(0))
-            }
-            else -> Unit
-        }
+    private suspend fun handleIncoming(msg: SipMessage) {
+        messageRouter.route(msg)
     }
 
     /** Coord 改完状态后立即同步,避免 bridge 协程时序滞后让后续消息读到陈旧状态。 */
@@ -260,22 +258,6 @@ class SimulatorEngine internal constructor(
         RegistrationState.Registering, RegistrationState.RetryBackoff -> SipState.Registering
         RegistrationState.Registered -> SipState.Registered
         RegistrationState.Failed -> SipState.Failed
-    }
-
-    private suspend fun handleRequest(req: SipRequest) {
-        val skip = com.uvp.sim.domain.coord.RoutingResult.Skip
-        when (req.method) {
-            SipMethod.INVITE -> if (invite.onIncoming(req) == skip) playback.onIncoming(req)
-            SipMethod.ACK, SipMethod.CANCEL -> invite.onIncoming(req)
-            SipMethod.BYE -> {
-                if (broadcast.onIncoming(req) == skip &&
-                    invite.onIncoming(req) == skip) playback.onIncoming(req)
-            }
-            SipMethod.INFO -> if (playback.onIncoming(req) == skip) manscdp.onIncoming(req)
-            SipMethod.MESSAGE, SipMethod.SUBSCRIBE -> manscdp.onIncoming(req)
-            SipMethod.OPTIONS -> registration.onIncoming(req)
-            else -> Unit
-        }
     }
 
     /** DeviceControl TeleBoot 回调(followup A 注入 Manscdp,P1.5 仍保留为 Engine internal 方法,AppEngine 装配时引用)。 */

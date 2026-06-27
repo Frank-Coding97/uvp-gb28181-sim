@@ -2,25 +2,32 @@ package com.uvp.sim.domain.coord
 
 import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
-import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
-import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlActions
+import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.DerivedDeviceControlStateFlow
 import com.uvp.sim.domain.MockGpsSource
-import com.uvp.sim.domain.PtzPose
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionDialog
 import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
+import com.uvp.sim.domain.coord.manscdp.AlarmSubRouter
+import com.uvp.sim.domain.coord.manscdp.BroadcastSubRouter
+import com.uvp.sim.domain.coord.manscdp.CatalogSubRouter
+import com.uvp.sim.domain.coord.manscdp.DeviceControlSubRouter
+import com.uvp.sim.domain.coord.manscdp.ManscdpContext
+import com.uvp.sim.domain.coord.manscdp.ManscdpDispatcher
+import com.uvp.sim.domain.coord.manscdp.ManscdpInternals
+import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
+import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
@@ -48,28 +55,25 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
 
 /**
- * [ManscdpRouter] 真实现(PR3 T3.2 GREEN)。
+ * [ManscdpRouter] 真实现(Wave 4 PR-D / P2-1)。
  *
- * 接管 Engine 的 MANSCDP 路由 + 19 个主动 / 应答 SIP 路径。
+ * 重构(Wave 4):
+ *  - 原 1536 行单文件中心交换机,按 GB28181 业务大类拆成 4 个 [com.uvp.sim.domain.coord.manscdp.ManscdpSubRouter]:
+ *      - [CatalogSubRouter]:Catalog / DeviceInfo / DeviceStatus / ConfigDownload / RecordInfo / MobilePosition
+ *      - [AlarmSubRouter]:AlarmStatus(查询路径;主动报警上报仍在本类)
+ *      - [DeviceControlSubRouter]:DeviceControl / PresetQuery / PtzPreciseStatusQuery / CruiseTrack 等
+ *      - [BroadcastSubRouter]:Broadcast → BroadcastInvoker
+ *  - 本类退化为 [ManscdpDispatcher] 装配 + 主动业务发起 + NOTIFY fan-out:
+ *      - 主动:reportSnapshot / reportAlarm / localResetAlarm / triggerMediaStatusAbnormal /
+ *              attachSnapshotPipeline / pushCatalogNotify / toggleChannelStatus / 设备升级假进度
+ *      - 订阅:SUBSCRIBE 处理(Catalog / Alarm / MobilePosition)+ 各 NOTIFY 发送
+ *      - dispatch:onIncoming MESSAGE → [ManscdpDispatcher.route]
  *
- * 跨域决策(plans/refactor-pr3-manscdp-router.md):
- *   - 决策 1:SubscriptionRegistry / catalogTree(MutableStateFlow)/ AlarmHistoryStore /
- *     deviceControlState(MutableStateFlow)由 Engine 持有注入,Router 是唯一写者;
- *     Engine 只在 unregister/shutdown 调 cancelAll 不构成双写
- *   - 决策 2:fan-out 路径完成后通过 [simEventEmit] lambda 桥接 SimEvent,保证事件顺序
- *   - SN 池跨域共享(2026-06-26 Wave 2 PR-SN-IDENTITY):构造期注入 [SipDialogIdentityService],
- *     每次出栈 MESSAGE / NOTIFY 调 `identityService.nextMessageNotify()` 取原子 identity,
- *     不再 cache/reuse callId|fromTag,也不再有 lambda provider 双轨 + 内部 fallback。
- *
- * **stateGuard / clockOffsetProvider / activeStreamHasInvite** 是协议层 guard 依赖:
- *   - stateGuard:reportSnapshot/reportAlarm/triggerMediaStatusAbnormal 仅 Registered/InCall 才发
- *   - clockOffsetProvider:DeviceStatus / MobilePosition 等 Response 用 currentLocalIso 取设备时间
- *   - 无 broadcast / no activeStream — 这些归 InviteCoordinator/BroadcastCoordinator,本类不碰
+ * 跨域决策(plans/refactor-pr3-manscdp-router.md)沿用:
+ *   - SubscriptionRegistry / catalogTree / AlarmHistoryStore / deviceControlState 唯一写者是本类(+ SubRouter 共享 ctx)
+ *   - 2026-06-26 Wave 2 PR-SN-IDENTITY:用 [SipDialogIdentityService] 取 dialog identity,不缓存
  */
 internal class ManscdpRouterImpl(
     private val config: SimConfig,
@@ -82,7 +86,6 @@ internal class ManscdpRouterImpl(
     private val catalogTree: MutableStateFlow<List<CatalogNode>>,
     private val alarmHistoryStore: AlarmHistoryStore,
     private val mutableDeviceControlState: MutableStateFlow<DeviceControlModel>,
-    // DeviceControlDispatcher 内部装配(followup A);2 个 callback 注入由 Engine 提供
     private val rebootCallback: suspend () -> Unit,
     private val requestKeyFrameCallback: () -> Unit,
     private val broadcastInvoker: BroadcastInvoker,
@@ -92,10 +95,6 @@ internal class ManscdpRouterImpl(
     private val stateRegisteredOrInCall: () -> Boolean = { true },
     private val broadcastBusy: () -> Boolean = { false },
     private val simEventEmit: suspend (SimEvent) -> Unit = {},
-    /**
-     * Wave 2 PR-SN-IDENTITY(2026-06-26):3 类 dialog identity 显式分离的注入入口。
-     * Manscdp 域所有出栈 MESSAGE / NOTIFY 走 `identityService.nextMessageNotify()`。
-     */
     private val identityService: SipDialogIdentityService,
 ) : ManscdpRouter {
 
@@ -108,57 +107,38 @@ internal class ManscdpRouterImpl(
 
     private val localIp: String get() = localIpProvider()
 
-    // Router 自管的 NOTIFY 序号
+    // 自管 NOTIFY 序号 — 主动 NOTIFY 路径用(SubRouter 不持有 NOTIFY 序号,只发 Response)
     private var notifySn = 0
     private var catalogNotifySn = 0
     private var alarmNotifySn = 0
-    /**
-     * Wave 2 PR-SN-IDENTITY:GB28181 协议 `<SN>` 用,跟 SIP CSeq 解耦。
-     * 原代码 snAllocator 复用全局 SipSnPool.cseqInc(),现在分开。
-     */
     private var snapshotProtocolSn = 0
 
-    // Snapshot pipeline(由 attachSnapshotPipeline 注入)
     private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
     private var snapshotCachePipeline: com.uvp.sim.snapshot.JpegLocalCache? = null
 
     /**
      * DeviceControl 命令分发器(followup A 迁入 Manscdp 域)。
-     *
-     * 5 个副作用通过 3 个 callback + 本类自有方法解耦:
-     *  - reboot:[rebootCallback](Engine 自己 unregister + register)
-     *  - snapshot:本类 [reportSnapshot]
-     *  - requestKeyFrame:[requestKeyFrameCallback](Engine 透传 cameraCapture)
-     *  - triggerSnapshotConfig:本类 [snapshotPipeline]
-     *  - startUpgrade:本类 [runUpgradeProgressFlow](followup E,5s 内 4 条 DeviceUpgradeResult NOTIFY 0/30/60/100)
+     * 5 个副作用通过 3 个 callback + 本类自有方法解耦。
      */
     private val deviceControlDispatcher: DeviceControlDispatcher by lazy {
         DeviceControlDispatcher(
             state = mutableDeviceControlState,
             config = config,
             actions = object : DeviceControlActions {
-                override suspend fun reboot() {
-                    rebootCallback()
-                }
-                override suspend fun snapshot() {
-                    reportSnapshot()
-                }
-                override fun requestKeyFrame() {
-                    requestKeyFrameCallback()
-                }
+                override suspend fun reboot() { rebootCallback() }
+                override suspend fun snapshot() { reportSnapshot() }
+                override fun requestKeyFrame() { requestKeyFrameCallback() }
                 override suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig) {
                     val pipeline = snapshotPipeline
                     if (pipeline == null) {
                         SystemLogger.emit(
-                            LogLevel.Warning,
-                            LogTag.Lifecycle,
+                            LogLevel.Warning, LogTag.Lifecycle,
                             "SnapShotConfig 收到但抓拍管线未挂(平台壳未调 attachSnapshotPipeline);忽略 SessionID=${cfg.sessionId}"
                         )
                         return
                     }
                     SystemLogger.emit(
-                        LogLevel.Info,
-                        LogTag.Lifecycle,
+                        LogLevel.Info, LogTag.Lifecycle,
                         "SnapShotConfig 派发 SessionID=${cfg.sessionId} N=${cfg.snapNum} interval=${cfg.intervalMs}ms"
                     )
                     pipeline.start(cfg)
@@ -175,17 +155,48 @@ internal class ManscdpRouterImpl(
         )
     }
 
+    /** SubRouter 共享 ctx — 装配 dispatcher 用。 */
+    private val subRouterContext: ManscdpContext = ManscdpContext(
+        config = config,
+        outbox = outbox,
+        identityService = identityService,
+        subscriptionRegistry = subscriptionRegistry,
+        deviceControlState = mutableDeviceControlState,
+        catalogTree = catalogTree,
+        mockGps = mockGps,
+        localIpProvider = localIpProvider,
+        localPortProvider = localPortProvider,
+        clockOffsetProvider = clockOffsetProvider,
+        stateRegisteredOrInCall = stateRegisteredOrInCall,
+        simEventEmit = simEventEmit,
+    )
+
+    /** 4 个 SubRouter + dispatcher 装配(lazy 让 deviceControlDispatcher 提前 by lazy 不撞冲突)。 */
+    private val dispatcher: ManscdpDispatcher by lazy {
+        ManscdpDispatcher(
+            routers = listOf(
+                CatalogSubRouter(ctx = subRouterContext, recordingService = recordingService),
+                AlarmSubRouter(ctx = subRouterContext),
+                DeviceControlSubRouter(
+                    ctx = subRouterContext,
+                    recordingService = recordingService,
+                    dispatcher = deviceControlDispatcher,
+                    alarmResetCallback = { by -> pushAlarmResetNotify(by) },
+                ),
+                BroadcastSubRouter(
+                    ctx = subRouterContext,
+                    broadcastInvoker = broadcastInvoker,
+                    broadcastBusy = broadcastBusy,
+                ),
+            ),
+        )
+    }
+
     override suspend fun onIncoming(msg: SipMessage): RoutingResult {
         return when (msg) {
             is SipRequest -> when (msg.method) {
-                SipMethod.MESSAGE -> {
-                    handleMessage(msg)
-                    RoutingResult.Handled
-                }
-                SipMethod.SUBSCRIBE -> {
-                    handleSubscribe(msg)
-                    RoutingResult.Handled
-                }
+                SipMethod.MESSAGE -> { handleMessage(msg); RoutingResult.Handled }
+                SipMethod.SUBSCRIBE -> { handleSubscribe(msg); RoutingResult.Handled }
                 else -> RoutingResult.Skip
             }
             is SipResponse -> RoutingResult.Skip
@@ -193,7 +204,6 @@ internal class ManscdpRouterImpl(
     }
 
     override suspend fun shutdown() {
-        // Router 不持任何独立协程(回调全在 caller scope 上),仅清空 snapshot 引用避免泄漏
         snapshotPipeline = null
         snapshotCachePipeline = null
     }
@@ -209,18 +219,11 @@ internal class ManscdpRouterImpl(
         }
         val id = identityService.nextMessageNotify()
         val sn = id.cseq.toInt()
-        val branch = SipBuilders.randomBranch()
-        val callIdNow = id.callId
-        val fromTagNow = id.fromTag
-        val xml = com.uvp.sim.gb28181.AlarmNotify.buildSnapshotAlarm(config = config, sn = sn.toString())
+        val xml = AlarmNotify.buildSnapshotAlarm(config = config, sn = sn.toString())
         val msg = SipBuilders.buildMessage(
-            config = config,
-            cseq = sn,
-            callId = callIdNow,
-            branch = branch,
-            fromTag = fromTagNow,
-            localIp = localIp,
-            localPort = localPortProvider(),
+            config = config, cseq = sn, callId = id.callId,
+            branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
+            localIp = localIp, localPort = localPortProvider(),
             xmlBody = xml,
         )
         try {
@@ -232,29 +235,19 @@ internal class ManscdpRouterImpl(
     }
 
     override suspend fun reportAlarm(payload: AlarmPayload) {
-        val dialogs: List<SubscriptionDialog>
-        val sn: String
         if (!stateRegisteredOrInCall()) {
             simEventEmit(SimEvent.TransportError("alarm: not registered"))
             return
         }
         val id = identityService.nextMessageNotify()
         val cseqNow = id.cseq.toInt()
-        sn = cseqNow.toString()
-        val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, payload)
+        val sn = cseqNow.toString()
+        val body = AlarmNotify.buildAlarm(config, sn, payload)
 
-        // 路 A — MESSAGE 给注册中心
-        val branch = SipBuilders.randomBranch()
-        val callIdNow = id.callId
-        val fromTagNow = id.fromTag
         val msg = SipBuilders.buildMessage(
-            config = config,
-            cseq = cseqNow,
-            callId = callIdNow,
-            branch = branch,
-            fromTag = fromTagNow,
-            localIp = localIp,
-            localPort = localPortProvider(),
+            config = config, cseq = cseqNow, callId = id.callId,
+            branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
+            localIp = localIp, localPort = localPortProvider(),
             xmlBody = body,
         )
         try {
@@ -263,8 +256,7 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("alarm MESSAGE send: ${e.message}"))
         }
 
-        // 路 B — NOTIFY 给每个活跃 Alarm 订阅人
-        dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+        val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
             sendAlarmNotify(updated, body, sn)
@@ -298,7 +290,6 @@ internal class ManscdpRouterImpl(
             return
         }
 
-        val dialogs: List<SubscriptionDialog>
         if (!stateRegisteredOrInCall()) {
             simEventEmit(SimEvent.TransportError("MediaStatus: not registered"))
             return
@@ -307,22 +298,15 @@ internal class ManscdpRouterImpl(
         val cseqNow = id.cseq.toInt()
         notifySn += 1
 
-        val branch = SipBuilders.randomBranch()
-        val callIdNow = id.callId
-        val fromTagNow = id.fromTag
         val xmlBody = com.uvp.sim.sip.MediaStatusNotify.buildXml(
             deviceId = config.device.deviceId,
             sn = notifySn,
             notifyType = notifyType,
         )
         val msg = SipBuilders.buildMessage(
-            config = config,
-            cseq = cseqNow,
-            callId = callIdNow,
-            branch = branch,
-            fromTag = fromTagNow,
-            localIp = localIp,
-            localPort = localPortProvider(),
+            config = config, cseq = cseqNow, callId = id.callId,
+            branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
+            localIp = localIp, localPort = localPortProvider(),
             xmlBody = xmlBody,
         )
         try {
@@ -331,7 +315,7 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("MediaStatus MESSAGE send: ${e.message}"))
         }
 
-        dialogs = subscriptionRegistry.dialogsByKind("Alarm")
+        val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
             sendMediaStatusNotifyToSubscriber(updated, xmlBody)
@@ -359,8 +343,6 @@ internal class ManscdpRouterImpl(
             scope = scope,
             deviceId = config.device.deviceId,
             snAllocator = {
-                // 用 Router 自管的 notifySn 自增,做 GB28181 协议 <SN>,跟 SIP CSeq 解耦
-                // (原代码用 SipSnPool 全局 cseq 当 SN 是历史 conflation,现在 Wave 2 解耦)
                 snapshotProtocolSn += 1
                 snapshotProtocolSn.toString()
             },
@@ -383,57 +365,20 @@ internal class ManscdpRouterImpl(
                                     snapShotId = progress.snapShotId,
                                 )
                             )
-                        is com.uvp.sim.snapshot.SnapshotProgress.CaptureSkipped -> {
+                        is com.uvp.sim.snapshot.SnapshotProgress.CaptureSkipped ->
                             SystemLogger.emit(
                                 LogLevel.Warning, LogTag.Media,
                                 "snapshot capture returned null: SessionID=${progress.sessionId} ID=${progress.snapShotId}"
                             )
-                        }
                     }
                 }
             },
         )
     }
 
-    private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
-
-    private fun subscriptionLabel(kind: String?): String = when (kind) {
-        "Catalog" -> "目录"
-        "Alarm" -> "报警"
-        else -> "位置"
-    }
-
-    private fun currentLocalIso(): String {
-        val ms = clockOffsetProvider().adjustedNowMs()
-        val now = Instant.fromEpochMilliseconds(ms)
-        val tz = TimeZone.currentSystemDefault()
-        val ldt = now.toLocalDateTime(tz)
-        return buildString {
-            append(ldt.year.toString().padStart(4, '0'))
-            append('-')
-            append(ldt.monthNumber.toString().padStart(2, '0'))
-            append('-')
-            append(ldt.dayOfMonth.toString().padStart(2, '0'))
-            append('T')
-            append(ldt.hour.toString().padStart(2, '0'))
-            append(':')
-            append(ldt.minute.toString().padStart(2, '0'))
-            append(':')
-            append(ldt.second.toString().padStart(2, '0'))
-        }
-    }
-
-    private fun publishableCatalogNodes(): List<CatalogNode> =
-        catalogTree.value.filterNot {
-            it.type == CatalogNodeType.Device && it.parentId == it.id
-        }
-
-    private fun isOwnedBroadcastTarget(targetId: String): Boolean {
-        val d = config.device
-        if (targetId == d.deviceId) return true
-        if (targetId == d.videoChannelId || targetId == d.frontChannelId || targetId == d.alarmChannelId) return true
-        return catalogTree.value.any { it.id == targetId }
-    }
+    // ----------------------------------------------------------------------
+    // Catalog 主动维护 / NOTIFY fan-out
+    // ----------------------------------------------------------------------
 
     suspend fun updateCatalogTree(tree: List<CatalogNode>) {
         val oldTree = catalogTree.value
@@ -493,11 +438,10 @@ internal class ManscdpRouterImpl(
         }
     }
 
-    // 后续 helper 由 Edit 续写(handleMessage / handleDeviceControl / handleBroadcast /
-    // handleRecordInfoQuery / handleSubscribe / send*Response / sendSnapshotNotify /
-    // sendAlarmNotify / sendMediaStatusNotifyToSubscriber / pushAlarmResetNotify /
-    // sendCatalogNotify / sendCatalogIncrementalNotify / sendCatalogStatusOnlyNotify /
-    // sendPositionNotify 等 13 个 private suspend)。占位 stub:
+    // ----------------------------------------------------------------------
+    // 路由入口
+    // ----------------------------------------------------------------------
+
     private suspend fun handleMessage(message: SipRequest) {
         try {
             val ok = SipBuilders.buildSimple200(
@@ -509,57 +453,10 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("send MESSAGE 200: ${e.message}"))
         }
         val xml = message.body.decodeToString()
-        val cmd = com.uvp.sim.gb28181.ManscdpParser.cmdType(xml)
-        when (cmd) {
-            "Catalog" -> sendCatalogResponse(com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0")
-            "DeviceInfo" -> sendDeviceInfoResponse(com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0")
-            "DeviceStatus" -> sendDeviceStatusResponse(com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0")
-            "AlarmStatus" -> sendAlarmStatusResponse(com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0")
-            "PresetQuery" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
-                sendPresetQueryResponse(sn, channelId)
-            }
-            "PTZPreciseStatusQuery" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
-                sendPtzPreciseStatusResponse(sn, channelId)
-            }
-            "HomePositionQuery" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
-                sendHomePositionQueryResponse(sn, channelId)
-            }
-            "StorageCardStatusQuery" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
-                sendStorageCardStatusResponse(sn, channelId)
-            }
-            "CruiseTrackListQuery" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
-                sendCruiseTrackListResponse(sn, channelId)
-            }
-            "CruiseTrackQuery" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val channelId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: ""
-                val trackNum = com.uvp.sim.gb28181.ManscdpParser.tagValue(xml, "GroupID")?.toIntOrNull()
-                    ?: com.uvp.sim.gb28181.ManscdpParser.tagValue(xml, "TrackNum")?.toIntOrNull()
-                    ?: 1
-                sendCruiseTrackResponse(sn, channelId, trackNum)
-            }
-            "ConfigDownload" -> {
-                val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-                val types = com.uvp.sim.gb28181.ConfigDownloadResponse.parseConfigTypes(xml)
-                sendConfigDownloadResponse(sn, types)
-            }
-            "MobilePosition" -> sendMobilePositionResponse(com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0")
-            "DeviceControl" -> handleDeviceControl(xml, fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) })
-            "RecordInfo" -> handleRecordInfoQuery(xml)
-            "Broadcast" -> handleBroadcast(xml, fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) })
-            else -> Unit
-        }
+        val fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) }
+        dispatcher.route(xml, fromUri)
     }
+
     private suspend fun handleSubscribe(req: SipRequest) {
         val intent = SubscribeHandler.parse(req, subscriptionRegistry.knownCallIds())
         when (intent) {
@@ -685,24 +582,21 @@ internal class ManscdpRouterImpl(
             is SubscribeIntent.Ignored -> Unit
         }
     }
+
+    // ----------------------------------------------------------------------
+    // NOTIFY fan-out helpers — 由本类持续 own,SubRouter 只发 Response,不发 NOTIFY
+    // ----------------------------------------------------------------------
+
     private suspend fun sendSnapshotNotify(xml: String) {
         if (!stateRegisteredOrInCall()) {
             simEventEmit(SimEvent.TransportError("snapshot notify: not registered"))
             return
         }
         val id = identityService.nextMessageNotify()
-        val cseqNow = id.cseq.toInt()
-        val branch = SipBuilders.randomBranch()
-        val callIdNow = id.callId
-        val fromTagNow = id.fromTag
         val msg = SipBuilders.buildMessage(
-            config = config,
-            cseq = cseqNow,
-            callId = callIdNow,
-            branch = branch,
-            fromTag = fromTagNow,
-            localIp = localIp,
-            localPort = localPortProvider(),
+            config = config, cseq = id.cseq.toInt(), callId = id.callId,
+            branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
+            localIp = localIp, localPort = localPortProvider(),
             xmlBody = xml,
         )
         try {
@@ -711,25 +605,10 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("snapshot notify send: ${e.message}"))
         }
     }
+
     private suspend fun sendAlarmNotify(dialog: SubscriptionDialog, body: String, sn: String) {
         alarmNotifySn++
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val notify = SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = body,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-            userAgent = config.userAgent,
-        )
+        val notify = buildNotifyForDialog(dialog, body)
         try {
             outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.AlarmNotifySent(sn = sn, subscriber = dialog.subscriberUri))
@@ -737,53 +616,24 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("send Alarm NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
+
     private suspend fun sendMediaStatusNotifyToSubscriber(dialog: SubscriptionDialog, body: String) {
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val notify = SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = body,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-            userAgent = config.userAgent,
-        )
+        val notify = buildNotifyForDialog(dialog, body)
         try {
             outbox.send(notify).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send MediaStatus NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
+
     private suspend fun sendCatalogNotify(dialog: SubscriptionDialog) {
         catalogNotifySn++
-        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.build(
+        val xml = CatalogNotifyBuilder.build(
             deviceId = config.device.deviceId,
             sn = catalogNotifySn,
-            tree = publishableCatalogNodes(),
+            tree = ManscdpInternals.publishableCatalogNodes(catalogTree.value),
         )
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val notify = SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = xml,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-        )
+        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
         try {
             outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
@@ -791,29 +641,15 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
+
     private suspend fun sendCatalogIncrementalNotify(dialog: SubscriptionDialog, events: List<CatalogChangeEvent>) {
         catalogNotifySn++
-        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildIncremental(
+        val xml = CatalogNotifyBuilder.buildIncremental(
             deviceId = config.device.deviceId,
             sn = catalogNotifySn,
             events = events,
         )
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val notify = SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = xml,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-        )
+        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
         try {
             outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
@@ -821,30 +657,16 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
+
     private suspend fun sendCatalogStatusOnlyNotify(dialog: SubscriptionDialog, channelId: String, online: Boolean) {
         catalogNotifySn++
-        val xml = com.uvp.sim.gb28181.CatalogNotifyBuilder.buildStatusOnly(
+        val xml = CatalogNotifyBuilder.buildStatusOnly(
             deviceId = config.device.deviceId,
             sn = catalogNotifySn,
             channelId = channelId,
             online = online,
         )
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val notify = SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = xml,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-        )
+        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
         try {
             outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
@@ -852,6 +674,7 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("send Catalog status-only NOTIFY: ${e::class.simpleName}: ${e.message}"))
         }
     }
+
     private suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
         notifySn++
         val fix = mockGps.next()
@@ -863,23 +686,7 @@ internal class ManscdpRouterImpl(
             direction = fix.direction,
             altitude = fix.altitude,
         )
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val notify = SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = xml,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-            userAgent = config.userAgent,
-        )
+        val notify = buildNotifyForDialog(dialog, xml)
         try {
             outbox.send(notify).getOrThrow()
             simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = notifySn))
@@ -888,501 +695,32 @@ internal class ManscdpRouterImpl(
         }
     }
 
-    private suspend fun sendCatalogResponse(sn: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val xmlBody = com.uvp.sim.gb28181.CatalogResponse.buildFromTree(
-                config = config,
-                sn = sn,
-                tree = publishableCatalogNodes(),
-            )
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send Catalog response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendDeviceInfoResponse(sn: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val xmlBody = com.uvp.sim.gb28181.DeviceInfoResponse.build(config, sn)
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 DeviceInfo → 已应答 sn=$sn")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send DeviceInfo response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendDeviceStatusResponse(sn: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val ctrl = mutableDeviceControlState.value
-            val snapshot = com.uvp.sim.gb28181.DeviceStatusSnapshot(
-                online = stateRegisteredOrInCall(),
-                deviceTime = currentLocalIso(),
-                recording = ctrl.isRecording,
-                alarming = ctrl.isAlarming,
-                guarded = ctrl.isGuarded,
-            )
-            val xmlBody = com.uvp.sim.gb28181.DeviceStatusResponse.build(config, sn, snapshot)
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Network,
-                "平台查询 DeviceStatus → 已应答 sn=$sn online=${snapshot.online} record=${snapshot.recording} alarm=${snapshot.alarming}"
-            )
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send DeviceStatus response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendAlarmStatusResponse(sn: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val snapshot = com.uvp.sim.gb28181.AlarmStatusSnapshot(
-                alarming = mutableDeviceControlState.value.isAlarming,
-                alarmChannelId = config.device.alarmChannelId,
-            )
-            val xmlBody = com.uvp.sim.gb28181.AlarmStatusResponse.build(config, sn, snapshot)
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 AlarmStatus → 已应答 sn=$sn alarm=${snapshot.alarming}")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send AlarmStatus response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendPresetQueryResponse(sn: String, channelId: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val xmlBody = com.uvp.sim.gb28181.PresetQueryResponse.build(
-                config = config,
-                sn = sn,
-                channelId = channelId,
-                presets = mutableDeviceControlState.value.presets,
-            )
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 PresetQuery → 已应答(空清单)sn=$sn")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send PresetQuery response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendPtzPreciseStatusResponse(sn: String, channelId: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val s = mutableDeviceControlState.value
-            val pose = s.lastPreciseCtrl ?: PtzPose(s.panAngle, s.tiltAngle, s.zoomLevel)
-            val xmlBody = com.uvp.sim.gb28181.PtzPreciseStatusResponse.build(
-                config = config,
-                sn = sn,
-                channelId = channelId,
-                pose = pose,
-            )
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Network,
-                "平台查询 PTZPreciseStatusQuery → 已应答(${pose.pan},${pose.tilt},${pose.zoom}x)sn=$sn"
-            )
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send PTZPreciseStatusQuery response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendConfigDownloadResponse(sn: String, configTypes: List<String>) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val xmlBody = com.uvp.sim.gb28181.ConfigDownloadResponse.build(config, sn, configTypes)
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Network,
-                "平台查询 ConfigDownload → 已应答 sn=$sn types=${configTypes.joinToString("/")}"
-            )
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send ConfigDownload response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendMobilePositionResponse(sn: String) {
-        try {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val fix = mockGps.next()
-            val xmlBody = com.uvp.sim.gb28181.MobilePositionResponse.build(
-                deviceId = config.device.deviceId,
-                sn = sn,
-                point = fix.point,
-                speed = fix.speed,
-                direction = fix.direction,
-                altitude = fix.altitude,
-                timestamp = currentLocalIso(),
-            )
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Network,
-                "平台查询 MobilePosition → 已应答 sn=$sn lng=${fix.point.longitude} lat=${fix.point.latitude}"
-            )
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send MobilePosition response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendMansResponseMessage(xmlBody: String, label: String) {
-        val id = identityService.nextMessageNotify()
-        val cseqNow = id.cseq.toInt()
-        val branch = SipBuilders.randomBranch()
-        val callIdNow = id.callId
-        val fromTagNow = id.fromTag
-        val msg = SipBuilders.buildMessage(
-            config = config,
-            cseq = cseqNow,
-            callId = callIdNow,
-            branch = branch,
-            fromTag = fromTagNow,
+    /** SUBSCRIBE 路径上所有 NOTIFY 共用的报文构造,统一 subscription-state / Via / UA。 */
+    private fun buildNotifyForDialog(
+        dialog: SubscriptionDialog,
+        xmlBody: String,
+        includeUserAgent: Boolean = true,
+    ): SipRequest {
+        val notifyCseq = dialog.cseqNotify + 1
+        val remaining = dialog.remainingSeconds
+        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        return SipBuilders.buildNotify(
+            subscriberUri = dialog.subscriberUri,
+            callId = dialog.callId,
+            fromTag = dialog.toTag,
+            toTag = dialog.fromTag,
+            event = "presence",
+            subscriptionState = ssValue,
+            cseq = notifyCseq,
+            xmlBody = xmlBody,
             localIp = localIp,
             localPort = localPortProvider(),
-            xmlBody = xmlBody,
+            transport = config.transport.name,
+            userAgent = if (includeUserAgent) config.userAgent else null,
         )
-        outbox.send(msg).getOrThrow()
-        SystemLogger.emit(LogLevel.Info, LogTag.Network, "$label → 已应答")
     }
 
-    private suspend fun sendHomePositionQueryResponse(sn: String, channelId: String) {
-        try {
-            val s = mutableDeviceControlState.value
-            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
-            val presetIndex = if (s.homePosition != null) 1 else 0
-            val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
-                "<Response>\r\n" +
-                "<CmdType>HomePositionQuery</CmdType>\r\n" +
-                "<SN>$sn</SN>\r\n" +
-                "<DeviceID>$responseDeviceId</DeviceID>\r\n" +
-                "<Enabled>${if (s.homePositionEnabled) 1 else 0}</Enabled>\r\n" +
-                "<ResetTime>30</ResetTime>\r\n" +
-                "<PresetIndex>$presetIndex</PresetIndex>\r\n" +
-                "</Response>\r\n"
-            sendMansResponseMessage(xmlBody, "HomePositionQuery sn=$sn")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send HomePositionQuery response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendStorageCardStatusResponse(sn: String, channelId: String) {
-        try {
-            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
-            val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
-                "<Response>\r\n" +
-                "<CmdType>StorageCardStatusQuery</CmdType>\r\n" +
-                "<SN>$sn</SN>\r\n" +
-                "<DeviceID>$responseDeviceId</DeviceID>\r\n" +
-                "<SumNum>1</SumNum>\r\n" +
-                "<StorageList Num=\"1\">\r\n" +
-                "<Item><CardNum>0</CardNum><Status>Normal</Status><TotalCapacity>32768</TotalCapacity><RemainingSpace>24576</RemainingSpace></Item>\r\n" +
-                "</StorageList>\r\n" +
-                "</Response>\r\n"
-            sendMansResponseMessage(xmlBody, "StorageCardStatusQuery sn=$sn")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send StorageCardStatus response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendCruiseTrackListResponse(sn: String, channelId: String) {
-        try {
-            val s = mutableDeviceControlState.value
-            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
-            val sumNum = s.cruiseTracks.size
-            val items = s.cruiseTracks.keys.sorted().joinToString("\r\n") { trackNum ->
-                "<Item><GroupID>$trackNum</GroupID><Name>巡航 $trackNum</Name></Item>"
-            }
-            val itemsBlock = if (sumNum == 0) "<TrackList Num=\"0\"/>"
-                else "<TrackList Num=\"$sumNum\">\r\n$items\r\n</TrackList>"
-            val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
-                "<Response>\r\n" +
-                "<CmdType>CruiseTrackListQuery</CmdType>\r\n" +
-                "<SN>$sn</SN>\r\n" +
-                "<DeviceID>$responseDeviceId</DeviceID>\r\n" +
-                "<SumNum>$sumNum</SumNum>\r\n" +
-                "$itemsBlock\r\n" +
-                "</Response>\r\n"
-            sendMansResponseMessage(xmlBody, "CruiseTrackList sn=$sn N=$sumNum")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send CruiseTrackList response: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendCruiseTrackResponse(sn: String, channelId: String, trackNum: Int) {
-        try {
-            val s = mutableDeviceControlState.value
-            val responseDeviceId = channelId.ifBlank { config.device.deviceId }
-            val track = s.cruiseTracks[trackNum] ?: emptyList()
-            val sumNum = track.size
-            val items = track.joinToString("\r\n") { presetNum ->
-                "<Item><PresetID>$presetNum</PresetID><Speed>5</Speed><DwellTime>3</DwellTime></Item>"
-            }
-            val itemsBlock = if (sumNum == 0) "<PresetList Num=\"0\"/>"
-                else "<PresetList Num=\"$sumNum\">\r\n$items\r\n</PresetList>"
-            val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
-                "<Response>\r\n" +
-                "<CmdType>CruiseTrackQuery</CmdType>\r\n" +
-                "<SN>$sn</SN>\r\n" +
-                "<DeviceID>$responseDeviceId</DeviceID>\r\n" +
-                "<GroupID>$trackNum</GroupID>\r\n" +
-                "<SumNum>$sumNum</SumNum>\r\n" +
-                "$itemsBlock\r\n" +
-                "</Response>\r\n"
-            sendMansResponseMessage(xmlBody, "CruiseTrack #$trackNum sn=$sn")
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send CruiseTrack response: ${e.message}"))
-        }
-    }
-
-    private suspend fun handleRecordInfoQuery(xml: String) {
-        val tz = "Asia/Shanghai"
-        val query = com.uvp.sim.gb28181.RecordInfoQuery.parse(xml, tz) ?: run {
-            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "RecordInfo 查询解析失败")
-            return
-        }
-        if (query.indistinctQuery == 1 || query.filePath != null ||
-            query.address != null || query.recorderId != null
-        ) {
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Media,
-                "RecordInfo 高级过滤(已解析,sim 单通道 mock 不参与命中): " +
-                    "indistinct=${query.indistinctQuery} path=${query.filePath} " +
-                    "addr=${query.address} recId=${query.recorderId}"
-            )
-        }
-        val files = recordingService.files.value
-        val hits = files.filter {
-            query.startMs <= it.endTimeMs && query.endMs >= it.startTimeMs &&
-                (query.type == null || it.type == query.type)
-        }
-        val packets = com.uvp.sim.gb28181.RecordInfoNotify.buildAll(
-            sn = query.sn,
-            deviceId = config.device.deviceId,
-            deviceName = config.device.name,
-            items = hits,
-            timeZoneId = tz,
-        )
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Media,
-            "平台查询录像 → 命中 ${hits.size} 条 / 分 ${packets.size} 包"
-        )
-        for (xmlBody in packets) {
-            try {
-                val id = identityService.nextMessageNotify()
-                val cseqNow = id.cseq.toInt()
-                val branch = SipBuilders.randomBranch()
-                val callIdNow = id.callId
-                val fromTagNow = id.fromTag
-                val msg = SipBuilders.buildMessage(
-                    config = config,
-                    cseq = cseqNow,
-                    callId = callIdNow,
-                    branch = branch,
-                    fromTag = fromTagNow,
-                    localIp = localIp,
-                    localPort = localPortProvider(),
-                    xmlBody = xmlBody,
-                )
-                outbox.send(msg).getOrThrow()
-            } catch (e: Throwable) {
-                simEventEmit(SimEvent.TransportError("send RecordInfo: ${e.message}"))
-            }
-        }
-    }
-
-    private suspend fun handleDeviceControl(xml: String, fromUri: String? = null) {
-        val ack = deviceControlDispatcher.dispatch(xml, fromUri = fromUri)
-        val lastCmd = mutableDeviceControlState.value.lastCommand
-        if (lastCmd != null) {
-            simEventEmit(
-                SimEvent.DeviceControlReceived(
-                    commandType = lastCmd.type,
-                    detail = lastCmd.rawHex,
-                )
-            )
-        }
-        if (ack.alarmReset) {
-            simEventEmit(SimEvent.AlarmReset(SimEvent.ResetSource.Remote(ack.by ?: "platform")))
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Network,
-                "平台 AlarmCmd 复位报警 by=${ack.by ?: "platform"}",
-            )
-            pushAlarmResetNotify(ack.by)
-        }
-        val recordCmd = com.uvp.sim.gb28181.ManscdpParser.recordCmd(xml) ?: return
-        val sn = com.uvp.sim.gb28181.ManscdpParser.sn(xml) ?: "0"
-        val deviceId = com.uvp.sim.gb28181.ManscdpParser.deviceId(xml) ?: config.device.deviceId
-        var result = "OK"
-        when (recordCmd.equals("Record", ignoreCase = true) to recordCmd.equals("StopRecord", ignoreCase = true)) {
-            true to false -> {
-                SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台下发 Record → 启动录像 source=PlatformCmd")
-                runCatching {
-                    recordingService.start(
-                        com.uvp.sim.recording.RecordSource.PlatformCmd,
-                        config.device.videoChannelId,
-                    )
-                }.onFailure {
-                    SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 启动录像异常: ${it.message}")
-                    result = "ERROR"
-                }
-            }
-            false to true -> {
-                SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台下发 StopRecord → 停止录像")
-                runCatching { recordingService.stop() }
-                    .onFailure {
-                        SystemLogger.emit(LogLevel.Error, LogTag.Media, "RecordCmd 停止录像异常: ${it.message}")
-                        result = "ERROR"
-                    }
-            }
-            else -> {
-                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "平台 RecordCmd 未识别 → '$recordCmd'")
-                result = "ERROR"
-            }
-        }
-        sendDeviceControlResponse(sn = sn, deviceId = deviceId, result = result)
-    }
-
-    private suspend fun sendDeviceControlResponse(sn: String, deviceId: String, result: String) {
-        val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
-            "<Response>\r\n" +
-            "<CmdType>DeviceControl</CmdType>\r\n" +
-            "<SN>$sn</SN>\r\n" +
-            "<DeviceID>$deviceId</DeviceID>\r\n" +
-            "<Result>$result</Result>\r\n" +
-            "</Response>\r\n"
-        runCatching {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-        }.onFailure {
-            simEventEmit(SimEvent.TransportError("send DeviceControl Response: ${it.message}"))
-        }
-    }
-
+    /** AlarmCmd 复位:把"复位"打包成 AlarmNotify body 给所有 Alarm 订阅者发 NOTIFY。 */
     private suspend fun pushAlarmResetNotify(by: String?) {
         val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
         if (dialogs.isEmpty()) return
@@ -1391,90 +729,17 @@ internal class ManscdpRouterImpl(
             deviceId = config.device.alarmChannelId,
             description = "报警已复位 (AlarmCmd by ${by ?: "platform"})",
         )
-        val body = com.uvp.sim.gb28181.AlarmNotify.buildAlarm(config, sn, resetPayload)
+        val body = AlarmNotify.buildAlarm(config, sn, resetPayload)
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
             sendAlarmNotify(updated, body, sn)
         }
     }
 
-    private suspend fun handleBroadcast(xml: String, fromUri: String? = null) {
-        val query = com.uvp.sim.gb28181.BroadcastQuery.parse(xml)
-        val sn = query.sn ?: "0"
-        val myId = config.device.deviceId
+    // ----------------------------------------------------------------------
+    // GB-2022 §9.13 设备升级假进度(本类持有 — 跟 DeviceControlSubRouter 经回调触发)
+    // ----------------------------------------------------------------------
 
-        // 并发拒绝(spec Q1):已持有一路 broadcast → ERROR busy,不发 INVITE
-        if (broadcastBusy()) {
-            sendBroadcastResponseMessage(
-                com.uvp.sim.gb28181.BroadcastResponse.build(
-                    deviceId = myId, sn = sn,
-                    result = com.uvp.sim.gb28181.BroadcastResponse.Result.ERROR,
-                    reason = "busy",
-                )
-            )
-            SystemLogger.emit(LogLevel.Warning, LogTag.Network, "已有语音广播进行中 → 拒绝第二路(busy)")
-            return
-        }
-
-        val targetId = query.targetId
-        if (targetId.isNullOrBlank() || !isOwnedBroadcastTarget(targetId)) {
-            sendBroadcastResponseMessage(
-                com.uvp.sim.gb28181.BroadcastResponse.build(
-                    deviceId = myId, sn = sn,
-                    result = com.uvp.sim.gb28181.BroadcastResponse.Result.ERROR,
-                    reason = "target mismatch",
-                )
-            )
-            SystemLogger.emit(
-                LogLevel.Warning, LogTag.Network,
-                "语音广播 TargetID 不属于本设备: 收到 '$targetId'(deviceId=$myId)→ ERROR",
-            )
-            return
-        }
-        sendBroadcastResponseMessage(
-            com.uvp.sim.gb28181.BroadcastResponse.build(
-                deviceId = myId, sn = sn,
-                result = com.uvp.sim.gb28181.BroadcastResponse.Result.OK,
-            )
-        )
-        val sourceId = query.sourceId ?: ""
-        simEventEmit(SimEvent.BroadcastReceived(sourceId = sourceId, targetId = targetId))
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Network,
-            "收到语音广播请求 source=$sourceId target=$targetId → 已回 OK,主动 INVITE 平台",
-        )
-        val platformUri = "sip:$sourceId@${config.server.domain}"
-        broadcastInvoker.fireBroadcastInvite(sourceId, platformUri, targetId)
-    }
-
-    private suspend fun sendBroadcastResponseMessage(xmlBody: String) {
-        runCatching {
-            val id = identityService.nextMessageNotify()
-            val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
-            val msg = SipBuilders.buildMessage(
-                config = config,
-                cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
-                localIp = localIp,
-                localPort = localPortProvider(),
-                xmlBody = xmlBody,
-            )
-            outbox.send(msg).getOrThrow()
-        }.onFailure {
-            simEventEmit(SimEvent.TransportError("send Broadcast Response: ${it.message}"))
-        }
-    }
-
-    /**
-     * GB-2022 §9.13 设备升级假进度 — 5s 内每秒推一次 DeviceUpgradeResult NOTIFY (0/30/60/100).
-     * 完成时推 result=1 + percent=100,同步写 mutableDeviceControlState.upgradeProgress.
-     * (followup E 从 Engine 迁入)
-     */
     private suspend fun runUpgradeProgressFlow(sessionId: String, firmware: String) {
         try {
             val steps = listOf(0, 30, 60, 100)
@@ -1511,15 +776,12 @@ internal class ManscdpRouterImpl(
         try {
             val id = identityService.nextMessageNotify()
             val cseqNow = id.cseq.toInt()
-            val branch = SipBuilders.randomBranch()
-            val callIdNow = id.callId
-            val fromTagNow = id.fromTag
             val msg = com.uvp.sim.sip.DeviceUpgradeResultNotify.build(
                 config = config,
                 cseq = cseqNow,
-                callId = callIdNow,
-                branch = branch,
-                fromTag = fromTagNow,
+                callId = id.callId,
+                branch = SipBuilders.randomBranch(),
+                fromTag = id.fromTag,
                 localIp = localIp,
                 localPort = localPortProvider(),
                 sn = (cseqNow and 0xFFFF),
@@ -1537,4 +799,17 @@ internal class ManscdpRouterImpl(
             simEventEmit(SimEvent.TransportError("send DeviceUpgradeResult NOTIFY: ${e.message}"))
         }
     }
+
+    // ----------------------------------------------------------------------
+    // small utils
+    // ----------------------------------------------------------------------
+
+    private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
+
+    private fun subscriptionLabel(kind: String?): String = when (kind) {
+        "Catalog" -> "目录"
+        "Alarm" -> "报警"
+        else -> "位置"
+    }
 }
+
