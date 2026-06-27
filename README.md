@@ -313,6 +313,25 @@ dev-env/     Python mock 联调辅助（snapshot-receiver 等）
 
 ---
 
+## Contributing
+
+欢迎 Issue / PR。提交前请确认本地 4 个 gate 全绿：
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+./gradlew :shared:jvmTest
+./gradlew :composeApp:testDebugUnitTest
+./gradlew :androidApp:testDebugUnitTest
+./gradlew :androidApp:assembleDebug
+```
+
+- 分支策略：trunk-based — `main` + 短 feature 分支
+- commit 约定：`<type>(<scope>): <description>`（如 `feat(sip): T03 SIP 状态机`），常用 type：`feat / fix / refactor / docs / test / chore / perf / ci`
+- 测试：协议 / 领域层改动必须配 `shared/src/commonTest/` 单测；UI 行为改动配 `composeApp/src/commonTest/` 或 `androidApp/src/test/`
+- 安全相关问题走 [SECURITY.md](SECURITY.md) 流程，请勿在 public issue 暴露细节
+
+---
+
 ## 联系我
 
 遇到 Bug、想要新功能、做平台兼容性反馈,欢迎提 [Issue](../../issues) 或加微信交流。
