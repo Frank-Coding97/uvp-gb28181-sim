@@ -28,6 +28,12 @@ data class SimConfig(
     val expiresSeconds: Int = 3600,
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
+    /**
+     * M-2 (audit §3) — SIP dialog 空闲超时(秒),`<= 0` 关闭 GC。默认 1800s = 30 分钟。
+     * 超过该时长无任何 in-dialog 消息(INVITE / re-INVITE / NOTIFY / BYE)的 dialog
+     * 视为对端已失联,本端主动清理释放资源。
+     */
+    val dialogIdleTimeoutSeconds: Int = 1800,
     val userAgent: String = "UVP-Sim/0.1",
     val mockPosition: GeoPoint = GeoPoint(),
     val osd: OsdConfig = OsdConfig(),
