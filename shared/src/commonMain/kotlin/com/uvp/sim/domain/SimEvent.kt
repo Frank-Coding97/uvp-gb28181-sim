@@ -122,7 +122,17 @@ sealed class SimEvent {
     ) : SimEvent()
     data class TransportError(
         val description: String,
-        override val timestampMs: Long = nowMs()
+        override val timestampMs: Long = nowMs(),
+        /**
+         * Wave 5 P3-3:错误分级。老调用点不传 → 默认 [com.uvp.sim.observability.ErrorCategory.Internal]
+         * (兜底,等同于以前"不知道是不是 bug")。新调用点应通过
+         * [com.uvp.sim.domain.UserErrorMapper.map] 拿到正确分级再传。
+         *
+         * 字段放在 timestampMs 后:既存测试 / 调用 `TransportError("desc", 19000L)` 把第二个
+         * 位置参数当 timestampMs 解析,加 category 到末尾保持二参签名行为不变。
+         */
+        val category: com.uvp.sim.observability.ErrorCategory =
+            com.uvp.sim.observability.ErrorCategory.Internal,
     ) : SimEvent()
     data class HeartbeatTimeoutDetected(
         val missedCount: Int,
