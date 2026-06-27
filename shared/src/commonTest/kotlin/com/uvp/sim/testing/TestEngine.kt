@@ -63,14 +63,11 @@ internal object TestEngine {
         playbackBuilder: PlaybackBuilder? = null,
     ): SimulatorEngine {
         val resources = TestResources(
-            cameraCapture = cameraCapture,
-            audioCapture = audioCapture,
             rtpSenderFactory = rtpSenderFactory?.let { f ->
                 { host, port, _, mode -> f(host, port, mode) }
             },
             rtpReceiverFactory = rtpReceiverFactory,
             audioSinkFactory = audioSinkFactory,
-            recordingService = recordingService,
             localIpProvider = localIpProvider,
         )
         val holders = EngineHolders(
@@ -152,12 +149,9 @@ internal object TestEngine {
 }
 
 internal class TestResources(
-    override val cameraCapture: CameraCapture? = null,
-    override val audioCapture: AudioCapture? = null,
     override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null,
     override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null,
     override val audioSinkFactory: ((Int, Int) -> AudioSink)? = null,
-    override val recordingService: RecordingService = NoopRecordingService,
     override val localIpProvider: () -> String = { "0.0.0.0" },
     override val snapshotCapture: SnapshotCapture? = null,
     override val snapshotCache: JpegLocalCache? = null,

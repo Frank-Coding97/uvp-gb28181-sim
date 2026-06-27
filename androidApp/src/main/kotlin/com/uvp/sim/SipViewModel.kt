@@ -4,10 +4,9 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.uvp.sim.app.PlatformResourcesAndroid
+import com.uvp.sim.app.PlatformRuntimeAndroid
 import com.uvp.sim.app.AppEngine
-import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
-import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.DeviceConfig
@@ -18,7 +17,6 @@ import com.uvp.sim.domain.DeviceControlState
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionSnapshot
 import com.uvp.sim.network.TransportType
-import com.uvp.sim.recording.AndroidRecordingService
 import com.uvp.sim.recording.RecordSource
 import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingService
@@ -41,18 +39,28 @@ import kotlinx.coroutines.launch
  *
  * PR6 T6.4:装配根下沉到 [AppEngine](commonMain),ViewModel 退化为薄转发 + Android 平台特有 UI 状态包装。
  * 装配 / 连接 / 12 StateFlow 桥接全部由 AppEngine 处理。
+ *
+ * Wave 4 PR-PLATFORM-RUNTIME:
+ *   - 不再持 camera / audio / recordingService 引用,媒体生命周期挪到 [PlatformRuntimeAndroid]
+ *   - bindCamera / bindAudio / bindRecordingService 测试 seam 保留(仅用于单测注入 fake)
+ *   - newCaptureConfig / newAudioCaptureConfig 保留,Activity 已不再用,留作向后兼容
  */
 class SipViewModel(application: Application) : AndroidViewModel(application) {
 
-    private var camera: CameraCapture? = null
-    private var audio: AudioCapture? = null
-    private var recordingService: RecordingService? = null
+    /** 平台运行时 — 媒体装配(camera/audio/recording)收口在这里。
+     *
+     * osdConfigSupplier 通过 [@Volatile] 中介变量,延迟到 osdConfig StateFlow 初始化之后再 wire。
+     * 避免 runtime 字段初始化早于 osdConfig 时 lambda 直接读 osdConfig 抛 NPE。
+     */
+    @Volatile private var osdConfigCarrier: kotlinx.coroutines.flow.StateFlow<com.uvp.sim.config.OsdConfig>? = null
+
+    private val runtime: PlatformRuntimeAndroid = PlatformRuntimeAndroid(
+        context = application,
+        osdConfigSupplier = { osdConfigCarrier },
+    )
 
     private val resources: PlatformResourcesAndroid = PlatformResourcesAndroid(
         context = application,
-        cameraSupplier = { camera },
-        audioSupplier = { audio },
-        recordingServiceSupplier = { recordingService ?: com.uvp.sim.recording.NoopRecordingService },
         networkLocalIp = {
             (networkController.state.value as? com.uvp.sim.network.NetworkState.Bound)?.localIp
         },
@@ -60,6 +68,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     private val appEngine: AppEngine = AppEngine(
         resources = resources,
+        runtime = runtime,
         initialConfig = defaultConfig(),
         parentScope = viewModelScope,
     )
@@ -95,6 +104,12 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             viewModelScope, SharingStarted.Eagerly,
             defaultConfig().osd.let { it.copy(channelName = it.channelName.copy(text = defaultConfig().device.videoChannelName)) }
         )
+
+    init {
+        // 把 osdConfig 派生流装到 runtime + AppEngine — 录像 / streamer 装配时拿到真实 supplier
+        osdConfigCarrier = osdConfig
+        appEngine.setOsdConfigFlowProvider { osdConfig }
+    }
 
     init {
         // OSD 配置变更日志
@@ -173,6 +188,14 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     val networkState: StateFlow<com.uvp.sim.network.NetworkState> = networkController.state
 
     init {
+        // Wave 4 PR-PLATFORM-RUNTIME:启动期装媒体三件套
+        // 必须放在 _recordingState / _recordingFiles / _toasts 等 backing field 初始化之后,
+        // 否则 wireRecordingService 触发 state collector emit → 写 _recordingState 时 NPE
+        appEngine.ensureMediaBuilt()
+        appEngine.currentRecordingService()?.let { svc -> wireRecordingService(svc) }
+    }
+
+    init {
         // 冷启动顺序(PR-USER-BUG-1 修复):
         // 1. AppEngine 构造时已用 defaultConfig() 装配 holders(loadOnce 等价)
         // 2. 灌入持久化 config → AppEngine.setConfig 触发 rehydrateHolders,
@@ -208,10 +231,6 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     fun updatePoseFromRender(pan: Float, tilt: Float, zoom: Float) =
         appEngine.updatePoseFromRender(pan, tilt, zoom)
 
-    /** Activity 创建 CameraCapture 后调。 */
-    fun bindCamera(cam: CameraCapture) { this.camera = cam }
-    fun bindAudio(a: AudioCapture) { this.audio = a }
-
     /** 双真实通道迁移:老配置 frontChannelId 为空时按 domain 补全前置通道 ID。 */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {
         if (cfg.device.frontChannelId.isNotBlank()) return cfg
@@ -223,11 +242,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * 注入 RecordingService(Activity 启动期调,因为录像 service 需要 cameraStreamer/audioStreamer hook)。
+     * 测试 seam:注入 fake RecordingService 替换 AppEngine 内部引用,然后挂 collector。
+     * Wave 4:生产路径已经由 AppEngine.ensureMediaBuilt() 在 init 时通过 runtime 装配 +
+     * wireRecordingService 挂载;此处仅用于 RecordingFlowTest 之类替身注入。
      */
     fun bindRecordingService(svc: RecordingService) {
-        this.recordingService = svc
-        viewModelScope.launch { svc.load() }
+        appEngine.bindRecordingService(svc)
+        wireRecordingService(svc)
+    }
+
+    /** 内部:把 RecordingService.state / files 挂到 ViewModel StateFlow。 */
+    private fun wireRecordingService(svc: RecordingService) {
+        viewModelScope.launch { runCatching { svc.load() } }
         viewModelScope.launch {
             var lastFailedReason: String? = null
             svc.state.collect { st ->
@@ -243,7 +269,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startRecording() {
-        val svc = recordingService ?: return
+        val svc = appEngine.currentRecordingService() ?: return
         val cfg = appEngine.config.value
         viewModelScope.launch {
             runCatching { svc.start(RecordSource.Manual, cfg.device.videoChannelId) }
@@ -251,12 +277,12 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopRecording() {
-        val svc = recordingService ?: return
+        val svc = appEngine.currentRecordingService() ?: return
         viewModelScope.launch { runCatching { svc.stop() } }
     }
 
     fun deleteRecording(id: String) {
-        val svc = recordingService ?: return
+        val svc = appEngine.currentRecordingService() ?: return
         viewModelScope.launch {
             val result = runCatching { svc.delete(id) }
             if (result.isSuccess) _toasts.tryEmit("已删除")
@@ -399,11 +425,11 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             kotlinx.coroutines.withTimeoutOrNull(5_000L) {
                 runCatching {
                     appEngine.disconnect()
-                    camera?.stop()
                     networkController.close()
                 }
             }
         }
+        // 注:runtime 单例(streamer / recordingService)跟 Activity 重建解耦,不在这里释放
     }
 
     fun newCaptureConfig(): CaptureConfig {
@@ -424,6 +450,18 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
             codec = v.audioCodec,
             sampleRateHz = v.effectiveAudioSampleRateHz,
         )
+    }
+
+    /** MainActivity 拿这个引用绑 Surface preview(平台壳的合理职责)。 */
+    fun platformRuntime(): PlatformRuntimeAndroid = runtime
+
+    /**
+     * 视频配置变更后触发媒体重建(Activity 在 videoConfigVersion bump 时调)。
+     * Wave 4 真重建逻辑挪到 [PlatformRuntimeAndroid.applyVideoConfig] 内部,
+     * ViewModel 只派生 CaptureConfig / AudioCaptureConfig 喂进去。
+     */
+    fun applyCurrentVideoConfig() {
+        runtime.applyVideoConfig(newCaptureConfig(), newAudioCaptureConfig())
     }
 
     companion object {
