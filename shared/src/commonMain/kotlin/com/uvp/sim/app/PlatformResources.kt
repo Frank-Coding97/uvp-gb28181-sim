@@ -21,11 +21,13 @@ import kotlinx.coroutines.CoroutineScope
  */
 interface PlatformResources {
     /**
-     * RtpSender 构造工厂(参数:host / port / scope / mode)。
-     * Android 直接 `RtpSender(host, port, scope, mode)`;iOS null。
+     * RtpSender 构造工厂(参数:host / port / scope / mode / expectedClientHost)。
+     * Android 直接 `RtpSender(host, port, scope, mode, expectedClientHost)`;iOS null。
      * scope 由 AppEngine.connect 时传入,所以接口里携带 scope 参数。
+     *
+     * P1-5 (audit §2) expectedClientHost — TCP_PASSIVE 模式下源 IP 白名单,null = 不验。
      */
-    val rtpSenderFactory: ((host: String, port: Int, scope: CoroutineScope, mode: RtpMode) -> RtpSender)?
+    val rtpSenderFactory: ((host: String, port: Int, scope: CoroutineScope, mode: RtpMode, expectedClientHost: String?) -> RtpSender)?
 
     /** 广播 RX source 工厂。 */
     val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)?

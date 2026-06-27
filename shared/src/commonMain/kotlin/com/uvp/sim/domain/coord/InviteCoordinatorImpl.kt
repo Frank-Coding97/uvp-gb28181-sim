@@ -63,7 +63,7 @@ internal class InviteCoordinatorImpl(
     private val localPortProvider: () -> Int = { 5060 },
     private val cameraCapture: com.uvp.sim.camera.CameraCapture? = null,
     private val audioCapture: com.uvp.sim.camera.AudioCapture? = null,
-    private val rtpSenderFactory: ((host: String, port: Int, mode: RtpMode) -> RtpSender)? = null,
+    private val rtpSenderFactory: ((host: String, port: Int, mode: RtpMode, expectedClientHost: String?) -> RtpSender)? = null,
     private val catalogTree: StateFlow<List<CatalogNode>> = MutableStateFlow(emptyList()),
     private val clockOffsetProvider: () -> ClockOffset = { ClockOffset.Empty },
     private val mutableSipState: MutableStateFlow<SipState> = MutableStateFlow(SipState.Disconnected),
@@ -377,7 +377,10 @@ internal class InviteCoordinatorImpl(
             }
         }
 
-        val rtp = sender(offer.remoteIp, offer.remotePort, rtpMode)
+        // P1-5: TCP_PASSIVE 模式下 expectedClientHost = SDP remote IP(平台真实端点),
+        // UDP/TCP_ACTIVE 不需要验证(null)。
+        val expectedClientHost = if (rtpMode == RtpMode.TCP_PASSIVE) offer.remoteIp else null
+        val rtp = sender(offer.remoteIp, offer.remotePort, rtpMode, expectedClientHost)
         val localRtpPort = try {
             rtp.bindLocalPort()
         } catch (e: Throwable) {
@@ -511,7 +514,7 @@ internal class InviteCoordinatorImpl(
         }
 
         // RTCP SR 反馈
-        val rtcp = sender(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP)
+        val rtcp = sender(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP, null)
         try { rtcp.bindLocalPort() } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("RTCP bind", e))
         }

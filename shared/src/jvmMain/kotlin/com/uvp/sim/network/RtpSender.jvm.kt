@@ -99,9 +99,9 @@ actual class RtpSender actual constructor(
             while (mismatchCount < MAX_ACCEPT_MISMATCH) {
                 try {
                     val client = server.accept()
-                    val clientHost = (client.remoteAddress as? InetSocketAddress)?.hostname
+                    val clientHost = clientHostOf(client.remoteAddress as? InetSocketAddress)
 
-                    if (expectedClientHost != null && clientHost != null && clientHost != expectedClientHost) {
+                    if (!hostMatches(expectedClientHost, clientHost)) {
                         mismatchCount++
                         SystemLogger.emit(
                             LogLevel.Warning, LogTag.Network,
@@ -134,6 +134,27 @@ actual class RtpSender actual constructor(
 
     companion object {
         private const val MAX_ACCEPT_MISMATCH = 10
+
+        /**
+         * Ktor [InetSocketAddress.hostname] 拿到的 host 在不同平台 / 版本可能是
+         * IP 字面量或 hostname,统一通过 java.net.InetAddress 解析成 IP 后比对。
+         * 解析失败时 fallback 到字符串。
+         */
+        private fun clientHostOf(address: InetSocketAddress?): String? {
+            val raw = address?.hostname ?: return null
+            return runCatching { java.net.InetAddress.getByName(raw).hostAddress }
+                .getOrDefault(raw)
+        }
+
+        private fun hostMatches(expected: String?, observed: String?): Boolean {
+            if (expected == null) return true   // 不验,任何连接放行
+            if (observed == null) return true   // 拿不到对端 IP,信任已建立连接
+            if (expected == observed) return true
+            // 双向 normalize 一次,处理 "localhost" vs "127.0.0.1" / IPv6 表达差异
+            val expectedNormalized = runCatching { java.net.InetAddress.getByName(expected).hostAddress }.getOrNull()
+            val observedNormalized = runCatching { java.net.InetAddress.getByName(observed).hostAddress }.getOrNull()
+            return expectedNormalized != null && observedNormalized != null && expectedNormalized == observedNormalized
+        }
     }
 
     actual suspend fun send(packet: ByteArray) {

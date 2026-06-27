@@ -21,7 +21,7 @@ import kotlinx.coroutines.CoroutineScope
  *   - configStore:NSUserDefaults,M1.1 实现
  */
 class PlatformResourcesIos : PlatformResources {
-    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode) -> RtpSender)? = null
+    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? = null
     override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null
     override val audioSinkFactory: ((Int, Int) -> AudioSink)? = null
     override val playbackBuilderFactory: ((CoroutineScope, AudioCodec, (String, Int, RtpMode) -> RtpSender) -> com.uvp.sim.domain.PlaybackBuilder)? = null

@@ -211,8 +211,8 @@ class InviteRoutingTest {
         TestEngine.create(
             cfg(fullTree()), transport, scope, localIpProvider = { "192.168.10.112" },
             cameraCapture = com.uvp.sim.camera.CameraCapture(com.uvp.sim.camera.CaptureConfig()),
-            rtpSenderFactory = { host, port, mode ->
-                com.uvp.sim.network.RtpSender(host, port, scope, mode)
+            rtpSenderFactory = { host, port, mode, expectedClientHost ->
+                com.uvp.sim.network.RtpSender(host, port, scope, mode, expectedClientHost)
             }
         )
 
