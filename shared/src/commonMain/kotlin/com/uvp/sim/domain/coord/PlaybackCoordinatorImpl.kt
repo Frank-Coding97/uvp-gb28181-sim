@@ -79,9 +79,12 @@ internal class PlaybackCoordinatorImpl(
         val mode: PlaybackMediaMode = PlaybackMediaMode.PLAYBACK,
     )
 
-    override suspend fun onIncoming(msg: SipMessage): RoutingResult = when (msg) {
-        is SipRequest -> handleRequest(msg)
-        is SipResponse -> RoutingResult.Skip
+    override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
+        val msg = envelope.message
+        return when (msg) {
+            is SipRequest -> handleRequest(msg)
+            is SipResponse -> RoutingResult.Skip
+        }
     }
 
     private suspend fun handleRequest(req: SipRequest): RoutingResult {

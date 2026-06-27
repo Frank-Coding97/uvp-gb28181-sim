@@ -119,7 +119,8 @@ internal class BroadcastCoordinatorImpl(
 
     // ---------- onIncoming ----------
 
-    override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+    override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
+        val msg = envelope.message
         return when (msg) {
             is SipResponse -> {
                 val cseqMethod = msg.cseqRaw()?.split(" ")?.getOrNull(1)?.let { SipMethod.fromString(it) }

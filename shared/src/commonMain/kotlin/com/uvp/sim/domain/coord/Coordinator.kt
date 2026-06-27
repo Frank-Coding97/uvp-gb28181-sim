@@ -1,7 +1,7 @@
 package com.uvp.sim.domain.coord
 
 import com.uvp.sim.network.NetworkState
-import com.uvp.sim.sip.SipMessage
+import com.uvp.sim.network.SipEnvelope
 
 /**
  * 一个 Coordinator 拥有一个 SIP 对话域(注册 / 主叫推流 / 回放 / 语音对讲 / MANSCDP 路由)。
@@ -10,6 +10,9 @@ import com.uvp.sim.sip.SipMessage
  *
  * 重构 spec:[[wiki/projects/uvp-gb28181-sim/specs/refactor-simulator-engine]]
  * 重构 plan:[[wiki/projects/uvp-gb28181-sim/plans/refactor-simulator-engine]]
+ *
+ * **Wave 7B P0-1**:入参从 `SipMessage` 改为 [SipEnvelope],携带 transport 层来源 IP/port,
+ * Coordinator 可基于真实网络来源做授权校验(参考 codex 第二轮 audit 引言)。
  */
 internal interface Coordinator {
     /**
@@ -19,7 +22,7 @@ internal interface Coordinator {
      * - 不归我管:返回 [RoutingResult.Skip],Engine 会试下一个 Coordinator
      * - 归我但处理失败:返回 [RoutingResult.Error],Engine 记录错误并不再 fallthrough
      */
-    suspend fun onIncoming(msg: SipMessage): RoutingResult
+    suspend fun onIncoming(envelope: SipEnvelope): RoutingResult
 
     /**
      * 网络状态变化(IPv4 切换 / Wi-Fi ↔ 4G / 离线)。

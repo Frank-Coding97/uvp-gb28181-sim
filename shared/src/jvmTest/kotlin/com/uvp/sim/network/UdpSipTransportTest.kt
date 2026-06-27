@@ -118,11 +118,19 @@ class UdpSipTransportTest {
         val respBytes = resp.toBytes()
         mockServer.send(DatagramPacket(respBytes, respBytes.size, clientAddr, clientPort))
 
-        // Transport should emit it on the incoming flow
-        val incoming = withTimeout(5000) { transport.incoming.first() }
+        // Transport should emit it on the incoming flow (SipEnvelope carries source)
+        val envelope = withTimeout(5000) { transport.incoming.first() }
+        val incoming = envelope.message
         assertTrue(incoming is SipResponse)
         assertEquals(200, incoming.statusCode)
         assertEquals("probe", incoming.callId())
+        // Wave 7B P0-1:envelope 携带 datagram 来源 — host 可能是 "127.0.0.1" 也可能是 "localhost"(ktor 反向 DNS)
+        assertTrue(
+            envelope.sourceIp == "127.0.0.1" || envelope.sourceIp == "localhost",
+            "sourceIp should be 127.0.0.1 or localhost, was ${envelope.sourceIp}"
+        )
+        assertEquals(mockServer.localPort, envelope.sourcePort)
+        assertEquals(TransportType.UDP, envelope.transport)
 
         transport.close()
     }

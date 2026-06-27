@@ -188,7 +188,8 @@ internal class ManscdpRouterImpl(
         )
     }
 
-    override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+    override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
+        val msg = envelope.message
         return when (msg) {
             is SipRequest -> when (msg.method) {
                 SipMethod.MESSAGE -> { handleMessage(msg); RoutingResult.Handled }

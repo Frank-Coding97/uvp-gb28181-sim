@@ -48,8 +48,8 @@ class UdpSipTransport(
     private val ownedScope: CoroutineScope = parentScope
         ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val _incoming = MutableSharedFlow<SipMessage>(extraBufferCapacity = 64)
-    override val incoming: Flow<SipMessage> = _incoming.asSharedFlow()
+    private val _incoming = MutableSharedFlow<SipEnvelope>(extraBufferCapacity = 64)
+    override val incoming: Flow<SipEnvelope> = _incoming.asSharedFlow()
 
     /** Public for testing / logs. The actual local port we ended up bound to. */
     override val localPort: Int get() = (socket?.localAddress as? InetSocketAddress)?.port ?: -1
@@ -90,7 +90,14 @@ class UdpSipTransport(
                 val bytes = datagram.packet.readBytes()
                 try {
                     val msg = SipParser.parse(bytes)
-                    _incoming.emit(msg)
+                    val sourceAddr = datagram.address as? InetSocketAddress
+                    val envelope = SipEnvelope(
+                        message = msg,
+                        sourceIp = sourceAddr?.hostname ?: "0.0.0.0",
+                        sourcePort = sourceAddr?.port ?: 0,
+                        transport = TransportType.UDP,
+                    )
+                    _incoming.emit(envelope)
                 } catch (e: SipParseException) {
                     // log and ignore malformed inbound (don't crash)
                     continue

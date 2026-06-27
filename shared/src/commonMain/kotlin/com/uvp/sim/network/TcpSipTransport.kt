@@ -56,8 +56,8 @@ class TcpSipTransport(
     private val ownedScope: CoroutineScope = parentScope
         ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    private val _incoming = MutableSharedFlow<SipMessage>(extraBufferCapacity = 64)
-    override val incoming: Flow<SipMessage> = _incoming.asSharedFlow()
+    private val _incoming = MutableSharedFlow<SipEnvelope>(extraBufferCapacity = 64)
+    override val incoming: Flow<SipEnvelope> = _incoming.asSharedFlow()
 
     override val localPort: Int
         get() = (socket?.localAddress as? InetSocketAddress)?.port ?: -1
@@ -149,10 +149,21 @@ class TcpSipTransport(
             )
             receiveJob = ownedScope.launch {
                 val rc = readChannel ?: return@launch
+                // TCP 单连接,sourceIp/Port 在 connect() 后就确定,read loop 复用 remote endpoint。
+                val remoteAddr = sk.remoteAddress as? InetSocketAddress
+                val sourceIp = remoteAddr?.hostname ?: remote.host
+                val sourcePort = remoteAddr?.port ?: remote.port
                 while (isActive) {
                     try {
                         val msg = readSipMessage(rc) ?: break
-                        _incoming.emit(msg)
+                        _incoming.emit(
+                            SipEnvelope(
+                                message = msg,
+                                sourceIp = sourceIp,
+                                sourcePort = sourcePort,
+                                transport = TransportType.TCP,
+                            )
+                        )
                     } catch (e: SipParseException) {
                         continue
                     } catch (e: Throwable) {

@@ -9,6 +9,7 @@ import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
@@ -151,7 +152,7 @@ class BroadcastCoordinatorTest {
             ),
             body = ByteArray(0),
         )
-        val result = bc.onIncoming(bye)
+        val result = bc.onIncoming(bye.asEnvelope())
         runCurrent()
         assertEquals(RoutingResult.Skip, result, "BYE 不命中 dialog 必须 Skip")
     }

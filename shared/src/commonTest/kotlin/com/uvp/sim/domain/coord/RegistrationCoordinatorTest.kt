@@ -14,6 +14,7 @@ import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -147,7 +148,7 @@ class RegistrationCoordinatorTest {
         val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
 
         transport.sent.clear()
-        coord.onIncoming(fake401(callId, fromTag))
+        coord.onIncoming(fake401(callId, fromTag).asEnvelope())
         runCurrent()
 
         val secondReq = transport.sent.filterIsInstance<SipRequest>().firstOrNull()
@@ -172,7 +173,7 @@ class RegistrationCoordinatorTest {
         val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
 
         coord.onIncoming(
-            fake200OkRegister(callId, fromTag, dateHeader = "Mon, 22 Jun 2026 08:00:00 GMT"),
+            fake200OkRegister(callId, fromTag, dateHeader = "Mon, 22 Jun 2026 08:00:00 GMT").asEnvelope(),
         )
         runCurrent()
 
@@ -193,7 +194,7 @@ class RegistrationCoordinatorTest {
         val firstReq = transport.sent.filterIsInstance<SipRequest>().first()
         val callId = firstReq.firstHeader(SipHeader.CALL_ID)!!
         val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
-        coord.onIncoming(fake200OkRegister(callId, fromTag))
+        coord.onIncoming(fake200OkRegister(callId, fromTag).asEnvelope())
         runCurrent()
         transport.sent.clear()
 
@@ -221,7 +222,7 @@ class RegistrationCoordinatorTest {
         val firstReq = transport.sent.filterIsInstance<SipRequest>().first()
         val callId = firstReq.firstHeader(SipHeader.CALL_ID)!!
         val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
-        coord.onIncoming(fake200OkRegister(callId, fromTag))
+        coord.onIncoming(fake200OkRegister(callId, fromTag).asEnvelope())
         runCurrent()
         val countBefore = transport.sent.size
 
@@ -246,7 +247,7 @@ class RegistrationCoordinatorTest {
         transport.connect()
         val coord = newCoord(this, transport)
 
-        coord.onIncoming(fakeOptions())
+        coord.onIncoming(fakeOptions().asEnvelope())
         runCurrent()
 
         val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
@@ -318,7 +319,7 @@ class RegistrationCoordinatorTest {
         val firstReq = transport.sent.filterIsInstance<SipRequest>().first()
         val callId = firstReq.firstHeader(SipHeader.CALL_ID)!!
         val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
-        coord.onIncoming(fake200OkRegister(callId, fromTag))
+        coord.onIncoming(fake200OkRegister(callId, fromTag).asEnvelope())
         runCurrent()
         transport.sent.clear()
 

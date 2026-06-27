@@ -144,7 +144,8 @@ internal class InviteCoordinatorImpl(
     }
 
     // ---- onIncoming 总分发(T4.2 实装,T4.1 stub 已删) ----
-    override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+    override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
+        val msg = envelope.message
         return when (msg) {
             is SipResponse -> handleResponse(msg)
             is SipRequest -> handleRequest(msg)

@@ -22,14 +22,14 @@ import com.uvp.sim.domain.coord.RegistrationEvent
 import com.uvp.sim.domain.coord.RegistrationState
 import com.uvp.sim.domain.coord.RoutingResult
 import com.uvp.sim.gb28181.AlarmPayload
+import com.uvp.sim.network.SipEnvelope
+import com.uvp.sim.network.TransportType
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -42,6 +42,8 @@ import kotlin.test.assertTrue
  * 验证按 SIP method 路由到对应 Coord:RegisterCoord / InviteCoord / BroadcastCoord /
  * PlaybackCoord / ManscdpRouter,fallthrough 顺序 INVITE → playback / BYE → broadcast →
  * invite → playback / INFO → playback → manscdp。
+ *
+ * Wave 7B P0-1:Coord.onIncoming 签名从 SipMessage 改为 SipEnvelope,fake 同步更新。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SipMessageRouterTest {
@@ -56,8 +58,8 @@ class SipMessageRouterTest {
         override suspend fun register() {}
         override suspend fun cancelRegister() {}
         override suspend fun unregister() {}
-        override suspend fun onIncoming(msg: SipMessage): RoutingResult {
-            calls += msg
+        override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
+            calls += envelope.message
             return RoutingResult.Handled
         }
         override suspend fun shutdown() {}
@@ -73,7 +75,8 @@ class SipMessageRouterTest {
         override val activeStreamSnapshot: StateFlow<ActiveStreamSnapshot?> = MutableStateFlow(null)
         override val currentChannelName: StateFlow<String> = MutableStateFlow("default")
         override suspend fun stopStream(reason: String) {}
-        override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+        override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
+            val msg = envelope.message
             calls += msg
             if (msg is SipRequest) {
                 if (msg.method == SipMethod.INVITE && skipInviteOnPlaybackSdp) return RoutingResult.Skip
@@ -96,7 +99,8 @@ class SipMessageRouterTest {
         override suspend fun stop(reason: BroadcastEndReason) {}
         override fun debugSnapshot(): BroadcastDebugSnapshot = BroadcastDebugSnapshot(0, 0, false)
         override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {}
-        override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+        override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
+            val msg = envelope.message
             calls += msg
             if (msg is SipRequest && msg.method == SipMethod.BYE && skipBye) return RoutingResult.Skip
             return RoutingResult.Handled
@@ -112,7 +116,8 @@ class SipMessageRouterTest {
         override val state: StateFlow<PlaybackState> = MutableStateFlow(PlaybackState.Idle)
         override val events: SharedFlow<PlaybackEvent> = MutableSharedFlow()
         override suspend fun stop(reason: String) {}
-        override suspend fun onIncoming(msg: SipMessage): RoutingResult {
+        override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
+            val msg = envelope.message
             calls += msg
             if (msg is SipRequest) {
                 if (msg.method == SipMethod.INFO && skipInfo) return RoutingResult.Skip
@@ -137,8 +142,8 @@ class SipMessageRouterTest {
             cache: com.uvp.sim.snapshot.JpegLocalCache,
             httpClient: HttpClient,
         ) {}
-        override suspend fun onIncoming(msg: SipMessage): RoutingResult {
-            calls += msg
+        override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
+            calls += envelope.message
             return RoutingResult.Handled
         }
         override suspend fun shutdown() {}
@@ -168,12 +173,19 @@ class SipMessageRouterTest {
         ),
     )
 
+    private fun env(msg: SipMessage): SipEnvelope = SipEnvelope(
+        message = msg,
+        sourceIp = "192.168.10.222",
+        sourcePort = 5060,
+        transport = TransportType.UDP,
+    )
+
     @Test
     fun register_request_options_routes_to_registration() = runTest {
         val reg = RecordingRegistration()
         val router = SipMessageRouterImpl(reg, RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), RecordingManscdp())
 
-        router.route(request(SipMethod.OPTIONS))
+        router.route(env(request(SipMethod.OPTIONS)))
         runCurrent()
         assertEquals(1, reg.calls.size)
         assertTrue((reg.calls.first() as SipRequest).method == SipMethod.OPTIONS)
@@ -184,7 +196,7 @@ class SipMessageRouterTest {
         val mans = RecordingManscdp()
         val router = SipMessageRouterImpl(RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans)
 
-        router.route(request(SipMethod.MESSAGE))
+        router.route(env(request(SipMethod.MESSAGE)))
         runCurrent()
         assertEquals(1, mans.calls.size)
     }
@@ -194,7 +206,7 @@ class SipMessageRouterTest {
         val mans = RecordingManscdp()
         val router = SipMessageRouterImpl(RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans)
 
-        router.route(request(SipMethod.SUBSCRIBE))
+        router.route(env(request(SipMethod.SUBSCRIBE)))
         runCurrent()
         assertEquals(1, mans.calls.size)
     }
@@ -205,7 +217,7 @@ class SipMessageRouterTest {
         val playback = RecordingPlayback()
         val router = SipMessageRouterImpl(RecordingRegistration(), invite, RecordingBroadcast(), playback, RecordingManscdp())
 
-        router.route(request(SipMethod.INVITE))
+        router.route(env(request(SipMethod.INVITE)))
         runCurrent()
 
         assertEquals(1, invite.calls.size, "invite 先吃")
@@ -218,7 +230,7 @@ class SipMessageRouterTest {
         val playback = RecordingPlayback()
         val router = SipMessageRouterImpl(RecordingRegistration(), invite, RecordingBroadcast(), playback, RecordingManscdp())
 
-        router.route(request(SipMethod.INVITE))
+        router.route(env(request(SipMethod.INVITE)))
         runCurrent()
 
         assertEquals(1, invite.calls.size)
@@ -231,7 +243,7 @@ class SipMessageRouterTest {
         val playback = RecordingPlayback()
         val router = SipMessageRouterImpl(RecordingRegistration(), invite, RecordingBroadcast(), playback, RecordingManscdp())
 
-        router.route(request(SipMethod.ACK))
+        router.route(env(request(SipMethod.ACK)))
         runCurrent()
         assertEquals(1, invite.calls.size)
         assertEquals(0, playback.calls.size)
@@ -244,7 +256,7 @@ class SipMessageRouterTest {
         val playback = RecordingPlayback(skipBye = false)
         val router = SipMessageRouterImpl(RecordingRegistration(), invite, broadcast, playback, RecordingManscdp())
 
-        router.route(request(SipMethod.BYE))
+        router.route(env(request(SipMethod.BYE)))
         runCurrent()
 
         assertEquals(1, broadcast.calls.size, "BYE 先问 broadcast")
@@ -258,7 +270,7 @@ class SipMessageRouterTest {
         val mans = RecordingManscdp()
         val router = SipMessageRouterImpl(RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), playback, mans)
 
-        router.route(request(SipMethod.INFO))
+        router.route(env(request(SipMethod.INFO)))
         runCurrent()
 
         assertEquals(1, playback.calls.size, "playback 先试")
@@ -274,7 +286,7 @@ class SipMessageRouterTest {
             onRegistrationStateChanged = { stateChanged += 1 },
         )
 
-        router.route(response(200, SipMethod.REGISTER))
+        router.route(env(response(200, SipMethod.REGISTER)))
         runCurrent()
 
         assertEquals(1, reg.calls.size)
@@ -290,7 +302,7 @@ class SipMessageRouterTest {
             onMessage2xxAck = { ack += 1 },
         )
 
-        router.route(response(200, SipMethod.MESSAGE))
+        router.route(env(response(200, SipMethod.MESSAGE)))
         runCurrent()
 
         assertEquals(1, reg.calls.size)
@@ -306,7 +318,7 @@ class SipMessageRouterTest {
             onMessage2xxAck = { ack += 1 },
         )
 
-        router.route(response(404, SipMethod.MESSAGE))
+        router.route(env(response(404, SipMethod.MESSAGE)))
         runCurrent()
 
         assertEquals(0, reg.calls.size, "MESSAGE 4xx 不应路由到 registration")
@@ -320,7 +332,7 @@ class SipMessageRouterTest {
             RecordingRegistration(), RecordingInvite(), broadcast, RecordingPlayback(), RecordingManscdp()
         )
 
-        router.route(response(200, SipMethod.INVITE))
+        router.route(env(response(200, SipMethod.INVITE)))
         runCurrent()
 
         assertEquals(1, broadcast.calls.size, "INVITE 2xx 路由到 broadcast(主叫 Broadcast INVITE 200)")
