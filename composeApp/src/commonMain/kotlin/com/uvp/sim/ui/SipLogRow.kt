@@ -150,12 +150,14 @@ private fun rawSipBody(ev: SimEventDto): String {
         is SimEventDto.MessageReceived -> ev.message
         else -> return ""
     }
+    // P2-7:UI 复制路径用 redactedHeaders — Authorization 系列头脱敏后再展开,
+    // 避免 Digest username / nonce / response 泄露到剪贴板。
     return buildString {
         when (msg) {
             is SipMessageDto.Request -> appendLine("${msg.method} ${msg.requestUri} SIP/2.0")
             is SipMessageDto.Response -> appendLine("SIP/2.0 ${msg.statusCode} ${msg.reasonPhrase}")
         }
-        msg.headers.forEach { appendLine("${it.name}: ${it.value}") }
+        msg.redactedHeaders.forEach { appendLine("${it.name}: ${it.value}") }
         if (msg.body.isNotEmpty()) {
             appendLine()
             append(msg.body.take(800))

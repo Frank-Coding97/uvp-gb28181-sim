@@ -29,31 +29,6 @@ object SystemLogger {
     private const val BUFFER_CAPACITY = 1000
     private const val CHANNEL_CAPACITY = 256
 
-    /**
-     * 通用 key=value 风格密码 / 令牌脱敏,覆盖 `password=xxx` / `token: xxx` /
-     * `secret = xxx` 等场景。一次只吞到第一个空白前,不咬下整行。
-     *
-     * M-7:`authorization` 从这里去掉 — 因为 SIP `Authorization:` 头需要整行
-     * 脱敏(走 [sipAuthHeaderRegex]),否则 kv 风格只吞首 token 会泄露 Digest
-     * 多字段(nonce / response / username)。
-     */
-    private val redactRegex = Regex(
-        "(password|secret|token)\\s*[=:]\\s*\\S+",
-        RegexOption.IGNORE_CASE
-    )
-
-    /**
-     * M-7 (audit §3) — SIP 协议头脱敏。HTTP/SIP 风格的多 token 头(`Authorization:
-     * Digest username="x", nonce="y", response="z"`)整行包含敏感字段,统一收敛
-     * 成 `Authorization: <redacted>` 输出。匹配到行尾(`\n` 或 `\r\n`)。
-     *
-     * 单独正则避开 [redactRegex] 只吞首 token 的局限。
-     */
-    private val sipAuthHeaderRegex = Regex(
-        "(authorization|proxy-authorization|www-authenticate|proxy-authenticate)" +
-            "\\s*:\\s*[^\\r\\n]*",
-        RegexOption.IGNORE_CASE,
-    )
 
     private var buffer = SystemLogBuffer(BUFFER_CAPACITY)
     private var seq: Long = 0
@@ -164,17 +139,10 @@ object SystemLogger {
      * M-7 (audit §3):额外脱敏 SIP `Authorization:` / `Proxy-Authorization:` 等
      * 多 token 头,把整个 header 值收敛成 `<redacted>` 输出,避免日志 dump 时
      * Digest username / nonce / response 三件套泄露被字典攻击。
+     *
+     * P2-7:委托给 [SipHeaderRedactor] — 单一真相来源,UI 复制路径也用同一套逻辑。
      */
-    internal fun sanitize(s: String): String {
-        // 先把 SIP 风格的整行 Authorization 头脱掉,再过 kv 风格 fallback。
-        val afterAuthHeader = s.replace(sipAuthHeaderRegex) { match ->
-            val headerName = match.groupValues[1]
-            "$headerName: <redacted>"
-        }
-        return afterAuthHeader.replace(redactRegex) { match ->
-            "${match.groupValues[1].lowercase()}=****"
-        }
-    }
+    internal fun sanitize(s: String): String = SipHeaderRedactor.redact(s)
 
     private sealed class Command {
         data class Emit(

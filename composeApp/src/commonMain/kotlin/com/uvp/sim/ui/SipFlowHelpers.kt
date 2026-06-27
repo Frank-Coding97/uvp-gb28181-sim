@@ -107,7 +107,9 @@ private fun formatSipMessage(msg: SipMessageDto): String = buildString {
         is SipMessageDto.Request -> appendLine("${msg.method.name} ${msg.requestUri} ${msg.sipVersion}")
         is SipMessageDto.Response -> appendLine("${msg.sipVersion} ${msg.statusCode} ${msg.reasonPhrase}")
     }
-    msg.headers.forEach { appendLine("${it.name}: ${it.value}") }
+    // P2-7:用 redactedHeaders — Authorization 系列头脱敏后再复制/导出,
+    // 避免 Digest 凭据通过 SIP Flow 会话复制泄露到剪贴板。
+    msg.redactedHeaders.forEach { appendLine("${it.name}: ${it.value}") }
     if (msg.body.isNotEmpty()) {
         appendLine()
         append(msg.body)
