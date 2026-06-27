@@ -55,9 +55,16 @@ import kotlinx.coroutines.launch
  * Android/iOS ViewModel 退化成薄转发,不再持装配逻辑。
  *
  * 公开 API 签名保持(避让轨 3 PR-B AppActions 拆切口)。
+ *
+ * Wave 4 PR-PLATFORM-RUNTIME:
+ *   - 多接一个 [runtime] 参数,媒体三件套(camera/audio/recording)经 runtime 装配,
+ *     不再走 [resources] supplier — Activity 不再亲手 new media,装配下沉到平台层
+ *   - 视频配置变更(SimConfig.video diff)走 [PlatformRuntime.applyVideoConfig],
+ *     真重建逻辑挪到 PlatformRuntimeAndroid 内部
  */
 class AppEngine(
     private val resources: PlatformResources,
+    private val runtime: PlatformRuntime,
     initialConfig: SimConfig,
     parentScope: CoroutineScope,
 ) {
@@ -72,6 +79,18 @@ class AppEngine(
     private var transport: SipTransport? = null
     private var engine: SimulatorEngine? = null
     private var snapshotHttp: HttpClient? = null
+
+    /**
+     * 媒体装配三件套 — 由 [runtime] 在 connect 时装配 + 缓存(P3-3 装配下沉)。
+     * cameraCapture / audioCapture / recordingService 跨 connect cycle 复用同一实例,
+     * Activity 重建不影响,跟旧 MainActivity companion 单例语义一致。
+     */
+    @Volatile private var cameraCapture: com.uvp.sim.camera.CameraCapture? = null
+    @Volatile private var audioCapture: com.uvp.sim.camera.AudioCapture? = null
+    @Volatile private var recordingService: com.uvp.sim.recording.RecordingService? = null
+    /** OSD config supplier — 默认从内部维护,SipViewModel 注入跟随 SimConfig.osd + currentChannelName 派生流。 */
+    @Volatile private var osdConfigFlowProvider: () -> kotlinx.coroutines.flow.StateFlow<com.uvp.sim.config.OsdConfig> =
+        { kotlinx.coroutines.flow.MutableStateFlow(initialConfig.osd).asStateFlow() }
 
     /** holders 在 AppEngine own,Engine 通过构造接引用 — 公开 StateFlow 直读 holder,免去 9 个 collect bridge。 */
     private val holders: EngineHolders = EngineHolders(
@@ -148,6 +167,8 @@ class AppEngine(
         transport = tx
 
         val outbox = SipOutboxImpl(tx) { ev -> holders.events.emit(ev) }
+        // 媒体三件套通过 runtime 装配(Wave 4 PR-PLATFORM-RUNTIME)
+        ensureMediaBuilt(cfg)
         var engineRef: SimulatorEngine? = null
         val coords = buildCoordinators(cfg, tx, outbox) { engineRef }
         val eng = SimulatorEngine(cfg, tx, engineScope, resources, coords, holders)
@@ -214,7 +235,7 @@ class AppEngine(
         val playback = PlaybackCoordinatorImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
             localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
-            playbackBuilder = playbackBuilder, recordingService = resources.recordingService,
+            playbackBuilder = playbackBuilder, recordingService = recordingService ?: com.uvp.sim.recording.NoopRecordingService,
             simEventEmit = { ev -> holders.events.emit(ev) },
             cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
             callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
@@ -223,7 +244,7 @@ class AppEngine(
         val invite = InviteCoordinatorImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
             localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
-            cameraCapture = resources.cameraCapture, audioCapture = resources.audioCapture,
+            cameraCapture = cameraCapture, audioCapture = audioCapture,
             rtpSenderFactory = rtpFactory,
             catalogTree = holders.catalogTree, clockOffsetProvider = { holders.clockOffset.value },
             mutableSipState = holders.state, simEventEmit = { ev -> holders.events.emit(ev) },
@@ -239,9 +260,9 @@ class AppEngine(
             alarmHistoryStore = holders.alarmHistoryStore,
             mutableDeviceControlState = holders.deviceControlState,
             rebootCallback = { engineRefProvider()?.rebootForDeviceControl() ?: Unit },
-            requestKeyFrameCallback = { resources.cameraCapture?.requestKeyFrame() },
+            requestKeyFrameCallback = { cameraCapture?.requestKeyFrame() },
             broadcastInvoker = broadcast,
-            recordingService = resources.recordingService,
+            recordingService = recordingService ?: com.uvp.sim.recording.NoopRecordingService,
             mockGps = holders.mockGps,
             clockOffsetProvider = { holders.clockOffset.value },
             stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
@@ -251,6 +272,48 @@ class AppEngine(
         )
         return EngineCoordinators(registration, broadcast, playback, invite, manscdp)
     }
+
+    /**
+     * 装媒体三件套(Wave 4 PR-PLATFORM-RUNTIME)。
+     *
+     * 首次 connect 时调一次 — runtime 内部按需复用进程级单例(Android Streamer / RecordingService)。
+     * camera / audio 的 CaptureConfig 派生自当前 SimConfig.video,确保跟用户最新配置一致。
+     *
+     * Public:SipViewModel 启动期手动调一次(早于 connect),让 recordingService 可用,
+     * UI 进入"未连接但要试录像"路径不挂。
+     */
+    fun ensureMediaBuilt(cfg: SimConfig = _config.value) {
+        val captureCfg = captureConfigOf(cfg)
+        val audioCfg = audioCaptureConfigOf(cfg)
+        if (cameraCapture == null) {
+            cameraCapture = runtime.buildCameraCapture(captureCfg)
+        }
+        if (audioCapture == null) {
+            audioCapture = runtime.buildAudioCapture(audioCfg)
+        }
+        if (recordingService == null) {
+            recordingService = runtime.buildRecordingService(
+                scope = engineScope,
+                deviceIdSupplier = { _config.value.device.deviceId },
+                encoderConfigSupplier = { recordingEncoderConfigOf(_config.value) },
+                osdConfigSupplier = { osdConfigFlowProvider() },
+                profileSupplier = { _config.value.recording },
+            )
+        }
+    }
+
+    /**
+     * SipViewModel 启动期注入 OSD 配置 supplier(跟 SimConfig.osd + currentChannelName 派生流)。
+     * 必须在 connect / videoConfig 变更前调,否则录像 / 推流 OSD 文字会用 default。
+     */
+    fun setOsdConfigFlowProvider(provider: () -> kotlinx.coroutines.flow.StateFlow<com.uvp.sim.config.OsdConfig>) {
+        osdConfigFlowProvider = provider
+    }
+
+    /** 暴露当前 cameraCapture(SipViewModel 触发 startStream 等需要直接引用)。 */
+    fun currentCameraCapture(): com.uvp.sim.camera.CameraCapture? = cameraCapture
+    /** 暴露当前 recordingService(SipViewModel 录像 UI 直接调 start/stop/delete)。 */
+    fun currentRecordingService(): com.uvp.sim.recording.RecordingService? = recordingService
 
     suspend fun cancelConnect() {
         val eng = engine ?: return
@@ -282,10 +345,18 @@ class AppEngine(
      * 或承载运行期状态"的 holder 立刻反映新配置 — 否则即便 SimConfig 切了,
      * 单例 holders 还沿用旧值,用户改 deviceId / videoChannelId 后会看到旧 catalog tree、
      * 旧通道名等假象。
+     *
+     * Wave 4 PR-PLATFORM-RUNTIME:video 子配置变更 → runtime.applyVideoConfig 接管真重建。
      */
     suspend fun updateConfig(new: SimConfig) {
+        val prev = _config.value
         _config.value = new
         rehydrateHolders(new)
+        if (prev.video != new.video || prev.audioTransport != new.audioTransport) {
+            runCatching {
+                runtime.applyVideoConfig(captureConfigOf(new), audioCaptureConfigOf(new))
+            }
+        }
         runCatching { resources.configStore.save(new) }
         if (engine != null) {
             disconnect()
@@ -328,10 +399,19 @@ class AppEngine(
      * currentChannelName / clockOffset / subscriptionRegistry 这些"派生自 SimConfig 或
      * 跟随旧配置生命周期的"holder。否则单例 holder 沿用旧值,用户改了 deviceId、
      * videoChannelName、mockPosition 等会看到旧值假象。
+     *
+     * Wave 4:video 配置 diff → runtime.applyVideoConfig(captureConfig, audioConfig),
+     * AndroidStreamer 真重建,recordingService 已通过 supplier 自动拿新 encoderConfig。
      */
     fun setConfig(new: SimConfig) {
+        val prev = _config.value
         _config.value = new
         rehydrateHolders(new)
+        if (prev.video != new.video || prev.audioTransport != new.audioTransport) {
+            runCatching {
+                runtime.applyVideoConfig(captureConfigOf(new), audioCaptureConfigOf(new))
+            }
+        }
     }
 
     /**
@@ -364,4 +444,55 @@ class AppEngine(
 
     /** 测试可见 — subscriptionRegistry 实例(单测验证 rehydrate 触发 cancelAll)。 */
     internal fun subscriptionRegistryForTest(): SubscriptionRegistry = holders.subscriptionRegistry
+
+    // ---- Wave 4 PR-PLATFORM-RUNTIME helpers ----
+
+    /** SimConfig.video → CameraCapture CaptureConfig 派生。 */
+    private fun captureConfigOf(cfg: SimConfig): com.uvp.sim.camera.CaptureConfig {
+        val v = cfg.video
+        return com.uvp.sim.camera.CaptureConfig(
+            widthPx = v.resolution.widthPx,
+            heightPx = v.resolution.heightPx,
+            frameRate = v.frameRate,
+            bitrateBps = v.bitrateKbps * 1000,
+            keyframeIntervalSeconds = v.keyframeIntervalSeconds,
+            videoCodec = v.videoCodec,
+        )
+    }
+
+    private fun audioCaptureConfigOf(cfg: SimConfig): com.uvp.sim.camera.AudioCaptureConfig {
+        val v = cfg.video
+        return com.uvp.sim.camera.AudioCaptureConfig(
+            codec = v.audioCodec,
+            sampleRateHz = v.effectiveAudioSampleRateHz,
+        )
+    }
+
+    private fun recordingEncoderConfigOf(cfg: SimConfig): RecordingEncoderConfig {
+        val v = cfg.video
+        return RecordingEncoderConfig(
+            widthPx = v.resolution.widthPx,
+            heightPx = v.resolution.heightPx,
+            frameRate = v.frameRate,
+            bitrateBps = v.bitrateKbps * 1000,
+            keyframeIntervalSeconds = v.keyframeIntervalSeconds,
+        )
+    }
+
+    /**
+     * 注入自定义 RecordingService(绕过 runtime),用于测试替身或外部托管。
+     * Wave 4 PR-PLATFORM-RUNTIME 后,生产路径走 [ensureMediaBuilt] 让 runtime 装配,
+     * 这个入口仅留给 [com.uvp.sim.SipViewModel.bindRecordingService] 测试 seam 转发。
+     */
+    fun bindRecordingService(svc: com.uvp.sim.recording.RecordingService) {
+        recordingService = svc
+    }
+
+    /** 测试可见 — 注入自定义媒体引用(绕过 runtime),用于 RecordingFlowTest 等场景。 */
+    internal fun bindCameraCaptureForTest(cam: com.uvp.sim.camera.CameraCapture) {
+        cameraCapture = cam
+    }
+    internal fun bindAudioCaptureForTest(audio: com.uvp.sim.camera.AudioCapture) {
+        audioCapture = audio
+    }
 }

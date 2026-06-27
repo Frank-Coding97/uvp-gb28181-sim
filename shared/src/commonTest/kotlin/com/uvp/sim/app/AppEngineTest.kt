@@ -52,6 +52,7 @@ class AppEngineTest {
 
     private fun newApp(scope: kotlinx.coroutines.CoroutineScope) = AppEngine(
         resources = FakePlatformResources(),
+        runtime = FakePlatformRuntime(),
         initialConfig = config(),
         parentScope = scope,
     )
