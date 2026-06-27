@@ -77,7 +77,23 @@ internal class PlaybackCoordinatorImpl(
         val rtpClose: suspend () -> Unit,
         val session: com.uvp.sim.domain.PlaybackSession? = null,
         val mode: PlaybackMediaMode = PlaybackMediaMode.PLAYBACK,
+        // P1-4(Wave 7B):dialog identity 四元组,mid-dialog 请求校验用
+        val localTag: String = "",
+        val remoteTag: String = "",
+        val remoteUri: String = "",
+        val remoteSourceIp: String? = null,
     )
+
+    /**
+     * P1-4 helper:把 [ActivePlayback] 抽成 [com.uvp.sim.sip.DialogIdentityVerifier.DialogId]。
+     */
+    private fun ActivePlayback.toDialogId(): com.uvp.sim.sip.DialogIdentityVerifier.DialogId =
+        com.uvp.sim.sip.DialogIdentityVerifier.DialogId(
+            callId = callId,
+            localTag = localTag,
+            remoteTag = remoteTag,
+            remoteSourceIp = remoteSourceIp,
+        )
 
     override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
         val msg = envelope.message
@@ -97,24 +113,63 @@ internal class PlaybackCoordinatorImpl(
                 else RoutingResult.Skip
             }
             SipMethod.INFO -> {
-                if (activePlayback == null) RoutingResult.Skip
-                else { handleInfo(req); RoutingResult.Handled }
+                val pb = activePlayback ?: return RoutingResult.Skip
+                // P1-4:mid-dialog INFO 必须通过 dialog identity 校验,callId 对 + remoteTag 对 +
+                // sourceIp 对。不通过 → 481 Call/Transaction Does Not Exist(RFC 3261 § 12.2.1.1)。
+                if (!verifyDialogOrReject(envelope, req, pb, op = "INFO")) {
+                    return RoutingResult.Handled
+                }
+                handleInfo(req); RoutingResult.Handled
             }
             SipMethod.BYE -> {
-                val cid = req.callId() ?: ""
-                val pb = activePlayback
-                if (pb != null && pb.callId == cid) {
-                    runCatching {
-                        val ok = SipBuilders.buildSimple200(req, userAgent = config.userAgent)
-                        outbox.send(ok).getOrThrow()
-                    }
-                    stopActivePlayback("remote BYE")
-                    simEventEmit(SimEvent.CallEnded(cid, "remote BYE"))
-                    RoutingResult.Handled
-                } else RoutingResult.Skip
+                val pb = activePlayback ?: return RoutingResult.Skip
+                if (pb.callId != req.callId()) return RoutingResult.Skip
+                // P1-4:Call-ID 对得上才进 verifier,免得吃掉 InviteCoordinator 同 Call-ID 的 BYE
+                if (!verifyDialogOrReject(envelope, req, pb, op = "BYE")) {
+                    return RoutingResult.Handled
+                }
+                val cid = pb.callId
+                runCatching {
+                    val ok = SipBuilders.buildSimple200(req, userAgent = config.userAgent)
+                    outbox.send(ok).getOrThrow()
+                }
+                stopActivePlayback("remote BYE")
+                simEventEmit(SimEvent.CallEnded(cid, "remote BYE"))
+                RoutingResult.Handled
             }
             else -> RoutingResult.Skip
         }
+    }
+
+    /**
+     * P1-4:把 envelope 跟 activePlayback dialog identity 比对。
+     *
+     * - [com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match]:返回 true
+     * - 其它三种 mismatch:返回 481 + Warning log + 返回 false
+     */
+    private suspend fun verifyDialogOrReject(
+        envelope: com.uvp.sim.network.SipEnvelope,
+        req: SipRequest,
+        pb: ActivePlayback,
+        op: String,
+    ): Boolean {
+        val result = com.uvp.sim.sip.DialogIdentityVerifier.verify(envelope, pb.toDialogId())
+        if (result == com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match) return true
+        SystemLogger.emit(
+            LogLevel.Warning, LogTag.Lifecycle,
+            "拒绝 PLAYBACK $op:dialog identity 不匹配($result) → 481 " +
+                "[expected callId=${pb.callId} remoteTag=${pb.remoteTag} sourceIp=${pb.remoteSourceIp}, " +
+                "got callId=${req.callId()} sourceIp=${envelope.sourceIp}]",
+        )
+        runCatching {
+            val resp = SipBuilders.buildSimpleResponse(
+                req, statusCode = 481, reasonPhrase = "Call/Transaction Does Not Exist",
+                toTag = SipBuilders.randomTag(),
+                userAgent = config.userAgent,
+            )
+            outbox.send(resp).getOrThrow()
+        }
+        return false
     }
 
     override suspend fun shutdown() {
@@ -232,10 +287,11 @@ internal class PlaybackCoordinatorImpl(
             SipHeaderHelpers.parseUri(invite.fromHeader() ?: ""),
             fallback = config.server.serverId,
         )
+        val toTag = SipBuilders.randomTag()
         val response = SipBuilders.buildInvite200WithSdp(
             invite = invite,
             deviceContact = deviceContact,
-            toTag = SipBuilders.randomTag(),
+            toTag = toTag,
             sdpBody = sdpAnswer,
             userAgent = config.userAgent,
             subject = SipBuilders.subject(
@@ -284,6 +340,11 @@ internal class PlaybackCoordinatorImpl(
                 _state.value = PlaybackState.Idle
             }
         }
+        // P1-4:从 INVITE 头部抽 dialog identity 关键字段,后续 mid-dialog 校验依赖。
+        val inviteFromHeader = invite.fromHeader() ?: ""
+        val remoteUri = SipHeaderHelpers.parseUri(inviteFromHeader)
+        val remoteTag = SipHeaderHelpers.parseTag(inviteFromHeader)
+
         activePlayback = ActivePlayback(
             callId = cid,
             ssrc = ssrc,
@@ -291,6 +352,10 @@ internal class PlaybackCoordinatorImpl(
             rtpClose = playback::cancel,
             session = playback,
             mode = sessionMode,
+            localTag = toTag,
+            remoteTag = remoteTag,
+            remoteUri = remoteUri,
+            remoteSourceIp = envelope.sourceIp,
         )
         _state.value = PlaybackState.Playing
     }
