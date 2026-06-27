@@ -11,6 +11,7 @@ androidx-camera = "1.4.1"
 androidx-datastore = "1.1.1"
 androidx-core-ktx = "1.15.0"
 androidx-media3 = "1.5.0"
+androidx-security-crypto = "1.1.0-alpha06"
 
 # Kotlin libs
 coroutines = "1.10.1"
@@ -56,6 +57,7 @@ androidx-camera-video = { module = "androidx.camera:camera-video", version.ref =
 androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "androidx-camera" }
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidx-datastore" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core-ktx" }
+androidx-security-crypto = { module = "androidx.security:security-crypto-ktx", version.ref = "androidx-security-crypto" }
 
 # Media3 ExoPlayer — 内嵌录像播放器(M2 录像列表点击预览)
 androidx-media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "androidx-media3" }
