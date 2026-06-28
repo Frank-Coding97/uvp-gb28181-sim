@@ -129,25 +129,37 @@ class AppEngine(
     /**
      * 连接平台。装配链:transport → buildHolders(已 lazy)→ buildCoordinators → Engine →
      * Coord<->Engine 反向 ref → snapshot pipeline → bridge(currentChannelName/currentBroadcast/broadcastSpeakerOn 3 个 invite/broadcast 专属)→ register。
+     *
+     * R3 #3 (full preset HIGH/architecture):原 72 行混合 5 个职责,拆成 4 个 helper:
+     *   reuseExistingEngine → buildTransportSession → wireSessionAndBridges → startRegistration
      */
     suspend fun connect() {
-        val existing = engine
-        if (existing != null) {
-            when (holders.state.value) {
-                SipState.Registering, SipState.Registered, SipState.InCall -> return
-                SipState.Disconnected, SipState.Failed -> {
-                    try {
-                        transport?.connect()
-                        existing.register()
-                    } catch (e: Throwable) {
-                        holders.events.emit(com.uvp.sim.domain.transportErrorOf("register retry", e))
-                    }
-                    return
+        if (reuseExistingEngine()) return
+        val cfg = _config.value
+        val tx = buildTransportSession(cfg)
+        val eng = wireSessionAndBridges(cfg, tx)
+        startRegistration(tx, eng)
+    }
+
+    /** 已有 engine 时不重建,只补发 register/transport.connect。返回 true = 已处理无须新建。 */
+    private suspend fun reuseExistingEngine(): Boolean {
+        val existing = engine ?: return false
+        when (holders.state.value) {
+            SipState.Registering, SipState.Registered, SipState.InCall -> return true
+            SipState.Disconnected, SipState.Failed -> {
+                try {
+                    transport?.connect()
+                    existing.register()
+                } catch (e: Throwable) {
+                    holders.events.emit(com.uvp.sim.domain.transportErrorOf("register retry", e))
                 }
+                return true
             }
         }
+    }
 
-        val cfg = _config.value
+    /** 按 cfg.transport 建对应 SipTransport,写到 [transport] 字段并返回。 */
+    private fun buildTransportSession(cfg: SimConfig): SipTransport {
         val tx: SipTransport = when (cfg.transport) {
             TransportType.TCP -> com.uvp.sim.network.TcpSipTransport(
                 remote = RemoteEndpoint(
@@ -169,9 +181,15 @@ class AppEngine(
             )
         }
         transport = tx
+        return tx
+    }
 
+    /**
+     * 装配 outbox / 媒体 / coordinators / SimulatorEngine / snapshot pipeline /
+     * 3 个 invite/broadcast 专属 StateFlow 桥接。bridge job 全收到 [bridgeJobs] 防泄漏(R2 #3)。
+     */
+    private fun wireSessionAndBridges(cfg: SimConfig, tx: SipTransport): SimulatorEngine {
         val outbox = SipOutboxImpl(tx) { ev -> holders.events.emit(ev) }
-        // 媒体三件套通过 runtime 装配(Wave 4 PR-PLATFORM-RUNTIME)
         ensureMediaBuilt(cfg)
         var engineRef: SimulatorEngine? = null
         val coords = buildCoordinators(cfg, tx, outbox) { engineRef }
@@ -189,12 +207,15 @@ class AppEngine(
             engineScope.launch { runCatching { cache.gc() } }
         }
 
-        // 3 个 invite/broadcast 专属 StateFlow 仍 collect 桥接(它们的 source-of-truth 在 Coord 内部 — 不在 holders)
-        // R2 #3:job ref 收集到 bridgeJobs,disconnect / cancelConnect 时一起 cancel,避免泄漏。
         bridgeJobs += engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
         bridgeJobs += engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
         bridgeJobs += engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
 
+        return eng
+    }
+
+    /** transport 真连 + 发首条 REGISTER。失败 emit TransportError 不抛(沿用旧行为)。 */
+    private suspend fun startRegistration(tx: SipTransport, eng: SimulatorEngine) {
         try {
             tx.connect()
             eng.register()
