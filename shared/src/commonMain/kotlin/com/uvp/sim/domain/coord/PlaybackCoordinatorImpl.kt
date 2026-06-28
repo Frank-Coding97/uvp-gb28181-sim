@@ -15,6 +15,7 @@ import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -318,7 +319,11 @@ internal class PlaybackCoordinatorImpl(
             playback.setScale(offer.downloadSpeed)
         }
 
-        val job = scope.launch {
+        // R2 #2:playback.run() 立刻完成 / 失败时(尤其 INFO 触发 DOWNLOAD_COMPLETE 二次进入),
+        // finally 块的 `activePlayback = null` 会在父方法还没给 activePlayback 赋值之前跑,
+        // 导致后续 INFO / BYE 看到 stale activePlayback / 关不掉。改用 LAZY 启动,activePlayback
+        // 赋值完成后再 job.start(),保证 finally 永远晚于赋值。
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
                 playback.run()
                 if (offer.isDownload) {
@@ -358,6 +363,7 @@ internal class PlaybackCoordinatorImpl(
             remoteSourceIp = envelope.sourceIp,
         )
         _state.value = PlaybackState.Playing
+        job.start()
     }
 
     private suspend fun handleInfo(req: SipRequest) {
