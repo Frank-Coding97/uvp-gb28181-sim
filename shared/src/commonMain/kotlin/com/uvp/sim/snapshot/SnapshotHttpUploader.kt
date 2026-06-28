@@ -6,6 +6,7 @@ import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
+import kotlinx.coroutines.CancellationException
 
 /**
  * 抓拍 JPEG HTTP 上传结果。
@@ -35,6 +36,11 @@ class SnapshotHttpUploader(private val client: HttpClient) {
             val code = response.status.value
             if (code in 200..299) UploadResult.Success
             else UploadResult.Failure(code, response.status.description)
+        } catch (ce: CancellationException) {
+            // R3 #1 (full preset round-2 HIGH/correctness):scope/job 被取消必须冒泡,
+            // 不能伪装成可重试 Failure。否则上层 retry loop 会拿"取消"当普通网络错重发,
+            // 拖慢 teardown 还可能在 client 关闭后发陈旧 PUT。
+            throw ce
         } catch (e: Throwable) {
             UploadResult.Failure(null, e.message ?: e::class.simpleName ?: "unknown")
         }
