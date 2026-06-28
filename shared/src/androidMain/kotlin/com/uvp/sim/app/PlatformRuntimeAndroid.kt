@@ -107,25 +107,14 @@ class PlatformRuntimeAndroid(
 
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
         val cam = cameraCaptureRef ?: return
-        val needsRebuild = currentCaptureConfig != null && currentCaptureConfig != captureConfig
-        val s = if (needsRebuild) {
-            // 真重建:release 旧 streamer + new 一个,facade 重绑
-            runCatching { streamer?.release() }
-            val fresh = AndroidCameraStreamer(
-                context = appContext,
-                mainExecutor = mainExecutor,
-                config = captureConfig,
-                osdConfigFlow = osdConfigSupplier(),
-            )
-            streamer = fresh
-            currentCaptureConfig = captureConfig
-            fresh
-        } else {
-            ensureStreamer(captureConfig)
-        }
-        // 即便复用旧 streamer 也把最新 CaptureConfig 推给它 — applyCaptureConfig
-        // 同值 short-circuit 不抖,值变会 release 当前 encoder 让下一轮 stream 起新 codec。
+        // P2-2(2026-06-28):不再粗暴 release + new 整个 streamer ——
+        // streamer.applyCaptureConfig 内部已经会按分辨率变化重建 OSD pipeline
+        // 并自动把当前挂着的 SurfaceView 重新 attach 到新 renderer。
+        // 老路径每次配置变都 new streamer + 等 Compose 重组 reattach,中间 SurfaceView 短暂黑屏,
+        // 而且 cameraCapture / recordingService 内部对 streamer 的引用也都得跟着轮换,容易漏。
+        val s = ensureStreamer(captureConfig)
         s.applyCaptureConfig(captureConfig)
+        currentCaptureConfig = captureConfig
         cam.setStreamer(s)
 
         // Audio:每次都 new 一个新 streamer(旧 stop 异步兜底)

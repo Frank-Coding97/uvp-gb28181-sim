@@ -115,6 +115,18 @@ class AndroidCameraStreamer(
     @Volatile private var encoderPreview: Preview? = null  // OSD 关时直连 encoder surface 的 fallback Preview UseCase
     @Volatile private var cameraToOsdPreview: Preview? = null  // 持续输出到 OsdRenderer.cameraInputSurface 的 Preview UseCase
 
+    /**
+     * 当前已挂载的屏幕 SurfaceView + 其 Callback 引用对(P2-1,2026-06-28)。
+     *
+     * 必须用 object 引用(不能用 lambda)以便后续 [SurfaceHolder.removeCallback]。
+     * - 同一个 view 再次 attach → 幂等,不重复注册 callback,避免每次 Compose 重组泄漏 callback
+     * - 不同 view → 先 remove 旧 callback 再注册新的
+     * - OSD pipeline 重建(P2-2)→ callback 闭包持有的是旧 renderer,必须 detach 旧 callback、用新 renderer 重新注册
+     * - [release] / [detachPreviewView] → removeCallback,避免 SurfaceView 持有 callback 间接 leak streamer
+     */
+    @Volatile private var attachedPreviewView: SurfaceView? = null
+    @Volatile private var attachedSurfaceCallback: SurfaceHolder.Callback? = null
+
     @Volatile private var provider: ProcessCameraProvider? = null
 
     /**
@@ -124,44 +136,86 @@ class AndroidCameraStreamer(
     @Volatile private var currentFacing: CameraFacing = config.cameraFacing
 
     /**
-     * 绑定屏幕预览 SurfaceView(P0-PREVIEW,2026-06-14)。
+     * 绑定屏幕预览 SurfaceView(P0-PREVIEW,2026-06-14;P2-1 幂等修复,2026-06-28)。
      *
      * 跟工业 IPC 同构:屏幕看到的画面来自 OsdRendererHolder 单一画面源,跟直播/录像同源。
      * 流程:
      * 1. 第一次 attach → ensurePersistentOsd() 启 OsdRendererHolder + bind 摄像头到 cameraInputSurface
      * 2. 监听 SurfaceHolder.Callback,surface 创建/尺寸变 → renderer.setScreenSurface
      * 3. surface destroyed → renderer.setScreenSurface(null)
+     *
+     * P2-1 幂等保证:
+     * - 同一个 view 再次 attach(AndroidView.update 每次 Compose 重组都会调一次)→ 直接 return,
+     *   不再叠注册 callback,避免 callback 链表无限增长导致 setScreenSurface 多次抖动
+     * - 不同 view → removeCallback 旧 view 上注册的旧 callback,再在新 view 上注册新 callback
+     * - callback 用 object: 持有引用以便后续 removeCallback(lambda 无法 remove)
      */
     fun attachPreviewView(view: SurfaceView) {
         runOnMain {
+            // 同一个 view → 幂等 short-circuit,避免重组泄漏 callback
+            if (attachedPreviewView === view && attachedSurfaceCallback != null) return@runOnMain
+
+            // 不同 view → 先清掉旧 view 上的 callback
+            removeAttachedCallback()
+
             ensurePersistentOsd()
             val renderer = persistentOsdRenderer ?: run {
                 SystemLogger.emit(LogLevel.Warning, LogTag.Media, "屏幕预览失败:OsdRenderer 未启动")
                 return@runOnMain
             }
-            // 注册 SurfaceHolder.Callback,surface 生命周期反映到 renderer
-            view.holder.addCallback(object : SurfaceHolder.Callback {
-                override fun surfaceCreated(holder: SurfaceHolder) {
-                    renderer.setScreenSurface(holder.surface, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))
-                }
-                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                    renderer.setScreenSurface(holder.surface, width, height)
-                }
-                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                    renderer.setScreenSurface(null, 0, 0)
-                }
-            })
-            // 如果 surface 已经存在(view 已 attached 到 window),直接通知一次
-            val existing = view.holder.surface
-            if (existing != null && existing.isValid) {
-                renderer.setScreenSurface(existing, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))
-            }
+            attachScreenCallback(view, renderer)
         }
     }
 
-    /** 解绑屏幕预览。OsdRendererHolder 引用通过 release() 路径归还。 */
+    /**
+     * 把 SurfaceHolder.Callback 注册到 [view] 并把 callback 路由到 [renderer]。
+     *
+     * 提取出来以便 [rebuildPersistentOsd] 在 OSD pipeline 重建后用**新** renderer
+     * 重新挂同一个 view —— 旧 callback 闭包持有的是已 release 的旧 renderer。
+     *
+     * 调用前必须先 [removeAttachedCallback]。调用方:[attachPreviewView] / [rebuildPersistentOsd]。
+     */
+    private fun attachScreenCallback(view: SurfaceView, renderer: OsdRenderer) {
+        val callback = object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                renderer.setScreenSurface(holder.surface, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))
+            }
+            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                renderer.setScreenSurface(holder.surface, width, height)
+            }
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                renderer.setScreenSurface(null, 0, 0)
+            }
+        }
+        view.holder.addCallback(callback)
+        attachedPreviewView = view
+        attachedSurfaceCallback = callback
+        // 如果 surface 已存在(view 已 attached 到 window),直接通知一次
+        val existing = view.holder.surface
+        if (existing != null && existing.isValid) {
+            renderer.setScreenSurface(existing, view.width.coerceAtLeast(1), view.height.coerceAtLeast(1))
+        }
+    }
+
+    /**
+     * 从当前 [attachedPreviewView] 上 removeCallback,然后清空字段。
+     *
+     * 必须在 main thread 上调(SurfaceHolder 不是线程安全的)。调用方:[attachPreviewView]
+     * / [detachPreviewView] / [rebuildPersistentOsd] / [release]。
+     */
+    private fun removeAttachedCallback() {
+        val cb = attachedSurfaceCallback ?: return
+        val v = attachedPreviewView
+        runCatching { v?.holder?.removeCallback(cb) }
+        attachedSurfaceCallback = null
+        // attachedPreviewView 不在这里清 —— rebuildPersistentOsd 需要保留 view 引用以便 reattach
+    }
+
+    /** 解绑屏幕预览。removeCallback 已注册的 callback + 清通知 renderer。 */
     fun detachPreviewView() {
         runOnMain {
+            removeAttachedCallback()
+            attachedPreviewView = null
             persistentOsdRenderer?.setScreenSurface(null, 0, 0)
         }
     }
@@ -218,6 +272,52 @@ class AndroidCameraStreamer(
                 }
             }
         cameraToOsdPreview = preview
+    }
+
+    /**
+     * 拆掉当前 persistent OSD pipeline 并按新 [config].widthPx/heightPx 重启(P2-2,2026-06-28)。
+     *
+     * 用户改了分辨率后必须重建,否则 OsdRenderer 还按旧 target 尺寸跑,预览/直播跟 encoder
+     * 起的新分辨率脱节。流程:
+     * 1. 主线程上拆旧 cameraToOsdPreview UseCase + rebind 触发 unbind
+     * 2. removeAttachedCallback 把屏幕 SurfaceView 上的旧 callback 撤掉(callback 闭包持有旧 renderer)
+     * 3. 释放 OsdRendererHolder 引用 → tear down GL pipeline
+     * 4. 清 persistentOsdRenderer / persistentOsdHeld 状态
+     * 5. ensurePersistentOsd() 以新尺寸重启
+     * 6. 若之前挂过 SurfaceView,用新 renderer 重新 attach callback
+     *
+     * 注意:调用必须在 main thread 上 —— SurfaceHolder removeCallback / CameraX rebind 都是主线程契约。
+     * 调用方:[applyCaptureConfig] 检测到 widthPx/heightPx 变化时。
+     */
+    private fun rebuildPersistentOsd() {
+        // 保留 view 引用,重建后还要 reattach
+        val savedView = attachedPreviewView
+        removeAttachedCallback()
+
+        // 拆旧 cameraToOsdPreview + rebind 让 CameraX 释放对旧 cameraInputSurface 的引用
+        cameraToOsdPreview = null
+        rebind()
+
+        // 通知旧 renderer 卸屏幕 surface,然后归还 holder 引用 → tear down GL
+        if (persistentOsdHeld) {
+            runCatching { persistentOsdRenderer?.setScreenSurface(null, 0, 0) }
+            runCatching { OsdRendererHolder.release() }
+        }
+        persistentOsdRenderer = null
+        persistentOsdHeld = false
+
+        // 用新 config.widthPx/heightPx 重启 pipeline
+        ensurePersistentOsd()
+
+        // 把屏幕 SurfaceView 重新挂到新 renderer 上(callback 闭包绑定新 renderer)
+        val newRenderer = persistentOsdRenderer
+        if (savedView != null && newRenderer != null) {
+            attachScreenCallback(savedView, newRenderer)
+        } else if (savedView != null) {
+            // 重建失败:OsdRendererHolder.acquire 返回 null。保留 view 引用,后续重新 attach 仍可重试。
+            attachedPreviewView = savedView
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD pipeline 重建后未获得 renderer,屏幕预览暂停")
+        }
     }
 
     /** Hot Flow of encoded H.264 frames. Cancelling the collection stops encoding. */
@@ -485,12 +585,15 @@ class AndroidCameraStreamer(
      * 3. 当前 encoder 在跑就 release —— 上层 collector 监 close 会触发 awaitClose,
      *    重新 collect 下一轮 stream 自动用新 config 起 codec
      * 4. cameraFacing 顺带跟随(setFacing 也会重新 rebind)
+     * 5. (P2-2,2026-06-28)分辨率变 → rebuildPersistentOsd 重启 OSD pipeline,
+     *    避免 OsdRenderer 还按旧 target 尺寸跑、跟 encoder 新分辨率脱节
      *
      * 调用方:[com.uvp.sim.SipViewModel.updateConfig] / MainActivity attachStreamer 路径
      * 在 videoConfigVersion bump 时连带调。
      */
     fun applyCaptureConfig(new: CaptureConfig) {
         if (config == new) return
+        val resolutionChanged = config.widthPx != new.widthPx || config.heightPx != new.heightPx
         config = new
         // 当前 encoder 还在跑 → 强制 release,callbackFlow 会走 awaitClose
         runCatching { encoder?.stop() }
@@ -501,13 +604,24 @@ class AndroidCameraStreamer(
         if (currentFacing != new.cameraFacing) {
             currentFacing = new.cameraFacing
         }
-        runOnMain { rebind() }
+        runOnMain {
+            if (resolutionChanged && persistentOsdHeld) {
+                // 仅在 OSD 已经启起来时才重建 —— 还没启过的话 ensurePersistentOsd 自然按新尺寸起
+                rebuildPersistentOsd()
+            } else {
+                rebind()
+            }
+        }
     }
 
     /** Release the self-driven lifecycle so CameraX drops our use cases.
      *  Caller (Activity onDestroy of the *last* instance / process exit). */
     fun release() {
         runOnMain {
+            // P2-1:屏幕 SurfaceView 上的 callback 必须撤,否则 SurfaceView 持有 callback
+            // → 间接持有 streamer,泄漏整个 GL pipeline + provider 引用
+            removeAttachedCallback()
+            attachedPreviewView = null
             try {
                 if (boundCases.isNotEmpty()) {
                     provider?.unbind(*boundCases.toTypedArray())
