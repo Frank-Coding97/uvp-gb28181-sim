@@ -461,6 +461,8 @@ internal class InviteCoordinatorImpl(
         }
 
         // 5.14 ACK watchdog
+        // R1 #4:ACK 超时不能只发事件,媒体管线已开,必须 stopActiveStream 释放
+        // RTP / RTCP / camera / audio,否则在永不 ACK 场景下推流持续 → 资源泄漏 + 假"已连接"。
         awaitingAckCallId = cid
         ackTimeoutJob?.cancel()
         ackTimeoutJob = scope.launch {
@@ -469,9 +471,10 @@ internal class InviteCoordinatorImpl(
                 simEventEmit(SimEvent.InviteAckTimeout(cid))
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Lifecycle,
-                    "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开"
+                    "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开,释放媒体管线"
                 )
                 awaitingAckCallId = null
+                stopActiveStream(cid, "ACK timeout (${ACK_TIMEOUT_MS / 1000}s)")
             }
         }
 
