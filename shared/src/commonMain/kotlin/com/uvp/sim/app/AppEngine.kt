@@ -187,6 +187,9 @@ class AppEngine(
     /**
      * 装配 outbox / 媒体 / coordinators / SimulatorEngine / snapshot pipeline /
      * 3 个 invite/broadcast 专属 StateFlow 桥接。bridge job 全收到 [bridgeJobs] 防泄漏(R2 #3)。
+     *
+     * R3 verify-followup #4:engine 字段只在所有 wiring 成功后才发布,wiring 抛错时
+     * cancel 已起的 bridge job + 清 snapshotHttp,避免半初始化的 engine 被下次 reuseExistingEngine 命中。
      */
     private fun wireSessionAndBridges(cfg: SimConfig, tx: SipTransport): SimulatorEngine {
         val outbox = SipOutboxImpl(tx) { ev -> holders.events.emit(ev) }
@@ -194,23 +197,35 @@ class AppEngine(
         var engineRef: SimulatorEngine? = null
         val coords = buildCoordinators(cfg, tx, outbox) { engineRef }
         val eng = SimulatorEngine(cfg, tx, engineScope, resources, coords, holders)
-        engine = eng
         engineRef = eng
 
-        val capture = resources.snapshotCapture
-        val cache = resources.snapshotCache
-        val httpEngine = resources.httpEngineFactory?.invoke()
-        if (capture != null && cache != null && httpEngine != null) {
-            val http = HttpClient(httpEngine)
-            snapshotHttp = http
-            eng.attachSnapshotPipeline(capture, cache, http)
-            engineScope.launch { runCatching { cache.gc() } }
+        // 局部收 bridge job,wiring 任一步抛错统一回滚。成功后再合入 bridgeJobs。
+        val localBridgeJobs = mutableListOf<kotlinx.coroutines.Job>()
+        var localSnapshotHttp: HttpClient? = null
+        try {
+            val capture = resources.snapshotCapture
+            val cache = resources.snapshotCache
+            val httpEngine = resources.httpEngineFactory?.invoke()
+            if (capture != null && cache != null && httpEngine != null) {
+                val http = HttpClient(httpEngine)
+                localSnapshotHttp = http
+                eng.attachSnapshotPipeline(capture, cache, http)
+                engineScope.launch { runCatching { cache.gc() } }
+            }
+
+            localBridgeJobs += engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
+            localBridgeJobs += engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
+            localBridgeJobs += engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
+        } catch (t: Throwable) {
+            localBridgeJobs.forEach { it.cancel() }
+            runCatching { localSnapshotHttp?.close() }
+            throw t
         }
 
-        bridgeJobs += engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
-        bridgeJobs += engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
-        bridgeJobs += engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
-
+        // 所有 wiring 成功 → 公布 engine + 合并 bridge job
+        snapshotHttp = localSnapshotHttp
+        bridgeJobs += localBridgeJobs
+        engine = eng
         return eng
     }
 

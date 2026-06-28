@@ -574,16 +574,20 @@ internal class RegistrationCoordinatorImpl(
                     armRegisterTimeout()
                 } catch (e: Throwable) {
                     // R3 #4 (full preset HIGH/correctness):续约 send 失败原先只清 isRenewal,
-                    // 状态仍停在 Registered,平台已经认为掉线,UI 也不知道。
-                    // 改走跟初次注册同款的 scheduleRetryOrFail:状态降到 RetryBackoff、
-                    // emit Unauthorized / 重试,避免续约失败被静默吞掉。
+                    // 状态仍停在 Registered → UI 以为没事,但平台已掉线,过 expiresSeconds 后才以更迷的方式暴露。
+                    // 改走跟初次注册同款的 scheduleRetryOrFail:状态降到 RetryBackoff、按退避重试或最终 Failed。
+                    // R3 verify-followup:scheduleRetryOrFail 进 backoff 只切状态、不 emit 事件
+                    // (Unauthorized 只在 terminal 失败时 emit),UI 还是听不到掉线信号。
+                    // 这里在进重试前先 emit 一条 Unauthorized,把"续约失败"立刻广播出去。
                     isRenewal = false
                     pendingRegister = null
+                    val reason = "renewal send: ${e.message ?: e::class.simpleName}"
                     SystemLogger.emit(
                         LogLevel.Warning, LogTag.Lifecycle,
-                        "Expires 续约 send 失败: ${e.message ?: e::class.simpleName} → 进入重试路径",
+                        "Expires 续约 send 失败: ${e.message ?: e::class.simpleName} → 立刻通知 + 进入重试路径",
                     )
-                    scheduleRetryOrFail("renewal send: ${e.message ?: e::class.simpleName}")
+                    _events.emit(RegistrationEvent.Unauthorized(0, reason))
+                    scheduleRetryOrFail(reason)
                 }
             }
         }
