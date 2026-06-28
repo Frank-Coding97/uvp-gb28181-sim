@@ -43,11 +43,15 @@ actual class JpegLocalCache actual constructor() {
 
         val totalNow = survivors.sumOf { it.length() }
         if (totalNow <= maxBytes) return
+        // R3 round-2 #4 (MEDIUM/correctness):原写法 `remaining -= f.length(); f.delete()` 在 delete 失败时
+        // 也减 quota,下次 GC 看到缓存"小于 100MB"但磁盘其实在涨。改成成功删除才减。
         var remaining = totalNow
         survivors.sortedBy { it.lastModified() }.forEach { f ->
             if (remaining <= maxBytes) return@forEach
-            remaining -= f.length()
-            f.delete()
+            val len = f.length()
+            if (f.delete()) {
+                remaining -= len
+            }
         }
     }
 
