@@ -394,6 +394,11 @@ internal class ManscdpRouterImpl(
                                 LogLevel.Error, LogTag.Network,
                                 "SnapShotConfig rejected: URL not in allow list: SessionID=${progress.sessionId} URL=${progress.uploadUrl}"
                             )
+                        is com.uvp.sim.snapshot.SnapshotProgress.PerShotError ->
+                            SystemLogger.emit(
+                                LogLevel.Warning, LogTag.Media,
+                                "snapshot 单帧失败,继续下一帧: SessionID=${progress.sessionId} idx=${progress.idx} cause=${progress.cause}"
+                            )
                     }
                 }
             },

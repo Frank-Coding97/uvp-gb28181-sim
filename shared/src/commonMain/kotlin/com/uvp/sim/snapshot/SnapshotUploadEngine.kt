@@ -65,7 +65,16 @@ class SnapshotUploadEngine(
 
         for (idx in 0 until cfg.snapNum) {
             if (idx > 0 && cfg.intervalMs > 0) delay(cfg.intervalMs)
-            processOne(cfg, idx)
+            // R3 round-2 #3 (MEDIUM/error_handling):processOne 只特化了 takeJpeg()==null 和 uploadFailed,
+            // 任何 writeCache / notifySender 抛错都会冒泡终结整个 snapNum 序列。
+            // 改:用 try/catch 隔离单帧失败 → 发 PerShotError 进度 + 继续下一帧。CancellationException 仍冒泡。
+            try {
+                processOne(cfg, idx)
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                onProgress?.invoke(SnapshotProgress.PerShotError(cfg.sessionId, idx, t.message ?: t::class.simpleName ?: "unknown"))
+            }
         }
     }
 
@@ -165,4 +174,10 @@ sealed class SnapshotProgress {
      * P2-6 — UploadURL 未通过 allowList 或属危险地址,整个抓拍序列被拒。
      */
     data class UrlRejected(val sessionId: String, val uploadUrl: String) : SnapshotProgress()
+
+    /**
+     * R3 round-2 #3 — 单帧 processOne 抛非 cancellation 异常(writeCache / notifySender 等),
+     * 上层 catch 后发本事件并继续下一帧,而不是整个 snapNum 序列被中断。
+     */
+    data class PerShotError(val sessionId: String, val idx: Int, val cause: String) : SnapshotProgress()
 }
