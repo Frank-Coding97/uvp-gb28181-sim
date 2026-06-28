@@ -442,7 +442,9 @@ internal class InviteCoordinatorImpl(
             sdpBody = sdpAnswer,
             userAgent = config.userAgent,
             subject = SipBuilders.subject(
-                senderId = config.device.deviceId,
+                // R2 #7:Subject sender ID 应为通道编码(GB §20.4),
+                // 之前用 device.deviceId 导致平台无法关联到真正出流的通道。
+                senderId = channelId.ifBlank { config.device.deviceId },
                 ssrc = ssrc,
                 receiverId = inviteFromUser,
             ),
