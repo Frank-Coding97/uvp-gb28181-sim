@@ -133,7 +133,7 @@ internal class BroadcastCoordinatorImpl(
                 val cseqMethod = msg.cseqRaw()?.split(" ")?.getOrNull(1)?.let { SipMethod.fromString(it) }
                 val bc = _current.value
                 if (cseqMethod == SipMethod.INVITE && bc != null && msg.callId() == bc.callId) {
-                    handleBroadcastInviteResponse(msg, bc)
+                    handleBroadcastInviteResponse(envelope, msg, bc)
                     RoutingResult.Handled
                 } else RoutingResult.Skip
             }
@@ -141,7 +141,7 @@ internal class BroadcastCoordinatorImpl(
                 if (msg.method == SipMethod.BYE) {
                     val bc = _current.value
                     if (bc != null && msg.callId() == bc.callId) {
-                        handleBroadcastBye(msg, bc)
+                        handleBroadcastBye(envelope, msg, bc)
                         RoutingResult.Handled
                     } else RoutingResult.Skip
                 } else RoutingResult.Skip
@@ -282,7 +282,7 @@ internal class BroadcastCoordinatorImpl(
 
     // ---------- 业务方法 ----------
 
-    private suspend fun handleBroadcastInviteResponse(resp: SipResponse, bc: BroadcastDialog) {
+    private suspend fun handleBroadcastInviteResponse(envelope: com.uvp.sim.network.SipEnvelope, resp: SipResponse, bc: BroadcastDialog) {
         when (resp.statusCode) {
             in 100..199 -> return
             in 200..299 -> {
@@ -332,6 +332,7 @@ internal class BroadcastCoordinatorImpl(
                     remoteAudioHost = answer.remoteIp,
                     remoteAudioPort = answer.remotePort,
                     codec = codec,
+                    remoteSourceIp = envelope.sourceIp,
                 )
                 _state.value = BroadcastDialogState.Talking
                 simEventEmit(SimEvent.BroadcastInvited(bc.sourcePlatformUri, bc.localAudioPort))
@@ -396,7 +397,13 @@ internal class BroadcastCoordinatorImpl(
         }
     }
 
-    private suspend fun handleBroadcastBye(bye: SipRequest, bc: BroadcastDialog) {
+    private suspend fun handleBroadcastBye(envelope: com.uvp.sim.network.SipEnvelope, bye: SipRequest, bc: BroadcastDialog) {
+        // R3 #1 (full preset CRITICAL):mid-dialog BYE 必须通过 dialog identity 校验
+        // (callId + remoteTag + sourceIp),跟 InviteCoordinator / PlaybackCoordinator 同款。
+        // 仅 Call-ID 匹配可被 LAN 抓包后伪造,任意源就能踢掉活跃 broadcast。
+        if (!verifyMidDialogOrReject(envelope, bye, bc, op = "BYE")) {
+            return
+        }
         runCatching {
             val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
             outbox.send(ok).getOrThrow()
@@ -414,6 +421,43 @@ internal class BroadcastCoordinatorImpl(
         val dur = nowMs() - bc.createdAtMs
         simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Remote, dur))
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台 BYE 关闭语音广播")
+    }
+
+    /**
+     * R3 #1:把 BroadcastDialog 抽成 DialogIdentityVerifier.DialogId 做 mid-dialog 守卫。
+     * remoteTag 还没收到 200 OK 时为 null,这种情况下任何 BYE 都该拒(对应 MismatchTag)。
+     */
+    private fun BroadcastDialog.toDialogId(): com.uvp.sim.sip.DialogIdentityVerifier.DialogId =
+        com.uvp.sim.sip.DialogIdentityVerifier.DialogId(
+            callId = callId,
+            localTag = localTag,
+            remoteTag = remoteTag ?: "",
+            remoteSourceIp = remoteSourceIp,
+        )
+
+    private suspend fun verifyMidDialogOrReject(
+        envelope: com.uvp.sim.network.SipEnvelope,
+        req: SipRequest,
+        bc: BroadcastDialog,
+        op: String,
+    ): Boolean {
+        val result = com.uvp.sim.sip.DialogIdentityVerifier.verify(envelope, bc.toDialogId())
+        if (result == com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match) return true
+        SystemLogger.emit(
+            LogLevel.Warning, LogTag.Lifecycle,
+            "拒绝 BROADCAST $op:dialog identity 不匹配($result) → 481 " +
+                "[expected callId=${bc.callId} remoteTag=${bc.remoteTag} sourceIp=${bc.remoteSourceIp}, " +
+                "got callId=${req.callId()} sourceIp=${envelope.sourceIp}]",
+        )
+        runCatching {
+            val resp = SipBuilders.buildSimpleResponse(
+                req, statusCode = 481, reasonPhrase = "Call/Transaction Does Not Exist",
+                toTag = SipBuilders.randomTag(),
+                userAgent = config.userAgent,
+            )
+            outbox.send(resp).getOrThrow()
+        }
+        return false
     }
 
     private fun startBroadcastRx() {

@@ -282,4 +282,67 @@ a=sendonly
         assertTrue(busy.any { it.contains("<Result>ERROR</Result>") && it.contains("<Reason>busy</Reason>") }, "应回 ERROR busy")
         engine.shutdown()
     }
+
+    // ---- R3 cross-review #1 (CRITICAL/security): mid-dialog BYE 必须 4 元组校验 ----
+
+    /** 攻击者抓到 Call-ID 后,带错的 from-tag 发 BYE → 应返 481,不 teardown。 */
+    @Test
+    fun spoofedBye_wrongFromTag_returns481_andKeepsDialog() = runTest {
+        val transport = MockSipTransport()
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.deliver(broadcastMessage())
+        runCurrent()
+        transport.deliver(ok200(lastInvite(transport), codec = 8))
+        runCurrent()
+        val cid = engine.currentBroadcast.value!!.callId
+        transport.sent.clear()
+
+        val spoof = SipRequest(
+            method = SipMethod.BYE,
+            requestUri = "sip:$deviceId@192.168.10.112:5060",
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.10.222:5060;branch=z9hG4bK-spoof"),
+                SipMessage.Header(SipHeader.FROM, "<sip:$platformId@$domain>;tag=ATTACKER"),
+                SipMessage.Header(SipHeader.TO, "<sip:$deviceId@$domain>;tag=devbc"),
+                SipMessage.Header(SipHeader.CALL_ID, cid),
+                SipMessage.Header(SipHeader.CSEQ, "9 BYE"),
+            ),
+        )
+        transport.deliver(spoof)
+        runCurrent()
+
+        val resp481 = transport.sent.filterIsInstance<SipResponse>().lastOrNull { it.statusCode == 481 }
+        assertNotNull(resp481, "伪造 from-tag 的 BYE 应回 481")
+        val ok200 = transport.sent.filterIsInstance<SipResponse>().any { it.statusCode == 200 }
+        assertEquals(false, ok200, "不能给伪造 BYE 发 200")
+        assertNotNull(engine.currentBroadcast.value, "dialog 仍应活跃")
+        assertEquals(BroadcastDialogState.Talking, engine.currentBroadcast.value?.state)
+        engine.shutdown()
+    }
+
+    /** 攻击者从不同 IP 发 BYE(callId + tag 都对) → 应返 481,不 teardown。 */
+    @Test
+    fun spoofedBye_wrongSourceIp_returns481_andKeepsDialog() = runTest {
+        val transport = MockSipTransport()
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.deliver(broadcastMessage())
+        runCurrent()
+        transport.deliver(ok200(lastInvite(transport), codec = 8))
+        runCurrent()
+        val cid = engine.currentBroadcast.value!!.callId
+        transport.sent.clear()
+
+        transport.deliver(platformBye(cid), sourceIp = "10.66.66.66")
+        runCurrent()
+
+        val resp481 = transport.sent.filterIsInstance<SipResponse>().lastOrNull { it.statusCode == 481 }
+        assertNotNull(resp481, "异源 IP BYE 应回 481")
+        assertNotNull(engine.currentBroadcast.value, "异源 BYE 不应踢掉对话")
+        assertEquals(BroadcastDialogState.Talking, engine.currentBroadcast.value?.state)
+        engine.shutdown()
+    }
 }

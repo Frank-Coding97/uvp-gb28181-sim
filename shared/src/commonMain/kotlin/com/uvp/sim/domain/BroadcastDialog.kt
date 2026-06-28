@@ -25,7 +25,10 @@ data class BroadcastDialog(
     val rxPackets: Long = 0L,
     val rxBytes: Long = 0L,
     val seqLost: Long = 0L,
-    val decodeErrors: Long = 0L
+    val decodeErrors: Long = 0L,
+    // 建 dialog(收 200 OK)时记录的平台来源 IP,用于 BYE 等 mid-dialog 请求的 envelope.sourceIp 校验。
+    // null = 还没收到 200 OK 或老链路;non-null 后所有 mid-dialog 入栈都必须匹配。
+    val remoteSourceIp: String? = null,
 )
 
 enum class BroadcastDialogState {
