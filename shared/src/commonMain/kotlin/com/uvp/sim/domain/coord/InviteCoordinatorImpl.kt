@@ -173,20 +173,22 @@ internal class InviteCoordinatorImpl(
     }
 
     override suspend fun shutdown() {
-        // 先停活跃流(锁外)
-        activeStream?.let { active ->
-            active.statsJob?.cancel()
-            active.streamJob.cancel()
-            active.audioJob?.cancel()
-            active.rtcpJob?.cancel()
-            try { active.rtpSender.close() } catch (_: Throwable) {}
-            try { active.rtcpSender?.close() } catch (_: Throwable) {}
+        // R1 #4 (verify-2 follow-up):跟 stopActiveStream 共享 mutex 防双进。
+        val active = mutex.withLock {
+            val cur = activeStream
             activeStream = null
-        }
-        mutex.withLock {
             ackTimeoutJob?.cancel()
             ackTimeoutJob = null
             awaitingAckCallId = null
+            cur
+        }
+        active?.let {
+            it.statsJob?.cancel()
+            it.streamJob.cancel()
+            it.audioJob?.cancel()
+            it.rtcpJob?.cancel()
+            try { it.rtpSender.close() } catch (_: Throwable) {}
+            try { it.rtcpSender?.close() } catch (_: Throwable) {}
         }
     }
 
