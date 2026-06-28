@@ -125,10 +125,17 @@ class PlatformRuntimeAndroid(
         audio.setStreamer(newAudioStreamer)
     }
 
-    override fun release() {
+    override suspend fun release() {
         runCatching { streamer?.release() }
         streamer = null
-        runCatching { audioStreamer?.let { runReleaseAsync(it) } }
+        // P1-2(2026-06-28):同步等 audio streamer.stop 完成,不再 fire-and-forget。
+        // 2s 超时兜底放在这里(原 runReleaseAsync 的语义),调用方(ViewModel.onCleared)
+        // 自己再叠一层 5s timeout 控制总 SLA。
+        audioStreamer?.let { old ->
+            kotlinx.coroutines.withTimeoutOrNull(2_000L) {
+                runCatching { old.stop() }
+            }
+        }
         audioStreamer = null
         cameraCaptureRef = null
         audioCaptureRef = null

@@ -191,4 +191,16 @@ class PlatformRuntimeTest {
         val svc = app.currentRecordingService()
         assertNotNull(svc, "recordingService should be available after ensureMediaBuilt")
     }
+
+    /**
+     * P1-2(2026-06-28):release() 升级为 suspend,确保契约级可结构化等待。
+     * 实际 ViewModel.onCleared 在 androidMain,这里只验证签名 + 计数语义。
+     */
+    @Test
+    fun release_is_callable_and_tracked() = runTest {
+        val runtime = FakePlatformRuntime()
+        assertEquals(0, runtime.releaseCalls)
+        runtime.release()
+        assertEquals(1, runtime.releaseCalls)
+    }
 }

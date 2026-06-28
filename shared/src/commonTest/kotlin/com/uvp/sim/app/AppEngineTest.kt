@@ -188,4 +188,56 @@ class AppEngineTest {
             "subscriptionRegistry 必须 cancelAll,实际=${registry.subscriptions.value}"
         )
     }
+
+    /**
+     * P1-1(2026-06-28):applyConfigPartial 是局部应用路径 — 只刷 _config 与
+     * catalogTree 派生,不能动 clockOffset / subscriptionRegistry / mockGps /
+     * currentChannelName。专为 saveCatalogTree 这类"只换数据快照"场景设计。
+     */
+    @Test
+    fun applyConfigPartial_only_refreshes_catalog_keeps_runtime_state() = runTest {
+        val app = newApp(this)
+        runCurrent()
+
+        val baselineChannelName = app.currentChannelName.value
+        val baselineCatalogIds = app.catalogTree.value.map { it.id }.toSet()
+
+        // 模拟运行期脏数据(订阅 + clockOffset baseline)
+        val registry = app.subscriptionRegistryForTest()
+        registry.activate(
+            com.uvp.sim.domain.SubscriptionDialog(
+                kind = "MobilePosition",
+                subscriberUri = "sip:platform@10.0.0.1:5060",
+                callId = "live-call@host",
+                fromTag = "ft", toTag = "tt",
+                intervalSeconds = 60, expiresSeconds = 3600, remainingSeconds = 3600
+            )
+        ) {}
+        runCurrent()
+        assertTrue(registry.subscriptions.value["MobilePosition"]?.active == true)
+
+        // 走 saveCatalogTree 等价路径:只改 catalogTree 字段(其它字段同 baseline)
+        val newTree = listOf(
+            com.uvp.sim.config.CatalogNode(
+                id = "99020000001320000099",
+                type = com.uvp.sim.config.CatalogNodeType.VideoChannel,
+                name = "局部新增通道",
+                parentId = app.config.value.device.deviceId,
+            )
+        )
+        val newCfg = app.config.value.copy(catalogTree = newTree)
+        app.applyConfigPartial(newCfg)
+        runCurrent()
+
+        // catalogTree 已刷
+        val newCatalogIds = app.catalogTree.value.map { it.id }.toSet()
+        assertNotEquals(baselineCatalogIds, newCatalogIds)
+
+        // 运行期状态必须原样保留
+        assertEquals(baselineChannelName, app.currentChannelName.value, "currentChannelName 不能动")
+        assertTrue(
+            registry.subscriptions.value["MobilePosition"]?.active == true,
+            "subscriptionRegistry 必须保留,实际=${registry.subscriptions.value}"
+        )
+    }
 }

@@ -56,7 +56,7 @@ internal class FakePlatformRuntime : PlatformRuntime {
         appliedVideoConfigs += captureConfig to audioConfig
     }
 
-    override fun release() {
+    override suspend fun release() {
         releaseCalls += 1
     }
 }

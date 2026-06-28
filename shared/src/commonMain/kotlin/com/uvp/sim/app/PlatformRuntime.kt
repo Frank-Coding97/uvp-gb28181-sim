@@ -87,8 +87,11 @@ interface PlatformRuntime {
     /**
      * 释放进程级媒体单例。仅 ViewModel.onCleared / 进程退出时调。
      * Android 释放 sStreamer + sRecordingService 引用,iOS no-op。
+     *
+     * P1-2(2026-06-28):改为 suspend — 内部用结构化协程等 audio streamer.stop 完成,
+     * 不再依赖 GlobalScope 兜底,调用方(ViewModel.onCleared)自带 timeout 控制 SLA。
      */
-    fun release()
+    suspend fun release()
 }
 
 /**

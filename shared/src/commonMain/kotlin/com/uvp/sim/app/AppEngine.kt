@@ -427,6 +427,19 @@ class AppEngine(
     }
 
     /**
+     * P1-1(2026-06-28)局部应用 — 只更新 `_config` 与从 SimConfig 派生的 [EngineHolders.catalogTree],
+     * 不触碰运行期状态(clockOffset / subscriptionRegistry / mockGps / currentChannelName)。
+     *
+     * 用于"保存目录树 / OSD / 水印 / mockPosition 局部字段"这类只换数据快照、不需要重启会话的场景。
+     * 调用方应自行确认改动字段不涉及 device / server / video / audioTransport — 那些走 [setConfig] /
+     * [updateConfig] 才能拿到正确的全量 rehydrate + runtime.applyVideoConfig 链路。
+     */
+    fun applyConfigPartial(new: SimConfig) {
+        _config.value = new
+        holders.catalogTree.value = CatalogTreeStore.effectiveTree(new)
+    }
+
+    /**
      * 把 holder 内部状态从 [new] SimConfig 重新派生 — 不替换 holder 实例引用,
      * 已绑给 Coord 的 holder 通过内部 setter / reset 同步刷新。
      *

@@ -313,7 +313,10 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val newCfg = appEngine.config.value.copy(catalogTree = tree)
         _lastCatalogSavedAt.value = System.currentTimeMillis()
         viewModelScope.launch {
-            appEngine.setConfig(newCfg)
+            // P1-1(2026-06-28):走局部应用 — 只刷 catalogTree 数据快照,
+            // 不清 clockOffset / 不 cancelAll 订阅 / 不 reset mockGps。
+            // updateCatalogTree 才是真正把新树推给 Coord(平台 NOTIFY)。
+            appEngine.applyConfigPartial(newCfg)
             runCatching { resources.configStore.save(newCfg) }
             try {
                 appEngine.updateCatalogTree(tree)
@@ -418,18 +421,20 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         super.onCleared()
+        // P1-2(2026-06-28):runtime.release 串到清理链。
         // ViewModel 已销毁,没有更好的 scope。GlobalScope + 5s 超时兜底:
-        // 允许后台清理 5 秒,超过则放弃避免泄漏。
+        // 允许后台清理 5 秒,超过则放弃避免泄漏。runtime.release 现在是结构化 suspend,
+        // 自带 audio streamer stop 2s 超时,跟外层 5s 总预算叠加。
         @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
         kotlinx.coroutines.GlobalScope.launch {
             kotlinx.coroutines.withTimeoutOrNull(5_000L) {
                 runCatching {
                     appEngine.disconnect()
                     networkController.close()
+                    runtime.release()
                 }
             }
         }
-        // 注:runtime 单例(streamer / recordingService)跟 Activity 重建解耦,不在这里释放
     }
 
     fun newCaptureConfig(): CaptureConfig {

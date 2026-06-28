@@ -51,7 +51,7 @@ class PlatformRuntimeIos : PlatformRuntime {
         // TODO(v1.1): 真重建 / applyVideoConfig 链路。当前 no-op。
     }
 
-    override fun release() {
+    override suspend fun release() {
         // no-op
     }
 }
