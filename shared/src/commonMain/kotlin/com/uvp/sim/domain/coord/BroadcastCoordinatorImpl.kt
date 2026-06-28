@@ -20,6 +20,8 @@ import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -71,6 +73,11 @@ internal class BroadcastCoordinatorImpl(
 
     private val _current = MutableStateFlow<BroadcastDialog?>(null)
     override val current: StateFlow<BroadcastDialog?> = _current.asStateFlow()
+
+    // R2 #1:state 转换锁。stop / shutdown / handleBroadcastInviteResponse(2xx 或 fail) / handleBroadcastBye
+    // 四路都做"判活跃 → teardownBroadcastMedia → 清 _current"动作,无锁时可两路同时进入 teardown,
+    // 把刚建好的 rtpReceiver / job 提前 close 一次再来第二次。
+    private val stateMutex = Mutex()
 
     private val _speakerOn = MutableStateFlow(true)
     override val speakerOn: StateFlow<Boolean> = _speakerOn.asStateFlow()
@@ -143,9 +150,11 @@ internal class BroadcastCoordinatorImpl(
     }
 
     override suspend fun shutdown() {
-        if (_current.value != null) {
-            teardownBroadcastMedia()
-            _current.value = null
+        stateMutex.withLock {
+            if (_current.value != null) {
+                teardownBroadcastMedia()
+                _current.value = null
+            }
         }
     }
 
@@ -155,14 +164,17 @@ internal class BroadcastCoordinatorImpl(
     }
 
     override suspend fun stop(reason: BroadcastEndReason) {
-        val bc = _current.value ?: return
-        val remoteTag = bc.remoteTag
+        val bcToStop = stateMutex.withLock {
+            val bc = _current.value ?: return@withLock null
+            teardownBroadcastMedia()
+            _current.value = null
+            bc
+        } ?: return
+        val remoteTag = bcToStop.remoteTag
         if (remoteTag != null) {
-            sendBroadcastBye(bc, remoteTag)
+            sendBroadcastBye(bcToStop, remoteTag)
         }
-        teardownBroadcastMedia()
-        val dur = nowMs() - bc.createdAtMs
-        _current.value = null
+        val dur = nowMs() - bcToStop.createdAtMs
         simEventEmit(SimEvent.BroadcastEnded(reason, dur))
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音广播停止(${reason.name})")
     }
@@ -381,9 +393,15 @@ internal class BroadcastCoordinatorImpl(
         }.onFailure {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("send broadcast BYE 200", it))
         }
-        teardownBroadcastMedia()
+        // R2 #1:跟 stop / shutdown 共享 stateMutex 防双进 teardown。
+        val shouldEmit = stateMutex.withLock {
+            if (_current.value == null) return@withLock false
+            teardownBroadcastMedia()
+            _current.value = null
+            true
+        }
+        if (!shouldEmit) return
         val dur = nowMs() - bc.createdAtMs
-        _current.value = null
         simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Remote, dur))
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "平台 BYE 关闭语音广播")
     }
