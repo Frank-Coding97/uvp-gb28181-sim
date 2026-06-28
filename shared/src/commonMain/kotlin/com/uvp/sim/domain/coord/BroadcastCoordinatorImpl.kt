@@ -158,6 +158,17 @@ internal class BroadcastCoordinatorImpl(
         }
     }
 
+    /**
+     * R2 #1 (verify-followup) helper:失败路径共用的"判活跃 → teardown → 清 _current"原子动作。
+     * 返回 true = 这次确实做了清理(调用方应继续发 BroadcastEnded 事件);false = 已被别的路径清过。
+     */
+    private suspend fun tearDownIfActive(): Boolean = stateMutex.withLock {
+        if (_current.value == null) return@withLock false
+        teardownBroadcastMedia()
+        _current.value = null
+        true
+    }
+
     override fun setSpeaker(on: Boolean) {
         _speakerOn.value = on
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音对讲扬声器 → ${if (on) "开" else "静音"}")
@@ -178,7 +189,6 @@ internal class BroadcastCoordinatorImpl(
         simEventEmit(SimEvent.BroadcastEnded(reason, dur))
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "语音广播停止(${reason.name})")
     }
-
     override fun debugSnapshot(): BroadcastDebugSnapshot =
         BroadcastDebugSnapshot(
             rxPacketCount = rxPackets,
@@ -264,9 +274,9 @@ internal class BroadcastCoordinatorImpl(
                 "反向 INVITE 已发: 通道 $targetId → $platformUri, ssrc=$deviceSsrc 本地音频端口=$boundPort"
             )
         }.onFailure {
-            _current.value = null
+            // R2 #1 (verify-followup):用 stateMutex 串行化失败 teardown
+            tearDownIfActive()
             simEventEmit(com.uvp.sim.domain.transportErrorOf("send broadcast INVITE", it))
-            teardownBroadcastMedia()
         }
     }
 
@@ -286,9 +296,9 @@ internal class BroadcastCoordinatorImpl(
                 if (answer == null || codec == null) {
                     sendBroadcastBye(bc.copy(remoteTag = remoteTag), remoteTag)
                     val dur = nowMs() - bc.createdAtMs
-                    teardownBroadcastMedia()
-                    _current.value = null
-                    simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.CodecRejected, dur))
+                    if (tearDownIfActive()) {
+                        simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.CodecRejected, dur))
+                    }
                     SystemLogger.emit(
                         LogLevel.Warning, LogTag.Media,
                         "语音广播编码不可接受(payloadTypes=${answer?.payloadTypes}) → BYE"
@@ -302,9 +312,9 @@ internal class BroadcastCoordinatorImpl(
                     if (!connected) {
                         sendBroadcastBye(bc.copy(remoteTag = remoteTag), remoteTag)
                         val dur = nowMs() - bc.createdAtMs
-                        teardownBroadcastMedia()
-                        _current.value = null
-                        simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                        if (tearDownIfActive()) {
+                            simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                        }
                         SystemLogger.emit(
                             LogLevel.Warning, LogTag.Media,
                             "语音广播 TCP 主动连接平台失败 ${answer.remoteIp}:${answer.remotePort} → BYE"
@@ -333,9 +343,9 @@ internal class BroadcastCoordinatorImpl(
             }
             in 400..699 -> {
                 val dur = nowMs() - bc.createdAtMs
-                teardownBroadcastMedia()
-                _current.value = null
-                simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.InviteFailed, dur))
+                if (tearDownIfActive()) {
+                    simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.InviteFailed, dur))
+                }
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Media,
                     "语音广播 INVITE 被拒: ${resp.statusCode} ${resp.reasonPhrase}"
