@@ -76,6 +76,9 @@ class AppEngine(
     private var transport: SipTransport? = null
     private var engine: SimulatorEngine? = null
     private var snapshotHttp: HttpClient? = null
+    // R2 #3:每次 connect() 会 launch 3 个桥接 collector(currentChannelName / currentBroadcast /
+    // broadcastSpeakerOn),disconnect 不取消时会泄漏。
+    private val bridgeJobs = mutableListOf<kotlinx.coroutines.Job>()
 
     /**
      * 媒体装配三件套 — 由 [runtime] 在 connect 时装配 + 缓存(P3-3 装配下沉)。
@@ -187,9 +190,10 @@ class AppEngine(
         }
 
         // 3 个 invite/broadcast 专属 StateFlow 仍 collect 桥接(它们的 source-of-truth 在 Coord 内部 — 不在 holders)
-        engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
-        engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
-        engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
+        // R2 #3:job ref 收集到 bridgeJobs,disconnect / cancelConnect 时一起 cancel,避免泄漏。
+        bridgeJobs += engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
+        bridgeJobs += engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
+        bridgeJobs += engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
 
         try {
             tx.connect()
@@ -341,6 +345,8 @@ class AppEngine(
         try { eng.shutdown() } catch (_: Throwable) {}
         try { transport?.close() } catch (_: Throwable) {}
         try { snapshotHttp?.close() } catch (_: Throwable) {}
+        bridgeJobs.forEach { it.cancel() }
+        bridgeJobs.clear()
         engine = null
         transport = null
         snapshotHttp = null
@@ -352,6 +358,8 @@ class AppEngine(
         try { eng.shutdown() } catch (_: Throwable) {}
         try { transport?.close() } catch (_: Throwable) {}
         try { snapshotHttp?.close() } catch (_: Throwable) {}
+        bridgeJobs.forEach { it.cancel() }
+        bridgeJobs.clear()
         engine = null
         transport = null
         snapshotHttp = null
