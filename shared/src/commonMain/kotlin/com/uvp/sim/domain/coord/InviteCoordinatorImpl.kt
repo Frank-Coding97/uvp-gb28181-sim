@@ -110,6 +110,11 @@ internal class InviteCoordinatorImpl(
     private var ackTimeoutJob: Job? = null
     private var awaitingAckCallId: String? = null
     private var activeStream: ActiveStream? = null
+    // R1 #3:并发 INVITE 竞态守卫。
+    // 接受路径从"过滤通过"到"activeStream 赋值"之间没有锁,两路并发 INVITE 都能通过
+    // `activeStream == null` 检查并各开一路 RTP / 200 OK。用 mutex 原子检查
+    // (activeStream || acceptInFlight),第二路立刻 486 Busy。
+    private var acceptInFlight: Boolean = false
 
     private data class ActiveStream(
         val callId: String,
@@ -341,12 +346,33 @@ internal class InviteCoordinatorImpl(
 
         // PR5 T5.4:SDP isPlayback 分流已在 handleInviteMaybe 完成,这里只处理 Play 路径
 
-        // 已有活跃流 → 486
-        if (activeStream != null) {
+        // R1 #3:已有活跃流 || 接受中 → 486,两个状态用同一把 mutex 原子检查 + 占用,
+        // 防止两路并发 INVITE 同时通过"activeStream == null"检查后各开一路。
+        val acquired = mutex.withLock {
+            if (activeStream != null || acceptInFlight) {
+                false
+            } else {
+                acceptInFlight = true
+                true
+            }
+        }
+        if (!acquired) {
             sendBusyResponse(invite, "已有直播流推送中,拒绝并发第二路")
             return
         }
 
+        try {
+            doAcceptInvite(envelope, invite, channelId)
+        } finally {
+            mutex.withLock { acceptInFlight = false }
+        }
+    }
+
+    private suspend fun doAcceptInvite(
+        envelope: com.uvp.sim.network.SipEnvelope,
+        invite: SipRequest,
+        channelId: String,
+    ) {
         mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
         val cid = invite.callId() ?: ""
         simEventEmit(SimEvent.IncomingInvite(cid))
