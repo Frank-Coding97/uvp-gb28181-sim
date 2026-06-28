@@ -109,6 +109,9 @@ internal class BroadcastCoordinatorImpl(
     private var rtpReceiver: com.uvp.sim.network.BroadcastRxSource? = null
     private var rxJob: Job? = null
     private var rxStatsJob: Job? = null
+    // R3 #6:RTP 入栈热路径 bounded channel + 单消费者,见 startBroadcastRx。
+    private var rxPacketChannel: Channel<com.uvp.sim.network.RtpPacket>? = null
+    private var rxConsumerJob: Job? = null
     private val audioChannel = Channel<ShortArray>(capacity = 50, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private var audioPlayback: com.uvp.sim.media.AudioSink? = null
     private var audioPlayJob: Job? = null
@@ -462,8 +465,18 @@ internal class BroadcastCoordinatorImpl(
 
     private fun startBroadcastRx() {
         val receiver = rtpReceiver ?: return
+        // R3 #6 (full preset MEDIUM/performance):原每包 scope.launch{ handleRxPacket } 在 RTP 热路径
+        // 每包起一条 coroutine,sustained stream 下调度抖动 + 创建无界 work。
+        // 改成 receiver callback 只 trySend 到 bounded channel(64),单 consumer 顺序消费。
+        rxPacketChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
         rxJob = receiver.start { rtp ->
-            scope.launch { handleRxPacket(rtp) }
+            rxPacketChannel?.trySend(rtp)
+        }
+        rxConsumerJob = scope.launch {
+            val ch = rxPacketChannel ?: return@launch
+            for (rtp in ch) {
+                handleRxPacket(rtp)
+            }
         }
         val sink = resolvedAudioSinkFactory(8000, 1)
         sink.start()
@@ -515,6 +528,8 @@ internal class BroadcastCoordinatorImpl(
     private suspend fun teardownBroadcastMedia() {
         rxStatsJob?.cancel(); rxStatsJob = null
         rxJob?.cancel(); rxJob = null
+        rxConsumerJob?.cancel(); rxConsumerJob = null
+        rxPacketChannel?.close(); rxPacketChannel = null
         audioPlayJob?.cancel(); audioPlayJob = null
         runCatching { audioPlayback?.stop() }
         audioPlayback = null
