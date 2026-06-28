@@ -638,16 +638,21 @@ internal class ManscdpRouterImpl(
 
     /**
      * R2 #6 helper:回 SUBSCRIBE 错误响应,复制 Via/From/To/Call-ID/CSeq 头。
+     * R2 #5:补 Date + User-Agent,跟其他 builder 行为对齐(满足 GB §6.3.3 / RFC 3261 § 20.16)。
      */
     private suspend fun sendSubscribeError(req: SipRequest, statusCode: Int, reason: String) {
+        val baseHeaders = req.headers.filter {
+            val c = SipHeader.canonicalize(it.name)
+            c == SipHeader.VIA || c == SipHeader.FROM || c == SipHeader.TO ||
+                c == SipHeader.CALL_ID || c == SipHeader.CSEQ
+        }
         val resp = SipResponse(
             statusCode = statusCode,
             reasonPhrase = reason,
-            headers = req.headers.filter {
-                val c = SipHeader.canonicalize(it.name)
-                c == SipHeader.VIA || c == SipHeader.FROM || c == SipHeader.TO ||
-                    c == SipHeader.CALL_ID || c == SipHeader.CSEQ
-            },
+            headers = baseHeaders + listOf(
+                SipMessage.Header(SipHeader.DATE, com.uvp.sim.sip.SipHeaders.rfc1123Date()),
+                SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
+            ),
         )
         outbox.send(resp).getOrThrow()
     }
