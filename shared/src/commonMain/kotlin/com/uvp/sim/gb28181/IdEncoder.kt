@@ -28,4 +28,18 @@ object IdEncoder {
         if (id.length != 20) return null
         return id.substring(10, 13)
     }
+
+    /**
+     * GB/T 28181-2022 §A.3 校验:20 位、全数字。
+     * 用于 deviceId / videoChannelId / alarmChannelId / serverId 等"GB ID 字段"。
+     * 不校验类型码段或行业码段,只保证长度 + 字符集 — 平台兜底仍由上级编码规则约束。
+     */
+    fun isValidGbId(id: String): Boolean =
+        id.length == 20 && id.all { it in '0'..'9' }
+
+    /**
+     * SIP domain / realm 校验:GB §A.3 前 10 位前缀(行政区划 8 + 行业 2),全数字。
+     */
+    fun isValidGbDomain(domain: String): Boolean =
+        domain.length == 10 && domain.all { it in '0'..'9' }
 }

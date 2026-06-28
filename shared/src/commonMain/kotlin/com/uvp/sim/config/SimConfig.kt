@@ -51,13 +51,16 @@ data class SimConfig(
     /**
      * 配置是否齐备到可发起 SIP 注册。
      * 任一必填项空 → 注册按钮禁用,避免向上级平台发空字段的 REGISTER。
-     * 必填项:服务器 IP / 服务器 ID / 域 / 设备 ID / 密码;端口由默认值 5060 兜底。
+     * 必填项:服务器 IP / 服务器 ID(20 位国标编码) / 域(10 位前缀) / 设备 ID(20 位国标编码) / 密码;端口由默认值 5060 兜底。
+     *
+     * R1 #7:补 GB ID 结构校验。原先只校验非空,允许 16 位 / 22 位 / 含字母的乱字符串
+     * 进 REGISTER / Catalog / INVITE 路由,平台会拒,但本地配置已"看上去就绪"。
      */
     val isReadyToRegister: Boolean
         get() = server.ip.isNotBlank() &&
-            server.serverId.isNotBlank() &&
-            server.domain.isNotBlank() &&
-            device.deviceId.isNotBlank() &&
+            com.uvp.sim.gb28181.IdEncoder.isValidGbId(server.serverId) &&
+            com.uvp.sim.gb28181.IdEncoder.isValidGbDomain(server.domain) &&
+            com.uvp.sim.gb28181.IdEncoder.isValidGbId(device.deviceId) &&
             device.password.isNotBlank()
 }
 

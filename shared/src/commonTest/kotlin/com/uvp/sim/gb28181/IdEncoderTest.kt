@@ -61,4 +61,34 @@ class IdEncoderTest {
         assertNull(IdEncoder.parseTypeCode("123"))
         assertNull(IdEncoder.parseTypeCode(""))
     }
+
+    @Test
+    fun `isValidGbId accepts 20-digit numeric`() {
+        assertEquals(true, IdEncoder.isValidGbId("34020000001320000001"))
+        assertEquals(true, IdEncoder.isValidGbId("00000000000000000000"))
+    }
+
+    @Test
+    fun `isValidGbId rejects wrong length or non-digit`() {
+        assertEquals(false, IdEncoder.isValidGbId(""))
+        assertEquals(false, IdEncoder.isValidGbId("12345678"))
+        assertEquals(false, IdEncoder.isValidGbId("3402000000132000000")) // 19
+        assertEquals(false, IdEncoder.isValidGbId("340200000013200000012")) // 21
+        assertEquals(false, IdEncoder.isValidGbId("3402000000A320000001")) // letter
+        assertEquals(false, IdEncoder.isValidGbId("3402000000 320000001")) // space
+    }
+
+    @Test
+    fun `isValidGbDomain accepts 10-digit numeric`() {
+        assertEquals(true, IdEncoder.isValidGbDomain("3402000000"))
+        assertEquals(true, IdEncoder.isValidGbDomain("0000000000"))
+    }
+
+    @Test
+    fun `isValidGbDomain rejects wrong length or non-digit`() {
+        assertEquals(false, IdEncoder.isValidGbDomain(""))
+        assertEquals(false, IdEncoder.isValidGbDomain("340200000")) // 9
+        assertEquals(false, IdEncoder.isValidGbDomain("34020000000")) // 11
+        assertEquals(false, IdEncoder.isValidGbDomain("3402a00000")) // letter
+    }
 }
