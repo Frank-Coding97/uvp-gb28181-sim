@@ -51,7 +51,7 @@ object CatalogNotifyBuilder {
         sb.append("<Notify>\n")
         sb.append("<CmdType>Catalog</CmdType>\n")
         sb.append("<SN>").append(sn).append("</SN>\n")
-        sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
+        sb.append("<DeviceID>").append(escapeXmlText(deviceId)).append("</DeviceID>\n")
         sb.append("<SumNum>").append(sumNum).append("</SumNum>\n")
         if (events.isEmpty()) {
             sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
@@ -89,11 +89,11 @@ object CatalogNotifyBuilder {
         sb.append("<Notify>\n")
         sb.append("<CmdType>Catalog</CmdType>\n")
         sb.append("<SN>").append(sn).append("</SN>\n")
-        sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
+        sb.append("<DeviceID>").append(escapeXmlText(deviceId)).append("</DeviceID>\n")
         sb.append("<SumNum>1</SumNum>\n")
         sb.append("<DeviceList Num=\"1\">\n")
         sb.append("<Item>\n")
-        sb.append("<DeviceID>").append(channelId).append("</DeviceID>\n")
+        sb.append("<DeviceID>").append(escapeXmlText(channelId)).append("</DeviceID>\n")
         sb.append("<Event>").append(event).append("</Event>\n")
         sb.append("<Status>").append(status).append("</Status>\n")
         sb.append("</Item>\n")
@@ -109,7 +109,7 @@ object CatalogNotifyBuilder {
             is CatalogChangeEvent.Del -> {
                 val sb = StringBuilder()
                 sb.append("<Item>\n")
-                sb.append("<DeviceID>").append(event.id).append("</DeviceID>\n")
+                sb.append("<DeviceID>").append(escapeXmlText(event.id)).append("</DeviceID>\n")
                 sb.append("<Event>DEL</Event>")
                 sb.append("\n</Item>")
                 sb.toString()
@@ -154,7 +154,7 @@ object CatalogNotifyBuilder {
         sb.append("<").append(wrapperTag).append(">\n")
         sb.append("<CmdType>Catalog</CmdType>\n")
         sb.append("<SN>").append(sn).append("</SN>\n")
-        sb.append("<DeviceID>").append(deviceId).append("</DeviceID>\n")
+        sb.append("<DeviceID>").append(escapeXmlText(deviceId)).append("</DeviceID>\n")
         sb.append("<SumNum>").append(sumNum).append("</SumNum>\n")
         if (ordered.isEmpty()) {
             sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
@@ -210,27 +210,26 @@ object CatalogNotifyBuilder {
         val parentId = if (node.parentId == node.id) node.id else node.parentId
         val sb = StringBuilder()
         sb.append("<Item>\n")
-        sb.append("<DeviceID>").append(node.id).append("</DeviceID>\n")
-        sb.append("<Name>").append(node.name).append("</Name>\n")
-        sb.append("<Manufacturer>").append(f["Manufacturer"] ?: "UVP").append("</Manufacturer>\n")
-        sb.append("<Model>").append(f["Model"] ?: "UVP-Sim").append("</Model>\n")
-        sb.append("<Owner>").append(f["Owner"] ?: "UVP").append("</Owner>\n")
-        sb.append("<CivilCode>").append(f["CivilCode"] ?: node.id.take(6)).append("</CivilCode>\n")
+        sb.append("<DeviceID>").append(escapeXmlText(node.id)).append("</DeviceID>\n")
+        sb.append("<Name>").append(escapeXmlText(node.name)).append("</Name>\n")
+        sb.append("<Manufacturer>").append(escapeXmlText(f["Manufacturer"] ?: "UVP")).append("</Manufacturer>\n")
+        sb.append("<Model>").append(escapeXmlText(f["Model"] ?: "UVP-Sim")).append("</Model>\n")
+        sb.append("<Owner>").append(escapeXmlText(f["Owner"] ?: "UVP")).append("</Owner>\n")
+        sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
         if (node.type == CatalogNodeType.BusinessGroup ||
             node.type == CatalogNodeType.VirtualOrg ||
             node.type == CatalogNodeType.Device
         ) {
-            // 目录类节点不需要 Address(可省),写空保留对齐
-            sb.append("<Address>").append(f["Address"] ?: "").append("</Address>\n")
+            sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "")).append("</Address>\n")
         } else {
-            sb.append("<Address>").append(f["Address"] ?: "Mobile").append("</Address>\n")
+            sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "Mobile")).append("</Address>\n")
         }
         sb.append("<Parental>").append(node.type.parental).append("</Parental>\n")
-        sb.append("<ParentID>").append(parentId).append("</ParentID>\n")
-        sb.append("<SafetyWay>").append(f["SafetyWay"] ?: "0").append("</SafetyWay>\n")
-        sb.append("<RegisterWay>").append(f["RegisterWay"] ?: "1").append("</RegisterWay>\n")
-        sb.append("<Secrecy>").append(f["Secrecy"] ?: "0").append("</Secrecy>\n")
-        sb.append("<Status>").append(f["Status"] ?: "ON").append("</Status>")
+        sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
+        sb.append("<SafetyWay>").append(escapeXmlText(f["SafetyWay"] ?: "0")).append("</SafetyWay>\n")
+        sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
+        sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
+        sb.append("<Status>").append(escapeXmlText(f["Status"] ?: "ON")).append("</Status>")
         sb.append("\n</Item>")
         return sb.toString()
     }

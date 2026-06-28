@@ -151,4 +151,28 @@ class CatalogNotifyBuilderTest {
         assertTrue(xml.contains("<Model>DS-2CD</Model>"))
         assertTrue(xml.contains("<Status>OFF</Status>"))
     }
+
+    @Test
+    fun `build escapes special characters in name and fields to prevent XML injection`() {
+        val node = CatalogNode(
+            "ch1",
+            CatalogNodeType.VideoChannel,
+            "Cam &<>\"' Inject",
+            rootId,
+            fields = mapOf(
+                "Manufacturer" to "A&B",
+                "Owner" to "</Item><Item><DeviceID>injected</DeviceID></Item>"
+            )
+        )
+        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(node))
+        // 转义后 5 字符全没有原始形态
+        assertTrue(xml.contains("<Name>Cam &amp;&lt;&gt;&quot;&apos; Inject</Name>"))
+        assertTrue(xml.contains("<Manufacturer>A&amp;B</Manufacturer>"))
+        // 注入企图应被转义,不出现新的 <Item>
+        assertTrue(xml.contains("&lt;/Item&gt;"))
+        assertTrue(!xml.contains("<DeviceID>injected</DeviceID>"), "injection must not produce an extra Item")
+        // 仍只有 1 个 Item
+        val itemCount = "<Item>".toRegex().findAll(xml).count()
+        assertEquals(1, itemCount)
+    }
 }
