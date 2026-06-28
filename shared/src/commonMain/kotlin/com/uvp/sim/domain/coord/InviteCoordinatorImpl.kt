@@ -463,17 +463,24 @@ internal class InviteCoordinatorImpl(
         // 5.14 ACK watchdog
         // R1 #4:ACK 超时不能只发事件,媒体管线已开,必须 stopActiveStream 释放
         // RTP / RTCP / camera / audio,否则在永不 ACK 场景下推流持续 → 资源泄漏 + 假"已连接"。
+        // R1 #4 (verify follow-up):awaitingAckCallId 检查与置空放进 mutex,
+        // 避免与 handleAck 并发竞态(ACK 在超时回调判断后才到达 → 双进 cleanup)。
         awaitingAckCallId = cid
         ackTimeoutJob?.cancel()
         ackTimeoutJob = scope.launch {
             delay(ACK_TIMEOUT_MS)
-            if (awaitingAckCallId == cid) {
+            val shouldFire = mutex.withLock {
+                if (awaitingAckCallId == cid) {
+                    awaitingAckCallId = null
+                    true
+                } else false
+            }
+            if (shouldFire) {
                 simEventEmit(SimEvent.InviteAckTimeout(cid))
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Lifecycle,
                     "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开,释放媒体管线"
                 )
-                awaitingAckCallId = null
                 stopActiveStream(cid, "ACK timeout (${ACK_TIMEOUT_MS / 1000}s)")
             }
         }
@@ -656,10 +663,13 @@ internal class InviteCoordinatorImpl(
                 return
             }
         }
-        if (cid == awaitingAckCallId) {
-            ackTimeoutJob?.cancel()
-            ackTimeoutJob = null
-            awaitingAckCallId = null
+        // R1 #4 (verify follow-up):跟超时回调争抢同一份 ack 状态,放进 mutex。
+        mutex.withLock {
+            if (cid == awaitingAckCallId) {
+                ackTimeoutJob?.cancel()
+                ackTimeoutJob = null
+                awaitingAckCallId = null
+            }
         }
     }
 
@@ -713,12 +723,17 @@ internal class InviteCoordinatorImpl(
     }
 
     private suspend fun stopActiveStream(callId: String, reason: String) {
-        val active = activeStream ?: return
-        activeStream = null
+        // R1 #4 (verify follow-up):原子 swap 防双进 — 多路触发(timeout / BYE / CANCEL / stopStream)
+        // 同时跑时,只有第一个抢到 active 的路径执行清理。
+        val active = mutex.withLock {
+            val cur = activeStream ?: return@withLock null
+            activeStream = null
+            ackTimeoutJob?.cancel()
+            ackTimeoutJob = null
+            awaitingAckCallId = null
+            cur
+        } ?: return
         _activeStreamSnapshot.value = null
-        ackTimeoutJob?.cancel()
-        ackTimeoutJob = null
-        awaitingAckCallId = null
         active.streamJob.cancel()
         active.audioJob?.cancel()
         active.statsJob?.cancel()
