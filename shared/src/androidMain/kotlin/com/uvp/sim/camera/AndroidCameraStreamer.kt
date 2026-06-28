@@ -552,16 +552,32 @@ class AndroidCameraStreamer(
         val nextCases = mutableListOf<UseCase>()
         cameraToOsdPreview?.let { nextCases += it }
         encoderPreview?.let { nextCases += it }
-        try {
-            if (boundCases.isNotEmpty()) {
+        // R1 #9:CameraX unbind 失败通常无害(用例本来就不在 provider 上),
+        // bind 失败才会让 encoder UseCase 没有 camera producer,导致黑屏 / 无帧但流仍在跑。
+        // 把两路错误分开:unbind 日志降到 Info,bind 失败 Error + 显式落库,
+        // 不再 swallow 所有 Throwable。
+        if (boundCases.isNotEmpty()) {
+            try {
                 prov.unbind(*boundCases.toTypedArray())
-                boundCases.clear()
+            } catch (t: Throwable) {
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "CameraX unbind 旧 case 失败(通常无害): ${t.message}"
+                )
             }
-            if (nextCases.isNotEmpty()) {
+            boundCases.clear()
+        }
+        if (nextCases.isNotEmpty()) {
+            try {
                 prov.bindToLifecycle(lifecycleOwner, selector, *nextCases.toTypedArray())
                 boundCases += nextCases
+            } catch (t: Throwable) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "CameraX bind 失败,推流将无视频帧: ${t::class.simpleName}: ${t.message}"
+                )
             }
-        } catch (_: Throwable) { /* swallow — unbind path */ }
+        }
     }
 
     /**
