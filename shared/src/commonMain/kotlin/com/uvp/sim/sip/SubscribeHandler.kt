@@ -14,11 +14,13 @@ sealed class SubscribeIntent {
 
     data class Refresh(
         val callId: String,
+        val fromTag: String,
         val newExpiresSeconds: Int
     ) : SubscribeIntent()
 
     data class Cancel(
-        val callId: String
+        val callId: String,
+        val fromTag: String
     ) : SubscribeIntent()
 
     data class Reject(
@@ -61,17 +63,21 @@ object SubscribeHandler {
 
         val callId = request.callId() ?: return SubscribeIntent.Reject(400, "Missing Call-ID")
 
+        // R2 #6:Refresh / Cancel 不能只看 Call-ID,把入站 From tag 带出去给 router 跟已注册
+        // dialog.fromTag 对比,防止同链路下其他订阅者凭 Call-ID 复用 / 旁路掉别人的 dialog。
+        val incomingFromTag = extractTag(request.fromHeader() ?: "") ?: ""
+
         if (expiresHeader == 0 && callId in knownCallIds) {
-            return SubscribeIntent.Cancel(callId)
+            return SubscribeIntent.Cancel(callId, incomingFromTag)
         }
 
         if (expiresHeader != null && expiresHeader > 0 && callId in knownCallIds) {
-            return SubscribeIntent.Refresh(callId, expiresHeader)
+            return SubscribeIntent.Refresh(callId, incomingFromTag, expiresHeader)
         }
 
         val fromHeader = request.fromHeader() ?: ""
         val subscriberUri = extractUri(fromHeader)
-        val fromTag = extractTag(fromHeader) ?: ""
+        val fromTag = incomingFromTag
 
         // Event: Alarm 短路 — 报警是事件流,不依赖 body CmdType,不周期推送(interval=0)。
         if (isAlarmEvent) {

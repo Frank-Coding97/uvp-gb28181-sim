@@ -568,8 +568,17 @@ internal class ManscdpRouterImpl(
             }
 
             is SubscribeIntent.Refresh -> {
-                val toTag = subscriptionRegistry.currentDialog(intent.callId)?.toTag
-                    ?: SipBuilders.randomTag()
+                // R2 #6:仅靠 Call-ID 不够,fromTag 必须跟原 dialog 一致;否则按 RFC 3261 § 12 视为不同 dialog。
+                val existing = subscriptionRegistry.currentDialog(intent.callId)
+                if (existing != null && existing.fromTag != intent.fromTag) {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Subscription,
+                        "拒绝 SUBSCRIBE refresh: From tag 不匹配 (期望=${existing.fromTag}, 实际=${intent.fromTag})",
+                    )
+                    sendSubscribeError(req, 481, "Call/Transaction Does Not Exist")
+                    return
+                }
+                val toTag = existing?.toTag ?: SipBuilders.randomTag()
                 val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
                 outbox.send(ok).getOrThrow()
                 subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
@@ -588,7 +597,16 @@ internal class ManscdpRouterImpl(
             }
 
             is SubscribeIntent.Cancel -> {
+                // R2 #6:同 Refresh,fromTag 不匹配拒绝。
                 val d = subscriptionRegistry.currentDialog(intent.callId)
+                if (d != null && d.fromTag != intent.fromTag) {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Subscription,
+                        "拒绝 SUBSCRIBE cancel: From tag 不匹配 (期望=${d.fromTag}, 实际=${intent.fromTag})",
+                    )
+                    sendSubscribeError(req, 481, "Call/Transaction Does Not Exist")
+                    return
+                }
                 val toTag = d?.toTag ?: SipBuilders.randomTag()
                 val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
                 outbox.send(ok).getOrThrow()
@@ -611,20 +629,27 @@ internal class ManscdpRouterImpl(
             }
 
             is SubscribeIntent.Reject -> {
-                val resp = SipResponse(
-                    statusCode = intent.statusCode,
-                    reasonPhrase = intent.reason,
-                    headers = req.headers.filter {
-                        val c = SipHeader.canonicalize(it.name)
-                        c == SipHeader.VIA || c == SipHeader.FROM || c == SipHeader.TO ||
-                            c == SipHeader.CALL_ID || c == SipHeader.CSEQ
-                    },
-                )
-                outbox.send(resp).getOrThrow()
+                sendSubscribeError(req, intent.statusCode, intent.reason)
             }
 
             is SubscribeIntent.Ignored -> Unit
         }
+    }
+
+    /**
+     * R2 #6 helper:回 SUBSCRIBE 错误响应,复制 Via/From/To/Call-ID/CSeq 头。
+     */
+    private suspend fun sendSubscribeError(req: SipRequest, statusCode: Int, reason: String) {
+        val resp = SipResponse(
+            statusCode = statusCode,
+            reasonPhrase = reason,
+            headers = req.headers.filter {
+                val c = SipHeader.canonicalize(it.name)
+                c == SipHeader.VIA || c == SipHeader.FROM || c == SipHeader.TO ||
+                    c == SipHeader.CALL_ID || c == SipHeader.CSEQ
+            },
+        )
+        outbox.send(resp).getOrThrow()
     }
 
     // ----------------------------------------------------------------------
