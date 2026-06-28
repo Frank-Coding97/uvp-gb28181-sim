@@ -177,16 +177,16 @@ class AndroidRecordingService(
         }
     }
 
-    override suspend fun start(source: RecordSource, channelId: String): Result<Unit> {
-        mutex.withLock {
-            val current = _state.value
-            if (current is RecordingState.Recording) {
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Media,
-                    "录像已在进行中,忽略重复指令 source=$source"
-                )
-                return Result.success(Unit)
-            }
+    override suspend fun start(source: RecordSource, channelId: String): Result<Unit> = mutex.withLock {
+        // R2 #8:整段 start 必须串行 — 原代码只在 mutex 内检查 _state,然后释放锁去做 pipeline / file 创建
+        // + 字段赋值,并发两路 start 都能通过检查并各开一路 pipeline,activeOutputFile 互相覆盖。
+        val current = _state.value
+        if (current is RecordingState.Recording) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "录像已在进行中,忽略重复指令 source=$source"
+            )
+            return@withLock Result.success(Unit)
         }
         val minFreeBytes = profile.minFreeMb.toLong() * 1024 * 1024
         val freeBytes = baseDir.usableSpace
@@ -194,9 +194,9 @@ class AndroidRecordingService(
             val msg = "磁盘空间不足 (${freeBytes / 1024 / 1024}MB < ${profile.minFreeMb}MB),拒绝录像"
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, msg)
             _state.value = RecordingState.Failed(msg)
-            return Result.failure(IllegalStateException(msg))
+            return@withLock Result.failure(IllegalStateException(msg))
         }
-        return runCatching {
+        runCatching {
             val now = clock.now()
             val outputFile = newOutputFile(now)
             outputFile.parentFile?.mkdirs()
