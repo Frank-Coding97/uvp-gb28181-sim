@@ -165,7 +165,14 @@ class TcpSipTransport(
                             )
                         )
                     } catch (e: SipParseException) {
-                        continue
+                        // R1 #8:帧级解析错误(畸形 Content-Length / 越界 / Header 截断)
+                        // 不能 continue —— 后续字节流已经无法对齐到合法帧边界,继续读
+                        // 只会循环消费垃圾数据。直接 break read-loop 让连接重建。
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Network,
+                            "TCP SIP framing error, dropping connection: ${e.message}"
+                        )
+                        break
                     } catch (e: Throwable) {
                         if (!isActive) break
                         SystemLogger.emit(
