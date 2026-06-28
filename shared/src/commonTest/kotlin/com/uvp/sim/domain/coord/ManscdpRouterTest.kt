@@ -179,5 +179,46 @@ class ManscdpRouterTest {
         val cseqHeader = msg.firstHeader(SipHeader.CSEQ)
         assertEquals("101 MESSAGE", cseqHeader, "应用注入的 identity service(100 + 1)")
     }
+
+    /**
+     * P2-4(2026-06-28):未识别 cmdType 不再静默吞掉。
+     *
+     * 期望:
+     *  - 200 OK 仍然先回(避免平台死循环重发)
+     *  - SystemLogger 有 Warning 级别的"未识别 MANSCDP cmdType"日志
+     */
+    @Test
+    fun p2_4_unknown_cmdType_logs_warning_and_still_acks() = runTest {
+        com.uvp.sim.observability.SystemLogger.resetForTest()
+        com.uvp.sim.observability.SystemLogger.bindScope(this)
+        val transport = MockSipTransport()
+        transport.connect()
+        val router = newRouter(this, transport)
+
+        val xml = "<?xml version=\"1.0\"?><Notify>" +
+            "<CmdType>BogusUnknownCmd</CmdType><SN>9</SN>" +
+            "<DeviceID>34020000001110000001</DeviceID></Notify>"
+        router.onIncoming(incomingMessage("bogus-1@plat", xml).asEnvelope(sourceIp = "192.168.1.100"))
+        runCurrent()
+
+        // 200 OK 必须先回(协议契约 — 哪怕 cmdType 未识别)
+        val responses = transport.sent.filterIsInstance<com.uvp.sim.sip.SipResponse>()
+        assertTrue(
+            responses.any { it.statusCode == 200 },
+            "未识别 cmdType 也应先回 200,实际 responses=${responses.size}",
+        )
+
+        // SystemLogger 应有"未识别 MANSCDP"的 Warning
+        val logs = com.uvp.sim.observability.SystemLogger.snapshot
+        assertTrue(
+            logs.any {
+                it.level == com.uvp.sim.observability.LogLevel.Warning &&
+                    it.message.contains("未识别 MANSCDP") &&
+                    it.message.contains("BogusUnknownCmd")
+            },
+            "应有未识别 MANSCDP 的 Warning 日志,实际 snapshot=${logs.map { it.level to it.message }}",
+        )
+        com.uvp.sim.observability.SystemLogger.shutdownForTest()
+    }
 }
 

@@ -478,7 +478,27 @@ internal class ManscdpRouterImpl(
         }
         val xml = message.body.decodeToString()
         val fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) }
-        dispatcher.route(xml, fromUri)
+        // P2-4(2026-06-28):dispatcher.route 返回 false 表示未识别 cmdType。
+        // 协议上 200 已先回避免平台死循环重发,但日志 + SimEvent 告警让未知报文可观测。
+        val handled = dispatcher.route(xml, fromUri)
+        if (!handled) {
+            val cmdType = com.uvp.sim.gb28181.ManscdpParser.cmdType(xml)
+            val cmdLabel = cmdType ?: "<unparseable>"
+            val bodySnippet = xml.take(MANSCDP_UNKNOWN_LOG_SNIPPET_MAX)
+            val fromLabel = fromUri ?: "<unknown>"
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "未识别 MANSCDP cmdType=$cmdLabel from=$fromLabel,已回 200 但不会处理",
+                detail = bodySnippet,
+                category = com.uvp.sim.observability.ErrorCategory.ProtocolViolation,
+            )
+            simEventEmit(
+                SimEvent.TransportError(
+                    "未识别 MANSCDP cmdType=$cmdLabel from=$fromLabel",
+                    category = com.uvp.sim.observability.ErrorCategory.ProtocolViolation,
+                ),
+            )
+        }
     }
 
     private suspend fun handleSubscribe(req: SipRequest) {
@@ -836,4 +856,7 @@ internal class ManscdpRouterImpl(
         else -> "位置"
     }
 }
+
+/** P2-4:未知 cmdType 日志正文截断长度(避免日志爆炸)。 */
+private const val MANSCDP_UNKNOWN_LOG_SNIPPET_MAX = 200
 
