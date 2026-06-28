@@ -133,7 +133,22 @@ internal class InviteCoordinatorImpl(
         val channelId: String = "",
         val remoteHost: String = "",
         val remotePort: Int = 0,
+        // P1-3(Wave 7B):dialog identity 四元组,mid-dialog 请求校验用。
+        // 跟 PlaybackCoordinatorImpl.ActivePlayback 同款 — 建立 INVITE 200 时记录 envelope.sourceIp,
+        // 后续 ACK / CANCEL / BYE 必须从同一来源进入并带正确 remoteTag,否则 RFC 3261 § 12.2.1.1 → 481。
+        val remoteSourceIp: String? = null,
     )
+
+    /**
+     * P1-3 helper:把 [ActiveStream] 抽成 [com.uvp.sim.sip.DialogIdentityVerifier.DialogId]。
+     */
+    private fun ActiveStream.toDialogId(): com.uvp.sim.sip.DialogIdentityVerifier.DialogId =
+        com.uvp.sim.sip.DialogIdentityVerifier.DialogId(
+            callId = callId,
+            localTag = localTag,
+            remoteTag = remoteTag,
+            remoteSourceIp = remoteSourceIp,
+        )
 
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
 
@@ -181,15 +196,15 @@ internal class InviteCoordinatorImpl(
         return when (req.method) {
             // PR5 T5.4:Invite 处理 INVITE,内部 SDP isPlayback 时 Skip 让 Engine 路由给 Playback
             SipMethod.INVITE -> handleInviteMaybe(envelope, req)
-            SipMethod.ACK -> { handleAck(req); RoutingResult.Handled }
+            SipMethod.ACK -> { handleAck(envelope, req); RoutingResult.Handled }
             SipMethod.BYE -> {
                 val cid = req.callId() ?: ""
                 val active = activeStream
                 if (active != null && active.callId == cid) {
-                    handleBye(req); RoutingResult.Handled
+                    handleBye(envelope, req); RoutingResult.Handled
                 } else RoutingResult.Skip
             }
-            SipMethod.CANCEL -> { handleCancel(req); RoutingResult.Handled }
+            SipMethod.CANCEL -> { handleCancel(envelope, req); RoutingResult.Handled }
             // INFO 全部 Skip(回放归 Playback,MANSCDP 归 Mans)
             SipMethod.INFO -> RoutingResult.Skip
             else -> RoutingResult.Skip
@@ -218,7 +233,7 @@ internal class InviteCoordinatorImpl(
             com.uvp.sim.sip.SdpPlaybackParser.parse(req.body).isPlayback
         } catch (_: Throwable) { false }
         return if (isPlayback) RoutingResult.Skip
-        else { handleInvite(req); RoutingResult.Handled }
+        else { handleInvite(envelope, req); RoutingResult.Handled }
     }
 
     // ----------------------------------------------------------------
@@ -301,7 +316,7 @@ internal class InviteCoordinatorImpl(
     // ----------------------------------------------------------------
     // 占位:大块业务 / broadcast / playback 由后续 Edit 注入
     // ----------------------------------------------------------------
-    private suspend fun handleInvite(invite: SipRequest) {
+    private suspend fun handleInvite(envelope: com.uvp.sim.network.SipEnvelope, invite: SipRequest) {
         // 按 channelId 类型路由 — 不支持的类型立即 488
         val channelId = extractInviteTarget(invite)
         val rejection = classifyInviteTarget(channelId)
@@ -540,6 +555,8 @@ internal class InviteCoordinatorImpl(
             channelId = channelId,
             remoteHost = offer.remoteIp,
             remotePort = offer.remotePort,
+            // P1-3:记录建立 dialog 时 envelope 真实来源 IP,后续 mid-dialog 校验。
+            remoteSourceIp = envelope.sourceIp,
             statsJob = scope.launch {
                 while (true) {
                     delay(MEDIA_STATS_INTERVAL_MS)
@@ -564,8 +581,52 @@ internal class InviteCoordinatorImpl(
         )
         _state.value = InviteState.Streaming
     }
-    private suspend fun handleAck(ack: SipRequest) {
+    /**
+     * P1-3:把 envelope 跟 activeStream dialog identity 比对(直播链路 mid-dialog 守卫)。
+     *
+     * 跟 [PlaybackCoordinatorImpl.verifyDialogOrReject] 同款语义:
+     * - [com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match] → 返回 true
+     * - 其它三种 mismatch → CANCEL/BYE 返 481 + Warning 日志,ACK 仅日志(无响应)
+     *
+     * @param respondOn481 ACK 没有响应(RFC 3261 § 17.1.1.3),传 false 跳过 481 发送。
+     */
+    private suspend fun verifyMidDialogOrReject(
+        envelope: com.uvp.sim.network.SipEnvelope,
+        req: SipRequest,
+        active: ActiveStream,
+        op: String,
+        respondOn481: Boolean = true,
+    ): Boolean {
+        val result = com.uvp.sim.sip.DialogIdentityVerifier.verify(envelope, active.toDialogId())
+        if (result == com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match) return true
+        SystemLogger.emit(
+            LogLevel.Warning, LogTag.Lifecycle,
+            "拒绝 INVITE $op:dialog identity 不匹配($result) → ${if (respondOn481) "481" else "丢弃"} " +
+                "[expected callId=${active.callId} remoteTag=${active.remoteTag} sourceIp=${active.remoteSourceIp}, " +
+                "got callId=${req.callId()} sourceIp=${envelope.sourceIp}]",
+        )
+        if (respondOn481) {
+            runCatching {
+                val resp = SipBuilders.buildSimpleResponse(
+                    req, statusCode = 481, reasonPhrase = "Call/Transaction Does Not Exist",
+                    toTag = SipBuilders.randomTag(),
+                    userAgent = config.userAgent,
+                )
+                outbox.send(resp).getOrThrow()
+            }
+        }
+        return false
+    }
+
+    private suspend fun handleAck(envelope: com.uvp.sim.network.SipEnvelope, ack: SipRequest) {
         val cid = ack.callId() ?: return
+        // P1-3:有活跃流时 ACK 必须通过 dialog identity 校验;ACK 无响应(§ 17.1.1.3),失败丢弃。
+        val active = activeStream
+        if (active != null && active.callId == cid) {
+            if (!verifyMidDialogOrReject(envelope, ack, active, op = "ACK", respondOn481 = false)) {
+                return
+            }
+        }
         if (cid == awaitingAckCallId) {
             ackTimeoutJob?.cancel()
             ackTimeoutJob = null
@@ -573,15 +634,21 @@ internal class InviteCoordinatorImpl(
         }
     }
 
-    private suspend fun handleCancel(cancel: SipRequest) {
+    private suspend fun handleCancel(envelope: com.uvp.sim.network.SipEnvelope, cancel: SipRequest) {
+        val cid = cancel.callId() ?: ""
+        val active = activeStream
+        // P1-3:Call-ID 对得上 activeStream 才进 verifier;Call-ID 不对沿用旧行为(发 200 但不动状态)
+        if (active != null && active.callId == cid) {
+            if (!verifyMidDialogOrReject(envelope, cancel, active, op = "CANCEL")) {
+                return
+            }
+        }
         try {
             val ok = SipBuilders.buildSimple200(cancel, userAgent = config.userAgent)
             outbox.send(ok).getOrThrow()
         } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("send CANCEL 200", e))
         }
-        val cid = cancel.callId() ?: ""
-        val active = activeStream
         if (active != null && active.callId == cid) {
             stopActiveStream(cid, "remote CANCEL")
             if (mutableSipState.value == SipState.InCall) {
@@ -591,8 +658,16 @@ internal class InviteCoordinatorImpl(
         }
     }
 
-    private suspend fun handleBye(bye: SipRequest) {
+    private suspend fun handleBye(envelope: com.uvp.sim.network.SipEnvelope, bye: SipRequest) {
         val cid = bye.callId() ?: ""
+        val active = activeStream
+        // P1-3:进入本 handler 时 handleRequest 已经判过 active.callId == cid(否则 Skip),
+        // 这里把 dialog identity 全维度校验补齐 — remoteTag / sourceIp 任一不匹配 → 481。
+        if (active != null) {
+            if (!verifyMidDialogOrReject(envelope, bye, active, op = "BYE")) {
+                return
+            }
+        }
         // 先发 200 OK
         try {
             val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
