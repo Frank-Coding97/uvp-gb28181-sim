@@ -98,6 +98,10 @@ class AndroidCameraStreamer(
     private val lifecycleRegistry: LifecycleRegistry
         get() = lifecycleOwner.lifecycle as LifecycleRegistry
 
+    // R3 round-2 #2:provider 异步获取专用 scope,IO 派发器 + SupervisorJob。release() 时 cancel。
+    private val cameraProviderScope =
+        CoroutineScope(Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+
     private var encoder: MediaCodec? = null
     private var encoderInputSurface: Surface? = null
 
@@ -240,14 +244,24 @@ class AndroidCameraStreamer(
         ) ?: return
         persistentOsdRenderer = renderer
         persistentOsdHeld = true
-        // 让摄像头 Preview UseCase 持续输出到 OsdRenderer.cameraInputSurface
-        runOnMain {
-            try {
-                if (provider == null) provider = awaitCameraProviderBlocking(context)
-                bindCameraToOsdInput(renderer)
-                rebind()
+        // R3 round-2 #2 (HIGH/performance):provider 获取要走 suspend off-main,
+        // 否则 runOnMain { awaitCameraProviderBlocking } 会卡 UI 线程触发 ANR。
+        // 现在 IO 拿 provider,只把 bind/rebind 在 main 跑。
+        cameraProviderScope.launch {
+            val cameraProvider = try {
+                provider ?: awaitCameraProvider(context).also { provider = it }
             } catch (t: Throwable) {
-                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD 持久 Preview UseCase bind 失败: ${t.message}")
+                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD 持久 Preview 获取 provider 失败: ${t.message}")
+                return@launch
+            }
+            runOnMain {
+                try {
+                    if (provider == null) provider = cameraProvider
+                    bindCameraToOsdInput(renderer)
+                    rebind()
+                } catch (t: Throwable) {
+                    SystemLogger.emit(LogLevel.Warning, LogTag.Media, "OSD 持久 Preview UseCase bind 失败: ${t.message}")
+                }
             }
         }
     }
