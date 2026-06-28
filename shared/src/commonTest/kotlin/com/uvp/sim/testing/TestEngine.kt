@@ -17,7 +17,6 @@ import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
 import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.newDefaultIdentityService
-import com.uvp.sim.domain.registerPoolLambdasFrom
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
@@ -83,33 +82,43 @@ internal object TestEngine {
         )
         val outbox = SipOutboxImpl(transport) { ev -> holders.events.emit(ev) }
         val identityService = holders.identityService
-        val pool = registerPoolLambdasFrom(identityService)
+        // P2-3(2026-06-28):跟 AppEngine.buildCoordinators 同款 — 共享 var 桥接,
+        // 不再走 registerPoolLambdasFrom 过渡桥。
+        var poolCseq = 0
+        var poolCallId: String? = null
+        var poolFromTag: String? = null
+        val cseqProvider: () -> Int = { poolCseq }
+        val cseqIncrementer: () -> Int = { poolCseq += 1; poolCseq }
+        val callIdProvider: () -> String? = { poolCallId }
+        val callIdSetter: (String) -> Unit = { poolCallId = it }
+        val fromTagProvider: () -> String? = { poolFromTag }
+        val fromTagSetter: (String) -> Unit = { poolFromTag = it }
         val localPortProvider: () -> Int = { transport.localPort.takeIf { it > 0 } ?: 5060 }
 
         val registration = RegistrationCoordinatorImpl(
             config = config, transport = transport, scope = scope, outbox = outbox,
             localIpProvider = localIpProvider, localPortProvider = localPortProvider,
-            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
-            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
-            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
+            cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
+            callIdProvider = callIdProvider, callIdSetter = callIdSetter,
+            fromTagProvider = fromTagProvider, fromTagSetter = fromTagSetter,
         )
         val broadcast = BroadcastCoordinatorImpl(
             config = config, transport = transport, scope = scope, outbox = outbox,
             localIpProvider = localIpProvider, localPortProvider = localPortProvider,
             rtpReceiverFactory = rtpReceiverFactory, audioSinkFactory = audioSinkFactory,
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
-            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
-            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
+            cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
+            callIdProvider = callIdProvider, callIdSetter = callIdSetter,
+            fromTagProvider = fromTagProvider, fromTagSetter = fromTagSetter,
         )
         val playback = PlaybackCoordinatorImpl(
             config = config, transport = transport, outbox = outbox, scope = scope,
             localIpProvider = localIpProvider, localPortProvider = localPortProvider,
             playbackBuilder = playbackBuilder, recordingService = recordingService,
             simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
-            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
-            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
+            cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
+            callIdProvider = callIdProvider, callIdSetter = callIdSetter,
+            fromTagProvider = fromTagProvider, fromTagSetter = fromTagSetter,
         )
         val invite = InviteCoordinatorImpl(
             config = config, transport = transport, outbox = outbox, scope = scope,
@@ -118,9 +127,9 @@ internal object TestEngine {
             rtpSenderFactory = rtpSenderFactory,
             catalogTree = holders.catalogTree, clockOffsetProvider = { holders.clockOffset.value },
             mutableSipState = holders.state, simEventEmit = { ev -> holders.events.emit(ev) },
-            cseqProvider = pool.cseqProvider, cseqIncrementer = pool.cseqIncrementer,
-            callIdProvider = pool.callIdProvider, callIdSetter = pool.callIdSetter,
-            fromTagProvider = pool.fromTagProvider, fromTagSetter = pool.fromTagSetter,
+            cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
+            callIdProvider = callIdProvider, callIdSetter = callIdSetter,
+            fromTagProvider = fromTagProvider, fromTagSetter = fromTagSetter,
         )
         var engineRef: SimulatorEngine? = null
         val manscdp = ManscdpRouterImpl(
