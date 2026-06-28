@@ -573,7 +573,17 @@ internal class RegistrationCoordinatorImpl(
                     outbox.send(req).getOrThrow()
                     armRegisterTimeout()
                 } catch (e: Throwable) {
+                    // R3 #4 (full preset HIGH/correctness):续约 send 失败原先只清 isRenewal,
+                    // 状态仍停在 Registered,平台已经认为掉线,UI 也不知道。
+                    // 改走跟初次注册同款的 scheduleRetryOrFail:状态降到 RetryBackoff、
+                    // emit Unauthorized / 重试,避免续约失败被静默吞掉。
                     isRenewal = false
+                    pendingRegister = null
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Lifecycle,
+                        "Expires 续约 send 失败: ${e.message ?: e::class.simpleName} → 进入重试路径",
+                    )
+                    scheduleRetryOrFail("renewal send: ${e.message ?: e::class.simpleName}")
                 }
             }
         }
