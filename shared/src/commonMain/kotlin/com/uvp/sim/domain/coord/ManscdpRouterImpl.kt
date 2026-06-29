@@ -23,6 +23,7 @@ import com.uvp.sim.domain.coord.manscdp.DeviceControlSubRouter
 import com.uvp.sim.domain.coord.manscdp.ManscdpContext
 import com.uvp.sim.domain.coord.manscdp.ManscdpDispatcher
 import com.uvp.sim.domain.coord.manscdp.ManscdpInternals
+import com.uvp.sim.domain.coord.manscdp.SubscriptionNotifyHandler
 import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
@@ -104,9 +105,6 @@ internal class ManscdpRouterImpl(
     private val localIp: String get() = localIpProvider()
 
     // 自管 NOTIFY 序号 — 主动 NOTIFY 路径用(SubRouter 不持有 NOTIFY 序号,只发 Response)
-    private var notifySn = 0
-    private var catalogNotifySn = 0
-    private var alarmNotifySn = 0
     private var snapshotProtocolSn = 0
 
     private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
@@ -167,6 +165,9 @@ internal class ManscdpRouterImpl(
         simEventEmit = simEventEmit,
     )
 
+    /** NOTIFY 扇出收口到独立 handler(cross-review R1 #3),共享同一份 [subRouterContext]。 */
+    private val notifyHandler = SubscriptionNotifyHandler(subRouterContext)
+
     /** 4 个 SubRouter + dispatcher 装配(lazy 让 deviceControlDispatcher 提前 by lazy 不撞冲突)。 */
     private val dispatcher: ManscdpDispatcher by lazy {
         ManscdpDispatcher(
@@ -177,7 +178,7 @@ internal class ManscdpRouterImpl(
                     ctx = subRouterContext,
                     recordingService = recordingService,
                     dispatcher = deviceControlDispatcher,
-                    alarmResetCallback = { by -> pushAlarmResetNotify(by) },
+                    alarmResetCallback = { by -> notifyHandler.pushAlarmResetNotify(by) },
                 ),
                 BroadcastSubRouter(
                     ctx = subRouterContext,
@@ -277,7 +278,7 @@ internal class ManscdpRouterImpl(
         val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            sendAlarmNotify(updated, body, sn)
+            notifyHandler.sendAlarmNotify(updated, body, sn)
         }
 
         alarmHistoryStore.append(
@@ -314,11 +315,11 @@ internal class ManscdpRouterImpl(
         }
         val id = identityService.nextMessageNotify()
         val cseqNow = id.cseq.toInt()
-        notifySn += 1
+        val mediaStatusSn = notifyHandler.nextNotifySn()
 
         val xmlBody = com.uvp.sim.sip.MediaStatusNotify.buildXml(
             deviceId = config.device.deviceId,
-            sn = notifySn,
+            sn = mediaStatusSn,
             notifyType = notifyType,
         )
         val msg = SipBuilders.buildMessage(
@@ -336,7 +337,7 @@ internal class ManscdpRouterImpl(
         val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            sendMediaStatusNotifyToSubscriber(updated, xmlBody)
+            notifyHandler.sendMediaStatusNotifyToSubscriber(updated, xmlBody)
         }
 
         simEventEmit(SimEvent.MediaStatusSent(notifyType, dialogs.size))
@@ -357,7 +358,7 @@ internal class ManscdpRouterImpl(
             takeJpeg = { capture.takeJpeg() },
             writeCache = { id, bytes -> cache.write(id, bytes) },
             uploader = uploader,
-            notifySender = { xml -> sendSnapshotNotify(xml) },
+            notifySender = { xml -> notifyHandler.sendSnapshotNotify(xml) },
             scope = scope,
             deviceId = config.device.deviceId,
             snAllocator = {
@@ -425,7 +426,7 @@ internal class ManscdpRouterImpl(
         val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            sendCatalogNotify(updated)
+            notifyHandler.sendCatalogNotify(updated)
         }
     }
 
@@ -434,7 +435,7 @@ internal class ManscdpRouterImpl(
         val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            sendCatalogIncrementalNotify(updated, events)
+            notifyHandler.sendCatalogIncrementalNotify(updated, events)
         }
     }
 
@@ -463,7 +464,7 @@ internal class ManscdpRouterImpl(
         val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
         for (d in dialogs) {
             val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            sendCatalogStatusOnlyNotify(updated, channelId, online)
+            notifyHandler.sendCatalogStatusOnlyNotify(updated, channelId, online)
         }
     }
 
@@ -537,16 +538,16 @@ internal class ManscdpRouterImpl(
                     },
                 ) { d ->
                     when (d.kind) {
-                        "Catalog" -> sendCatalogNotify(d)
+                        "Catalog" -> notifyHandler.sendCatalogNotify(d)
                         "Alarm" -> Unit
-                        else -> sendPositionNotify(d)
+                        else -> notifyHandler.sendPositionNotify(d)
                     }
                 }
 
                 when (intent.kind) {
-                    "Catalog" -> sendCatalogNotify(dialog)
+                    "Catalog" -> notifyHandler.sendCatalogNotify(dialog)
                     "Alarm" -> Unit
-                    else -> sendPositionNotify(dialog)
+                    else -> notifyHandler.sendPositionNotify(dialog)
                 }
 
                 if (intent.kind == "Alarm") {
@@ -662,158 +663,6 @@ internal class ManscdpRouterImpl(
         outbox.send(resp).getOrThrow()
     }
 
-    // ----------------------------------------------------------------------
-    // NOTIFY fan-out helpers — 由本类持续 own,SubRouter 只发 Response,不发 NOTIFY
-    // ----------------------------------------------------------------------
-
-    private suspend fun sendSnapshotNotify(xml: String) {
-        if (!stateRegisteredOrInCall()) {
-            simEventEmit(SimEvent.TransportError("snapshot notify: not registered"))
-            return
-        }
-        val id = identityService.nextMessageNotify()
-        val msg = SipBuilders.buildMessage(
-            config = config, cseq = id.cseq.toInt(), callId = id.callId,
-            branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
-            localIp = localIp, localPort = localPortProvider(),
-            xmlBody = xml,
-        )
-        try {
-            outbox.send(msg).getOrThrow()
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("snapshot notify send: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendAlarmNotify(dialog: SubscriptionDialog, body: String, sn: String) {
-        alarmNotifySn++
-        val notify = buildNotifyForDialog(dialog, body)
-        try {
-            outbox.send(notify).getOrThrow()
-            simEventEmit(SimEvent.AlarmNotifySent(sn = sn, subscriber = dialog.subscriberUri))
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send Alarm NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendMediaStatusNotifyToSubscriber(dialog: SubscriptionDialog, body: String) {
-        val notify = buildNotifyForDialog(dialog, body)
-        try {
-            outbox.send(notify).getOrThrow()
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send MediaStatus NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendCatalogNotify(dialog: SubscriptionDialog) {
-        catalogNotifySn++
-        val xml = CatalogNotifyBuilder.build(
-            deviceId = config.device.deviceId,
-            sn = catalogNotifySn,
-            tree = ManscdpInternals.publishableCatalogNodes(catalogTree.value),
-        )
-        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
-        try {
-            outbox.send(notify).getOrThrow()
-            simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendCatalogIncrementalNotify(dialog: SubscriptionDialog, events: List<CatalogChangeEvent>) {
-        catalogNotifySn++
-        val xml = CatalogNotifyBuilder.buildIncremental(
-            deviceId = config.device.deviceId,
-            sn = catalogNotifySn,
-            events = events,
-        )
-        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
-        try {
-            outbox.send(notify).getOrThrow()
-            simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendCatalogStatusOnlyNotify(dialog: SubscriptionDialog, channelId: String, online: Boolean) {
-        catalogNotifySn++
-        val xml = CatalogNotifyBuilder.buildStatusOnly(
-            deviceId = config.device.deviceId,
-            sn = catalogNotifySn,
-            channelId = channelId,
-            online = online,
-        )
-        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
-        try {
-            outbox.send(notify).getOrThrow()
-            simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send Catalog status-only NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    private suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
-        notifySn++
-        val fix = mockGps.next()
-        val xml = MobilePositionNotify.build(
-            deviceId = config.device.deviceId,
-            sn = notifySn,
-            point = fix.point,
-            speed = fix.speed,
-            direction = fix.direction,
-            altitude = fix.altitude,
-        )
-        val notify = buildNotifyForDialog(dialog, xml)
-        try {
-            outbox.send(notify).getOrThrow()
-            simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = notifySn))
-        } catch (e: Throwable) {
-            simEventEmit(SimEvent.TransportError("send NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
-    }
-
-    /** SUBSCRIBE 路径上所有 NOTIFY 共用的报文构造,统一 subscription-state / Via / UA。 */
-    private fun buildNotifyForDialog(
-        dialog: SubscriptionDialog,
-        xmlBody: String,
-        includeUserAgent: Boolean = true,
-    ): SipRequest {
-        val notifyCseq = dialog.cseqNotify + 1
-        val remaining = dialog.remainingSeconds
-        val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        return SipBuilders.buildNotify(
-            subscriberUri = dialog.subscriberUri,
-            callId = dialog.callId,
-            fromTag = dialog.toTag,
-            toTag = dialog.fromTag,
-            event = "presence",
-            subscriptionState = ssValue,
-            cseq = notifyCseq,
-            xmlBody = xmlBody,
-            localIp = localIp,
-            localPort = localPortProvider(),
-            transport = config.transport.name,
-            userAgent = if (includeUserAgent) config.userAgent else null,
-        )
-    }
-
-    /** AlarmCmd 复位:把"复位"打包成 AlarmNotify body 给所有 Alarm 订阅者发 NOTIFY。 */
-    private suspend fun pushAlarmResetNotify(by: String?) {
-        val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
-        if (dialogs.isEmpty()) return
-        val sn = identityService.nextMessageNotify().cseq.toString()
-        val resetPayload = AlarmPayload(
-            deviceId = config.device.alarmChannelId,
-            description = "报警已复位 (AlarmCmd by ${by ?: "platform"})",
-        )
-        val body = AlarmNotify.buildAlarm(config, sn, resetPayload)
-        for (d in dialogs) {
-            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            sendAlarmNotify(updated, body, sn)
-        }
-    }
 
     // ----------------------------------------------------------------------
     // GB-2022 §9.13 设备升级假进度(本类持有 — 跟 DeviceControlSubRouter 经回调触发)
