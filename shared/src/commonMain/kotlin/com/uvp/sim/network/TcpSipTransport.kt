@@ -4,6 +4,7 @@ import com.uvp.sim.concurrency.IoDispatcher
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipParseException
 import com.uvp.sim.sip.SipParser
@@ -94,6 +95,20 @@ class TcpSipTransport(
                 )
             }
             return cl
+        }
+
+        /**
+         * cross-review R1 #1 followup:判断一行 header 是否为 Content-Length
+         * (含 SIP 紧凑头形式 `l:`,RFC 3261 §7.3.3)。
+         *
+         * TCP 分帧过去只硬匹配 "content-length:",漏了 `l:`,导致用紧凑头的合规
+         * 消息 body 不被读取 → 流错位。抽成 internal 静态函数复用 [SipHeader.canonicalize]
+         * 并便于单测。
+         */
+        internal fun isContentLengthHeaderLine(line: String): Boolean {
+            val colon = line.indexOf(':')
+            if (colon <= 0) return false
+            return SipHeader.canonicalize(line.substring(0, colon).trim()) == SipHeader.CONTENT_LENGTH
         }
 
         /**
@@ -243,8 +258,9 @@ class TcpSipTransport(
             val line = channel.readUTF8Line() ?: return null
             if (line.isEmpty()) break
             headerLines.add(line)
-            val lower = line.lowercase()
-            if (lower.startsWith("content-length:") || lower.startsWith("content-length :")) {
+            // cross-review R1 #1 followup:TCP 分帧过去只硬匹配 "content-length:",
+            // 漏了 SIP 紧凑头形式 `l:`(RFC 3261 §7.3.3,SipHeader.canonicalize 已认)。
+            if (isContentLengthHeaderLine(line)) {
                 contentLength = parseContentLengthOrThrow(line)
             }
         }

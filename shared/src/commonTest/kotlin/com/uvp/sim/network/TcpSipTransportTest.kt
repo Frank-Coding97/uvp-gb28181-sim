@@ -71,4 +71,19 @@ class TcpSipTransportTest {
             TcpSipTransport.parseContentLengthOrThrow("Content-Length: abc")
         }
     }
+
+    @Test
+    fun isContentLengthHeaderLine_recognizes_full_and_compact_forms() {
+        // cross-review R1 #1 followup:TCP 分帧过去只硬匹配 "content-length:",
+        // 漏了 SIP 紧凑头 `l:`(RFC 3261 §7.3.3),用紧凑头的合规消息 body 不被读取 → 流错位。
+        assertTrue(TcpSipTransport.isContentLengthHeaderLine("Content-Length: 128"))
+        assertTrue(TcpSipTransport.isContentLengthHeaderLine("content-length: 128"))
+        assertTrue(TcpSipTransport.isContentLengthHeaderLine("Content-Length : 128"))
+        assertTrue(TcpSipTransport.isContentLengthHeaderLine("l: 128"), "紧凑头 l: 必须被识别")
+        assertTrue(TcpSipTransport.isContentLengthHeaderLine("L: 128"), "紧凑头大小写不敏感")
+        // 不能误命中其它头
+        assertTrue(!TcpSipTransport.isContentLengthHeaderLine("Contact: <sip:x@y>"))
+        assertTrue(!TcpSipTransport.isContentLengthHeaderLine("Call-ID: abc"))
+        assertTrue(!TcpSipTransport.isContentLengthHeaderLine("no-colon-line"))
+    }
 }
