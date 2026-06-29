@@ -86,4 +86,36 @@ class TcpSipTransportTest {
         assertTrue(!TcpSipTransport.isContentLengthHeaderLine("Call-ID: abc"))
         assertTrue(!TcpSipTransport.isContentLengthHeaderLine("no-colon-line"))
     }
+
+    @Test
+    fun detectContentLength_picks_full_and_compact_headers() {
+        // 正常 header 列表:取到 Content-Length / 紧凑头 l: 的值
+        assertEquals(42, TcpSipTransport.detectContentLength(listOf("Via: x", "Content-Length: 42")))
+        assertEquals(42, TcpSipTransport.detectContentLength(listOf("Via: x", "l: 42")))
+        assertEquals(0, TcpSipTransport.detectContentLength(listOf("Via: x", "Call-ID: y")))
+    }
+
+    @Test
+    fun detectContentLength_ignores_folded_continuation_lines() {
+        // cross-review R1 #1 折叠根治:RFC 3261 §7.3.1 以 SP/HTAB 开头的续行是上一个
+        // header 值的折叠,不是新 header。过去 TCP 分帧逐物理行判断,会把续行 " l: 5"
+        // 误当真 Content-Length → 用未声明的长度读 body → 流错位。
+        // 这里:Subject 折叠续行恰好长得像 l:/Content-Length:,必须被忽略(返回 0)。
+        assertEquals(
+            0,
+            TcpSipTransport.detectContentLength(listOf("Subject: x", " l: 5")),
+            "折叠续行 ' l: 5' 不是真 Content-Length,应忽略"
+        )
+        assertEquals(
+            0,
+            TcpSipTransport.detectContentLength(listOf("Subject: x", "\tContent-Length: 5")),
+            "TAB 折叠续行也应忽略"
+        )
+        // 真 Content-Length 仍取到,即便后面跟一个折叠续行
+        assertEquals(
+            10,
+            TcpSipTransport.detectContentLength(listOf("Content-Length: 10", " continuation")),
+            "真 Content-Length 头后跟折叠续行,仍取真值"
+        )
+    }
 }

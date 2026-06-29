@@ -112,6 +112,30 @@ class TcpSipTransport(
         }
 
         /**
+         * cross-review R1 #1 折叠根治:从 TCP 分帧累积的 header 行列表里检测 Content-Length。
+         *
+         * 必须跟 [SipParser] 的解析口径一致(RFC 3261 §7.3.1 行折叠):以 SP/HTAB 开头的
+         * 续行是上一个 header 值的延续,**不是**新 header。过去 TCP 分帧逐物理行判断,
+         * 会把续行 ` l: 5` / ` Content-Length: 5` 误当真 Content-Length 头,用一个从未声明
+         * 的长度去读 body → 流错位(false positive)。这里先剔除续行再匹配。
+         *
+         * @param headerLines 不含 start-line 之后、空行之前的所有物理 header 行(原样,未 trim)
+         * @return 声明的 body 字节数(0..MAX_SIP_BODY_BYTES);无 Content-Length 头返回 0
+         * @throws SipParseException 值非法 / 负数 / 超上限(经 [parseContentLengthOrThrow])
+         */
+        internal fun detectContentLength(headerLines: List<String>): Int {
+            var contentLength = 0
+            for (line in headerLines) {
+                // RFC 3261 §7.3.1:续行(leading WSP)是上一个 header 的折叠,跳过。
+                if (line.startsWith(' ') || line.startsWith('\t')) continue
+                if (isContentLengthHeaderLine(line)) {
+                    contentLength = parseContentLengthOrThrow(line)
+                }
+            }
+            return contentLength
+        }
+
+        /**
          * M-3 (audit §3) — TCP SIP socket option 配置。
          *
          * 抽成静态函数方便单测注入 stub 验证 keepAlive 被打开。
@@ -252,20 +276,19 @@ class TcpSipTransport(
      */
     private suspend fun readSipMessage(channel: ByteReadChannel): SipMessage? {
         val headerLines = mutableListOf<String>()
-        var contentLength = 0
 
         while (true) {
             val line = channel.readUTF8Line() ?: return null
             if (line.isEmpty()) break
             headerLines.add(line)
-            // cross-review R1 #1 followup:TCP 分帧过去只硬匹配 "content-length:",
-            // 漏了 SIP 紧凑头形式 `l:`(RFC 3261 §7.3.3,SipHeader.canonicalize 已认)。
-            if (isContentLengthHeaderLine(line)) {
-                contentLength = parseContentLengthOrThrow(line)
-            }
         }
 
         if (headerLines.isEmpty()) return null
+
+        // cross-review R1 #1 折叠根治:累积完所有 header 行后统一检测 Content-Length,
+        // detectContentLength 跟 SipParser 一样跳过 RFC 3261 §7.3.1 折叠续行,
+        // 避免续行 ` l: 5` 被误当真 Content-Length 头致分帧错位。
+        val contentLength = detectContentLength(headerLines)
 
         val headerBytes = headerLines.joinToString("\r\n").encodeToByteArray()
         val separator = "\r\n\r\n".encodeToByteArray()
