@@ -63,9 +63,12 @@ class TcpSipTransportTest {
     }
 
     @Test
-    fun contentLength_malformed_treated_as_zero() {
-        // 非数字 → toIntOrNull 返 null → 当 0 处理,不抛异常(跟旧行为兼容)
-        val cl = TcpSipTransport.parseContentLengthOrThrow("Content-Length: abc")
-        assertEquals(0, cl)
+    fun contentLength_malformed_throws() {
+        // cross-review R1 #1:非数字 Content-Length 头存在但值非法,过去 `toIntOrNull() ?: 0`
+        // 静默当 0 → body 不被读取,TCP SIP 流错位(下一个 read 把 payload 当新 start-line)。
+        // fail-closed:畸形 Content-Length 视为攻击/损坏,抛 SipParseException 关连接。
+        assertFailsWith<SipParseException> {
+            TcpSipTransport.parseContentLengthOrThrow("Content-Length: abc")
+        }
     }
 }

@@ -79,7 +79,12 @@ class TcpSipTransport(
          * @throws SipParseException 负数或超上限 → 视为攻击,关连接
          */
         internal fun parseContentLengthOrThrow(headerLine: String): Int {
-            val cl = headerLine.lowercase().substringAfter(':').trim().toIntOrNull() ?: 0
+            val raw = headerLine.lowercase().substringAfter(':').trim()
+            // cross-review R1 #1:非数字 Content-Length 过去 `toIntOrNull() ?: 0` 静默当 0,
+            // body 不被读取 → TCP SIP 流错位(下一 read 把 payload 当新 start-line)。
+            // fail-closed:头存在但值非合法整数,视为攻击/损坏帧,抛异常关连接。
+            val cl = raw.toIntOrNull()
+                ?: throw SipParseException("Content-Length \"$raw\" is not a valid integer")
             if (cl < 0) {
                 throw SipParseException("Content-Length $cl is negative")
             }
