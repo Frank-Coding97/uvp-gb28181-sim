@@ -36,16 +36,7 @@ object SipParser {
         val startLine = lines[0]
 
         // 2. Header lines with continuation collapse (RFC 3261 § 7.3.1: leading WSP folds).
-        val rawHeaderLines = mutableListOf<String>()
-        for (line in lines.drop(1)) {
-            if (line.isEmpty()) continue
-            if (line.startsWith(' ') || line.startsWith('\t')) {
-                if (rawHeaderLines.isEmpty()) throw SipParseException("Continuation line without header: $line")
-                rawHeaderLines[rawHeaderLines.lastIndex] = rawHeaderLines.last() + " " + line.trim()
-            } else {
-                rawHeaderLines += line
-            }
-        }
+        val rawHeaderLines = foldContinuationLines(lines.drop(1))
         val headers = rawHeaderLines.mapNotNull { line ->
             val sep = line.indexOf(':')
             if (sep < 0) throw SipParseException("Malformed header: $line")
@@ -56,8 +47,7 @@ object SipParser {
         }
 
         // 3. Body — respect Content-Length if present, else take rest.
-        val cl = headers.firstOrNull { SipHeader.canonicalize(it.name) == SipHeader.CONTENT_LENGTH }
-            ?.value?.trim()?.toIntOrNull()
+        val cl = contentLengthFrom(rawHeaderLines)
         val bodyAvailable = raw.size - bodyStart
         val bodySize = if (cl != null) {
             if (cl > bodyAvailable) {
@@ -71,6 +61,49 @@ object SipParser {
 
         // 4. Dispatch on start line
         return parseStartLine(startLine, headers, body)
+    }
+
+    /**
+     * RFC 3261 §7.3.1 行折叠:把以 SP/HTAB 开头的续行折叠进上一个 header。
+     *
+     * 抽成共享函数,让 [SipParser] 解析和 [com.uvp.sim.network.TcpSipTransport] 的 TCP 分帧
+     * **复用同一份折叠口径**,避免两套独立实现长期漂移(cross-review R1 #1 根因)。
+     *
+     * @param headerLines start-line 之后、空行之前的物理 header 行(不含 start-line)
+     * @return 折叠后的逻辑 header 行
+     * @throws SipParseException 续行出现在任何 header 之前
+     */
+    internal fun foldContinuationLines(headerLines: List<String>): List<String> {
+        val folded = mutableListOf<String>()
+        for (line in headerLines) {
+            if (line.isEmpty()) continue
+            if (line.startsWith(' ') || line.startsWith('\t')) {
+                if (folded.isEmpty()) throw SipParseException("Continuation line without header: $line")
+                folded[folded.lastIndex] = folded.last() + " " + line.trim()
+            } else {
+                folded += line
+            }
+        }
+        return folded
+    }
+
+    /**
+     * 从物理 header 行解析 body 的 Content-Length(含 RFC 3261 §7.3.1 折叠 + 紧凑头 `l:`)。
+     *
+     * 口径与 [parse] body 段完全一致:先折叠续行,再取**第一个** canonical Content-Length
+     * 的值跑 `toIntOrNull`。TCP 分帧复用本函数决定读多少 body 字节,确保跟 parser 不漂移。
+     *
+     * @return body 字节数;无 Content-Length 头或值非数字返回 null(调用方决定回退/失败语义)
+     */
+    internal fun contentLengthFrom(foldedOrPhysicalLines: List<String>): Int? {
+        // 容错:若传入的是未折叠的物理行,这里再折叠一次是幂等的(已折叠的行无 leading WSP)。
+        val folded = foldContinuationLines(foldedOrPhysicalLines)
+        return folded
+            .firstOrNull {
+                val sep = it.indexOf(':')
+                sep > 0 && SipHeader.canonicalize(it.substring(0, sep).trim()) == SipHeader.CONTENT_LENGTH
+            }
+            ?.substringAfter(':')?.trim()?.toIntOrNull()
     }
 
     private data class Boundary(val headerEnd: Int, val bodyStart: Int)

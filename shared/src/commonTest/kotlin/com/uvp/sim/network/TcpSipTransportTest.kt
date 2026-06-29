@@ -97,8 +97,8 @@ class TcpSipTransportTest {
 
     @Test
     fun detectContentLength_first_value_wins_matching_SipParser() {
-        // cross-review R1 #1 根治:SipParser 用 firstOrNull 取第一个 Content-Length。
-        // detectContentLength 必须对齐(首值优先),否则分帧读的字节数 != parser 认的 body。
+        // cross-review R1 #1 根治:body 长度判定委托 SipParser.contentLengthFrom,
+        // 跟 SipParser 一样取第一个 Content-Length(firstOrNull),保证分帧 == 解析。
         assertEquals(
             5,
             TcpSipTransport.detectContentLength(listOf("Content-Length: 5", "Content-Length: 5")),
@@ -109,41 +109,46 @@ class TcpSipTransportTest {
             TcpSipTransport.detectContentLength(listOf("Content-Length: 7", "Subject: x")),
             "首个 Content-Length 即为准"
         )
+        // 重复且冲突:分帧与 parser 都取首个(5),口径一致,不会错位
+        assertEquals(
+            5,
+            TcpSipTransport.detectContentLength(listOf("Content-Length: 5", "l: 10")),
+            "重复冲突头 → 跟 SipParser 一样取首个 5,分帧与解析一致"
+        )
     }
 
     @Test
-    fun detectContentLength_conflicting_duplicates_throw() {
-        // 冲突的重复 Content-Length(如 `Content-Length: 5` 后跟 `l: 10`):分帧与 parser
-        // 会分歧致流错位 → fail-closed 抛异常关连接。
+    fun detectContentLength_folded_into_content_length_fails_closed() {
+        // cross-review R1 #1 收敛:`Content-Length: 5` 后跟折叠续行 ` 0` → 折叠成 "5 0"
+        // → toIntOrNull(null)。SipParser 此时回退读剩余字节,流式分帧无"剩余"概念,
+        // 必须 fail-closed 关连接,而不是用 5 去读(那样会跟 parser 漂移)。
         assertFailsWith<SipParseException> {
-            TcpSipTransport.detectContentLength(listOf("Content-Length: 5", "l: 10"))
+            TcpSipTransport.detectContentLength(listOf("Content-Length: 5", " 0"))
         }
         assertFailsWith<SipParseException> {
-            TcpSipTransport.detectContentLength(listOf("l: 10", "Content-Length: 5"))
+            TcpSipTransport.detectContentLength(listOf("l: 5", "\t0"))
         }
     }
 
     @Test
-    fun detectContentLength_ignores_folded_continuation_lines() {
-        // cross-review R1 #1 折叠根治:RFC 3261 §7.3.1 以 SP/HTAB 开头的续行是上一个
-        // header 值的折叠,不是新 header。过去 TCP 分帧逐物理行判断,会把续行 " l: 5"
-        // 误当真 Content-Length → 用未声明的长度读 body → 流错位。
-        // 这里:Subject 折叠续行恰好长得像 l:/Content-Length:,必须被忽略(返回 0)。
+    fun detectContentLength_ignores_folded_continuation_on_other_headers() {
+        // RFC 3261 §7.3.1 折叠:别的 header 的续行恰好长得像 l:/Content-Length:,
+        // 折叠进上一个 header 后不再是独立 Content-Length,应忽略(返回 0)。
         assertEquals(
             0,
             TcpSipTransport.detectContentLength(listOf("Subject: x", " l: 5")),
-            "折叠续行 ' l: 5' 不是真 Content-Length,应忽略"
+            "折叠续行 ' l: 5' 归到 Subject,不是真 Content-Length"
         )
         assertEquals(
             0,
             TcpSipTransport.detectContentLength(listOf("Subject: x", "\tContent-Length: 5")),
-            "TAB 折叠续行也应忽略"
+            "TAB 折叠续行也归到 Subject"
         )
-        // 真 Content-Length 仍取到,即便后面跟一个折叠续行
+        // 真 Content-Length 后跟一个普通折叠续行(纯文本),值仍合法
         assertEquals(
             10,
-            TcpSipTransport.detectContentLength(listOf("Content-Length: 10", " continuation")),
-            "真 Content-Length 头后跟折叠续行,仍取真值"
+            TcpSipTransport.detectContentLength(listOf("Subject: hi", " there", "Content-Length: 10")),
+            "Subject 折叠不影响后面真 Content-Length"
         )
     }
 }

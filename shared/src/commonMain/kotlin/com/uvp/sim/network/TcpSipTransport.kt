@@ -112,39 +112,41 @@ class TcpSipTransport(
         }
 
         /**
-         * cross-review R1 #1 折叠根治:从 TCP 分帧累积的 header 行列表里检测 Content-Length。
+         * cross-review R1 #1 折叠根治(收敛版):从 TCP 分帧累积的物理 header 行检测 body 长度。
          *
-         * **必须跟 [SipParser] 解析 body 的口径完全一致**,否则分帧读的字节数跟 parser
-         * 认的 body 长度不符 → TCP 流错位。两条对齐规则:
+         * **根因**:过去 TCP 分帧自己实现"逐行找 Content-Length",跟 [SipParser] 的
+         * "折叠续行后取首个 Content-Length"是两套独立逻辑,反复在折叠/紧凑头/重复头/
+         * 续行拼接等边界上漂移(每修一个 CodeX 又找到下一个)。
          *
-         * 1. RFC 3261 §7.3.1 行折叠:以 SP/HTAB 开头的续行是上一个 header 值的延续,
-         *    **不是**新 header,跳过(否则续行 ` l: 5` 被误当真 Content-Length)。
-         * 2. 首值优先 + 重复 fail-closed:[SipParser] 用 `firstOrNull` 取**第一个** canonical
-         *    Content-Length。这里同样取首个;若后续再出现 Content-Length/`l:` 且值不同
-         *    (如 `Content-Length: 5` 后跟 `l: 10`),分帧与 parser 会分歧 → 抛
-         *    [SipParseException] 关连接(攻击者构造冲突头偷流字节)。
+         * **治本**:body 长度判定**唯一委托** [SipParser.contentLengthFrom](先按 RFC 3261
+         * §7.3.1 折叠续行,再取首个 canonical Content-Length 跑 toIntOrNull),保证分帧读的
+         * 字节数跟 parser 认的 body 长度**永远一致**,不可能再漂移。
          *
-         * @param headerLines 不含 start-line 之后、空行之前的所有物理 header 行(原样,未 trim)
-         * @return 声明的 body 字节数(0..MAX_SIP_BODY_BYTES);无 Content-Length 头返回 0
-         * @throws SipParseException 值非法 / 负数 / 超上限 / 冲突的重复 Content-Length
+         * 分帧额外的 fail-closed 守卫(流式场景特有,parser 在内存里可"取剩余"但流不行):
+         * - header 存在但折叠后非数字(如 `Content-Length: 5` + 折叠 ` 0` → `"5 0"`):
+         *   parser 会回退读剩余字节,流式无"剩余"概念 → 抛异常关连接
+         * - 负数 / 超 [MAX_SIP_BODY_BYTES](DoS 上限)→ 抛异常
+         *
+         * @param headerLines start-line 之后、空行之前的所有物理 header 行(原样,未 trim)
+         * @return body 字节数(0..MAX_SIP_BODY_BYTES);无 Content-Length 头返回 0
+         * @throws SipParseException 头存在但非法 / 负数 / 超上限
          */
         internal fun detectContentLength(headerLines: List<String>): Int {
-            var contentLength: Int? = null
-            for (line in headerLines) {
-                // 规则 1:续行(leading WSP)是上一个 header 的折叠,跳过。
-                if (line.startsWith(' ') || line.startsWith('\t')) continue
-                if (!isContentLengthHeaderLine(line)) continue
-                val parsed = parseContentLengthOrThrow(line)
-                // 规则 2:首值优先(对齐 SipParser firstOrNull);重复且冲突 → fail-closed。
-                if (contentLength == null) {
-                    contentLength = parsed
-                } else if (contentLength != parsed) {
-                    throw SipParseException(
-                        "Conflicting duplicate Content-Length: $contentLength vs $parsed"
-                    )
-                }
+            // 是否存在 Content-Length 头(折叠后判断,跟 parser 同口径)
+            val folded = SipParser.foldContinuationLines(headerLines)
+            val hasContentLength = folded.any { isContentLengthHeaderLine(it) }
+            if (!hasContentLength) return 0
+
+            // 委托 parser 取值,保证口径一致;header 存在却取不到合法整数 → 流式 fail-closed
+            val cl = SipParser.contentLengthFrom(folded)
+                ?: throw SipParseException("Content-Length header present but not a valid integer (folded: $folded)")
+            if (cl < 0) {
+                throw SipParseException("Content-Length $cl is negative")
             }
-            return contentLength ?: 0
+            if (cl > MAX_SIP_BODY_BYTES) {
+                throw SipParseException("Content-Length $cl exceeds max $MAX_SIP_BODY_BYTES — possible DoS")
+            }
+            return cl
         }
 
         /**
