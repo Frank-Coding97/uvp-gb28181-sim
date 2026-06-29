@@ -186,6 +186,43 @@ class InviteCoordinatorTest {
     }
 
     @Test
+    fun handleInvite_malformed_sdp_fails_closed_400() = runTest {
+        // cross-review R1 #5:授权平台发来的 INVITE 若 SDP 缺 c=/m=video,
+        // 过去 handleInviteMaybe `catch { false }` 把它当 live INVITE 处理 →
+        // 路由边界塌陷(畸形输入静默走直播分支,不回任何 SIP 错误)。
+        // fail-closed:SDP 解析失败应回 400 Bad Request 并 Handled,不进任何媒体路径。
+        val transport = MockSipTransport()
+        transport.connect()
+        val invite = newInvite(this, transport)
+        val badSdp = """
+            v=0
+            o=server 0 0 IN IP4 192.168.10.222
+            s=Play
+            t=0 0
+        """.trimIndent().replace("\n", "\r\n")
+        val req = SipRequest(
+            method = SipMethod.INVITE,
+            requestUri = "sip:35020000001320000001@3502000000",
+            headers = listOf(
+                SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.10.222:8160;branch=z9hG4bK-bad"),
+                SipMessage.Header(SipHeader.FROM, "<sip:35020000002000000001@3502000000>;tag=plat"),
+                SipMessage.Header(SipHeader.TO, "<sip:35020000001320000001@3502000000>"),
+                SipMessage.Header(SipHeader.CALL_ID, "bad-sdp@plat"),
+                SipMessage.Header(SipHeader.CSEQ, "1 INVITE"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:35020000002000000001@192.168.10.222:8160>"),
+                SipMessage.Header("Content-Type", "application/sdp"),
+            ),
+            body = badSdp.encodeToByteArray(),
+        )
+        val result = invite.onIncoming(req.asEnvelope())
+        runCurrent()
+        assertEquals(RoutingResult.Handled, result, "畸形 SDP INVITE 应被 fail-closed 吃下")
+        val resp = transport.sent.filterIsInstance<SipResponse>().firstOrNull()
+        assertNotNull(resp, "畸形 SDP 应回一个 SIP 错误响应")
+        assertEquals(400, resp.statusCode, "SDP 解析失败应回 400 Bad Request")
+    }
+
+    @Test
     fun handleAck_no_active_returns_Handled() = runTest {
         val transport = MockSipTransport()
         transport.connect()

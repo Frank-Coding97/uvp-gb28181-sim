@@ -238,7 +238,17 @@ internal class InviteCoordinatorImpl(
         }
         val isPlayback = try {
             com.uvp.sim.sip.SdpPlaybackParser.parse(req.body).isPlayback
-        } catch (_: Throwable) { false }
+        } catch (_: Throwable) {
+            // cross-review R1 #5:SDP 解析失败过去 `catch { false }` 把畸形 INVITE 当 live 处理 →
+            // 路由边界塌陷(畸形输入静默走直播分支,不回任何 SIP 错误)。
+            // fail-closed:解析失败回 400 Bad Request 并 Handled,不进任何媒体路径。
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 INVITE: SDP 解析失败(sourceIp=${envelope.sourceIp}) → 400"
+            )
+            sendSimpleResponse(req, statusCode = 400, reasonPhrase = "Bad Request")
+            return RoutingResult.Handled
+        }
         return if (isPlayback) RoutingResult.Skip
         else { handleInvite(envelope, req); RoutingResult.Handled }
     }
