@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 class PlatformResourcesAndroid(
     private val context: Context,
     private val networkLocalIp: () -> String? = { null },
+    configStoreOverride: ConfigStore? = null,
 ) : PlatformResources {
 
     override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? =
@@ -51,5 +52,5 @@ class PlatformResourcesAndroid(
     override val snapshotCache: JpegLocalCache? = JpegLocalCache.forContext(context)
     override val httpEngineFactory: (() -> HttpClientEngine)? = { CIO.create { requestTimeout = 30_000 } }
 
-    override val configStore: ConfigStore = ConfigStoreAndroid(context)
+    override val configStore: ConfigStore = configStoreOverride ?: ConfigStoreAndroid(context)
 }

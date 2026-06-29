@@ -45,7 +45,10 @@ import kotlinx.coroutines.launch
  *   - bindCamera / bindAudio / bindRecordingService 测试 seam 保留(仅用于单测注入 fake)
  *   - newCaptureConfig / newAudioCaptureConfig 保留,Activity 已不再用,留作向后兼容
  */
-class SipViewModel(application: Application) : AndroidViewModel(application) {
+class SipViewModel(
+    application: Application,
+    configStoreOverride: com.uvp.sim.app.ConfigStore? = null,
+) : AndroidViewModel(application) {
 
     /** 平台运行时 — 媒体装配(camera/audio/recording)收口在这里。
      *
@@ -64,6 +67,7 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         networkLocalIp = {
             (networkController.state.value as? com.uvp.sim.network.NetworkState.Bound)?.localIp
         },
+        configStoreOverride = configStoreOverride,
     )
 
     private val appEngine: AppEngine = AppEngine(
@@ -311,13 +315,23 @@ class SipViewModel(application: Application) : AndroidViewModel(application) {
         val result = com.uvp.sim.domain.CatalogTreeStore.validate(tree)
         if (result is com.uvp.sim.domain.ValidationResult.Invalid) return result
         val newCfg = appEngine.config.value.copy(catalogTree = tree)
-        _lastCatalogSavedAt.value = System.currentTimeMillis()
         viewModelScope.launch {
             // P1-1(2026-06-28):走局部应用 — 只刷 catalogTree 数据快照,
             // 不清 clockOffset / 不 cancelAll 订阅 / 不 reset mockGps。
             // updateCatalogTree 才是真正把新树推给 Coord(平台 NOTIFY)。
             appEngine.applyConfigPartial(newCfg)
-            runCatching { resources.configStore.save(newCfg) }
+            // cross-review R1 #4:持久化成功后才标记 lastCatalogSavedAt。
+            // 过去时间戳在协程外同步设置(save 还没跑就报成功),save 失败时 UI 仍显示
+            // "已保存"且会 NOTIFY 下发,重启后用户丢失编辑且无任何提示。
+            // 现在:save 成功 → 更新时间戳;save 失败 → 发错误事件,不更新时间戳。
+            val saved = runCatching { resources.configStore.save(newCfg) }
+            saved.onSuccess {
+                _lastCatalogSavedAt.value = System.currentTimeMillis()
+            }.onFailure { e ->
+                _events.update { current ->
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
+                }
+            }
             try {
                 appEngine.updateCatalogTree(tree)
             } catch (e: Throwable) {
