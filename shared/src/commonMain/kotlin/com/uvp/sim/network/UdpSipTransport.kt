@@ -79,7 +79,10 @@ class UdpSipTransport(
             LogLevel.Info, LogTag.Network,
             "UDP socket bound :$boundPort → ${remote.host}:${remote.port}"
         )
-        receiveJob = ownedScope.launch {
+        // 接收循环显式跑在 Dispatchers.Default:ownedScope 可能继承调用方
+        // (Android viewModelScope = Dispatchers.Main)的 context,而本循环含阻塞网络 IO
+        // (sk.receive / InetSocketAddress 反向 DNS),在主线程会触发 NetworkOnMainThreadException 崩溃。
+        receiveJob = ownedScope.launch(Dispatchers.Default) {
             while (isActive) {
                 val datagram = try {
                     sk.receive()

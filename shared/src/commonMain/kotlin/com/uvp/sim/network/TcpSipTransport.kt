@@ -211,7 +211,10 @@ class TcpSipTransport(
                 LogLevel.Info, LogTag.Network,
                 "TCP connected → ${remote.host}:${remote.port} keepalive=on"
             )
-            receiveJob = ownedScope.launch {
+            // 同 UdpSipTransport:接收循环含阻塞网络 IO(InetSocketAddress 反向 DNS 等),
+            // 显式跑在 Dispatchers.Default,避免继承调用方(Android viewModelScope = Main)
+            // 在主线程触发 NetworkOnMainThreadException 崩溃。
+            receiveJob = ownedScope.launch(Dispatchers.Default) {
                 val rc = readChannel ?: return@launch
                 // TCP 单连接,sourceIp/Port 在 connect() 后就确定,read loop 复用 remote endpoint。
                 val remoteAddr = sk.remoteAddress as? InetSocketAddress
