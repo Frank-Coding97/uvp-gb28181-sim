@@ -96,6 +96,34 @@ class TcpSipTransportTest {
     }
 
     @Test
+    fun detectContentLength_first_value_wins_matching_SipParser() {
+        // cross-review R1 #1 根治:SipParser 用 firstOrNull 取第一个 Content-Length。
+        // detectContentLength 必须对齐(首值优先),否则分帧读的字节数 != parser 认的 body。
+        assertEquals(
+            5,
+            TcpSipTransport.detectContentLength(listOf("Content-Length: 5", "Content-Length: 5")),
+            "重复但值相同 → 取首值 5"
+        )
+        assertEquals(
+            7,
+            TcpSipTransport.detectContentLength(listOf("Content-Length: 7", "Subject: x")),
+            "首个 Content-Length 即为准"
+        )
+    }
+
+    @Test
+    fun detectContentLength_conflicting_duplicates_throw() {
+        // 冲突的重复 Content-Length(如 `Content-Length: 5` 后跟 `l: 10`):分帧与 parser
+        // 会分歧致流错位 → fail-closed 抛异常关连接。
+        assertFailsWith<SipParseException> {
+            TcpSipTransport.detectContentLength(listOf("Content-Length: 5", "l: 10"))
+        }
+        assertFailsWith<SipParseException> {
+            TcpSipTransport.detectContentLength(listOf("l: 10", "Content-Length: 5"))
+        }
+    }
+
+    @Test
     fun detectContentLength_ignores_folded_continuation_lines() {
         // cross-review R1 #1 折叠根治:RFC 3261 §7.3.1 以 SP/HTAB 开头的续行是上一个
         // header 值的折叠,不是新 header。过去 TCP 分帧逐物理行判断,会把续行 " l: 5"

@@ -114,25 +114,37 @@ class TcpSipTransport(
         /**
          * cross-review R1 #1 折叠根治:从 TCP 分帧累积的 header 行列表里检测 Content-Length。
          *
-         * 必须跟 [SipParser] 的解析口径一致(RFC 3261 §7.3.1 行折叠):以 SP/HTAB 开头的
-         * 续行是上一个 header 值的延续,**不是**新 header。过去 TCP 分帧逐物理行判断,
-         * 会把续行 ` l: 5` / ` Content-Length: 5` 误当真 Content-Length 头,用一个从未声明
-         * 的长度去读 body → 流错位(false positive)。这里先剔除续行再匹配。
+         * **必须跟 [SipParser] 解析 body 的口径完全一致**,否则分帧读的字节数跟 parser
+         * 认的 body 长度不符 → TCP 流错位。两条对齐规则:
+         *
+         * 1. RFC 3261 §7.3.1 行折叠:以 SP/HTAB 开头的续行是上一个 header 值的延续,
+         *    **不是**新 header,跳过(否则续行 ` l: 5` 被误当真 Content-Length)。
+         * 2. 首值优先 + 重复 fail-closed:[SipParser] 用 `firstOrNull` 取**第一个** canonical
+         *    Content-Length。这里同样取首个;若后续再出现 Content-Length/`l:` 且值不同
+         *    (如 `Content-Length: 5` 后跟 `l: 10`),分帧与 parser 会分歧 → 抛
+         *    [SipParseException] 关连接(攻击者构造冲突头偷流字节)。
          *
          * @param headerLines 不含 start-line 之后、空行之前的所有物理 header 行(原样,未 trim)
          * @return 声明的 body 字节数(0..MAX_SIP_BODY_BYTES);无 Content-Length 头返回 0
-         * @throws SipParseException 值非法 / 负数 / 超上限(经 [parseContentLengthOrThrow])
+         * @throws SipParseException 值非法 / 负数 / 超上限 / 冲突的重复 Content-Length
          */
         internal fun detectContentLength(headerLines: List<String>): Int {
-            var contentLength = 0
+            var contentLength: Int? = null
             for (line in headerLines) {
-                // RFC 3261 §7.3.1:续行(leading WSP)是上一个 header 的折叠,跳过。
+                // 规则 1:续行(leading WSP)是上一个 header 的折叠,跳过。
                 if (line.startsWith(' ') || line.startsWith('\t')) continue
-                if (isContentLengthHeaderLine(line)) {
-                    contentLength = parseContentLengthOrThrow(line)
+                if (!isContentLengthHeaderLine(line)) continue
+                val parsed = parseContentLengthOrThrow(line)
+                // 规则 2:首值优先(对齐 SipParser firstOrNull);重复且冲突 → fail-closed。
+                if (contentLength == null) {
+                    contentLength = parsed
+                } else if (contentLength != parsed) {
+                    throw SipParseException(
+                        "Conflicting duplicate Content-Length: $contentLength vs $parsed"
+                    )
                 }
             }
-            return contentLength
+            return contentLength ?: 0
         }
 
         /**
