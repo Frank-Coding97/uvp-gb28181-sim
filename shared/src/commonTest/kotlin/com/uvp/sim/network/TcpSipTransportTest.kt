@@ -92,7 +92,16 @@ class TcpSipTransportTest {
         // 正常 header 列表:取到 Content-Length / 紧凑头 l: 的值
         assertEquals(42, TcpSipTransport.detectContentLength(listOf("Via: x", "Content-Length: 42")))
         assertEquals(42, TcpSipTransport.detectContentLength(listOf("Via: x", "l: 42")))
-        assertEquals(0, TcpSipTransport.detectContentLength(listOf("Via: x", "Call-ID: y")))
+    }
+
+    @Test
+    fun detectContentLength_missing_header_fails_closed() {
+        // cross-review R1 #1 收口:RFC 3261 §18.3 — TCP 流式必须带 Content-Length。
+        // 缺失时 SipParser 在内存里会"取剩余字节",但流式无边界,那样会吞掉后续消息字节
+        // (消息走私/错位)。所以缺失即 fail-closed 关连接。
+        assertFailsWith<SipParseException> {
+            TcpSipTransport.detectContentLength(listOf("Via: x", "Call-ID: y"))
+        }
     }
 
     @Test
@@ -133,17 +142,14 @@ class TcpSipTransportTest {
     @Test
     fun detectContentLength_ignores_folded_continuation_on_other_headers() {
         // RFC 3261 §7.3.1 折叠:别的 header 的续行恰好长得像 l:/Content-Length:,
-        // 折叠进上一个 header 后不再是独立 Content-Length,应忽略(返回 0)。
-        assertEquals(
-            0,
-            TcpSipTransport.detectContentLength(listOf("Subject: x", " l: 5")),
-            "折叠续行 ' l: 5' 归到 Subject,不是真 Content-Length"
-        )
-        assertEquals(
-            0,
-            TcpSipTransport.detectContentLength(listOf("Subject: x", "\tContent-Length: 5")),
-            "TAB 折叠续行也归到 Subject"
-        )
+        // 折叠进上一个 header 后不再是独立 Content-Length。此时无真 Content-Length →
+        // 按 missing 规则 fail-closed(关键:续行不能被误当真 CL)。
+        assertFailsWith<SipParseException>("折叠续行 ' l: 5' 归到 Subject,无真 CL → fail-closed") {
+            TcpSipTransport.detectContentLength(listOf("Subject: x", " l: 5"))
+        }
+        assertFailsWith<SipParseException>("TAB 折叠续行归到 Subject,无真 CL → fail-closed") {
+            TcpSipTransport.detectContentLength(listOf("Subject: x", "\tContent-Length: 5"))
+        }
         // 真 Content-Length 后跟一个普通折叠续行(纯文本),值仍合法
         assertEquals(
             10,

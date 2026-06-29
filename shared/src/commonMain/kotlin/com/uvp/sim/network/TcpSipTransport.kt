@@ -123,19 +123,25 @@ class TcpSipTransport(
          * 字节数跟 parser 认的 body 长度**永远一致**,不可能再漂移。
          *
          * 分帧额外的 fail-closed 守卫(流式场景特有,parser 在内存里可"取剩余"但流不行):
+         * - **缺失 Content-Length**:RFC 3261 §18.3 规定 TCP 流式传输必须带 Content-Length。
+         *   parser 在内存里无 CL 会回退"取剩余字节",但流式无边界 → 那样会把后续消息的
+         *   字节当本条 body 吞掉(消息走私/错位)。所以缺失即非法,抛异常关连接。
          * - header 存在但折叠后非数字(如 `Content-Length: 5` + 折叠 ` 0` → `"5 0"`):
          *   parser 会回退读剩余字节,流式无"剩余"概念 → 抛异常关连接
          * - 负数 / 超 [MAX_SIP_BODY_BYTES](DoS 上限)→ 抛异常
          *
          * @param headerLines start-line 之后、空行之前的所有物理 header 行(原样,未 trim)
-         * @return body 字节数(0..MAX_SIP_BODY_BYTES);无 Content-Length 头返回 0
-         * @throws SipParseException 头存在但非法 / 负数 / 超上限
+         * @return body 字节数(0..MAX_SIP_BODY_BYTES)
+         * @throws SipParseException Content-Length 缺失 / 非法 / 负数 / 超上限
          */
         internal fun detectContentLength(headerLines: List<String>): Int {
-            // 是否存在 Content-Length 头(折叠后判断,跟 parser 同口径)
+            // 折叠续行后判断(跟 parser 同口径)
             val folded = SipParser.foldContinuationLines(headerLines)
             val hasContentLength = folded.any { isContentLengthHeaderLine(it) }
-            if (!hasContentLength) return 0
+            // 缺失 Content-Length:流式下 parser 会"取剩余字节",分帧无法对齐 → fail-closed
+            if (!hasContentLength) {
+                throw SipParseException("TCP-framed SIP message missing Content-Length (RFC 3261 §18.3)")
+            }
 
             // 委托 parser 取值,保证口径一致;header 存在却取不到合法整数 → 流式 fail-closed
             val cl = SipParser.contentLengthFrom(folded)
