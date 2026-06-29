@@ -421,7 +421,14 @@ class AppEngine(
                 runtime.applyVideoConfig(captureConfigOf(new), audioCaptureConfigOf(new))
             }
         }
+        // cross-review R1 #3:持久化失败不能静默吞 —— 过去 runCatching 丢弃 save 异常,
+        // keystore/DataStore 写失败时引擎继续用未落盘的 config 跑,冷启动后改动丢失且用户无感知。
+        // 现在把失败上报为 TransportError,UI 能提示;运行期仍沿用新 config(用户可见即所得),
+        // 但至少不再假装持久化成功。
         runCatching { resources.configStore.save(new) }
+            .onFailure { e ->
+                holders.events.emit(com.uvp.sim.domain.transportErrorOf("保存配置", e))
+            }
         if (engine != null) {
             disconnect()
             connect()

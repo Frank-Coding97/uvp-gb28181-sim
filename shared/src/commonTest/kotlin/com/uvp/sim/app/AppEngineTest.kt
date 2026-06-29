@@ -9,6 +9,7 @@ import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -238,6 +239,48 @@ class AppEngineTest {
         assertTrue(
             registry.subscriptions.value["MobilePosition"]?.active == true,
             "subscriptionRegistry 必须保留,实际=${registry.subscriptions.value}"
+        )
+    }
+
+    // ---------- cross-review R1 #3:config 持久化失败必须上报,不能静默吞 ----------
+
+    /** save 抛异常的 ConfigStore — 模拟 keystore/DataStore 写失败。 */
+    private class ThrowingSaveConfigStore : ConfigStore {
+        var saveAttempts = 0
+        override suspend fun loadOnce(fallback: SimConfig): SimConfig = fallback
+        override suspend fun save(config: SimConfig) {
+            saveAttempts++
+            throw IllegalStateException("模拟持久化失败(keystore/DataStore)")
+        }
+    }
+
+    @Test
+    fun updateConfig_persistence_failure_emits_error_event() = runTest {
+        val store = ThrowingSaveConfigStore()
+        val app = AppEngine(
+            resources = FakePlatformResources(configStore = store),
+            runtime = FakePlatformRuntime(),
+            initialConfig = config(),
+            parentScope = this,
+        )
+        runCurrent()
+
+        val collected = mutableListOf<com.uvp.sim.domain.SimEvent>()
+        backgroundScope.launch { app.events.collect { collected += it } }
+        runCurrent()
+
+        // 改 deviceId(非 video,不触发 reconnect 路径以隔离持久化语义)
+        val newCfg = app.config.value.copy(
+            device = app.config.value.device.copy(deviceId = "35020000001310000009"),
+        )
+        app.updateConfig(newCfg)
+        runCurrent()
+
+        assertTrue(store.saveAttempts >= 1, "应尝试过持久化")
+        val errs = collected.filterIsInstance<com.uvp.sim.domain.SimEvent.TransportError>()
+        assertTrue(
+            errs.isNotEmpty(),
+            "config 持久化失败必须 emit TransportError,不能静默吞(runCatching 丢弃)。实际收到: $collected",
         )
     }
 }
