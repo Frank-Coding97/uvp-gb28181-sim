@@ -316,22 +316,23 @@ class SipViewModel(
         if (result is com.uvp.sim.domain.ValidationResult.Invalid) return result
         val newCfg = appEngine.config.value.copy(catalogTree = tree)
         viewModelScope.launch {
+            // cross-review R1 #4 (+ verify-1 补强):commit-on-success。
+            // 过去先 applyConfigPartial + 同步标记时间戳,再 runCatching{save} 吞失败 →
+            // save 失败时未落盘的树照样进运行态、NOTIFY 下发给平台,重启后丢编辑且 UI 假报成功。
+            // 现在:先持久化,成功才把新树应用到本地/运行态 + 标记时间戳 + 推平台;
+            //       失败只发 TransportError,运行态 catalog 保持不变(硬停止)。
+            val saved = runCatching { resources.configStore.save(newCfg) }
+            saved.onFailure { e ->
+                _events.update { current ->
+                    (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
+                }
+                return@launch
+            }
             // P1-1(2026-06-28):走局部应用 — 只刷 catalogTree 数据快照,
             // 不清 clockOffset / 不 cancelAll 订阅 / 不 reset mockGps。
             // updateCatalogTree 才是真正把新树推给 Coord(平台 NOTIFY)。
             appEngine.applyConfigPartial(newCfg)
-            // cross-review R1 #4:持久化成功后才标记 lastCatalogSavedAt。
-            // 过去时间戳在协程外同步设置(save 还没跑就报成功),save 失败时 UI 仍显示
-            // "已保存"且会 NOTIFY 下发,重启后用户丢失编辑且无任何提示。
-            // 现在:save 成功 → 更新时间戳;save 失败 → 发错误事件,不更新时间戳。
-            val saved = runCatching { resources.configStore.save(newCfg) }
-            saved.onSuccess {
-                _lastCatalogSavedAt.value = System.currentTimeMillis()
-            }.onFailure { e ->
-                _events.update { current ->
-                    (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
-                }
-            }
+            _lastCatalogSavedAt.value = System.currentTimeMillis()
             try {
                 appEngine.updateCatalogTree(tree)
             } catch (e: Throwable) {

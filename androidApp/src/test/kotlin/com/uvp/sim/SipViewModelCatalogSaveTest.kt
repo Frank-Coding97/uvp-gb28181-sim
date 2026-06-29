@@ -13,6 +13,7 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -73,6 +74,7 @@ class SipViewModelCatalogSaveTest {
                 com.uvp.sim.config.CatalogNodeType.VideoChannel, "Cam", dev,
             ),
         )
+        val baselineTree = vm.catalogTree.value
         val vr = vm.saveCatalogTree(tree)
         advanceUntilIdle()
 
@@ -85,6 +87,13 @@ class SipViewModelCatalogSaveTest {
         assertTrue(
             "save 失败必须 emit TransportError,实际 events=${vm.events.value}",
             errs.isNotEmpty(),
+        )
+        // verify-1 补强(CodeX R1 verify):save 失败必须是本地/运行态 catalog 变更的硬停止 —
+        // 不能 applyConfigPartial / updateCatalogTree 把未落盘的树推进运行态并 NOTIFY 下发。
+        assertEquals(
+            "save 失败时 catalogTree 不能被未落盘的新树覆盖(commit-on-success)",
+            baselineTree,
+            vm.catalogTree.value,
         )
     }
 }
