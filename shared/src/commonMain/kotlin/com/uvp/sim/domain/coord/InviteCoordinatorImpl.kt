@@ -474,30 +474,7 @@ internal class InviteCoordinatorImpl(
             return
         }
 
-        // 5.14 ACK watchdog
-        // R1 #4:ACK 超时不能只发事件,媒体管线已开,必须 stopActiveStream 释放
-        // RTP / RTCP / camera / audio,否则在永不 ACK 场景下推流持续 → 资源泄漏 + 假"已连接"。
-        // R1 #4 (verify follow-up):awaitingAckCallId 检查与置空放进 mutex,
-        // 避免与 handleAck 并发竞态(ACK 在超时回调判断后才到达 → 双进 cleanup)。
-        awaitingAckCallId = cid
-        ackTimeoutJob?.cancel()
-        ackTimeoutJob = scope.launch {
-            delay(ACK_TIMEOUT_MS)
-            val shouldFire = mutex.withLock {
-                if (awaitingAckCallId == cid) {
-                    awaitingAckCallId = null
-                    true
-                } else false
-            }
-            if (shouldFire) {
-                simEventEmit(SimEvent.InviteAckTimeout(cid))
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Lifecycle,
-                    "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开,释放媒体管线"
-                )
-                stopActiveStream(cid, "ACK timeout (${ACK_TIMEOUT_MS / 1000}s)")
-            }
-        }
+        installAckWatchdog(cid)
 
         simEventEmit(SimEvent.StreamStarted(cid, offer.remoteIp, offer.remotePort, ssrc))
         SystemLogger.emit(
@@ -505,6 +482,76 @@ internal class InviteCoordinatorImpl(
             "开始推流 → ${offer.remoteIp}:${offer.remotePort} ssrc=$ssrc"
         )
 
+        val media = launchMediaJobs(cid, rtp, offer, ssrc, cam)
+
+        val statsJob = scope.launch {
+            while (true) {
+                delay(MEDIA_STATS_INTERVAL_MS)
+                val a = activeStream ?: break
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "RTP 推送中: ${a.frameCount} 帧 / ${a.packetCount} 包"
+                )
+                simEventEmit(
+                    SimEvent.StreamStats(
+                        callId = a.callId,
+                        frameCount = a.frameCount,
+                        packetCount = a.packetCount,
+                    )
+                )
+            }
+        }
+
+        activeStream = ActiveStream(
+            callId = cid,
+            ssrc = ssrc,
+            rtpSender = rtp,
+            streamJob = media.streamJob,
+            audioJob = media.audioJob,
+            rtcpSender = media.rtcpSender,
+            rtcpJob = media.rtcpJob,
+            localUri = localUri,
+            localTag = localToTag,
+            remoteUri = remoteUri,
+            remoteTag = remoteTag,
+            remoteTarget = remoteTarget,
+            channelId = channelId,
+            remoteHost = offer.remoteIp,
+            remotePort = offer.remotePort,
+            // P1-3:记录建立 dialog 时 envelope 真实来源 IP,后续 mid-dialog 校验。
+            remoteSourceIp = envelope.sourceIp,
+            statsJob = statsJob,
+        )
+        _activeStreamSnapshot.value = ActiveStreamSnapshot(
+            callId = cid, channelId = channelId,
+            remoteHost = offer.remoteIp, remotePort = offer.remotePort, ssrc = ssrc,
+        )
+        _state.value = InviteState.Streaming
+    }
+
+    /** [doAcceptInvite] 启动的媒体推流 job 集合(视频 / 音频 / RTCP)+ RTCP 发送器。 */
+    private class MediaJobs(
+        val streamJob: Job,
+        val audioJob: Job?,
+        val rtcpSender: RtpSender,
+        val rtcpJob: Job,
+    )
+
+    /**
+     * 启动视频 / 音频 / RTCP 推流 job —— 从 [doAcceptInvite] 抽出。
+     *
+     * 视频帧 / 音频帧经 [com.uvp.sim.media.PsMuxer] + [com.uvp.sim.media.RtpPacker]
+     * 打包后走 [rtp] 发送,共享一把 [Mutex] 串行化(RTP 序列号 / 计数器)。RTCP SR
+     * 每 [RTCP_SR_INTERVAL_MS] 反馈一次。推流统计累加进 [activeStream](由调用方在本
+     * 方法返回后赋值,job 内通过 `activeStream?.let` 安全读)。
+     */
+    private suspend fun launchMediaJobs(
+        cid: String,
+        rtp: RtpSender,
+        offer: com.uvp.sim.sip.SdpOffer,
+        ssrc: String,
+        cam: com.uvp.sim.camera.CameraCapture,
+    ): MediaJobs {
         val packer = com.uvp.sim.media.RtpPacker(
             payloadType = 96,
             ssrc = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc),
@@ -567,7 +614,7 @@ internal class InviteCoordinatorImpl(
         }
 
         // RTCP SR 反馈
-        val rtcp = sender(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP, null)
+        val rtcp = rtpSenderFactory!!(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP, null)
         try { rtcp.bindLocalPort() } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("RTCP bind", e))
         }
@@ -589,48 +636,40 @@ internal class InviteCoordinatorImpl(
             }
         }
 
-        activeStream = ActiveStream(
-            callId = cid,
-            ssrc = ssrc,
-            rtpSender = rtp,
-            streamJob = streamJob,
-            audioJob = audioJob,
-            rtcpSender = rtcp,
-            rtcpJob = rtcpJob,
-            localUri = localUri,
-            localTag = localToTag,
-            remoteUri = remoteUri,
-            remoteTag = remoteTag,
-            remoteTarget = remoteTarget,
-            channelId = channelId,
-            remoteHost = offer.remoteIp,
-            remotePort = offer.remotePort,
-            // P1-3:记录建立 dialog 时 envelope 真实来源 IP,后续 mid-dialog 校验。
-            remoteSourceIp = envelope.sourceIp,
-            statsJob = scope.launch {
-                while (true) {
-                    delay(MEDIA_STATS_INTERVAL_MS)
-                    val a = activeStream ?: break
-                    SystemLogger.emit(
-                        LogLevel.Info, LogTag.Media,
-                        "RTP 推送中: ${a.frameCount} 帧 / ${a.packetCount} 包"
-                    )
-                    simEventEmit(
-                        SimEvent.StreamStats(
-                            callId = a.callId,
-                            frameCount = a.frameCount,
-                            packetCount = a.packetCount,
-                        )
-                    )
-                }
-            },
-        )
-        _activeStreamSnapshot.value = ActiveStreamSnapshot(
-            callId = cid, channelId = channelId,
-            remoteHost = offer.remoteIp, remotePort = offer.remotePort, ssrc = ssrc,
-        )
-        _state.value = InviteState.Streaming
+        return MediaJobs(streamJob, audioJob, rtcp, rtcpJob)
     }
+
+
+    /**
+     * 5.14 ACK watchdog —— 从 [doAcceptInvite] 抽出。
+     *
+     * R1 #4:ACK 超时不能只发事件,媒体管线已开,必须 stopActiveStream 释放
+     * RTP / RTCP / camera / audio,否则在永不 ACK 场景下推流持续 → 资源泄漏 + 假"已连接"。
+     * R1 #4 (verify follow-up):awaitingAckCallId 检查与置空放进 mutex,
+     * 避免与 handleAck 并发竞态(ACK 在超时回调判断后才到达 → 双进 cleanup)。
+     */
+    private fun installAckWatchdog(cid: String) {
+        awaitingAckCallId = cid
+        ackTimeoutJob?.cancel()
+        ackTimeoutJob = scope.launch {
+            delay(ACK_TIMEOUT_MS)
+            val shouldFire = mutex.withLock {
+                if (awaitingAckCallId == cid) {
+                    awaitingAckCallId = null
+                    true
+                } else false
+            }
+            if (shouldFire) {
+                simEventEmit(SimEvent.InviteAckTimeout(cid))
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开,释放媒体管线"
+                )
+                stopActiveStream(cid, "ACK timeout (${ACK_TIMEOUT_MS / 1000}s)")
+            }
+        }
+    }
+
     /**
      * P1-3:把 envelope 跟 activeStream dialog identity 比对(直播链路 mid-dialog 守卫)。
      *
