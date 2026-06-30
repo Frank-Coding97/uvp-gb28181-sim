@@ -128,6 +128,14 @@ internal class InviteCoordinatorImpl(
             this@InviteCoordinatorImpl.simEventEmit(event)
     }
     private val dialogHandler = InviteDialogHandler(sharedState)
+    private val mediaPipeline: InviteMediaPipeline? = rtpSenderFactory?.let { factory ->
+        InviteMediaPipeline(
+            shared = sharedState,
+            rtpSenderFactory = factory,
+            audioCapture = audioCapture,
+            clockOffsetProvider = clockOffsetProvider,
+        )
+    }
 
     /**
      * cross-review R3 拆分:`internal`(原 private)— 让同 package 的
@@ -601,26 +609,12 @@ internal class InviteCoordinatorImpl(
         )
 
         // cross-review R3 #2:media jobs 全部用 LAZY 启动,先**赋 activeStream 发布**,
-        // 再 start —— 这样任一 job 立即失败时,catch 里调 stopActiveStream 拿到的不是 null,
-        // teardown 能正确销毁 audio / rtcp / stats / cam 所有资源。
-        val media = launchMediaJobs(cid, rtp, offer, ssrc, cam)
-
-        val statsJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-            while (true) {
-                delay(MEDIA_STATS_INTERVAL_MS)
-                val a = activeStream ?: break
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Media,
-                    "RTP 推送中: ${a.frameCount} 帧 / ${a.packetCount} 包"
-                )
-                simEventEmit(
-                    SimEvent.StreamStats(
-                        callId = a.callId,
-                        frameCount = a.frameCount,
-                        packetCount = a.packetCount,
-                    )
-                )
-            }
+        // 再 startAll() —— 这样任一 job 立即失败时,onMediaFailure 回调能看到已发布的 activeStream。
+        // R3 拆分:launchMediaJobs/launchVideoSendLoop/launchAudioSendLoop/launchRtcpSrLoop
+        // 全部迁到 InviteMediaPipeline.build,主类只编排顺序。
+        val pipeline = mediaPipeline ?: error("rtpSenderFactory null,不该进 doAcceptInvite 媒体段")
+        val media = pipeline.build(cid, rtp, offer, ssrc, cam) { failedCid, reason ->
+            cleanupActiveStream(reason, sipEvent = SipEvent.CallEnded, callId = failedCid)
         }
 
         activeStream = ActiveStream(
@@ -641,7 +635,7 @@ internal class InviteCoordinatorImpl(
             remotePort = offer.remotePort,
             // P1-3:记录建立 dialog 时 envelope 真实来源 IP,后续 mid-dialog 校验。
             remoteSourceIp = envelope.sourceIp,
-            statsJob = statsJob,
+            statsJob = media.statsJob,
         )
         _activeStreamSnapshot.value = ActiveStreamSnapshot(
             callId = cid, channelId = channelId,
@@ -649,191 +643,10 @@ internal class InviteCoordinatorImpl(
         )
         _state.value = InviteState.Streaming
 
-        // R3 #2:activeStream 发布完成,显式 start 所有 LAZY job。
-        // start() 是 idempotent —— 多次调用无副作用。
-        media.streamJob.start()
-        media.audioJob?.start()
-        media.rtcpJob.start()
-        statsJob.start()
+        // R3 #2:activeStream 发布完成,启动所有 LAZY job。
+        media.startAll()
     }
 
-    /** [doAcceptInvite] 启动的媒体推流 job 集合(视频 / 音频 / RTCP)+ RTCP 发送器。 */
-    private class MediaJobs(
-        val streamJob: Job,
-        val audioJob: Job?,
-        val rtcpSender: RtpSender,
-        val rtcpJob: Job,
-    )
-
-    /**
-     * 启动视频 / 音频 / RTCP 推流 job —— 从 [doAcceptInvite] 抽出。
-     *
-     * 视频帧 / 音频帧经 [com.uvp.sim.media.PsMuxer] + [com.uvp.sim.media.RtpPacker]
-     * 打包后走 [rtp] 发送,共享一把 [Mutex] 串行化(RTP 序列号 / 计数器)。RTCP SR
-     * 每 [RTCP_SR_INTERVAL_MS] 反馈一次。推流统计累加进 [activeStream](由调用方在本
-     * 方法返回后赋值,job 内通过 `activeStream?.let` 安全读)。
-     *
-     * cross-review R2 #2:本函数过去 92 LOC 糅合 video / audio / RTCP / RTCP-bind /
-     * 故障 teardown,单点改一处易回归另一处。现在仅作编排,实际 loop 拆至
-     * [launchVideoSendLoop] / [launchAudioSendLoop] / [launchRtcpSrLoop],
-     * 三处共享同一 [Mutex] / [activeStream] / [stopActiveStream] 入口。
-     */
-    private suspend fun launchMediaJobs(
-        cid: String,
-        rtp: RtpSender,
-        offer: com.uvp.sim.sip.SdpOffer,
-        ssrc: String,
-        cam: com.uvp.sim.camera.CameraCapture,
-    ): MediaJobs {
-        val packer = com.uvp.sim.media.RtpPacker(
-            payloadType = 96,
-            ssrc = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc),
-        )
-        val muxer = com.uvp.sim.media.PsMuxer().apply {
-            audioCodec = if (audioCapture != null) config.video.audioCodec else null
-        }
-        val rtpMutex = Mutex()
-
-        val streamJob = launchVideoSendLoop(cid, cam, muxer, packer, rtp, rtpMutex)
-        val audioJob = audioCapture?.let { audio ->
-            launchAudioSendLoop(cid, audio, muxer, packer, rtp, rtpMutex)
-        }
-
-        // RTCP SR 反馈 sender 在 launchMediaJobs 内创建(失败 emit 事件不阻断主流程,
-        // 跟历史一致),loop 单独抽出。
-        val rtcp = rtpSenderFactory!!(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP, null)
-        try { rtcp.bindLocalPort() } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTCP bind", e))
-        }
-        val rtcpJob = launchRtcpSrLoop(ssrc, rtcp)
-
-        return MediaJobs(streamJob, audioJob, rtcp, rtcpJob)
-    }
-
-    /**
-     * 视频帧 → PS 封装 → RTP 打包 → 发送 + 计数。
-     *
-     * 失败时通过 [simEventEmit] 上报 TransportError 并异步触发 [stopActiveStream] 释放整个
-     * 推流(因为视频是主流,挂了等于会话死)。Cancellation 直透。
-     *
-     * cross-review R3 #2:job 用 [kotlinx.coroutines.CoroutineStart.LAZY] 启动 —— 调用方
-     * 必须在赋值 [activeStream] 之后再 `streamJob.start()` 显式启动。否则 job 立即失败时,
-     * catch 里的 `stopActiveStream` 拿到 activeStream==null 是 no-op,留下 audio/rtcp/cam 残留。
-     */
-    private fun launchVideoSendLoop(
-        cid: String,
-        cam: com.uvp.sim.camera.CameraCapture,
-        muxer: com.uvp.sim.media.PsMuxer,
-        packer: com.uvp.sim.media.RtpPacker,
-        rtp: RtpSender,
-        rtpMutex: Mutex,
-    ): Job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-        try {
-            cam.start().collect { frame ->
-                val ps = muxer.muxFrame(frame)
-                val timestamp90k = frame.timestampUs * 9 / 100
-                // cross-review R2 #2 (verify follow-up):pack 必须跟 send 在同一把 mutex 下,
-                // 否则 video / audio 并发时 RtpPacker 内部序列号自增竞态,RFC 3550 单调递增
-                // 不变量被破坏(平台侧表现:乱序丢包 / jitter buffer 摆动)。
-                rtpMutex.withLock {
-                    val packets = packer.packFrame(ps, timestamp90k)
-                    for (p in packets) {
-                        rtp.send(p)
-                        activeStream?.let {
-                            it.packetCount += 1
-                            it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
-                            it.lastRtpTimestamp = timestamp90k
-                        }
-                    }
-                }
-                activeStream?.let { it.frameCount += 1 }
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP video send", e))
-            scope.launch { stopActiveStream(cid, "video send failed: ${e::class.simpleName}") }
-        }
-    }
-
-    /**
-     * 音频帧 → PS 封装 → RTP 打包 → 发送 + 计数(不更新 lastRtpTimestamp /
-     * frameCount,这两是视频侧统计入口)。
-     *
-     * 跟视频共享 [rtpMutex] 保证 RTP 序列号串行。失败同款 stopActiveStream 释放推流。
-     *
-     * cross-review R3 #2:LAZY,要 doAcceptInvite 赋 activeStream 后显式 start()。
-     */
-    private fun launchAudioSendLoop(
-        cid: String,
-        audio: com.uvp.sim.camera.AudioCapture,
-        muxer: com.uvp.sim.media.PsMuxer,
-        packer: com.uvp.sim.media.RtpPacker,
-        rtp: RtpSender,
-        rtpMutex: Mutex,
-    ): Job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-        try {
-            audio.start().collect { aFrame ->
-                val ps = muxer.muxAudio(aFrame)
-                val timestamp90k = aFrame.timestampUs * 9 / 100
-                // cross-review R2 #2 (verify follow-up):同 video loop —— pack 进 mutex,
-                // RtpPacker 序列号串行,避免跟 video 并发时 RFC 3550 单调递增被破坏。
-                rtpMutex.withLock {
-                    val packets = packer.packFrame(ps, timestamp90k)
-                    for (p in packets) {
-                        rtp.send(p)
-                        activeStream?.let {
-                            it.packetCount += 1
-                            it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
-                        }
-                    }
-                }
-            }
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP audio send", e))
-            scope.launch { stopActiveStream(cid, "audio send failed: ${e::class.simpleName}") }
-        }
-    }
-
-    /**
-     * RTCP SR 周期反馈循环,每 [RTCP_SR_INTERVAL_MS] 一发,直到 [activeStream] 被清空。
-     *
-     * 单条 SR build/send 失败 [runCatching] 静默(SR 是辅助统计,丢一两条不影响推流),
-     * 跟历史行为一致。
-     *
-     * cross-review R3 #2:LAZY,要 doAcceptInvite 赋 activeStream 后显式 start()。
-     */
-    private fun launchRtcpSrLoop(ssrc: String, rtcp: RtpSender): Job {
-        val ssrcInt = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
-        return scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-            while (true) {
-                delay(RTCP_SR_INTERVAL_MS)
-                val a = activeStream ?: break
-                runCatching {
-                    val sr = com.uvp.sim.rtp.RtcpSender.buildSR(
-                        ssrc = ssrcInt,
-                        ntpEpochMs = clockOffsetProvider().adjustedNowMs(),
-                        rtpTimestamp = a.lastRtpTimestamp,
-                        senderPacketCount = a.packetCount.toLong(),
-                        senderOctetCount = a.octetCount,
-                    )
-                    rtcp.send(sr)
-                }
-            }
-        }
-    }
-
-
-    /**
-     * 5.14 ACK watchdog —— 从 [doAcceptInvite] 抽出。
-     *
-     * R1 #4:ACK 超时不能只发事件,媒体管线已开,必须 stopActiveStream 释放
-     * RTP / RTCP / camera / audio,否则在永不 ACK 场景下推流持续 → 资源泄漏 + 假"已连接"。
-     * R1 #4 (verify follow-up):awaitingAckCallId 检查与置空放进 mutex,
-     * 避免与 handleAck 并发竞态(ACK 在超时回调判断后才到达 → 双进 cleanup)。
-     */
     /**
      * R3 拆分 — stopActiveStream 是 cleanupActiveStream 的薄封装,保留供 stopStream 内部调。
      * 行为完全等价于 cleanupActiveStream(reason, CallEnded, callId)。
