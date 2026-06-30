@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 
 /**
  * AppEngine — 装配根(P1.5 真下沉)。
@@ -79,6 +80,7 @@ class AppEngine(
     // R2 #3:每次 connect() 会 launch 3 个桥接 collector(currentChannelName / currentBroadcast /
     // broadcastSpeakerOn),disconnect 不取消时会泄漏。
     private val bridgeJobs = mutableListOf<kotlinx.coroutines.Job>()
+    private val bridgeJobsMutex = kotlinx.coroutines.sync.Mutex()
 
     /**
      * 媒体装配三件套 — 由 [runtime] 在 connect 时装配 + 缓存(P3-3 装配下沉)。
@@ -199,7 +201,7 @@ class AppEngine(
      * R3 verify-followup #4:engine 字段只在所有 wiring 成功后才发布,wiring 抛错时
      * cancel 已起的 bridge job + 清 snapshotHttp,避免半初始化的 engine 被下次 reuseExistingEngine 命中。
      */
-    private fun wireSessionAndBridges(cfg: SimConfig, tx: SipTransport): SimulatorEngine {
+    private suspend fun wireSessionAndBridges(cfg: SimConfig, tx: SipTransport): SimulatorEngine {
         val outbox = SipOutboxImpl(tx) { ev -> holders.events.emit(ev) }
         ensureMediaBuilt(cfg)
         var engineRef: SimulatorEngine? = null
@@ -232,7 +234,7 @@ class AppEngine(
 
         // 所有 wiring 成功 → 公布 engine + 合并 bridge job
         snapshotHttp = localSnapshotHttp
-        bridgeJobs += localBridgeJobs
+        bridgeJobsMutex.withLock { bridgeJobs += localBridgeJobs }
         engine = eng
         return eng
     }
@@ -389,8 +391,7 @@ class AppEngine(
         try { eng.shutdown() } catch (_: Throwable) {}
         try { transport?.close() } catch (_: Throwable) {}
         try { snapshotHttp?.close() } catch (_: Throwable) {}
-        bridgeJobs.forEach { it.cancel() }
-        bridgeJobs.clear()
+        bridgeJobsMutex.withLock { bridgeJobs.forEach { it.cancel() }; bridgeJobs.clear() }
         engine = null
         transport = null
         snapshotHttp = null
@@ -402,8 +403,7 @@ class AppEngine(
         try { eng.shutdown() } catch (_: Throwable) {}
         try { transport?.close() } catch (_: Throwable) {}
         try { snapshotHttp?.close() } catch (_: Throwable) {}
-        bridgeJobs.forEach { it.cancel() }
-        bridgeJobs.clear()
+        bridgeJobsMutex.withLock { bridgeJobs.forEach { it.cancel() }; bridgeJobs.clear() }
         engine = null
         transport = null
         snapshotHttp = null
