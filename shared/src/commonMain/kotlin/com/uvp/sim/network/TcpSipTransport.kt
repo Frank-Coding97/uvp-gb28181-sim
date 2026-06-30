@@ -220,40 +220,55 @@ class TcpSipTransport(
                 val remoteAddr = sk.remoteAddress as? InetSocketAddress
                 val sourceIp = remoteAddr?.hostname ?: remote.host
                 val sourcePort = remoteAddr?.port ?: remote.port
-                while (isActive) {
-                    try {
-                        val msg = readSipMessage(rc) ?: break
-                        _incoming.emit(
-                            SipEnvelope(
-                                message = msg,
-                                sourceIp = sourceIp,
-                                sourcePort = sourcePort,
-                                transport = TransportType.TCP,
+                var shouldRelease = false
+                try {
+                    while (isActive) {
+                        try {
+                            val msg = readSipMessage(rc)
+                            if (msg == null) {
+                                // EOF / 对端 FIN:跟 parse 错误同款,read 已结束,transport 不再可用。
+                                shouldRelease = true
+                                break
+                            }
+                            _incoming.emit(
+                                SipEnvelope(
+                                    message = msg,
+                                    sourceIp = sourceIp,
+                                    sourcePort = sourcePort,
+                                    transport = TransportType.TCP,
+                                )
                             )
-                        )
-                    } catch (e: SipParseException) {
-                        // R1 #8:帧级解析错误(畸形 Content-Length / 越界 / Header 截断)
-                        // 不能 continue —— 后续字节流已经无法对齐到合法帧边界,继续读
-                        // 只会循环消费垃圾数据。直接 break read-loop。
-                        //
-                        // cross-review R2 #5:仅 break 会留 half-open —— socket / writeChannel
-                        // 还活着、_incoming 永不再 emit,上层 send 不会失败、health-check 拿不到
-                        // 终结信号。这里异步 launch close() 释放 socket/selector/writeChannel,
-                        // 让上层 send 立即抛 "Transport not connected" 触发重连决策。
-                        SystemLogger.emit(
-                            LogLevel.Warning, LogTag.Network,
-                            "TCP SIP framing error, dropping connection: ${e.message}"
-                        )
+                        } catch (e: SipParseException) {
+                            // R1 #8:帧级解析错误(畸形 Content-Length / 越界 / Header 截断)
+                            // 不能 continue —— 后续字节流已经无法对齐到合法帧边界,继续读
+                            // 只会循环消费垃圾数据。直接 break read-loop。
+                            SystemLogger.emit(
+                                LogLevel.Warning, LogTag.Network,
+                                "TCP SIP framing error, dropping connection: ${e.message}"
+                            )
+                            shouldRelease = true
+                            break
+                        } catch (e: Throwable) {
+                            if (!isActive) break
+                            SystemLogger.emit(
+                                LogLevel.Warning, LogTag.Network,
+                                "TCP read error: ${e::class.simpleName}: ${e.message}"
+                            )
+                            shouldRelease = true
+                            break
+                        }
+                    }
+                } finally {
+                    // cross-review R2 #5 (verify follow-up):任何"非 cancellation"终止 read loop
+                    // (EOF / parse error / 其他 read 错)都必须**同步**置空 writeChannel/readChannel,
+                    // 否则上层 send 在 close() 异步 mutex.withLock 完成前还能往死链接里写,UI 看不到
+                    // 终结信号。socket / selector 的 fd 释放仍可异步,因为它们的 close() 进 mutex 阻塞。
+                    //
+                    // cancellation (shouldRelease=false) 走正常 close() 路径,不重复释放。
+                    if (shouldRelease) {
+                        writeChannel = null
+                        readChannel = null
                         ownedScope.launch { runCatching { close() } }
-                        break
-                    } catch (e: Throwable) {
-                        if (!isActive) break
-                        SystemLogger.emit(
-                            LogLevel.Warning, LogTag.Network,
-                            "TCP read error: ${e::class.simpleName}: ${e.message}"
-                        )
-                        ownedScope.launch { runCatching { close() } }
-                        break
                     }
                 }
             }

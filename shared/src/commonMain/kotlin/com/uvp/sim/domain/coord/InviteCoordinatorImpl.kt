@@ -600,8 +600,11 @@ internal class InviteCoordinatorImpl(
             cam.start().collect { frame ->
                 val ps = muxer.muxFrame(frame)
                 val timestamp90k = frame.timestampUs * 9 / 100
-                val packets = packer.packFrame(ps, timestamp90k)
+                // cross-review R2 #2 (verify follow-up):pack 必须跟 send 在同一把 mutex 下,
+                // 否则 video / audio 并发时 RtpPacker 内部序列号自增竞态,RFC 3550 单调递增
+                // 不变量被破坏(平台侧表现:乱序丢包 / jitter buffer 摆动)。
                 rtpMutex.withLock {
+                    val packets = packer.packFrame(ps, timestamp90k)
                     for (p in packets) {
                         rtp.send(p)
                         activeStream?.let {
@@ -639,8 +642,10 @@ internal class InviteCoordinatorImpl(
             audio.start().collect { aFrame ->
                 val ps = muxer.muxAudio(aFrame)
                 val timestamp90k = aFrame.timestampUs * 9 / 100
-                val packets = packer.packFrame(ps, timestamp90k)
+                // cross-review R2 #2 (verify follow-up):同 video loop —— pack 进 mutex,
+                // RtpPacker 序列号串行,避免跟 video 并发时 RFC 3550 单调递增被破坏。
                 rtpMutex.withLock {
+                    val packets = packer.packFrame(ps, timestamp90k)
                     for (p in packets) {
                         rtp.send(p)
                         activeStream?.let {
