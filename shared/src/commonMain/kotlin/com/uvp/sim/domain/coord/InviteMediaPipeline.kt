@@ -103,8 +103,8 @@ internal class InviteMediaPipeline(
         try { rtcp.bindLocalPort() } catch (e: Throwable) {
             shared.simEventEmit(transportErrorOf("RTCP bind", e))
         }
-        val rtcpJob = launchRtcpSrLoop(ssrc, rtcp)
-        val statsJob = launchStatsLoop(cid)
+        val rtcpJob = launchRtcpSrLoop(ssrc, rtcp, rtpMutex)
+        val statsJob = launchStatsLoop(cid, rtpMutex)
 
         return MediaJobs(streamJob, audioJob, rtcp, rtcpJob, statsJob)
     }
@@ -123,6 +123,7 @@ internal class InviteMediaPipeline(
                 val ps = muxer.muxFrame(frame)
                 val timestamp90k = frame.timestampUs * 9 / 100
                 // R2 #2 verify-followup: pack 跟 send 在同一把 mutex,RFC 3550 序列号单调递增
+                // R4 #2:frameCount 一同收进 rtpMutex 保护范围,避免 stats/RTCP loop torn read
                 rtpMutex.withLock {
                     val packets = packer.packFrame(ps, timestamp90k)
                     for (p in packets) {
@@ -133,8 +134,8 @@ internal class InviteMediaPipeline(
                             it.lastRtpTimestamp = timestamp90k
                         }
                     }
+                    shared.currentActiveStream()?.let { it.frameCount += 1 }
                 }
-                shared.currentActiveStream()?.let { it.frameCount += 1 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -176,19 +177,23 @@ internal class InviteMediaPipeline(
         }
     }
 
-    private fun launchRtcpSrLoop(ssrc: String, rtcp: RtpSender): Job {
+    private fun launchRtcpSrLoop(ssrc: String, rtcp: RtpSender, rtpMutex: Mutex): Job {
         val ssrcInt = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
         return shared.scope.launch(start = CoroutineStart.LAZY) {
             while (true) {
                 delay(rtcpSrIntervalMs)
                 val a = shared.currentActiveStream() ?: break
+                // R4 #2:atomic snapshot 4 个 counter,避免 torn read
+                val snapshot = rtpMutex.withLock {
+                    Quad(a.lastRtpTimestamp, a.packetCount.toLong(), a.octetCount, 0L)
+                }
                 runCatching {
                     val sr = com.uvp.sim.rtp.RtcpSender.buildSR(
                         ssrc = ssrcInt,
                         ntpEpochMs = clockOffsetProvider().adjustedNowMs(),
-                        rtpTimestamp = a.lastRtpTimestamp,
-                        senderPacketCount = a.packetCount.toLong(),
-                        senderOctetCount = a.octetCount,
+                        rtpTimestamp = snapshot.a,
+                        senderPacketCount = snapshot.b,
+                        senderOctetCount = snapshot.c,
                     )
                     rtcp.send(sr)
                 }
@@ -196,20 +201,23 @@ internal class InviteMediaPipeline(
         }
     }
 
-    private fun launchStatsLoop(cid: String): Job =
+    private data class Quad(val a: Long, val b: Long, val c: Long, val d: Long)
+
+    private fun launchStatsLoop(cid: String, rtpMutex: Mutex): Job =
         shared.scope.launch(start = CoroutineStart.LAZY) {
             while (true) {
                 delay(mediaStatsIntervalMs)
                 val a = shared.currentActiveStream() ?: break
+                val (frameCount, packetCount) = rtpMutex.withLock { a.frameCount to a.packetCount }
                 com.uvp.sim.observability.SystemLogger.emit(
                     com.uvp.sim.observability.LogLevel.Info, LogTag.Media,
-                    "RTP 推送中: ${a.frameCount} 帧 / ${a.packetCount} 包"
+                    "RTP 推送中: $frameCount 帧 / $packetCount 包"
                 )
                 shared.simEventEmit(
                     com.uvp.sim.domain.SimEvent.StreamStats(
                         callId = a.callId,
-                        frameCount = a.frameCount,
-                        packetCount = a.packetCount,
+                        frameCount = frameCount,
+                        packetCount = packetCount,
                     )
                 )
             }
