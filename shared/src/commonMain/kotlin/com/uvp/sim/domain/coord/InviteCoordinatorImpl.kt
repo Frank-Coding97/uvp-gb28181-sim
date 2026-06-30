@@ -280,7 +280,14 @@ internal class InviteCoordinatorImpl(
 
     private fun classifyInviteTarget(channelId: String): Pair<Int, String>? {
         if (channelId.isBlank()) return null
-        val node = catalogTree.value.firstOrNull { it.id == channelId } ?: return null
+        val tree = catalogTree.value
+        val node = tree.firstOrNull { it.id == channelId }
+            // cross-review R3 #4:未知 channelId 过去返 null → 走接受流,落到默认 channel 推流,
+            // SDP/Subject 还原 channelId,模拟器在"不存在"的通道上对外宣称在出流。
+            // GB28181 + RFC 3261 应 fail-closed → 404 Not Found 拒绝。
+            // 例外:catalogTree 还没拉到 / 主动留空时不强制(node 找不到但 tree 整体也空 = legacy 兜底)。
+            ?: return if (tree.isEmpty()) null
+                     else 404 to "Channel Not Found"
         return when (node.type) {
             CatalogNodeType.VideoChannel -> null
             CatalogNodeType.AlarmChannel ->
@@ -385,10 +392,15 @@ internal class InviteCoordinatorImpl(
         invite: SipRequest,
         channelId: String,
     ) {
-        mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
         val cid = invite.callId() ?: ""
         simEventEmit(SimEvent.IncomingInvite(cid))
 
+        // cross-review R3 #1:InviteReceived 状态转换过去在函数顶 → 任何"接受失败"
+        // (单测无媒体管线 / SDP parse 失败 / RTP bind 失败 / 200 OK 发送失败)都会让
+        // SipState 卡在 InCall,阻塞 register/reconnect 状态回归。
+        // 现在延后到 200 OK 发送成功后再切 InCall(下面对应行)。SDP / RTP bind 失败路径
+        // 在 R2 #4 里已经发了 488/500 错误响应,所以本来就不应再进 InCall;那些路径里的
+        // "SipEvent.CallEnded transition"在没有进 InCall 时是 no-op(状态机字面允许)。
         val sender = rtpSenderFactory
         val cam = cameraCapture
         if (sender == null || cam == null) return  // 单测路径,无媒体管线
@@ -484,8 +496,17 @@ internal class InviteCoordinatorImpl(
         } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("send 200 OK", e))
             try { rtp.close() } catch (_: Throwable) {}
+            // cross-review R3 #1:200 OK 发送失败也要保证 SipState 不卡 InCall —— 这里
+            // InviteReceived 还没切(R3 #1 把切换延后到下面),所以理论无须回滚,但
+            // 保留 CallEnded transition 兜底(若状态机已 InCall,会回 Registered;不在 InCall
+            // 则 no-op),防御性写法。
+            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
             return
         }
+
+        // cross-review R3 #1:200 OK 发送成功后才正式切 InCall —— 上面所有 pre-publication
+        // 失败路径都已发过错误响应 + (隐式)留在 Registered,不会卡 InCall。
+        mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
 
         installAckWatchdog(cid)
 
@@ -495,9 +516,12 @@ internal class InviteCoordinatorImpl(
             "开始推流 → ${offer.remoteIp}:${offer.remotePort} ssrc=$ssrc"
         )
 
+        // cross-review R3 #2:media jobs 全部用 LAZY 启动,先**赋 activeStream 发布**,
+        // 再 start —— 这样任一 job 立即失败时,catch 里调 stopActiveStream 拿到的不是 null,
+        // teardown 能正确销毁 audio / rtcp / stats / cam 所有资源。
         val media = launchMediaJobs(cid, rtp, offer, ssrc, cam)
 
-        val statsJob = scope.launch {
+        val statsJob = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             while (true) {
                 delay(MEDIA_STATS_INTERVAL_MS)
                 val a = activeStream ?: break
@@ -540,6 +564,13 @@ internal class InviteCoordinatorImpl(
             remoteHost = offer.remoteIp, remotePort = offer.remotePort, ssrc = ssrc,
         )
         _state.value = InviteState.Streaming
+
+        // R3 #2:activeStream 发布完成,显式 start 所有 LAZY job。
+        // start() 是 idempotent —— 多次调用无副作用。
+        media.streamJob.start()
+        media.audioJob?.start()
+        media.rtcpJob.start()
+        statsJob.start()
     }
 
     /** [doAcceptInvite] 启动的媒体推流 job 集合(视频 / 音频 / RTCP)+ RTCP 发送器。 */
@@ -600,6 +631,10 @@ internal class InviteCoordinatorImpl(
      *
      * 失败时通过 [simEventEmit] 上报 TransportError 并异步触发 [stopActiveStream] 释放整个
      * 推流(因为视频是主流,挂了等于会话死)。Cancellation 直透。
+     *
+     * cross-review R3 #2:job 用 [kotlinx.coroutines.CoroutineStart.LAZY] 启动 —— 调用方
+     * 必须在赋值 [activeStream] 之后再 `streamJob.start()` 显式启动。否则 job 立即失败时,
+     * catch 里的 `stopActiveStream` 拿到 activeStream==null 是 no-op,留下 audio/rtcp/cam 残留。
      */
     private fun launchVideoSendLoop(
         cid: String,
@@ -608,7 +643,7 @@ internal class InviteCoordinatorImpl(
         packer: com.uvp.sim.media.RtpPacker,
         rtp: RtpSender,
         rtpMutex: Mutex,
-    ): Job = scope.launch {
+    ): Job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
         try {
             cam.start().collect { frame ->
                 val ps = muxer.muxFrame(frame)
@@ -642,6 +677,8 @@ internal class InviteCoordinatorImpl(
      * frameCount,这两是视频侧统计入口)。
      *
      * 跟视频共享 [rtpMutex] 保证 RTP 序列号串行。失败同款 stopActiveStream 释放推流。
+     *
+     * cross-review R3 #2:LAZY,要 doAcceptInvite 赋 activeStream 后显式 start()。
      */
     private fun launchAudioSendLoop(
         cid: String,
@@ -650,7 +687,7 @@ internal class InviteCoordinatorImpl(
         packer: com.uvp.sim.media.RtpPacker,
         rtp: RtpSender,
         rtpMutex: Mutex,
-    ): Job = scope.launch {
+    ): Job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
         try {
             audio.start().collect { aFrame ->
                 val ps = muxer.muxAudio(aFrame)
@@ -681,10 +718,12 @@ internal class InviteCoordinatorImpl(
      *
      * 单条 SR build/send 失败 [runCatching] 静默(SR 是辅助统计,丢一两条不影响推流),
      * 跟历史行为一致。
+     *
+     * cross-review R3 #2:LAZY,要 doAcceptInvite 赋 activeStream 后显式 start()。
      */
     private fun launchRtcpSrLoop(ssrc: String, rtcp: RtpSender): Job {
         val ssrcInt = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
-        return scope.launch {
+        return scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             while (true) {
                 delay(RTCP_SR_INTERVAL_MS)
                 val a = activeStream ?: break
@@ -804,12 +843,25 @@ internal class InviteCoordinatorImpl(
         } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("send CANCEL 200", e))
         }
-        if (active != null && active.callId == cid) {
+        // cross-review R3 #3:CANCEL 语义 (RFC 3261 § 9.2):只能 cancel "还在 pending"
+        // 的 INVITE 事务 —— 一旦最终响应(200 OK)已发 + ACK 已收,dialog 完全建立,
+        // 后续到来的 CANCEL 应只发自己的 200,**不**销毁 dialog;销毁该靠 BYE。
+        //
+        // 过去任何 CANCEL 命中已 active 的 callId 都会 stopActiveStream → 重放/迟到 CANCEL
+        // 能把活会话关掉。现在用 awaitingAckCallId 守卫:只在"已发 200 但 ACK 还没来"
+        // 这个 pending 窗口(由 installAckWatchdog 标记)才销毁 dialog;ACK 已收 → 沉默。
+        val inPendingPhase = active != null && active.callId == cid && awaitingAckCallId == cid
+        if (inPendingPhase) {
             stopActiveStream(cid, "remote CANCEL")
             if (mutableSipState.value == SipState.InCall) {
                 mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
             }
             simEventEmit(SimEvent.CallEnded(cid, "remote CANCEL"))
+        } else if (active != null && active.callId == cid) {
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Lifecycle,
+                "忽略 late CANCEL: callId=$cid dialog 已建立(ACK 已收),等 BYE 销毁"
+            )
         }
     }
 
