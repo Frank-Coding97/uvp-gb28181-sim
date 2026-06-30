@@ -107,14 +107,27 @@ internal class InviteCoordinatorImpl(
 
     // ---- 内部状态(从 Engine 搬过来) ----
     private val mutex = Mutex()
-    private var ackTimeoutJob: Job? = null
-    private var awaitingAckCallId: String? = null
     private var activeStream: ActiveStream? = null
     // R1 #3:并发 INVITE 竞态守卫。
     // 接受路径从"过滤通过"到"activeStream 赋值"之间没有锁,两路并发 INVITE 都能通过
     // `activeStream == null` 检查并各开一路 RTP / 200 OK。用 mutex 原子检查
     // (activeStream || acceptInFlight),第二路立刻 486 Busy。
     private var acceptInFlight: Boolean = false
+
+    // ---- Handler(R3 拆分:mid-dialog 委派给独立 handler)----
+    private val sharedState: InviteSharedState = object : InviteSharedState {
+        override val config: SimConfig get() = this@InviteCoordinatorImpl.config
+        override val outbox: com.uvp.sim.sip.SipOutbox get() = this@InviteCoordinatorImpl.outbox
+        override val scope: CoroutineScope get() = this@InviteCoordinatorImpl.scope
+        override val catalogTree: StateFlow<List<CatalogNode>> get() = this@InviteCoordinatorImpl.catalogTree
+        override val localIp: String get() = this@InviteCoordinatorImpl.localIp
+        override val localPort: Int get() = localPortProvider()
+        override fun currentActiveStream(): ActiveStream? = activeStream
+        override fun currentSipState(): SipState = mutableSipState.value
+        override suspend fun simEventEmit(event: SimEvent) =
+            this@InviteCoordinatorImpl.simEventEmit(event)
+    }
+    private val dialogHandler = InviteDialogHandler(sharedState)
 
     /**
      * cross-review R3 拆分:`internal`(原 private)— 让同 package 的
@@ -150,17 +163,6 @@ internal class InviteCoordinatorImpl(
         val remoteSourceIp: String? = null,
     )
 
-    /**
-     * P1-3 helper:把 [ActiveStream] 抽成 [com.uvp.sim.sip.DialogIdentityVerifier.DialogId]。
-     */
-    private fun ActiveStream.toDialogId(): com.uvp.sim.sip.DialogIdentityVerifier.DialogId =
-        com.uvp.sim.sip.DialogIdentityVerifier.DialogId(
-            callId = callId,
-            localTag = localTag,
-            remoteTag = remoteTag,
-            remoteSourceIp = remoteSourceIp,
-        )
-
     private fun nowMs(): Long = Clock.System.now().toEpochMilliseconds()
 
     companion object {
@@ -180,14 +182,13 @@ internal class InviteCoordinatorImpl(
 
     override suspend fun shutdown() {
         // R1 #4 (verify-2 follow-up):跟 stopActiveStream 共享 mutex 防双进。
+        // R3 拆分:ackTimeoutJob / awaitingAckCallId 现归 dialogHandler 管。
         val active = mutex.withLock {
             val cur = activeStream
             activeStream = null
-            ackTimeoutJob?.cancel()
-            ackTimeoutJob = null
-            awaitingAckCallId = null
             cur
         }
+        dialogHandler.cancelAckWatchdog()
         active?.let {
             it.statsJob?.cancel()
             it.streamJob.cancel()
@@ -209,19 +210,89 @@ internal class InviteCoordinatorImpl(
         return when (req.method) {
             // PR5 T5.4:Invite 处理 INVITE,内部 SDP isPlayback 时 Skip 让 Engine 路由给 Playback
             SipMethod.INVITE -> handleInviteMaybe(envelope, req)
-            SipMethod.ACK -> { handleAck(envelope, req); RoutingResult.Handled }
+            SipMethod.ACK -> {
+                dialogHandler.handleAck(envelope, req)
+                RoutingResult.Handled
+            }
             SipMethod.BYE -> {
                 val cid = req.callId() ?: ""
                 val active = activeStream
                 if (active != null && active.callId == cid) {
-                    handleBye(envelope, req); RoutingResult.Handled
+                    val result = dialogHandler.handleBye(envelope, req)
+                    if (result is DialogResult.TerminateDialog) {
+                        cleanupActiveStream(result.reason, sipEvent = SipEvent.ByeReceived)
+                    }
+                    RoutingResult.Handled
                 } else RoutingResult.Skip
             }
-            SipMethod.CANCEL -> { handleCancel(envelope, req); RoutingResult.Handled }
+            SipMethod.CANCEL -> {
+                val cid = req.callId() ?: ""
+                val result = dialogHandler.handleCancel(envelope, req)
+                if (result is DialogResult.TerminateDialog) {
+                    // RG-1 race 治本:cleanupActiveStream 容忍 active 为 null
+                    // (pre-publication CANCEL 走 awaitingAckCallId 判 pending,
+                    //  此时 activeStream 可能还没赋值)
+                    cleanupActiveStream(result.reason, sipEvent = SipEvent.CallEnded, callId = cid)
+                }
+                RoutingResult.Handled
+            }
             // INFO 全部 Skip(回放归 Playback,MANSCDP 归 Mans)
             SipMethod.INFO -> RoutingResult.Skip
             else -> RoutingResult.Skip
         }
+    }
+
+    /**
+     * 统一销毁口(R3 拆分 + RG-1 race 治本):
+     * - active != null:正常 teardown(关 RTP / cancel jobs / stop cam+audio + 发 StreamStopped)
+     * - active == null:仅清 dialogHandler watchdog(pre-publication CANCEL 走这里)
+     *
+     * @param reason 销毁原因(给日志 + SimEvent 用)
+     * @param sipEvent 切 SipState 用的事件(典型:CallEnded / ByeReceived)
+     * @param callId 销毁的 callId(用于 active==null 时仍能 emit 事件)
+     */
+    private suspend fun cleanupActiveStream(
+        reason: String,
+        sipEvent: SipEvent,
+        callId: String? = null,
+    ) {
+        val active = mutex.withLock {
+            val cur = activeStream
+            activeStream = null
+            cur
+        }
+        dialogHandler.cancelAckWatchdog()
+        if (active != null) {
+            _activeStreamSnapshot.value = null
+            active.streamJob.cancel()
+            active.audioJob?.cancel()
+            active.statsJob?.cancel()
+            active.rtcpJob?.cancel()
+            try { active.rtpSender.close() } catch (_: Throwable) {}
+            try { active.rtcpSender?.close() } catch (_: Throwable) {}
+            try { cameraCapture?.stop() } catch (_: Throwable) {}
+            try { audioCapture?.stop() } catch (_: Throwable) {}
+            simEventEmit(
+                SimEvent.StreamStopped(
+                    callId = active.callId,
+                    frameCount = active.frameCount,
+                    packetCount = active.packetCount,
+                    reason = reason,
+                )
+            )
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "停止推流 ($reason): ${active.frameCount} 帧 / ${active.packetCount} 包"
+            )
+        }
+        if (mutableSipState.value == SipState.InCall) {
+            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, sipEvent)
+        }
+        val cidForEvent = active?.callId ?: callId ?: ""
+        if (cidForEvent.isNotEmpty()) {
+            simEventEmit(SimEvent.CallEnded(cidForEvent, reason))
+        }
+        _state.value = InviteState.Idle
     }
 
     /**
@@ -514,7 +585,14 @@ internal class InviteCoordinatorImpl(
         // 失败路径都已发过错误响应 + (隐式)留在 Registered,不会卡 InCall。
         mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
 
-        installAckWatchdog(cid)
+        // R3 拆分:installAckWatchdog 委派给 dialogHandler,超时回调走主类 cleanupActiveStream
+        dialogHandler.installAckWatchdog(cid) { timedOutCid ->
+            cleanupActiveStream(
+                "ACK timeout (${InviteDialogHandler.ACK_TIMEOUT_MS / 1000}s)",
+                sipEvent = SipEvent.CallEnded,
+                callId = timedOutCid,
+            )
+        }
 
         simEventEmit(SimEvent.StreamStarted(cid, offer.remoteIp, offer.remotePort, ssrc))
         SystemLogger.emit(
@@ -756,179 +834,12 @@ internal class InviteCoordinatorImpl(
      * R1 #4 (verify follow-up):awaitingAckCallId 检查与置空放进 mutex,
      * 避免与 handleAck 并发竞态(ACK 在超时回调判断后才到达 → 双进 cleanup)。
      */
-    private fun installAckWatchdog(cid: String) {
-        awaitingAckCallId = cid
-        ackTimeoutJob?.cancel()
-        ackTimeoutJob = scope.launch {
-            delay(ACK_TIMEOUT_MS)
-            val shouldFire = mutex.withLock {
-                if (awaitingAckCallId == cid) {
-                    awaitingAckCallId = null
-                    true
-                } else false
-            }
-            if (shouldFire) {
-                simEventEmit(SimEvent.InviteAckTimeout(cid))
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Lifecycle,
-                    "INVITE 200 OK 未收到 ACK (${ACK_TIMEOUT_MS / 1000}s) — 平台可能已断开,释放媒体管线"
-                )
-                stopActiveStream(cid, "ACK timeout (${ACK_TIMEOUT_MS / 1000}s)")
-            }
-        }
-    }
-
     /**
-     * P1-3:把 envelope 跟 activeStream dialog identity 比对(直播链路 mid-dialog 守卫)。
-     *
-     * 跟 [PlaybackCoordinatorImpl.verifyDialogOrReject] 同款语义:
-     * - [com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match] → 返回 true
-     * - 其它三种 mismatch → CANCEL/BYE 返 481 + Warning 日志,ACK 仅日志(无响应)
-     *
-     * @param respondOn481 ACK 没有响应(RFC 3261 § 17.1.1.3),传 false 跳过 481 发送。
+     * R3 拆分 — stopActiveStream 是 cleanupActiveStream 的薄封装,保留供 stopStream 内部调。
+     * 行为完全等价于 cleanupActiveStream(reason, CallEnded, callId)。
      */
-    private suspend fun verifyMidDialogOrReject(
-        envelope: com.uvp.sim.network.SipEnvelope,
-        req: SipRequest,
-        active: ActiveStream,
-        op: String,
-        respondOn481: Boolean = true,
-    ): Boolean {
-        val result = com.uvp.sim.sip.DialogIdentityVerifier.verify(envelope, active.toDialogId())
-        if (result == com.uvp.sim.sip.DialogIdentityVerifier.VerifyResult.Match) return true
-        SystemLogger.emit(
-            LogLevel.Warning, LogTag.Lifecycle,
-            "拒绝 INVITE $op:dialog identity 不匹配($result) → ${if (respondOn481) "481" else "丢弃"} " +
-                "[expected callId=${active.callId} remoteTag=${active.remoteTag} sourceIp=${active.remoteSourceIp}, " +
-                "got callId=${req.callId()} sourceIp=${envelope.sourceIp}]",
-        )
-        if (respondOn481) {
-            runCatching {
-                val resp = SipBuilders.buildSimpleResponse(
-                    req, statusCode = 481, reasonPhrase = "Call/Transaction Does Not Exist",
-                    toTag = SipBuilders.randomTag(),
-                    userAgent = config.userAgent,
-                )
-                outbox.send(resp).getOrThrow()
-            }
-        }
-        return false
-    }
-
-    private suspend fun handleAck(envelope: com.uvp.sim.network.SipEnvelope, ack: SipRequest) {
-        val cid = ack.callId() ?: return
-        // P1-3:有活跃流时 ACK 必须通过 dialog identity 校验;ACK 无响应(§ 17.1.1.3),失败丢弃。
-        val active = activeStream
-        if (active != null && active.callId == cid) {
-            if (!verifyMidDialogOrReject(envelope, ack, active, op = "ACK", respondOn481 = false)) {
-                return
-            }
-        }
-        // R1 #4 (verify follow-up):跟超时回调争抢同一份 ack 状态,放进 mutex。
-        mutex.withLock {
-            if (cid == awaitingAckCallId) {
-                ackTimeoutJob?.cancel()
-                ackTimeoutJob = null
-                awaitingAckCallId = null
-            }
-        }
-    }
-
-    private suspend fun handleCancel(envelope: com.uvp.sim.network.SipEnvelope, cancel: SipRequest) {
-        val cid = cancel.callId() ?: ""
-        val active = activeStream
-        // P1-3:Call-ID 对得上 activeStream 才进 verifier;Call-ID 不对沿用旧行为(发 200 但不动状态)
-        if (active != null && active.callId == cid) {
-            if (!verifyMidDialogOrReject(envelope, cancel, active, op = "CANCEL")) {
-                return
-            }
-        }
-        try {
-            val ok = SipBuilders.buildSimple200(cancel, userAgent = config.userAgent)
-            outbox.send(ok).getOrThrow()
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("send CANCEL 200", e))
-        }
-        // cross-review R3 #3:CANCEL 语义 (RFC 3261 § 9.2):只能 cancel "还在 pending"
-        // 的 INVITE 事务 —— 一旦最终响应(200 OK)已发 + ACK 已收,dialog 完全建立,
-        // 后续到来的 CANCEL 应只发自己的 200,**不**销毁 dialog;销毁该靠 BYE。
-        //
-        // 过去任何 CANCEL 命中已 active 的 callId 都会 stopActiveStream → 重放/迟到 CANCEL
-        // 能把活会话关掉。现在用 awaitingAckCallId 守卫:只在"已发 200 但 ACK 还没来"
-        // 这个 pending 窗口(由 installAckWatchdog 标记)才销毁 dialog;ACK 已收 → 沉默。
-        val inPendingPhase = active != null && active.callId == cid && awaitingAckCallId == cid
-        if (inPendingPhase) {
-            stopActiveStream(cid, "remote CANCEL")
-            if (mutableSipState.value == SipState.InCall) {
-                mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
-            }
-            simEventEmit(SimEvent.CallEnded(cid, "remote CANCEL"))
-        } else if (active != null && active.callId == cid) {
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Lifecycle,
-                "忽略 late CANCEL: callId=$cid dialog 已建立(ACK 已收),等 BYE 销毁"
-            )
-        }
-    }
-
-    private suspend fun handleBye(envelope: com.uvp.sim.network.SipEnvelope, bye: SipRequest) {
-        val cid = bye.callId() ?: ""
-        val active = activeStream
-        // P1-3:进入本 handler 时 handleRequest 已经判过 active.callId == cid(否则 Skip),
-        // 这里把 dialog identity 全维度校验补齐 — remoteTag / sourceIp 任一不匹配 → 481。
-        if (active != null) {
-            if (!verifyMidDialogOrReject(envelope, bye, active, op = "BYE")) {
-                return
-            }
-        }
-        // 先发 200 OK
-        try {
-            val ok = SipBuilders.buildSimple200(bye, userAgent = config.userAgent)
-            outbox.send(ok).getOrThrow()
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("send BYE 200", e))
-        }
-        // PR5 T5.4:回放 dialog BYE 由 PlaybackCoordinator 接,本类只处理 activeStream
-        stopActiveStream(cid, "remote BYE")
-        if (mutableSipState.value == SipState.InCall) {
-            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.ByeReceived)
-        }
-        simEventEmit(SimEvent.CallEnded(cid, "remote BYE"))
-    }
-
     private suspend fun stopActiveStream(callId: String, reason: String) {
-        // R1 #4 (verify follow-up):原子 swap 防双进 — 多路触发(timeout / BYE / CANCEL / stopStream)
-        // 同时跑时,只有第一个抢到 active 的路径执行清理。
-        val active = mutex.withLock {
-            val cur = activeStream ?: return@withLock null
-            activeStream = null
-            ackTimeoutJob?.cancel()
-            ackTimeoutJob = null
-            awaitingAckCallId = null
-            cur
-        } ?: return
-        _activeStreamSnapshot.value = null
-        active.streamJob.cancel()
-        active.audioJob?.cancel()
-        active.statsJob?.cancel()
-        active.rtcpJob?.cancel()
-        try { active.rtpSender.close() } catch (_: Throwable) {}
-        try { active.rtcpSender?.close() } catch (_: Throwable) {}
-        try { cameraCapture?.stop() } catch (_: Throwable) {}
-        try { audioCapture?.stop() } catch (_: Throwable) {}
-        simEventEmit(
-            SimEvent.StreamStopped(
-                callId = callId,
-                frameCount = active.frameCount,
-                packetCount = active.packetCount,
-                reason = reason,
-            )
-        )
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Media,
-            "停止推流 ($reason): ${active.frameCount} 帧 / ${active.packetCount} 包"
-        )
-        _state.value = InviteState.Idle
+        cleanupActiveStream(reason, sipEvent = SipEvent.CallEnded, callId = callId)
     }
 
     override suspend fun stopStream(reason: String) {

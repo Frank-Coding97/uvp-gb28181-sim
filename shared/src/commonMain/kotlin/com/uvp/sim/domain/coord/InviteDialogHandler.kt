@@ -1,10 +1,14 @@
 package com.uvp.sim.domain.coord
 
 import com.uvp.sim.domain.SimEvent
+import com.uvp.sim.domain.transportErrorOf
+import com.uvp.sim.network.SipEnvelope
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
-import kotlinx.coroutines.CoroutineScope
+import com.uvp.sim.sip.DialogIdentityVerifier
+import com.uvp.sim.sip.SipBuilders
+import com.uvp.sim.sip.SipRequest
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -20,11 +24,12 @@ import kotlinx.coroutines.sync.withLock
  * - 自带 [ackMutex] 保护 ack 状态,跟主类的 `mutex`(守 acceptInFlight/activeStream)解耦
  * - 完成 ACK/CANCEL/BYE 后返回 [DialogResult],**不**直接动 SipState / activeStream
  * - `handleCancel` 用 [awaitingAckCallId] 判 pending-phase,RFC 3261 § 9.2 语义:
- *   * pending(200 已发但 ACK 还没来)→ TerminateDialog
- *   * late(ACK 已收 / pre-publication)→ 主类决定(KeepDialog 或 TerminateDialog
- *     by pre-publication race 治本逻辑)
+ *   * pending(200 已发 / awaitingAckCallId == cid)→ TerminateDialog
+ *   * late(ACK 已收 / awaitingAckCallId == null)→ KeepDialog
  *
- * 本 task(PR1 T1.2)只迁 watchdog + 字段骨架,verify/ACK/CANCEL/BYE 在 T1.3 / T1.4 迁。
+ * **R3 verify-残留 race 治本(RG-1)**:`handleCancel` 不再硬要求 `active != null`,
+ * 改用 `awaitingAckCallId == cid` 单独判 pending —— 这覆盖了 "200 已发但 activeStream
+ * 还没赋值"的 pre-publication 窗口,让主类的 cleanupActiveStream 可以容忍 null active。
  */
 internal class InviteDialogHandler(
     private val shared: InviteSharedState,
@@ -98,6 +103,139 @@ internal class InviteDialogHandler(
             ackTimeoutJob = null
             _awaitingAckCallId = null
         }
+    }
+
+    /**
+     * P1-3 mid-dialog dialog identity 校验。
+     *
+     * 跟 [com.uvp.sim.domain.coord.PlaybackCoordinatorImpl] 同款语义:
+     * - [DialogIdentityVerifier.VerifyResult.Match] → 返回 true
+     * - 其它 mismatch → CANCEL/BYE 返 481 + Warning 日志,ACK 仅日志(无响应)
+     *
+     * @param respondOn481 ACK 没有响应(RFC 3261 § 17.1.1.3),传 false 跳过 481 发送。
+     */
+    suspend fun verifyMidDialogOrReject(
+        envelope: SipEnvelope,
+        req: SipRequest,
+        active: InviteCoordinatorImpl.ActiveStream,
+        op: String,
+        respondOn481: Boolean = true,
+    ): Boolean {
+        val dialogId = DialogIdentityVerifier.DialogId(
+            callId = active.callId,
+            localTag = active.localTag,
+            remoteTag = active.remoteTag,
+            remoteSourceIp = active.remoteSourceIp,
+        )
+        val result = DialogIdentityVerifier.verify(envelope, dialogId)
+        if (result == DialogIdentityVerifier.VerifyResult.Match) return true
+        SystemLogger.emit(
+            LogLevel.Warning, LogTag.Lifecycle,
+            "拒绝 INVITE $op:dialog identity 不匹配($result) → ${if (respondOn481) "481" else "丢弃"} " +
+                "[expected callId=${active.callId} remoteTag=${active.remoteTag} sourceIp=${active.remoteSourceIp}, " +
+                "got callId=${req.callId()} sourceIp=${envelope.sourceIp}]",
+        )
+        if (respondOn481) {
+            runCatching {
+                val resp = SipBuilders.buildSimpleResponse(
+                    req, statusCode = 481, reasonPhrase = "Call/Transaction Does Not Exist",
+                    toTag = SipBuilders.randomTag(),
+                    userAgent = shared.config.userAgent,
+                )
+                shared.outbox.send(resp).getOrThrow()
+            }
+        }
+        return false
+    }
+
+    /**
+     * 处理 ACK 请求。主路径:校验 dialog identity → 命中则 cancelAckWatchdogIfMatches。
+     *
+     * 总是返回 [DialogResult.KeepDialog] —— ACK 不终止 dialog。
+     */
+    suspend fun handleAck(envelope: SipEnvelope, ack: SipRequest): DialogResult {
+        val cid = ack.callId() ?: return DialogResult.KeepDialog
+        val active = shared.currentActiveStream()
+        // P1-3:有活跃流时 ACK 必须通过 dialog identity 校验;ACK 无响应,失败丢弃。
+        if (active != null && active.callId == cid) {
+            if (!verifyMidDialogOrReject(envelope, ack, active, op = "ACK", respondOn481 = false)) {
+                return DialogResult.KeepDialog
+            }
+        }
+        cancelAckWatchdogIfMatches(cid)
+        return DialogResult.KeepDialog
+    }
+
+    /**
+     * 处理 CANCEL 请求。RFC 3261 § 9.2 语义:
+     *
+     * 1. 校验 dialog identity(若有 active 命中 Call-ID)
+     * 2. 发 CANCEL 的 200(无论 pending 与否)
+     * 3. 判 pending phase:`awaitingAckCallId == cid` → [DialogResult.TerminateDialog]
+     * 4. late phase(ACK 已收)→ [DialogResult.KeepDialog](日志记 late CANCEL,留给 BYE)
+     *
+     * **R3 verify-残留 race 治本(RG-1)**:pending 判定**只看 awaitingAckCallId**,不要求
+     * `active != null` —— 这覆盖 "200 已发 / activeStream 还没赋值"的 pre-publication 窗口。
+     * 主类的 cleanupActiveStream 需容忍 active 为 null。
+     */
+    suspend fun handleCancel(envelope: SipEnvelope, cancel: SipRequest): DialogResult {
+        val cid = cancel.callId() ?: ""
+        val active = shared.currentActiveStream()
+        // P1-3:Call-ID 对得上 activeStream 才进 verifier;Call-ID 不对沿用旧行为(发 200 不动状态)
+        if (active != null && active.callId == cid) {
+            if (!verifyMidDialogOrReject(envelope, cancel, active, op = "CANCEL")) {
+                return DialogResult.KeepDialog
+            }
+        }
+        try {
+            val ok = SipBuilders.buildSimple200(cancel, userAgent = shared.config.userAgent)
+            shared.outbox.send(ok).getOrThrow()
+        } catch (e: Throwable) {
+            shared.simEventEmit(transportErrorOf("send CANCEL 200", e))
+        }
+
+        // RG-1 治本:pending 判定**只看 awaitingAckCallId**,不依赖 active != null。
+        // pre-publication 路径(200 已发出 / activeStream 还没赋值)也算 pending。
+        val inPendingPhase = awaitingAckCallId == cid
+        return if (inPendingPhase) {
+            DialogResult.TerminateDialog("remote CANCEL")
+        } else {
+            if (active != null && active.callId == cid) {
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "忽略 late CANCEL: callId=$cid dialog 已建立(ACK 已收),等 BYE 销毁"
+                )
+            }
+            DialogResult.KeepDialog
+        }
+    }
+
+    /**
+     * 处理 BYE 请求。语义:
+     *
+     * 1. 校验 dialog identity(若有 active),不匹配 → 481 + KeepDialog
+     * 2. 发 BYE 的 200
+     * 3. 总是 [DialogResult.TerminateDialog]
+     *
+     * 主类拿 TerminateDialog 后调 cleanupActiveStream + 切 SipState。
+     */
+    suspend fun handleBye(envelope: SipEnvelope, bye: SipRequest): DialogResult {
+        val cid = bye.callId() ?: ""
+        val active = shared.currentActiveStream()
+        // P1-3:进入本 handler 时主类已判过 active.callId == cid,这里把全维度校验补齐。
+        if (active != null) {
+            if (!verifyMidDialogOrReject(envelope, bye, active, op = "BYE")) {
+                return DialogResult.KeepDialog
+            }
+        }
+        // 先发 200 OK
+        try {
+            val ok = SipBuilders.buildSimple200(bye, userAgent = shared.config.userAgent)
+            shared.outbox.send(ok).getOrThrow()
+        } catch (e: Throwable) {
+            shared.simEventEmit(transportErrorOf("send BYE 200", e))
+        }
+        return DialogResult.TerminateDialog("remote BYE")
     }
 
     companion object {
