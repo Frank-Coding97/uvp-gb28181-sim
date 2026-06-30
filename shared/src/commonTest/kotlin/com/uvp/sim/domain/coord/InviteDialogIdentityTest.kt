@@ -67,7 +67,14 @@ class InviteDialogIdentityTest {
         transport: MockSipTransport,
     ): InviteCoordinatorImpl {
         val cfg = config()
-        val tree = MutableStateFlow(emptyList<com.uvp.sim.config.CatalogNode>())
+        val tree = MutableStateFlow(listOf(
+            com.uvp.sim.config.CatalogNode(
+                id = channelId,
+                type = com.uvp.sim.config.CatalogNodeType.VideoChannel,
+                name = "test-channel",
+                parentId = "35020000001000000001",
+            )
+        ))
         val sipState = MutableStateFlow(com.uvp.sim.sip.SipState.Registered)
         val capture = com.uvp.sim.camera.CameraCapture(com.uvp.sim.camera.CaptureConfig())
         return InviteCoordinatorImpl(

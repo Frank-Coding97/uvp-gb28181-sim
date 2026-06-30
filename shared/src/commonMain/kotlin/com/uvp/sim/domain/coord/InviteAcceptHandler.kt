@@ -36,9 +36,7 @@ internal class InviteAcceptHandler(
         if (channelId.isBlank()) return null
         val tree = shared.catalogTree.value
         val node = tree.firstOrNull { it.id == channelId }
-            // cross-review R3 #4:未知 channelId 落到默认 channel 推真流 → 必须 fail-closed 404
-            ?: return if (tree.isEmpty()) null
-                     else 404 to "Channel Not Found"
+            ?: return 404 to "Channel Not Found"
         return when (node.type) {
             CatalogNodeType.VideoChannel -> null
             CatalogNodeType.AlarmChannel ->

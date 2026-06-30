@@ -355,7 +355,7 @@ internal class InviteCoordinatorImpl(
         if (channelId.isBlank()) return null
         val tree = catalogTree.value
         val node = tree.firstOrNull { it.id == channelId }
-            ?: return if (tree.isEmpty()) null else 404 to "Channel Not Found"
+            ?: return 404 to "Channel Not Found"
         return when (node.type) {
             CatalogNodeType.VideoChannel -> null
             CatalogNodeType.AlarmChannel -> 488 to "Not Acceptable Here (alarm channel does not stream)"
