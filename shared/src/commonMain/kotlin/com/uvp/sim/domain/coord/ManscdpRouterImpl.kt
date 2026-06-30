@@ -109,6 +109,7 @@ internal class ManscdpRouterImpl(
 
     private var snapshotPipeline: com.uvp.sim.snapshot.SnapshotUploadEngine? = null
     private var snapshotCachePipeline: com.uvp.sim.snapshot.JpegLocalCache? = null
+    private var upgradeJob: kotlinx.coroutines.Job? = null
 
     /**
      * DeviceControl 命令分发器(followup A 迁入 Manscdp 域)。
@@ -142,7 +143,8 @@ internal class ManscdpRouterImpl(
                         LogLevel.Info, LogTag.Lifecycle,
                         "DeviceUpgrade → 启动假进度 SessionID=$sessionId Firmware=$firmware URL=$fileUrl"
                     )
-                    scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
+                    upgradeJob?.cancel()
+                    upgradeJob = scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
                 }
             },
             scope = scope
@@ -225,6 +227,8 @@ internal class ManscdpRouterImpl(
     override suspend fun shutdown() {
         snapshotPipeline = null
         snapshotCachePipeline = null
+        upgradeJob?.cancel()
+        upgradeJob = null
     }
 
     // ----------------------------------------------------------------------
