@@ -24,15 +24,15 @@ import kotlinx.coroutines.flow.StateFlow
  * INVITE 接受路径(AcceptHandler.handleInvite)返回值。
  *
  * 主类按分支处理:
- * - [Success] → 主类先赋 `activeStream = result.activeStream`,再启动 media pipeline,
- *   再切 `SipState.InviteReceived`,再 install ACK watchdog(顺序严格,治本 R3 #1)
+ * - [Success] → 主类用 [AcceptedInvite] 启动 media pipeline → 拼 ActiveStream → 发布 →
+ *   切 SipState.InviteReceived → install ACK watchdog(顺序严格,治本 R3 #1)
  * - [Rejected] → handler 已发拒绝响应(488/500/404 等),主类**不**切 InCall,留 Registered
  * - [Failed] → handler 已尝试发兜底响应(可能已成功也可能没),主类**不**切 InCall,
  *   做好资源回收(关 rtp 等)
  */
 internal sealed class AcceptResult {
-    /** 200 OK 已成功发出,媒体管线该启动 */
-    data class Success(val activeStream: InviteCoordinatorImpl.ActiveStream) : AcceptResult()
+    /** 200 OK 已成功发出,媒体管线该启动。载体含主类装配 ActiveStream 所需的全部 pre-media 字段 */
+    data class Success(val accepted: AcceptedInvite) : AcceptResult()
 
     /** 已发拒绝响应(488 SDP / 500 RTP bind / 404 unknown channel / 486 busy 等),不进 InCall */
     data class Rejected(val statusCode: Int, val reason: String) : AcceptResult()

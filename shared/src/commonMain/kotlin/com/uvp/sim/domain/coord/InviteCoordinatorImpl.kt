@@ -136,6 +136,14 @@ internal class InviteCoordinatorImpl(
             clockOffsetProvider = clockOffsetProvider,
         )
     }
+    private val acceptHandler: InviteAcceptHandler? = rtpSenderFactory?.let { factory ->
+        InviteAcceptHandler(
+            shared = sharedState,
+            rtpSenderFactory = factory,
+            cseqProvider = cseqRead,
+            localPortProvider = localPortProvider,
+        )
+    }
 
     /**
      * cross-review R3 拆分:`internal`(原 private)— 让同 package 的
@@ -338,54 +346,38 @@ internal class InviteCoordinatorImpl(
         else { handleInvite(envelope, req); RoutingResult.Handled }
     }
 
-    // ----------------------------------------------------------------
-    // 通用 helper(InviteCoord 独有的 parseUriHost 留在本类,其它都走 SipHeaderHelpers)
-    // ----------------------------------------------------------------
-
-    /** 从 `sip:user@host[:port][;params]` 提取 host 段(不含 port / params)。 */
-    private fun parseUriHost(uri: String): String {
-        val afterAt = uri.substringAfter("sip:", uri).substringAfter('@', "")
-        return afterAt.substringBefore(':').substringBefore(';').substringBefore('>').trim()
-    }
-
-    // H-1 / P0-2 来源校验已抽到 com.uvp.sim.sip.PlatformAuthorizer,本类不再持有私有 helper。
-
-    private fun extractInviteTarget(invite: SipRequest): String {
-        val ru = invite.requestUri
-        val sipBody = ru.substringAfter("sip:", "").substringAfter("sips:", ru.substringAfter("sip:", ""))
-        val userHost = if (sipBody.isNotEmpty()) sipBody else ""
-        val user = userHost.substringBefore('@', "").substringBefore(';').trim()
-        if (user.isNotEmpty()) return user
-        val to = invite.toHeader() ?: return ""
-        return SipHeaderHelpers.parseUri(to).substringAfter("sip:", "")
-            .substringBefore('@', "")
-            .substringBefore(';')
-            .trim()
-    }
-
-    private fun classifyInviteTarget(channelId: String): Pair<Int, String>? {
+    /**
+     * 通道分类内联版(无媒体管线时也可用)。
+     * 跟 AcceptHandler.classifyInviteTarget 等价 — 后者读 InviteSharedState.catalogTree,
+     * 这里读主类 catalogTree,内容一样。
+     */
+    private fun classifyInviteTargetInline(channelId: String): Pair<Int, String>? {
         if (channelId.isBlank()) return null
         val tree = catalogTree.value
         val node = tree.firstOrNull { it.id == channelId }
-            // cross-review R3 #4:未知 channelId 过去返 null → 走接受流,落到默认 channel 推流,
-            // SDP/Subject 还原 channelId,模拟器在"不存在"的通道上对外宣称在出流。
-            // GB28181 + RFC 3261 应 fail-closed → 404 Not Found 拒绝。
-            // 例外:catalogTree 还没拉到 / 主动留空时不强制(node 找不到但 tree 整体也空 = legacy 兜底)。
-            ?: return if (tree.isEmpty()) null
-                     else 404 to "Channel Not Found"
+            ?: return if (tree.isEmpty()) null else 404 to "Channel Not Found"
         return when (node.type) {
             CatalogNodeType.VideoChannel -> null
-            CatalogNodeType.AlarmChannel ->
-                488 to "Not Acceptable Here (alarm channel does not stream)"
-            CatalogNodeType.Device ->
-                488 to "Not Acceptable Here (cannot invite device root)"
-            CatalogNodeType.BusinessGroup ->
-                488 to "Not Acceptable Here (cannot invite business group)"
-            CatalogNodeType.VirtualOrg ->
-                488 to "Not Acceptable Here (cannot invite virtual org)"
+            CatalogNodeType.AlarmChannel -> 488 to "Not Acceptable Here (alarm channel does not stream)"
+            CatalogNodeType.Device -> 488 to "Not Acceptable Here (cannot invite device root)"
+            CatalogNodeType.BusinessGroup -> 488 to "Not Acceptable Here (cannot invite business group)"
+            CatalogNodeType.VirtualOrg -> 488 to "Not Acceptable Here (cannot invite virtual org)"
         }
     }
 
+    /** 从 INVITE 请求 URI 提取 channel ID(GB28181 §20.4 / §C.2.3)。 */
+    private fun extractInviteTargetInline(invite: SipRequest): String {
+        val uri = invite.requestUri ?: return ""
+        val atIdx = uri.indexOf('@')
+        val schemeIdx = uri.indexOf(':')
+        return if (schemeIdx >= 0 && atIdx > schemeIdx) {
+            uri.substring(schemeIdx + 1, atIdx)
+        } else ""
+    }
+
+    /**
+     * 403 Forbidden / 400 Bad Request 等顶层拒绝,保留给 handleInviteMaybe 用。
+     */
     private suspend fun sendSimpleResponse(req: SipRequest, statusCode: Int, reasonPhrase: String) {
         runCatching {
             val resp = SipBuilders.buildSimpleResponse(
@@ -393,208 +385,129 @@ internal class InviteCoordinatorImpl(
                 statusCode = statusCode,
                 reasonPhrase = reasonPhrase,
                 toTag = SipBuilders.randomTag(),
-            )
-            outbox.send(resp).getOrThrow()
-        }
-    }
-
-    private suspend fun sendBusyResponse(req: SipRequest, reason: String) {
-        runCatching {
-            val resp = SipBuilders.buildSimpleResponse(
-                req, statusCode = 486, reasonPhrase = "Busy Here",
-                toTag = SipBuilders.randomTag(),
                 userAgent = config.userAgent,
             )
             outbox.send(resp).getOrThrow()
         }
-        SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 INVITE → 486 ($reason)")
     }
 
-    private suspend fun sendNotFoundResponse(req: SipRequest, reason: String) {
-        runCatching {
-            val resp = SipBuilders.buildSimpleResponse(
-                req, statusCode = 487, reasonPhrase = "Request Terminated",
-                toTag = SipBuilders.randomTag(),
-                userAgent = config.userAgent,
-            )
-            outbox.send(resp).getOrThrow()
-        }
-        SystemLogger.emit(LogLevel.Warning, LogTag.Media, "拒绝 INVITE → 487 ($reason)")
-    }
-
-    // ----------------------------------------------------------------
-    // 占位:大块业务 / broadcast / playback 由后续 Edit 注入
-    // ----------------------------------------------------------------
+    /**
+     * R3 拆分 + spec G1 主类壳化:直播 INVITE 接受路径委派 [InviteAcceptHandler]。
+     *
+     * 编排顺序(R3 #1 #2 race 治本):
+     *   1. accept 守卫(acceptInFlight)+ 通道分类拒绝
+     *   2. acceptHandler.handleInvite → AcceptResult
+     *   3. Success → 启动 media(LAZY)→ 先发布 activeStream → startAll() → 切 SipState.InCall
+     *   4. Rejected/Failed → 不切 InCall,不赋 activeStream(保留 Registered)
+     */
     private suspend fun handleInvite(envelope: com.uvp.sim.network.SipEnvelope, invite: SipRequest) {
-        // 按 channelId 类型路由 — 不支持的类型立即 488
-        val channelId = extractInviteTarget(invite)
-        val rejection = classifyInviteTarget(channelId)
-        if (rejection != null) {
-            try {
+        // 通道分类拒绝(R3 #4: 未知 channel 404)— **不依赖媒体管线**,单测路径也要走。
+        // 直接用主类内联版而非 acceptHandler(因为 handler 可能为 null);classifyInviteTarget
+        // 只读 catalogTree + config,无副作用,所以内联跟 handler 版等价。
+        val channelId = extractInviteTargetInline(invite)
+        classifyInviteTargetInline(channelId)?.let { (code, reason) ->
+            runCatching {
                 val resp = SipBuilders.buildSimpleError(
                     request = invite,
-                    statusCode = rejection.first,
-                    reasonPhrase = rejection.second,
+                    statusCode = code,
+                    reasonPhrase = reason,
                     toTag = SipBuilders.randomTag(),
                 )
                 outbox.send(resp).getOrThrow()
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Lifecycle,
-                    "拒绝 INVITE: channelId=$channelId → ${rejection.first} ${rejection.second}"
+                    "拒绝 INVITE: channelId=$channelId → $code $reason"
                 )
-            } catch (e: Throwable) {
+            }.onFailure { e ->
                 simEventEmit(com.uvp.sim.domain.transportErrorOf("send INVITE reject", e))
             }
             return
         }
 
-        // PR5 T5.4:SDP isPlayback 分流已在 handleInviteMaybe 完成,这里只处理 Play 路径
-
-        // R1 #3:已有活跃流 || 接受中 → 486,两个状态用同一把 mutex 原子检查 + 占用,
-        // 防止两路并发 INVITE 同时通过"activeStream == null"检查后各开一路。
-        val acquired = mutex.withLock {
-            if (activeStream != null || acceptInFlight) {
-                false
-            } else {
-                acceptInFlight = true
-                true
-            }
-        }
-        if (!acquired) {
-            sendBusyResponse(invite, "已有直播流推送中,拒绝并发第二路")
+        val handler = acceptHandler
+        val pipeline = mediaPipeline
+        val cam = cameraCapture
+        if (handler == null || pipeline == null || cam == null) {
+            // 单测路径:无媒体管线,通道已分类通过,只发 IncomingInvite 事件
+            simEventEmit(SimEvent.IncomingInvite(invite.callId() ?: ""))
             return
         }
 
+        // R1 #3:accept 守卫,防止并发第二路
+        val acquired = mutex.withLock {
+            if (activeStream != null || acceptInFlight) false
+            else { acceptInFlight = true; true }
+        }
+        if (!acquired) {
+            handler.sendRejection(invite, 486, "Busy Here")
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "拒绝 INVITE → 486 (已有直播流推送中,拒绝并发第二路)"
+            )
+            return
+        }
+
+        simEventEmit(SimEvent.IncomingInvite(invite.callId() ?: ""))
+
         try {
-            doAcceptInvite(envelope, invite, channelId)
+            val result = handler.handleInvite(envelope, invite, channelId, cam) { newName ->
+                _currentChannelName.value = newName
+            }
+            when (result) {
+                is AcceptResult.Success -> finalizeAcceptedInvite(envelope, result.accepted, pipeline)
+                is AcceptResult.Rejected, is AcceptResult.Failed -> {
+                    // 不切 InCall,不赋 activeStream(主类保持 Registered)
+                }
+            }
         } finally {
             mutex.withLock { acceptInFlight = false }
         }
     }
 
-    private suspend fun doAcceptInvite(
+    /**
+     * accept 成功后的编排:启动 media(LAZY)→ 先发布 activeStream → startAll() → 切 SipState.InCall。
+     * R3 #2 race 治本核心:activeStream 在 startAll 之前发布,任一 job 立即失败时 onMediaFailure
+     * 回调能看到已发布的 activeStream。
+     */
+    private suspend fun finalizeAcceptedInvite(
         envelope: com.uvp.sim.network.SipEnvelope,
-        invite: SipRequest,
-        channelId: String,
+        accepted: AcceptedInvite,
+        pipeline: InviteMediaPipeline,
     ) {
-        val cid = invite.callId() ?: ""
-        simEventEmit(SimEvent.IncomingInvite(cid))
-
-        // cross-review R3 #1:InviteReceived 状态转换过去在函数顶 → 任何"接受失败"
-        // (单测无媒体管线 / SDP parse 失败 / RTP bind 失败 / 200 OK 发送失败)都会让
-        // SipState 卡在 InCall,阻塞 register/reconnect 状态回归。
-        // 现在延后到 200 OK 发送成功后再切 InCall(下面对应行)。SDP / RTP bind 失败路径
-        // 在 R2 #4 里已经发了 488/500 错误响应,所以本来就不应再进 InCall;那些路径里的
-        // "SipEvent.CallEnded transition"在没有进 InCall 时是 no-op(状态机字面允许)。
-        val sender = rtpSenderFactory
-        val cam = cameraCapture
-        if (sender == null || cam == null) return  // 单测路径,无媒体管线
-
-        cam.setFacing(config.device.facingForChannel(channelId))
-        _currentChannelName.value = config.device.channelNameForChannel(channelId)
-
-        val offer = try {
-            com.uvp.sim.sip.SdpParser.parseOffer(invite.body)
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("SDP parse", e))
-            // cross-review R2 #4:SDP 解析失败过去裸 return → 平台拿不到任何 SIP 响应,
-            // 超时后才放弃,GB28181 协议合规要求"收 INVITE 必有响应"。
-            // 发 488 Not Acceptable Here(SDP 描述不可接受),回滚状态到 Registered。
-            runCatching {
-                outbox.send(SipBuilders.buildSimpleError(invite, 488, "Not Acceptable Here"))
-            }
-            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
-            return
+        val media = pipeline.build(accepted.cid, accepted.rtp, accepted.offer, accepted.ssrc, accepted.cam) { failedCid, reason ->
+            cleanupActiveStream(reason, sipEvent = SipEvent.CallEnded, callId = failedCid)
         }
 
-        val ssrc = offer.ssrc ?: com.uvp.sim.sip.SsrcUtils.generate(
-            realtime = true,
-            domainCode = config.server.domain.takeLast(5).padStart(5, '0'),
-            sequence = (cseq + 1) and 0x0FFF,
+        // 先发布 activeStream(R3 #2 race 治本)
+        activeStream = ActiveStream(
+            callId = accepted.cid,
+            ssrc = accepted.ssrc,
+            rtpSender = accepted.rtp,
+            streamJob = media.streamJob,
+            audioJob = media.audioJob,
+            rtcpSender = media.rtcpSender,
+            rtcpJob = media.rtcpJob,
+            localUri = accepted.localUri,
+            localTag = accepted.localTag,
+            remoteUri = accepted.remoteUri,
+            remoteTag = accepted.remoteTag,
+            remoteTarget = accepted.remoteTarget,
+            channelId = accepted.channelId,
+            remoteHost = accepted.offer.remoteIp,
+            remotePort = accepted.offer.remotePort,
+            remoteSourceIp = accepted.remoteSourceIp,
+            statsJob = media.statsJob,
         )
-
-        val rtpMode = when (offer.transport) {
-            com.uvp.sim.sip.SdpTransport.UDP -> RtpMode.UDP
-            com.uvp.sim.sip.SdpTransport.TCP -> when (offer.tcpSetup) {
-                com.uvp.sim.sip.SdpTcpSetup.PASSIVE -> RtpMode.TCP_ACTIVE
-                com.uvp.sim.sip.SdpTcpSetup.ACTIVE -> RtpMode.TCP_PASSIVE
-                com.uvp.sim.sip.SdpTcpSetup.ACTPASS -> RtpMode.TCP_ACTIVE
-            }
-        }
-
-        // P1-5: TCP_PASSIVE 模式下 expectedClientHost = SDP remote IP(平台真实端点),
-        // UDP/TCP_ACTIVE 不需要验证(null)。
-        val expectedClientHost = if (rtpMode == RtpMode.TCP_PASSIVE) offer.remoteIp else null
-        val rtp = sender(offer.remoteIp, offer.remotePort, rtpMode, expectedClientHost)
-        val localRtpPort = try {
-            rtp.bindLocalPort()
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP bind", e))
-            // cross-review R2 #4:RTP bind 失败过去裸 return → 平台无 SIP 响应,同款问题。
-            // 发 500 Server Internal Error,回滚状态。
-            runCatching {
-                outbox.send(SipBuilders.buildSimpleError(invite, 500, "Server Internal Error"))
-            }
-            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
-            return
-        }
-
-        val sdpAnswer = com.uvp.sim.sip.SdpAnswer.buildPlayAnswer(
-            deviceId = config.device.deviceId,
-            localIp = localIp,
-            localRtpPort = localRtpPort,
-            ssrc = ssrc,
-            sessionName = "Play",
-            transport = offer.transport,
-            tcpSetup = offer.tcpSetup,
-            mediaSpec = SipHeaderHelpers.buildSdpMediaSpec(config),
+        _activeStreamSnapshot.value = ActiveStreamSnapshot(
+            callId = accepted.cid, channelId = accepted.channelId,
+            remoteHost = accepted.offer.remoteIp, remotePort = accepted.offer.remotePort, ssrc = accepted.ssrc,
         )
-        val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
-        val localToTag = SipBuilders.randomTag()
-        val inviteFromUser = SipHeaderHelpers.parseUriUser(
-            SipHeaderHelpers.parseUri(invite.fromHeader() ?: ""),
-            fallback = config.server.serverId,
-        )
-        val response = SipBuilders.buildInvite200WithSdp(
-            invite = invite,
-            deviceContact = deviceContact,
-            toTag = localToTag,
-            sdpBody = sdpAnswer,
-            userAgent = config.userAgent,
-            subject = SipBuilders.subject(
-                // R2 #7:Subject sender ID 应为通道编码(GB §20.4),
-                // 之前用 device.deviceId 导致平台无法关联到真正出流的通道。
-                senderId = channelId.ifBlank { config.device.deviceId },
-                ssrc = ssrc,
-                receiverId = inviteFromUser,
-            ),
-        )
-        val inviteFromHeader = invite.fromHeader() ?: ""
-        val inviteToHeader = invite.toHeader() ?: ""
-        val inviteContact = invite.firstHeader(SipHeader.CONTACT) ?: ""
-        val remoteUri = SipHeaderHelpers.parseUri(inviteFromHeader)
-        val remoteTag = SipHeaderHelpers.parseTag(inviteFromHeader)
-        val localUri = SipHeaderHelpers.parseUri(inviteToHeader)
-        val remoteTarget = SipHeaderHelpers.parseUri(inviteContact).ifEmpty { remoteUri }
-        try {
-            outbox.send(response).getOrThrow()
-        } catch (e: Throwable) {
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("send 200 OK", e))
-            try { rtp.close() } catch (_: Throwable) {}
-            // cross-review R3 #1:200 OK 发送失败也要保证 SipState 不卡 InCall —— 这里
-            // InviteReceived 还没切(R3 #1 把切换延后到下面),所以理论无须回滚,但
-            // 保留 CallEnded transition 兜底(若状态机已 InCall,会回 Registered;不在 InCall
-            // 则 no-op),防御性写法。
-            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
-            return
-        }
+        _state.value = InviteState.Streaming
 
-        // cross-review R3 #1:200 OK 发送成功后才正式切 InCall —— 上面所有 pre-publication
-        // 失败路径都已发过错误响应 + (隐式)留在 Registered,不会卡 InCall。
+        // R3 #1:200 OK 已发(handler 内),activeStream 发布完成,现在切 SipState + start media
         mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
 
-        // R3 拆分:installAckWatchdog 委派给 dialogHandler,超时回调走主类 cleanupActiveStream
-        dialogHandler.installAckWatchdog(cid) { timedOutCid ->
+        dialogHandler.installAckWatchdog(accepted.cid) { timedOutCid ->
             cleanupActiveStream(
                 "ACK timeout (${InviteDialogHandler.ACK_TIMEOUT_MS / 1000}s)",
                 sipEvent = SipEvent.CallEnded,
@@ -602,48 +515,13 @@ internal class InviteCoordinatorImpl(
             )
         }
 
-        simEventEmit(SimEvent.StreamStarted(cid, offer.remoteIp, offer.remotePort, ssrc))
+        simEventEmit(SimEvent.StreamStarted(accepted.cid, accepted.offer.remoteIp, accepted.offer.remotePort, accepted.ssrc))
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "开始推流 → ${offer.remoteIp}:${offer.remotePort} ssrc=$ssrc"
+            "开始推流 → ${accepted.offer.remoteIp}:${accepted.offer.remotePort} ssrc=${accepted.ssrc}"
         )
 
-        // cross-review R3 #2:media jobs 全部用 LAZY 启动,先**赋 activeStream 发布**,
-        // 再 startAll() —— 这样任一 job 立即失败时,onMediaFailure 回调能看到已发布的 activeStream。
-        // R3 拆分:launchMediaJobs/launchVideoSendLoop/launchAudioSendLoop/launchRtcpSrLoop
-        // 全部迁到 InviteMediaPipeline.build,主类只编排顺序。
-        val pipeline = mediaPipeline ?: error("rtpSenderFactory null,不该进 doAcceptInvite 媒体段")
-        val media = pipeline.build(cid, rtp, offer, ssrc, cam) { failedCid, reason ->
-            cleanupActiveStream(reason, sipEvent = SipEvent.CallEnded, callId = failedCid)
-        }
-
-        activeStream = ActiveStream(
-            callId = cid,
-            ssrc = ssrc,
-            rtpSender = rtp,
-            streamJob = media.streamJob,
-            audioJob = media.audioJob,
-            rtcpSender = media.rtcpSender,
-            rtcpJob = media.rtcpJob,
-            localUri = localUri,
-            localTag = localToTag,
-            remoteUri = remoteUri,
-            remoteTag = remoteTag,
-            remoteTarget = remoteTarget,
-            channelId = channelId,
-            remoteHost = offer.remoteIp,
-            remotePort = offer.remotePort,
-            // P1-3:记录建立 dialog 时 envelope 真实来源 IP,后续 mid-dialog 校验。
-            remoteSourceIp = envelope.sourceIp,
-            statsJob = media.statsJob,
-        )
-        _activeStreamSnapshot.value = ActiveStreamSnapshot(
-            callId = cid, channelId = channelId,
-            remoteHost = offer.remoteIp, remotePort = offer.remotePort, ssrc = ssrc,
-        )
-        _state.value = InviteState.Streaming
-
-        // R3 #2:activeStream 发布完成,启动所有 LAZY job。
+        // R3 #2:activeStream 已发布,启动所有 LAZY job
         media.startAll()
     }
 

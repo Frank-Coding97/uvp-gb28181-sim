@@ -20,11 +20,11 @@ class InviteHandlerResultsTest {
     // ---- AcceptResult ----
 
     @Test
-    fun acceptResult_success_carries_activeStream() {
-        val active = stubActiveStream(callId = "cid-1")
-        val r: AcceptResult = AcceptResult.Success(active)
+    fun acceptResult_success_carries_acceptedInvite() {
+        val accepted = stubAcceptedInvite(cid = "cid-1")
+        val r: AcceptResult = AcceptResult.Success(accepted)
         assertTrue(r is AcceptResult.Success)
-        assertSame(active, r.activeStream)
+        assertSame(accepted, r.accepted)
     }
 
     @Test
@@ -83,12 +83,26 @@ class InviteHandlerResultsTest {
         }
     }
 
-    // ---- 构造 stub ActiveStream(测试用,字段大多为 default)----
-    private fun stubActiveStream(callId: String) =
-        InviteCoordinatorImpl.ActiveStream(
-            callId = callId,
+    // ---- 构造 stub AcceptedInvite(测试用) ----
+    private fun stubAcceptedInvite(cid: String) =
+        AcceptedInvite(
+            cid = cid,
+            rtp = com.uvp.sim.network.RtpSender("127.0.0.1", 0),
+            offer = com.uvp.sim.sip.SdpOffer(
+                remoteIp = "127.0.0.1",
+                remotePort = 30000,
+                ssrc = "0100000001",
+                direction = com.uvp.sim.sip.SdpDirection.SENDRECV,
+                rawBody = "",
+            ),
             ssrc = "0100000001",
-            rtpSender = com.uvp.sim.network.RtpSender("127.0.0.1", 0),
-            streamJob = kotlinx.coroutines.Job(),
+            cam = com.uvp.sim.camera.CameraCapture(com.uvp.sim.camera.CaptureConfig()),
+            channelId = "ch-1",
+            localUri = "sip:34020000001310000001@127.0.0.1",
+            localTag = "lt",
+            remoteUri = "sip:server@127.0.0.1",
+            remoteTag = "rt",
+            remoteTarget = "sip:server@127.0.0.1",
+            remoteSourceIp = "127.0.0.1",
         )
 }
