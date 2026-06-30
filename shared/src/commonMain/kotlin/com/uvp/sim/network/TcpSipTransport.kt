@@ -49,6 +49,7 @@ class TcpSipTransport(
 ) : SipTransport {
 
     private val mutex = Mutex()
+    private val sendMutex = Mutex()
     private var socket: Socket? = null
     private var selector: SelectorManager? = null
     private var readChannel: ByteReadChannel? = null
@@ -276,18 +277,28 @@ class TcpSipTransport(
     }
 
     override suspend fun send(message: SipMessage) {
-        val wc = writeChannel ?: error("Transport not connected — call connect() first")
         val payload = message.toBytes()
         // write 在主线程也会撞 NetworkOnMainThreadException,统一在 IO 跑。
-        withContext(IoDispatcher) {
-            try {
-                wc.writeByteArray(payload)
-            } catch (e: Throwable) {
-                SystemLogger.emit(
-                    LogLevel.Error, LogTag.Network,
-                    "TCP send 失败: ${e::class.simpleName}: ${e.message}"
-                )
-                throw e
+        //
+        // cross-review R2 #2:多协程并发(SipOutboxImpl 跨多个 Coordinator)同时进 send
+        // 会让两条 SIP 报文在 ByteWriteChannel 上交错,平台拿到的字节流是损坏帧。
+        // sendMutex 串行整段 write,保证一条 SIP 写完再写下一条。
+        //
+        // R2 #2 同时治本 R1 #5 verify-followup 残留:writeChannel 的读取放在 mutex 内,
+        // read-loop 在 finally 同步置空时,正在等锁的 send 拿到的就是 null,直接抛
+        // "Transport not connected"。
+        sendMutex.withLock {
+            val wc = writeChannel ?: error("Transport not connected — call connect() first")
+            withContext(IoDispatcher) {
+                try {
+                    wc.writeByteArray(payload)
+                } catch (e: Throwable) {
+                    SystemLogger.emit(
+                        LogLevel.Error, LogTag.Network,
+                        "TCP send 失败: ${e::class.simpleName}: ${e.message}"
+                    )
+                    throw e
+                }
             }
         }
     }
