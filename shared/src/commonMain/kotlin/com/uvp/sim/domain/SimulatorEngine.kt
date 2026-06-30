@@ -88,6 +88,7 @@ class SimulatorEngine internal constructor(
                     SimEvent.RegistrationSucceeded(config.expiresSeconds)
                 is RegistrationEvent.AuthChallenged -> SimEvent.RegistrationChallenged(ev.realm)
                 is RegistrationEvent.Unauthorized -> SimEvent.RegistrationFailed(ev.reason)
+                is RegistrationEvent.TransportFailed -> SimEvent.TransportError(ev.reason)
                 is RegistrationEvent.NetworkSwitchedReregister -> null
                 is RegistrationEvent.AutoReregisterTriggered -> {
                     invite.stopStream("auto re-register triggered")

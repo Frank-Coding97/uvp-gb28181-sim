@@ -45,6 +45,11 @@ internal sealed class RegistrationEvent {
     data object Renewed : RegistrationEvent()
     data class AuthChallenged(val realm: String) : RegistrationEvent()
     data class Unauthorized(val statusCode: Int, val reason: String) : RegistrationEvent()
+    /**
+     * Transport 层失败(socket 发送 / 网络不通),**不是**鉴权失败。UI 应展示"网络不通"
+     * 而非"用户名密码错误"。
+     */
+    data class TransportFailed(val reason: String) : RegistrationEvent()
     data class NetworkSwitchedReregister(val newIp: String) : RegistrationEvent()
 
     /**

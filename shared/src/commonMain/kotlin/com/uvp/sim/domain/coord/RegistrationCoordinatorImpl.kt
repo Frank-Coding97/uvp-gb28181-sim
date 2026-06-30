@@ -167,7 +167,7 @@ internal class RegistrationCoordinatorImpl(
                 armRegisterTimeout()
             } catch (e: Throwable) {
                 _state.value = RegistrationState.Failed
-                _events.emit(RegistrationEvent.Unauthorized(0, "transport: ${e.message}"))
+                _events.emit(RegistrationEvent.TransportFailed("transport: ${e.message}"))
                 SystemLogger.emit(
                     LogLevel.Error, LogTag.Lifecycle,
                     "注册请求发送失败: ${e::class.simpleName}: ${e.message}",
@@ -586,7 +586,7 @@ internal class RegistrationCoordinatorImpl(
                         LogLevel.Warning, LogTag.Lifecycle,
                         "Expires 续约 send 失败: ${e.message ?: e::class.simpleName} → 立刻通知 + 进入重试路径",
                     )
-                    _events.emit(RegistrationEvent.Unauthorized(0, reason))
+                    _events.emit(RegistrationEvent.TransportFailed(reason))
                     scheduleRetryOrFail(reason)
                 }
             }
