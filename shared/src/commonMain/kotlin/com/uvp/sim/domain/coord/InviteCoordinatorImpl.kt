@@ -474,6 +474,17 @@ internal class InviteCoordinatorImpl(
         accepted: AcceptedInvite,
         pipeline: InviteMediaPipeline,
     ) {
+        // R4 #3 CANCEL race fix: installAckWatchdog BEFORE media build / activeStream publish.
+        // 200 OK is already sent by AcceptHandler — enter pending state immediately so
+        // a CANCEL arriving in this window hits awaitingAckCallId == cid → TerminateDialog.
+        dialogHandler.installAckWatchdog(accepted.cid) { timedOutCid ->
+            cleanupActiveStream(
+                "ACK timeout (${InviteDialogHandler.ACK_TIMEOUT_MS / 1000}s)",
+                sipEvent = SipEvent.CallEnded,
+                callId = timedOutCid,
+            )
+        }
+
         val media = pipeline.build(accepted.cid, accepted.rtp, accepted.offer, accepted.ssrc, accepted.cam) { failedCid, reason ->
             cleanupActiveStream(reason, sipEvent = SipEvent.CallEnded, callId = failedCid)
         }
@@ -506,14 +517,6 @@ internal class InviteCoordinatorImpl(
 
         // R3 #1:200 OK 已发(handler 内),activeStream 发布完成,现在切 SipState + start media
         mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
-
-        dialogHandler.installAckWatchdog(accepted.cid) { timedOutCid ->
-            cleanupActiveStream(
-                "ACK timeout (${InviteDialogHandler.ACK_TIMEOUT_MS / 1000}s)",
-                sipEvent = SipEvent.CallEnded,
-                callId = timedOutCid,
-            )
-        }
 
         simEventEmit(SimEvent.StreamStarted(accepted.cid, accepted.offer.remoteIp, accepted.offer.remotePort, accepted.ssrc))
         SystemLogger.emit(
