@@ -1,7 +1,6 @@
 package com.uvp.sim.domain.coord
 
 import com.uvp.sim.config.CatalogNode
-import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.SimEvent
@@ -347,35 +346,6 @@ internal class InviteCoordinatorImpl(
     }
 
     /**
-     * 通道分类内联版(无媒体管线时也可用)。
-     * 跟 AcceptHandler.classifyInviteTarget 等价 — 后者读 InviteSharedState.catalogTree,
-     * 这里读主类 catalogTree,内容一样。
-     */
-    private fun classifyInviteTargetInline(channelId: String): Pair<Int, String>? {
-        if (channelId.isBlank()) return null
-        val tree = catalogTree.value
-        val node = tree.firstOrNull { it.id == channelId }
-            ?: return 404 to "Channel Not Found"
-        return when (node.type) {
-            CatalogNodeType.VideoChannel -> null
-            CatalogNodeType.AlarmChannel -> 488 to "Not Acceptable Here (alarm channel does not stream)"
-            CatalogNodeType.Device -> 488 to "Not Acceptable Here (cannot invite device root)"
-            CatalogNodeType.BusinessGroup -> 488 to "Not Acceptable Here (cannot invite business group)"
-            CatalogNodeType.VirtualOrg -> 488 to "Not Acceptable Here (cannot invite virtual org)"
-        }
-    }
-
-    /** 从 INVITE 请求 URI 提取 channel ID(GB28181 §20.4 / §C.2.3)。 */
-    private fun extractInviteTargetInline(invite: SipRequest): String {
-        val uri = invite.requestUri ?: return ""
-        val atIdx = uri.indexOf('@')
-        val schemeIdx = uri.indexOf(':')
-        return if (schemeIdx >= 0 && atIdx > schemeIdx) {
-            uri.substring(schemeIdx + 1, atIdx)
-        } else ""
-    }
-
-    /**
      * 403 Forbidden / 400 Bad Request 等顶层拒绝,保留给 handleInviteMaybe 用。
      */
     private suspend fun sendSimpleResponse(req: SipRequest, statusCode: Int, reasonPhrase: String) {
@@ -402,10 +372,9 @@ internal class InviteCoordinatorImpl(
      */
     private suspend fun handleInvite(envelope: com.uvp.sim.network.SipEnvelope, invite: SipRequest) {
         // 通道分类拒绝(R3 #4: 未知 channel 404)— **不依赖媒体管线**,单测路径也要走。
-        // 直接用主类内联版而非 acceptHandler(因为 handler 可能为 null);classifyInviteTarget
-        // 只读 catalogTree + config,无副作用,所以内联跟 handler 版等价。
-        val channelId = extractInviteTargetInline(invite)
-        classifyInviteTargetInline(channelId)?.let { (code, reason) ->
+        // R4 #5:改用 top-level 纯函数,主类 + AcceptHandler 共用单一实现。
+        val channelId = extractInviteTarget(invite)
+        classifyInviteTarget(channelId, catalogTree.value)?.let { (code, reason) ->
             runCatching {
                 val resp = SipBuilders.buildSimpleError(
                     request = invite,

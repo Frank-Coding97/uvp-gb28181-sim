@@ -1,5 +1,6 @@
 package com.uvp.sim.domain.coord
 
+import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.domain.transportErrorOf
 import com.uvp.sim.network.RtpMode
@@ -10,6 +11,35 @@ import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipHeaderHelpers
 import com.uvp.sim.sip.SipRequest
+
+/**
+ * 通道分类纯函数 — 主类 + AcceptHandler 共用。返回 null = 可接受,非 null = (statusCode, reason) 拒绝。
+ *
+ * R4 #5:消除主类 classifyInviteTargetInline / AcceptHandler.classifyInviteTarget 重复实现,
+ * 避免漂移风险。catalogTree 由调用者读取,保持 pure。
+ */
+internal fun classifyInviteTarget(channelId: String, catalogTree: List<CatalogNode>): Pair<Int, String>? {
+    if (channelId.isBlank()) return null
+    val node = catalogTree.firstOrNull { it.id == channelId }
+        ?: return 404 to "Channel Not Found"
+    return when (node.type) {
+        CatalogNodeType.VideoChannel -> null
+        CatalogNodeType.AlarmChannel -> 488 to "Not Acceptable Here (alarm channel does not stream)"
+        CatalogNodeType.Device -> 488 to "Not Acceptable Here (cannot invite device root)"
+        CatalogNodeType.BusinessGroup -> 488 to "Not Acceptable Here (cannot invite business group)"
+        CatalogNodeType.VirtualOrg -> 488 to "Not Acceptable Here (cannot invite virtual org)"
+    }
+}
+
+/** 从 INVITE 请求 URI 提取 channel ID(GB28181 §20.4 / §C.2.3)。 */
+internal fun extractInviteTarget(invite: SipRequest): String {
+    val uri = invite.requestUri ?: return ""
+    val atIdx = uri.indexOf('@')
+    val schemeIdx = uri.indexOf(':')
+    return if (schemeIdx >= 0 && atIdx > schemeIdx) {
+        uri.substring(schemeIdx + 1, atIdx)
+    } else ""
+}
 
 /**
  * cross-review R3 拆分 — INVITE 接受路径:URI 解析 / 通道分类 / 拒绝构建 / SDP 解析 /
@@ -31,36 +61,12 @@ internal class InviteAcceptHandler(
     /**
      * 给主类用的 INVITE 解析:URI 解析 + 通道分类。
      * 返回 null = 可接受,非 null = (statusCode, reason) 拒绝。
+     *
+     * R4 #5:转发到 top-level 纯函数,主类亦可直接调 top-level。保留 instance API 以
+     * 兼容旧调用方;新代码直接调 top-level [classifyInviteTarget]。
      */
-    fun classifyInviteTarget(channelId: String): Pair<Int, String>? {
-        if (channelId.isBlank()) return null
-        val tree = shared.catalogTree.value
-        val node = tree.firstOrNull { it.id == channelId }
-            ?: return 404 to "Channel Not Found"
-        return when (node.type) {
-            CatalogNodeType.VideoChannel -> null
-            CatalogNodeType.AlarmChannel ->
-                488 to "Not Acceptable Here (alarm channel does not stream)"
-            CatalogNodeType.Device ->
-                488 to "Not Acceptable Here (cannot invite device root)"
-            CatalogNodeType.BusinessGroup ->
-                488 to "Not Acceptable Here (cannot invite business group)"
-            CatalogNodeType.VirtualOrg ->
-                488 to "Not Acceptable Here (cannot invite virtual org)"
-        }
-    }
-
-    /**
-     * 从 INVITE 请求 URI 提取 channel ID(GB28181 §20.4 / §C.2.3)。
-     */
-    fun extractInviteTarget(invite: SipRequest): String {
-        val uri = invite.requestUri ?: return ""
-        val atIdx = uri.indexOf('@')
-        val schemeIdx = uri.indexOf(':')
-        return if (schemeIdx >= 0 && atIdx > schemeIdx) {
-            uri.substring(schemeIdx + 1, atIdx)
-        } else ""
-    }
+    fun classifyInviteTargetForCurrentTree(channelId: String): Pair<Int, String>? =
+        classifyInviteTarget(channelId, shared.catalogTree.value)
 
     /**
      * 接受主流程。**主类必须先做 acceptInFlight 守卫**(activeStream != null 或正在接受
