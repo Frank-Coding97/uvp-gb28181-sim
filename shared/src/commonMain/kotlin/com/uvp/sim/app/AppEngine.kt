@@ -417,8 +417,14 @@ class AppEngine(
         _config.value = new
         rehydrateHolders(new)
         if (prev.video != new.video || prev.audioTransport != new.audioTransport) {
+            // cross-review R2 #3:runCatching 吞错会让 streamer/audio 重建失败时
+            // 持久化 config 已变,但 pipeline 还跑旧的;UI 没任何信号 → 用户面对静默
+            // 偏差。这里把失败上报到 events(已被 ViewModel toast),保持运行期 fail-safe
+            // 但显式可见。
             runCatching {
                 runtime.applyVideoConfig(captureConfigOf(new), audioCaptureConfigOf(new))
+            }.onFailure { e ->
+                holders.events.emit(com.uvp.sim.domain.transportErrorOf("应用视频配置", e))
             }
         }
         // cross-review R1 #3:持久化失败不能静默吞 —— 过去 runCatching 丢弃 save 异常,
@@ -479,8 +485,14 @@ class AppEngine(
         _config.value = new
         rehydrateHolders(new)
         if (prev.video != new.video || prev.audioTransport != new.audioTransport) {
+            // cross-review R2 #3:跟 [updateConfig] 同款根因 —— runCatching 吞错让
+            // streamer 重建失败时 pipeline 跑旧的、_config 已是新的,UI 无信号。
+            // setConfig 是同步 fun(ViewModel 已 save 后调),用 tryEmit 把失败丢到
+            // events buffer(extraBufferCapacity=64),不阻塞。
             runCatching {
                 runtime.applyVideoConfig(captureConfigOf(new), audioCaptureConfigOf(new))
+            }.onFailure { e ->
+                holders.events.tryEmit(com.uvp.sim.domain.transportErrorOf("应用视频配置", e))
             }
         }
     }
