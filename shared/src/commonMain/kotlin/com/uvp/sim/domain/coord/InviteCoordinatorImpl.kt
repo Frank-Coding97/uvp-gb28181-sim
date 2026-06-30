@@ -544,6 +544,11 @@ internal class InviteCoordinatorImpl(
      * 打包后走 [rtp] 发送,共享一把 [Mutex] 串行化(RTP 序列号 / 计数器)。RTCP SR
      * 每 [RTCP_SR_INTERVAL_MS] 反馈一次。推流统计累加进 [activeStream](由调用方在本
      * 方法返回后赋值,job 内通过 `activeStream?.let` 安全读)。
+     *
+     * cross-review R2 #2:本函数过去 92 LOC 糅合 video / audio / RTCP / RTCP-bind /
+     * 故障 teardown,单点改一处易回归另一处。现在仅作编排,实际 loop 拆至
+     * [launchVideoSendLoop] / [launchAudioSendLoop] / [launchRtcpSrLoop],
+     * 三处共享同一 [Mutex] / [activeStream] / [stopActiveStream] 入口。
      */
     private suspend fun launchMediaJobs(
         cid: String,
@@ -561,65 +566,107 @@ internal class InviteCoordinatorImpl(
         }
         val rtpMutex = Mutex()
 
-        val streamJob = scope.launch {
-            try {
-                cam.start().collect { frame ->
-                    val ps = muxer.muxFrame(frame)
-                    val timestamp90k = frame.timestampUs * 9 / 100
-                    val packets = packer.packFrame(ps, timestamp90k)
-                    rtpMutex.withLock {
-                        for (p in packets) {
-                            rtp.send(p)
-                            activeStream?.let {
-                                it.packetCount += 1
-                                it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
-                                it.lastRtpTimestamp = timestamp90k
-                            }
-                        }
-                    }
-                    activeStream?.let { it.frameCount += 1 }
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP video send", e))
-                scope.launch { stopActiveStream(cid, "video send failed: ${e::class.simpleName}") }
-            }
-        }
-
+        val streamJob = launchVideoSendLoop(cid, cam, muxer, packer, rtp, rtpMutex)
         val audioJob = audioCapture?.let { audio ->
-            scope.launch {
-                try {
-                    audio.start().collect { aFrame ->
-                        val ps = muxer.muxAudio(aFrame)
-                        val timestamp90k = aFrame.timestampUs * 9 / 100
-                        val packets = packer.packFrame(ps, timestamp90k)
-                        rtpMutex.withLock {
-                            for (p in packets) {
-                                rtp.send(p)
-                                activeStream?.let {
-                                    it.packetCount += 1
-                                    it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
-                                }
-                            }
-                        }
-                    }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP audio send", e))
-                    scope.launch { stopActiveStream(cid, "audio send failed: ${e::class.simpleName}") }
-                }
-            }
+            launchAudioSendLoop(cid, audio, muxer, packer, rtp, rtpMutex)
         }
 
-        // RTCP SR 反馈
+        // RTCP SR 反馈 sender 在 launchMediaJobs 内创建(失败 emit 事件不阻断主流程,
+        // 跟历史一致),loop 单独抽出。
         val rtcp = rtpSenderFactory!!(offer.remoteIp, offer.remotePort + 1, RtpMode.UDP, null)
         try { rtcp.bindLocalPort() } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("RTCP bind", e))
         }
+        val rtcpJob = launchRtcpSrLoop(ssrc, rtcp)
+
+        return MediaJobs(streamJob, audioJob, rtcp, rtcpJob)
+    }
+
+    /**
+     * 视频帧 → PS 封装 → RTP 打包 → 发送 + 计数。
+     *
+     * 失败时通过 [simEventEmit] 上报 TransportError 并异步触发 [stopActiveStream] 释放整个
+     * 推流(因为视频是主流,挂了等于会话死)。Cancellation 直透。
+     */
+    private fun launchVideoSendLoop(
+        cid: String,
+        cam: com.uvp.sim.camera.CameraCapture,
+        muxer: com.uvp.sim.media.PsMuxer,
+        packer: com.uvp.sim.media.RtpPacker,
+        rtp: RtpSender,
+        rtpMutex: Mutex,
+    ): Job = scope.launch {
+        try {
+            cam.start().collect { frame ->
+                val ps = muxer.muxFrame(frame)
+                val timestamp90k = frame.timestampUs * 9 / 100
+                val packets = packer.packFrame(ps, timestamp90k)
+                rtpMutex.withLock {
+                    for (p in packets) {
+                        rtp.send(p)
+                        activeStream?.let {
+                            it.packetCount += 1
+                            it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
+                            it.lastRtpTimestamp = timestamp90k
+                        }
+                    }
+                }
+                activeStream?.let { it.frameCount += 1 }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP video send", e))
+            scope.launch { stopActiveStream(cid, "video send failed: ${e::class.simpleName}") }
+        }
+    }
+
+    /**
+     * 音频帧 → PS 封装 → RTP 打包 → 发送 + 计数(不更新 lastRtpTimestamp /
+     * frameCount,这两是视频侧统计入口)。
+     *
+     * 跟视频共享 [rtpMutex] 保证 RTP 序列号串行。失败同款 stopActiveStream 释放推流。
+     */
+    private fun launchAudioSendLoop(
+        cid: String,
+        audio: com.uvp.sim.camera.AudioCapture,
+        muxer: com.uvp.sim.media.PsMuxer,
+        packer: com.uvp.sim.media.RtpPacker,
+        rtp: RtpSender,
+        rtpMutex: Mutex,
+    ): Job = scope.launch {
+        try {
+            audio.start().collect { aFrame ->
+                val ps = muxer.muxAudio(aFrame)
+                val timestamp90k = aFrame.timestampUs * 9 / 100
+                val packets = packer.packFrame(ps, timestamp90k)
+                rtpMutex.withLock {
+                    for (p in packets) {
+                        rtp.send(p)
+                        activeStream?.let {
+                            it.packetCount += 1
+                            it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
+                        }
+                    }
+                }
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP audio send", e))
+            scope.launch { stopActiveStream(cid, "audio send failed: ${e::class.simpleName}") }
+        }
+    }
+
+    /**
+     * RTCP SR 周期反馈循环,每 [RTCP_SR_INTERVAL_MS] 一发,直到 [activeStream] 被清空。
+     *
+     * 单条 SR build/send 失败 [runCatching] 静默(SR 是辅助统计,丢一两条不影响推流),
+     * 跟历史行为一致。
+     */
+    private fun launchRtcpSrLoop(ssrc: String, rtcp: RtpSender): Job {
         val ssrcInt = com.uvp.sim.sip.SsrcUtils.toRtpInt(ssrc)
-        val rtcpJob = scope.launch {
+        return scope.launch {
             while (true) {
                 delay(RTCP_SR_INTERVAL_MS)
                 val a = activeStream ?: break
@@ -635,8 +682,6 @@ internal class InviteCoordinatorImpl(
                 }
             }
         }
-
-        return MediaJobs(streamJob, audioJob, rtcp, rtcpJob)
     }
 
 
