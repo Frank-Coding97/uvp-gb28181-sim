@@ -46,7 +46,7 @@ import kotlinx.coroutines.launch
  *   - bindCamera / bindAudio / bindRecordingService 测试 seam 保留(仅用于单测注入 fake)
  *   - newCaptureConfig / newAudioCaptureConfig 保留,Activity 已不再用,留作向后兼容
  */
-class SipViewModel(
+class SipViewModel @JvmOverloads constructor(
     application: Application,
     configStoreOverride: com.uvp.sim.app.ConfigStore? = null,
 ) : AndroidViewModel(application) {
