@@ -45,6 +45,8 @@ import com.uvp.sim.sip.SubscribeHandler
 import com.uvp.sim.sip.SubscribeIntent
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -280,9 +282,14 @@ internal class ManscdpRouterImpl(
         }
 
         val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
-        for (d in dialogs) {
-            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            notifyHandler.sendAlarmNotify(updated, body, sn)
+        // R4 #11:先串行 bumpNotify(SN 池写入,顺序敏感),再并行 sendNotify(网络 IO,各自独立)。
+        val bumped = dialogs.mapNotNull { d ->
+            subscriptionRegistry.bumpNotify(d.callId)?.let { it }
+        }
+        kotlinx.coroutines.coroutineScope {
+            bumped.map { updated ->
+                async { notifyHandler.sendAlarmNotify(updated, body, sn) }
+            }.awaitAll()
         }
 
         alarmHistoryStore.append(
@@ -339,9 +346,11 @@ internal class ManscdpRouterImpl(
         }
 
         val dialogs = subscriptionRegistry.dialogsByKind("Alarm")
-        for (d in dialogs) {
-            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            notifyHandler.sendMediaStatusNotifyToSubscriber(updated, xmlBody)
+        val bumped = dialogs.mapNotNull { subscriptionRegistry.bumpNotify(it.callId) }
+        kotlinx.coroutines.coroutineScope {
+            bumped.map { updated ->
+                async { notifyHandler.sendMediaStatusNotifyToSubscriber(updated, xmlBody) }
+            }.awaitAll()
         }
 
         simEventEmit(SimEvent.MediaStatusSent(notifyType, dialogs.size))
@@ -428,18 +437,22 @@ internal class ManscdpRouterImpl(
 
     suspend fun pushCatalogNotify() {
         val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
-        for (d in dialogs) {
-            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            notifyHandler.sendCatalogNotify(updated)
+        val bumped = dialogs.mapNotNull { subscriptionRegistry.bumpNotify(it.callId) }
+        kotlinx.coroutines.coroutineScope {
+            bumped.map { updated ->
+                async { notifyHandler.sendCatalogNotify(updated) }
+            }.awaitAll()
         }
     }
 
     suspend fun pushCatalogIncremental(events: List<CatalogChangeEvent>) {
         if (events.isEmpty()) return
         val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
-        for (d in dialogs) {
-            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            notifyHandler.sendCatalogIncrementalNotify(updated, events)
+        val bumped = dialogs.mapNotNull { subscriptionRegistry.bumpNotify(it.callId) }
+        kotlinx.coroutines.coroutineScope {
+            bumped.map { updated ->
+                async { notifyHandler.sendCatalogIncrementalNotify(updated, events) }
+            }.awaitAll()
         }
     }
 
@@ -466,9 +479,11 @@ internal class ManscdpRouterImpl(
 
     private suspend fun pushCatalogStatusChange(channelId: String, online: Boolean) {
         val dialogs = subscriptionRegistry.dialogsByKind("Catalog")
-        for (d in dialogs) {
-            val updated = subscriptionRegistry.bumpNotify(d.callId) ?: continue
-            notifyHandler.sendCatalogStatusOnlyNotify(updated, channelId, online)
+        val bumped = dialogs.mapNotNull { subscriptionRegistry.bumpNotify(it.callId) }
+        kotlinx.coroutines.coroutineScope {
+            bumped.map { updated ->
+                async { notifyHandler.sendCatalogStatusOnlyNotify(updated, channelId, online) }
+            }.awaitAll()
         }
     }
 
