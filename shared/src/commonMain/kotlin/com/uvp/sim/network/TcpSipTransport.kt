@@ -234,11 +234,17 @@ class TcpSipTransport(
                     } catch (e: SipParseException) {
                         // R1 #8:帧级解析错误(畸形 Content-Length / 越界 / Header 截断)
                         // 不能 continue —— 后续字节流已经无法对齐到合法帧边界,继续读
-                        // 只会循环消费垃圾数据。直接 break read-loop 让连接重建。
+                        // 只会循环消费垃圾数据。直接 break read-loop。
+                        //
+                        // cross-review R2 #5:仅 break 会留 half-open —— socket / writeChannel
+                        // 还活着、_incoming 永不再 emit,上层 send 不会失败、health-check 拿不到
+                        // 终结信号。这里异步 launch close() 释放 socket/selector/writeChannel,
+                        // 让上层 send 立即抛 "Transport not connected" 触发重连决策。
                         SystemLogger.emit(
                             LogLevel.Warning, LogTag.Network,
                             "TCP SIP framing error, dropping connection: ${e.message}"
                         )
+                        ownedScope.launch { runCatching { close() } }
                         break
                     } catch (e: Throwable) {
                         if (!isActive) break
@@ -246,6 +252,7 @@ class TcpSipTransport(
                             LogLevel.Warning, LogTag.Network,
                             "TCP read error: ${e::class.simpleName}: ${e.message}"
                         )
+                        ownedScope.launch { runCatching { close() } }
                         break
                     }
                 }
