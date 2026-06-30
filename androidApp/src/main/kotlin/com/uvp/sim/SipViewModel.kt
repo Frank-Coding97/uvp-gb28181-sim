@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.launch
 
 /**
@@ -156,6 +157,9 @@ class SipViewModel(
     /** 最后一次成功保存目录树的时间。 */
     private val _lastCatalogSavedAt = MutableStateFlow<Long?>(null)
     val lastCatalogSavedAt: StateFlow<Long?> = _lastCatalogSavedAt.asStateFlow()
+
+    /** 串行化 catalog 持久化,防两次 save 乱序完成导致旧树覆盖新树(cross-review R1 #4)。 */
+    private val catalogSaveMutex = kotlinx.coroutines.sync.Mutex()
 
     /** 报警发送模式 + 固定单。 */
     private val _alarmFireMode = MutableStateFlow(com.uvp.sim.ui.AlarmFireMode.Random)
@@ -316,28 +320,31 @@ class SipViewModel(
         if (result is com.uvp.sim.domain.ValidationResult.Invalid) return result
         val newCfg = appEngine.config.value.copy(catalogTree = tree)
         viewModelScope.launch {
-            // cross-review R1 #4 (+ verify-1 补强):commit-on-success。
+            // cross-review R1 #4 (+ verify-1/2 补强):commit-on-success + 串行化。
             // 过去先 applyConfigPartial + 同步标记时间戳,再 runCatching{save} 吞失败 →
             // save 失败时未落盘的树照样进运行态、NOTIFY 下发给平台,重启后丢编辑且 UI 假报成功。
-            // 现在:先持久化,成功才把新树应用到本地/运行态 + 标记时间戳 + 推平台;
-            //       失败只发 TransportError,运行态 catalog 保持不变(硬停止)。
-            val saved = runCatching { resources.configStore.save(newCfg) }
-            saved.onFailure { e ->
-                _events.update { current ->
-                    (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
+            // 现在:catalogSaveMutex 串行化整段"持久化+应用",避免两次 save 乱序完成导致旧树
+            //       覆盖新树(verify-2 指出的竞态);先持久化,成功才把新树应用到本地/运行态 +
+            //       标记时间戳 + 推平台;失败只发 TransportError,运行态 catalog 保持不变(硬停止)。
+            catalogSaveMutex.withLock {
+                val saved = runCatching { resources.configStore.save(newCfg) }
+                saved.onFailure { e ->
+                    _events.update { current ->
+                        (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
+                    }
+                    return@withLock
                 }
-                return@launch
-            }
-            // P1-1(2026-06-28):走局部应用 — 只刷 catalogTree 数据快照,
-            // 不清 clockOffset / 不 cancelAll 订阅 / 不 reset mockGps。
-            // updateCatalogTree 才是真正把新树推给 Coord(平台 NOTIFY)。
-            appEngine.applyConfigPartial(newCfg)
-            _lastCatalogSavedAt.value = System.currentTimeMillis()
-            try {
-                appEngine.updateCatalogTree(tree)
-            } catch (e: Throwable) {
-                _events.update { current ->
-                    (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
+                // P1-1(2026-06-28):走局部应用 — 只刷 catalogTree 数据快照,
+                // 不清 clockOffset / 不 cancelAll 订阅 / 不 reset mockGps。
+                // updateCatalogTree 才是真正把新树推给 Coord(平台 NOTIFY)。
+                appEngine.applyConfigPartial(newCfg)
+                _lastCatalogSavedAt.value = System.currentTimeMillis()
+                try {
+                    appEngine.updateCatalogTree(tree)
+                } catch (e: Throwable) {
+                    _events.update { current ->
+                        (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)
+                    }
                 }
             }
         }
