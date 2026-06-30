@@ -150,10 +150,18 @@ class AppEngine(
                 try {
                     transport?.connect()
                     existing.register()
+                    return true
                 } catch (e: Throwable) {
+                    // cross-review R2 #3:reconnect 失败过去 catch 后仍返 true,外层
+                    // connect() 不会重建 transport,引擎陷在死链上直到 app 重启。
+                    // 现在显式清掉 stale engine / transport,返 false 让 connect() 走
+                    // 重建路径(buildTransportSession + wireSessionAndBridges + startRegistration)。
                     holders.events.emit(com.uvp.sim.domain.transportErrorOf("register retry", e))
+                    runCatching { transport?.close() }
+                    transport = null
+                    engine = null
+                    return false
                 }
-                return true
             }
         }
     }
