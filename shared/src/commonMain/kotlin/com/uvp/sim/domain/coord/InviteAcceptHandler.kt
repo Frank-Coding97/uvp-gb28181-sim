@@ -59,16 +59,6 @@ internal class InviteAcceptHandler(
 ) {
 
     /**
-     * 给主类用的 INVITE 解析:URI 解析 + 通道分类。
-     * 返回 null = 可接受,非 null = (statusCode, reason) 拒绝。
-     *
-     * R4 #5:转发到 top-level 纯函数,主类亦可直接调 top-level。保留 instance API 以
-     * 兼容旧调用方;新代码直接调 top-level [classifyInviteTarget]。
-     */
-    fun classifyInviteTargetForCurrentTree(channelId: String): Pair<Int, String>? =
-        classifyInviteTarget(channelId, shared.catalogTree.value)
-
-    /**
      * 接受主流程。**主类必须先做 acceptInFlight 守卫**(activeStream != null 或正在接受
      * 时拒绝并发第二路),本 handler 只处理:
      *
