@@ -116,7 +116,13 @@ internal class InviteCoordinatorImpl(
     // (activeStream || acceptInFlight),第二路立刻 486 Busy。
     private var acceptInFlight: Boolean = false
 
-    private data class ActiveStream(
+    /**
+     * cross-review R3 拆分:`internal`(原 private)— 让同 package 的
+     * `InviteHandlerResults.AcceptResult.Success(ActiveStream)` 等 handler 能引用。
+     * 这是 `InviteCoordinatorImpl` 内部状态,**不**对外暴露(声明仍嵌套于本 Impl),
+     * `InviteCoordinator` interface 用 `ActiveStreamSnapshot` 对外。
+     */
+    internal data class ActiveStream(
         val callId: String,
         val ssrc: String,
         val rtpSender: RtpSender,

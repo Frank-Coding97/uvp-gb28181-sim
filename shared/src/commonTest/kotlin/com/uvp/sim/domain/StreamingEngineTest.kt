@@ -94,7 +94,16 @@ class StreamingEngineTest {
         )
     }
 
-    @Test fun inviteWithoutMediaPlumbingStillTransitionsToInCall() = runTest {
+    @Test fun inviteWithoutMediaPlumbingStaysRegistered() = runTest {
+        // cross-review R3 #1 (commit 493ce2e):InviteReceived 状态转换延后到 200 OK 发送成功后。
+        // 无媒体管线 (rtpSenderFactory / cameraCapture = null) 时 doAcceptInvite 立刻 return,
+        // 200 OK 永远不会发,故 SipState 必须留在 Registered —— 这是 race 治本的核心约束:
+        // 任何"接受失败"路径(单测无管线 / SDP fail / RTP bind fail / 200 send fail)都不允许
+        // 把 SipState 卡在 InCall。
+        //
+        // 历史测试名 inviteWithoutMediaPlumbingStillTransitionsToInCall 是 R3 修复前的设计意图,
+        // 但那本身就是一种 state-stranding(媒体没起来 SipState 却显示 InCall),按 round-3 治本
+        // 标准应改为留在 Registered。
         val transport = MockSipTransport()
         val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" })
         try {
@@ -109,7 +118,10 @@ class StreamingEngineTest {
             transport.deliver(inviteWithSdp())
             testScheduler.runCurrent()
 
-            assertEquals(SipState.InCall, engine.state.value)
+            assertEquals(
+                SipState.Registered, engine.state.value,
+                "R3 #1: 无媒体管线 = doAcceptInvite 立即 return,不该切 InCall"
+            )
             // No 200 OK was sent because rtpSenderFactory / cameraCapture are null
             assertEquals(1, transport.sent.size)  // only the original REGISTER
         } finally {
