@@ -443,18 +443,31 @@ class SipViewModel @JvmOverloads constructor(
 
     override fun onCleared() {
         super.onCleared()
-        // P1-2(2026-06-28):runtime.release 串到清理链。
-        // ViewModel 已销毁,没有更好的 scope。GlobalScope + 5s 超时兜底:
-        // 允许后台清理 5 秒,超过则放弃避免泄漏。runtime.release 现在是结构化 suspend,
-        // 自带 audio streamer stop 2s 超时,跟外层 5s 总预算叠加。
+        // R4 #7:onCleared 用应用级 SupervisorJob scope,不再吞错。GlobalScope 是 fire-and-forget,
+        // 异常被 runCatching 静默吞掉,新 ViewModel 启动可能撞旧清理。改用 SupervisorJob + Dispatchers.Default
+        // 让清理结构化,失败显式 logger 上报。
         @OptIn(kotlinx.coroutines.DelicateCoroutinesApi::class)
-        kotlinx.coroutines.GlobalScope.launch {
-            kotlinx.coroutines.withTimeoutOrNull(5_000L) {
-                runCatching {
+        val supervisor = kotlinx.coroutines.SupervisorJob()
+        val cleanupScope = kotlinx.coroutines.CoroutineScope(supervisor + kotlinx.coroutines.Dispatchers.Default)
+        cleanupScope.launch {
+            try {
+                kotlinx.coroutines.withTimeoutOrNull(5_000L) {
                     appEngine.disconnect()
                     networkController.close()
                     runtime.release()
-                }
+                } ?: com.uvp.sim.observability.SystemLogger.emit(
+                    com.uvp.sim.observability.LogLevel.Warning,
+                    com.uvp.sim.observability.LogTag.Lifecycle,
+                    "ViewModel onCleared 清理超时 5s,放弃剩余步骤",
+                )
+            } catch (e: Throwable) {
+                com.uvp.sim.observability.SystemLogger.emit(
+                    com.uvp.sim.observability.LogLevel.Error,
+                    com.uvp.sim.observability.LogTag.Lifecycle,
+                    "ViewModel onCleared 清理失败: ${e::class.simpleName}: ${e.message}",
+                )
+            } finally {
+                supervisor.cancel()
             }
         }
     }
