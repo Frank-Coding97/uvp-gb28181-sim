@@ -400,6 +400,13 @@ internal class InviteCoordinatorImpl(
             com.uvp.sim.sip.SdpParser.parseOffer(invite.body)
         } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("SDP parse", e))
+            // cross-review R2 #4:SDP 解析失败过去裸 return → 平台拿不到任何 SIP 响应,
+            // 超时后才放弃,GB28181 协议合规要求"收 INVITE 必有响应"。
+            // 发 488 Not Acceptable Here(SDP 描述不可接受),回滚状态到 Registered。
+            runCatching {
+                outbox.send(SipBuilders.buildSimpleError(invite, 488, "Not Acceptable Here"))
+            }
+            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
             return
         }
 
@@ -426,6 +433,12 @@ internal class InviteCoordinatorImpl(
             rtp.bindLocalPort()
         } catch (e: Throwable) {
             simEventEmit(com.uvp.sim.domain.transportErrorOf("RTP bind", e))
+            // cross-review R2 #4:RTP bind 失败过去裸 return → 平台无 SIP 响应,同款问题。
+            // 发 500 Server Internal Error,回滚状态。
+            runCatching {
+                outbox.send(SipBuilders.buildSimpleError(invite, 500, "Server Internal Error"))
+            }
+            mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
             return
         }
 
