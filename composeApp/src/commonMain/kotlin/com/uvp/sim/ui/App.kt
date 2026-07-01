@@ -122,12 +122,14 @@ fun App(state: AppUiState, actions: AppActions) {
                                 modifier = Modifier.fillMaxWidth().weight(1f),
                                 color = UvpColor.Bg
                             ) {
-                                // iOS 悬浮 tab bar 不占布局空间,内容底部得留出 tab bar
-                                // 高度(64dp)+ 上下 padding(16dp)+ 安全区(~4dp)= 84dp,
-                                // 让最后一个 ActionTile / SIP 配置末行不被 tab bar 遮住。
-                                val bottomInset = if (isFloatingBottomBar) 84.dp else 0.dp
-                                val screenModifier = if (bottomInset > 0.dp)
-                                    Modifier.padding(bottom = bottomInset)
+                                // iOS 悬浮 tab bar 不占布局空间,内容底部得给它让位:
+                                //   Home Indicator inset(safe area 底部)+ 8dp 呼吸
+                                //   + 64dp tab bar 高 + 8dp 呼吸 = ~114dp
+                                // 用 windowInsetsPadding 拿真实 inset,加上 tab bar 固定高。
+                                val screenModifier = if (isFloatingBottomBar)
+                                    Modifier
+                                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                                        .padding(bottom = 80.dp)  // 64 tab bar + 上下 8dp 呼吸
                                 else Modifier
                                 Box(modifier = screenModifier) {
                                     when (currentTab) {
@@ -266,8 +268,9 @@ private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
  *
  * 特点:
  *   - 悬浮在内容上方,不占 Column 布局空间(由外层 Box.align 定位)
- *   - 圆角胶囊 32dp radius,白色底色 + 柔和阴影
- *   - 底部留出 Home Indicator 上方 8dp 呼吸,左右各 12dp 内缩
+ *   - 毛玻璃背景 UIVisualEffectView(SystemChromeMaterial),内容能透过来
+ *   - 圆角胶囊 32dp radius,柔和阴影
+ *   - 距 Home Indicator 8dp 呼吸,左右各 12dp 内缩
  *   - 内部布局跟 CompactBottomBar 一致(4 tab + 中间半圆凸)
  */
 @Composable
@@ -279,45 +282,53 @@ private fun FloatingBottomBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
+            // 底部 safe area inset(Home Indicator 高度)+ 8dp 呼吸
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
             .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
+        // Shadow 单独一层,只在胶囊外圈渲染;不给 blur view 加阴影(会糊)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(64.dp)
-                .shadow(elevation = 12.dp, shape = RoundedCornerShape(32.dp), clip = false)
+                .shadow(elevation = 16.dp, shape = RoundedCornerShape(32.dp), clip = false)
                 .clip(RoundedCornerShape(32.dp))
-                .background(UvpColor.Surface),
-            contentAlignment = Alignment.BottomStart
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .align(Alignment.BottomStart),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                AppTab.entries.forEachIndexed { index, tab ->
-                    if (index == 2) {
-                        Box(modifier = Modifier.weight(1f).fillMaxSize())
-                    } else {
-                        BottomTabItem(
-                            tab = tab,
-                            selected = tab == active,
-                            onClick = { onPick(tab) },
-                            modifier = Modifier.weight(1f)
-                        )
+            PlatformBlurBackground(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.BottomStart
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .align(Alignment.BottomStart),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AppTab.entries.forEachIndexed { index, tab ->
+                            if (index == 2) {
+                                Box(modifier = Modifier.weight(1f).fillMaxSize())
+                            } else {
+                                BottomTabItem(
+                                    tab = tab,
+                                    selected = tab == active,
+                                    onClick = { onPick(tab) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
                     }
+                    SimulateAccentButton(
+                        selected = active == AppTab.Simulate,
+                        onClick = { onPick(AppTab.Simulate) },
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 2.dp)
+                    )
                 }
             }
-            SimulateAccentButton(
-                selected = active == AppTab.Simulate,
-                onClick = { onPick(AppTab.Simulate) },
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 2.dp)
-            )
         }
     }
 }
