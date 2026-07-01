@@ -47,6 +47,7 @@ import platform.AVFoundation.AVMediaTypeVideo
 import platform.CoreFoundation.CFDictionaryCreateMutable
 import platform.CoreFoundation.CFDictionarySetValue
 import platform.CoreFoundation.CFRelease
+import platform.CoreFoundation.CFRetain
 import platform.CoreFoundation.kCFAllocatorDefault
 import platform.CoreFoundation.kCFBooleanTrue
 import platform.CoreFoundation.kCFTypeDictionaryKeyCallBacks
@@ -62,6 +63,7 @@ import platform.CoreMedia.CMSampleBufferRef
 import platform.CoreMedia.CMTimeMake
 import platform.CoreMedia.CMVideoFormatDescriptionGetH264ParameterSetAtIndex
 import platform.CoreMedia.kCMVideoCodecType_H264
+import platform.CoreVideo.CVImageBufferRef
 import platform.CoreVideo.kCVPixelBufferPixelFormatTypeKey
 import platform.CoreVideo.kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
 import platform.Foundation.NSError
@@ -114,6 +116,18 @@ class IosCameraStreamer(private val config: CaptureConfig) {
 
     @Volatile
     private var pendingForceKey: Boolean = false
+
+    /**
+     * 最近一帧 `CVImageBufferRef`,由 [encodeSample] 每帧刷新。SnapshotCapture 用这一帧
+     * 做 CVPixelBuffer → CIImage → UIImage → JPEG 转换,避免额外挂 AVCapturePhotoOutput。
+     *
+     * 生命周期:
+     *   - 每次 [encodeSample] 把新帧 CFRetain 一次并原子替换旧值(旧值 CFRelease)
+     *   - [releaseInternal] 释放最后持有的一帧
+     *   - 消费方(SnapshotCapture)通过 [latestFramePixelBuffer] 再 CFRetain 一次,使用完 CFRelease
+     */
+    @Volatile
+    private var latestFrame: CVImageBufferRef? = null
 
     /**
      * Backing [AVCaptureSession] created inside [stream]. Exposed for
@@ -191,6 +205,27 @@ class IosCameraStreamer(private val config: CaptureConfig) {
     }
 
     /**
+     * 取当前最近一帧 pixel buffer,并额外 CFRetain 一次交给调用方。
+     * 调用方(SnapshotCapture)使用完必须 [CFRelease]。
+     *
+     * 返回 null 表示尚未有帧到达(stream 还没起来 / 首帧未到)。
+     */
+    fun latestFramePixelBuffer(): CVImageBufferRef? {
+        val current = latestFrame ?: return null
+        CFRetain(current)
+        return current
+    }
+
+    /** 原子替换 [latestFrame],旧值 CFRelease。encodeSample 每帧调用一次。 */
+    private fun publishLatestFrame(newFrame: CVImageBufferRef) {
+        val old = latestFrame
+        // 先 retain 新的再替换,避免消费者观察到窗口内为 null
+        CFRetain(newFrame)
+        latestFrame = newFrame
+        if (old != null) CFRelease(old)
+    }
+
+    /**
      * Encode a single [CMSampleBufferRef] captured by [CameraSampleDelegate].
      *
      * Extracts the [CVImageBuffer] and feeds it to
@@ -204,6 +239,7 @@ class IosCameraStreamer(private val config: CaptureConfig) {
     internal fun encodeSample(sample: CMSampleBufferRef, forceKeyFrame: Boolean = false) {
         val session = compressionSession ?: return
         val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
+        publishLatestFrame(imageBuffer)
         val pts = CMSampleBufferGetPresentationTimeStamp(sample)
         // Duration is best-effort — VideoToolbox uses it to compute inter-frame
         // spacing; if the sample buffer doesn't carry one we hand it 1/fps.
@@ -384,6 +420,7 @@ class IosCameraStreamer(private val config: CaptureConfig) {
 
         _captureSession = session
         IosCameraSessionHolder.publish(session)
+        IosSnapshotSourceHolder.publish(this)
         captureInput = input
         captureOutput = output
         sampleDelegate = delegate
@@ -425,6 +462,11 @@ class IosCameraStreamer(private val config: CaptureConfig) {
         receiverRef = null
         frameChannel = null
         pendingForceKey = false
+
+        // 释放最后一帧,避免 stream 结束后仍占着 CVPixelBuffer
+        latestFrame?.let { CFRelease(it) }
+        latestFrame = null
+        IosSnapshotSourceHolder.publish(null)
     }
 
     /**
