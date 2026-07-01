@@ -39,4 +39,33 @@ object AnnexB {
         }
         return result
     }
+
+    /**
+     * Split an AVCC (length-prefixed) byte stream into individual NAL units.
+     *
+     * AVCC layout: `[len:N-BE][NAL body ...][len:N-BE][NAL body ...] ...`
+     * where N is [lengthPrefixSize] (typically 4 for VideoToolbox output).
+     *
+     * Used by iOS VideoToolbox — the container gives length prefix instead of
+     * Annex-B start code. Kotlin/Common byte manipulation, no cinterop.
+     *
+     * Malformed input (truncated length / body exceeds buffer) returns whatever
+     * NALs were parsed before the corruption; does not throw.
+     */
+    fun splitAvcc(data: ByteArray, lengthPrefixSize: Int = 4): List<ByteArray> {
+        require(lengthPrefixSize in 1..4) { "AVCC length prefix must be 1..4 bytes" }
+        val result = mutableListOf<ByteArray>()
+        var i = 0
+        while (i + lengthPrefixSize <= data.size) {
+            var nalLen = 0
+            for (k in 0 until lengthPrefixSize) {
+                nalLen = (nalLen shl 8) or (data[i + k].toInt() and 0xFF)
+            }
+            i += lengthPrefixSize
+            if (nalLen <= 0 || i + nalLen > data.size) break  // truncated / corrupt
+            result += data.copyOfRange(i, i + nalLen)
+            i += nalLen
+        }
+        return result
+    }
 }
