@@ -27,8 +27,15 @@ import androidx.compose.ui.unit.dp
 fun HomeScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
     val toast = LocalToastHost.current
+    // iOS 悬浮 tab bar 需要额外底部 padding 让最后一行不被遮:
+    //   safe area 34dp + tab bar 64dp + 上下 8dp 呼吸 = ~100dp
+    // Android 用 docked tab bar 自己占布局空间,不需要额外 padding。
+    val extraBottom = if (isFloatingBottomBar) 100.dp else 0.dp
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scroll)
+            .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp + extraBottom),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // 顶部 banner:状态 + 注册 CTA 合一,首屏一眼可见
