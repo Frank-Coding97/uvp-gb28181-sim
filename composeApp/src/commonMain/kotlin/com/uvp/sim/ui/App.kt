@@ -16,11 +16,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
@@ -184,6 +187,13 @@ private fun CompactTopBar(unreadCount: Int = 0, onBellClick: () -> Unit = {}) {
 
 @Composable
 private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
+    // 底部 insets 处理(跨平台一致):
+    //   Android 手势导航:navigationBars 30dp 由 Android Compose 主动 apply
+    //   iOS Home Indicator:34dp 由 SwiftUI ContentView 的 safe area 处理
+    //     (iOS 侧 SwiftUI 不 ignoresSafeArea,Compose 天然贴在 safe area 内)
+    //
+    // navigationBars 在 iOS 上返回 0 是正确的 —— iOS 端 SwiftUI 已经把 tab bar
+    // 推到 Home Indicator 上方,Compose 不需要再加 padding。
     Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
         Box(
