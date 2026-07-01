@@ -47,7 +47,7 @@ class AlarmNotifyBuilderTest {
     }
 
     @Test
-    fun `9 字段顺序对齐 §9_5_1`() {
+    fun `9 字段顺序对齐 spec 9_5_1`() {
         val xml = AlarmNotify.buildAlarm(config, "5", payload(longitude = 116.4, latitude = 39.9))
         val order = listOf(
             "<SN>", "<DeviceID>", "<AlarmPriority>", "<AlarmMethod>",

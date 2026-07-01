@@ -1,5 +1,7 @@
 package com.uvp.sim.domain
 
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlin.math.abs
@@ -38,11 +40,11 @@ class ClockOffsetTest {
     }
 
     @Test
-    fun `synced 后流逝时间反映在 adjustedNowMs 上`() {
+    fun `synced 后流逝时间反映在 adjustedNowMs 上`() = runBlocking {
         val baseInstant = Instant.parse("2026-06-18T07:30:00Z")
         val o = ClockOffset.synced(baseInstant, "iso")
         val before = o.adjustedNowMs()
-        Thread.sleep(80)
+        delay(80)
         val after = o.adjustedNowMs()
         val delta = after - before
         // 流逝大约 80ms,放宽 [60, 250]

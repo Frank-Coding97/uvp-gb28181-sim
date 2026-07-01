@@ -2,6 +2,7 @@ package com.uvp.sim.recording
 
 import com.uvp.sim.media.AudioFrame
 import com.uvp.sim.media.H264Frame
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow

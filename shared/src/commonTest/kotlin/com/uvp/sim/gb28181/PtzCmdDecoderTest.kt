@@ -177,14 +177,14 @@ class PtzCmdDecoderTest {
     }
 
     @Test
-    fun `decode 老接口对预置位返回 null(向后兼容)`() {
+    fun `decode 老接口对预置位返回 null 向后兼容`() {
         // 既有调用方只关心 Motion,预置位走 decodeInstruction 分支,decode 应该 null
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x81, 0x03, 0x00, 0x00)
         assertNull(PtzCmdDecoder.decode(hex))
     }
 
     @Test
-    fun `decodeInstruction 对 0x91 (Right+ZoomIn+FocusNear bit 组合) 走 Motion`() {
+    fun `decodeInstruction 对 0x91 Right plus ZoomIn plus FocusNear bit 组合 走 Motion`() {
         // 0x91 = bit0 (Right) + bit4 (ZoomIn) + bit7 (FocusNear) — 一次性同时下发 3 个动作
         // 这种组合实际不一定常见,但 GB28181 byte3 是位字段,各位独立有效
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x91, 0x32, 0x00, 0x80)
@@ -199,7 +199,7 @@ class PtzCmdDecoderTest {
     // ---------- 辅助控制 (GB-2022 §F.3 byte3 = 0x89 / 0x8A) ----------
 
     @Test
-    fun `Aux On 雨刷(byte4=1)`() {
+    fun `Aux On 雨刷 byte4 eq 1`() {
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x89, 0x01, 0x00, 0x00)
         val ins = PtzCmdDecoder.decodeInstruction(hex)
         assertTrue(ins is PtzInstruction.Aux, "expected Aux, got $ins")
@@ -210,7 +210,7 @@ class PtzCmdDecoderTest {
     }
 
     @Test
-    fun `Aux Off 加热(byte4=3)`() {
+    fun `Aux Off 加热 byte4 eq 3`() {
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x8A, 0x03, 0x00, 0x00)
         val ins = PtzCmdDecoder.decodeInstruction(hex)
         assertTrue(ins is PtzInstruction.Aux)
@@ -221,7 +221,7 @@ class PtzCmdDecoderTest {
     }
 
     @Test
-    fun `Aux 未知 index 仍解码成功(由 dispatcher 决定语义)`() {
+    fun `Aux 未知 index 仍解码成功 由 dispatcher 决定语义`() {
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x89, 0xEE, 0x00, 0x00)
         val ins = PtzCmdDecoder.decodeInstruction(hex)
         assertTrue(ins is PtzInstruction.Aux)
@@ -233,7 +233,7 @@ class PtzCmdDecoderTest {
     // ---------- Focus (byte3 bit6 / bit7) ----------
 
     @Test
-    fun `Focus Near (bit7) speed=8`() {
+    fun `Focus Near bit7 speed eq 8`() {
         // byte3 = 0x80 (bit7), byte6 低 4 位 = focus speed = 8
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x80, 0x00, 0x00, 0x08)
         val cmd = PtzCmdDecoder.decode(hex)
@@ -243,7 +243,7 @@ class PtzCmdDecoderTest {
     }
 
     @Test
-    fun `Focus Far (bit6) speed=4`() {
+    fun `Focus Far bit6 speed eq 4`() {
         // byte3 = 0x40 (bit6), byte6 低 4 位 = focus speed = 4
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x40, 0x00, 0x00, 0x04)
         val cmd = PtzCmdDecoder.decode(hex)
@@ -252,7 +252,7 @@ class PtzCmdDecoderTest {
     }
 
     @Test
-    fun `Zoom + Focus 同时(bit4 + bit6)`() {
+    fun `Zoom plus Focus 同时 bit4 plus bit6`() {
         // byte3 = 0x50 = bit4 + bit6 → ZoomIn + FocusFar
         // byte6 = 0x84 → 高 4 位 zoom speed = 8 / 低 4 位 focus speed = 4
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x50, 0x00, 0x00, 0x84)

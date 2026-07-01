@@ -461,7 +461,7 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
-    fun `batch3 T3-2 — FormatSDCard 缺 DiskNum fallback FormatSDCard 整数(老格式)`() {
+    fun `batch3 T3-2 — FormatSDCard 缺 DiskNum fallback FormatSDCard 整数 老格式`() {
         val state = newState()
         val d = newDispatcher(state)
         d.dispatch("<C><FormatSDCard>3</FormatSDCard></C>")
@@ -512,7 +512,7 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
-    fun `batch3 T4-2 — TargetTrack Manual 仅 ObjectID(无 Speed)`() {
+    fun `batch3 T4-2 — TargetTrack Manual 仅 ObjectID 无 Speed`() {
         val state = newState()
         val d = newDispatcher(state)
         d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode><ObjectID>car-2</ObjectID></C>")
