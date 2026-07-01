@@ -261,14 +261,18 @@ private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
 }
 
 /**
- * iOS 26 Liquid Glass 风悬浮 tab bar.
+ * iOS 悬浮胶囊 tab bar(方案 A —— 纯白背景 + 强阴影)。
+ *
+ * 设计决策:Compose Multiplatform 的 UIKitView 只糊 UIKit 层内容,拿不到
+ * Compose 绘制的 4 能力卡,毛玻璃视觉在这套 UI 里出不来。放弃毛玻璃,
+ * 走"白色不透明胶囊 + 强阴影"—— 苹果自家 Notes / Reminders / Podcasts
+ * 的 tab bar 也是这个风格,视觉一样干净。
  *
  * 特点:
- *   - 悬浮在内容上方,不占 Column 布局空间(由外层 Box.align 定位)
- *   - 毛玻璃背景 UIVisualEffectView(SystemChromeMaterial),内容能透过来
- *   - 圆角胶囊 32dp radius,柔和阴影
- *   - 距 Home Indicator 8dp 呼吸,左右各 12dp 内缩
- *   - 内部布局跟 CompactBottomBar 一致(4 tab + 中间半圆凸)
+ *   - 悬浮在内容上方,不占 Column 布局空间
+ *   - 纯白 Surface 底色 + 20dp 柔和阴影,悬浮感强
+ *   - 圆角胶囊 32dp
+ *   - 距 Home Indicator 顶(safe area)紧贴,左右各 40dp 内缩
  */
 @Composable
 private fun FloatingBottomBar(
@@ -279,55 +283,46 @@ private fun FloatingBottomBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            // 底部 safe area inset(Home Indicator 高度)—— 紧贴 Home Indicator 顶。
-            // 水平方向大幅内缩,做成 pill-style 胶囊,视觉上更轻更悬浮,
-            // 跟 Apple Fitness / Music 一致。
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
             .padding(horizontal = 40.dp)
     ) {
-        // Shadow 单独一层,只在胶囊外圈渲染;不给 blur view 加阴影(会糊)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(64.dp)
-                .shadow(elevation = 16.dp, shape = RoundedCornerShape(32.dp), clip = false)
+                .shadow(elevation = 20.dp, shape = RoundedCornerShape(32.dp), clip = false)
                 .clip(RoundedCornerShape(32.dp))
+                .background(UvpColor.Surface),
+            contentAlignment = Alignment.BottomStart
         ) {
-            PlatformBlurBackground(modifier = Modifier.fillMaxSize()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.BottomStart
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .align(Alignment.BottomStart),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        AppTab.entries.forEachIndexed { index, tab ->
-                            if (index == 2) {
-                                Box(modifier = Modifier.weight(1f).fillMaxSize())
-                            } else {
-                                BottomTabItem(
-                                    tab = tab,
-                                    selected = tab == active,
-                                    onClick = { onPick(tab) },
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
-                        }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .align(Alignment.BottomStart),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AppTab.entries.forEachIndexed { index, tab ->
+                    if (index == 2) {
+                        Box(modifier = Modifier.weight(1f).fillMaxSize())
+                    } else {
+                        BottomTabItem(
+                            tab = tab,
+                            selected = tab == active,
+                            onClick = { onPick(tab) },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
-                    SimulateAccentButton(
-                        selected = active == AppTab.Simulate,
-                        onClick = { onPick(AppTab.Simulate) },
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 2.dp)
-                    )
                 }
             }
+            SimulateAccentButton(
+                selected = active == AppTab.Simulate,
+                onClick = { onPick(AppTab.Simulate) },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 2.dp)
+            )
         }
     }
 }
