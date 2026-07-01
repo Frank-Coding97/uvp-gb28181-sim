@@ -22,12 +22,16 @@ kotlin {
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true
+            // 让 ComposeApp.framework 里 export shared 项目,iosApp 只 link
+            // 一个 KMP framework,避免 Kotlin runtime 被两次 injectToRuntime()
+            // 触发 RuntimeAssertFailedPanic (see overnight report F3).
+            export(project(":shared"))
         }
     }
 
     sourceSets {
         commonMain.dependencies {
-            implementation(project(":shared"))
+            api(project(":shared"))  // api 让 shared 符号被 export 到 iosApp
             implementation(libs.compose.runtime)
             implementation(libs.compose.foundation)
             implementation(libs.compose.material3)

@@ -45,26 +45,35 @@ targets:
         # Permissions per plan §3.4
         NSCameraUsageDescription: "UVP Sim needs camera access to simulate a GB28181 device video stream."
         NSMicrophoneUsageDescription: "UVP Sim needs microphone access to simulate a GB28181 device audio stream."
+        # Compose Multiplatform iOS runtime sanity check (F4 fix). Enables
+        # high-refresh-rate rendering on ProMotion iPhones. Docs:
+        # https://developer.apple.com/documentation/quartzcore/optimizing_promotion_refresh_rates_for_iphone_13_pro_and_ipad_pro
+        CADisableMinimumFrameDurationOnPhone: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.uvp.sim.ios
         TARGETED_DEVICE_FAMILY: "1"  # iPhone only for v1.1 (spec §5)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_ASSET_PATHS: '"iosApp/Preview Content"'
-        # KMP-produced XCFramework paths (Debug config = Simulator; Release = arm64)
+        # KMP-produced framework path. Only ComposeApp.framework — it
+        # re-exports :shared so we don't init the Kotlin runtime twice
+        # (F3 fix, see overnight report).
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
-          - "$(PROJECT_DIR)/../shared/build/bin/iosSimulatorArm64/debugFramework"
           - "$(PROJECT_DIR)/../composeApp/build/bin/iosSimulatorArm64/debugFramework"
         OTHER_LDFLAGS:
           - "$(inherited)"
-          - "-framework"
-          - "Shared"
           - "-framework"
           - "ComposeApp"
     preBuildScripts:
       - name: "Build KMP Frameworks"
         script: |
+          export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+          export PATH="$JAVA_HOME/bin:$PATH"
           cd "$SRCROOT/.."
-          ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 :composeApp:linkDebugFrameworkIosSimulatorArm64
+          if [ "$CONFIGURATION" = "Release" ]; then
+            ./gradlew :composeApp:linkReleaseFrameworkIosSimulatorArm64
+          else
+            ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64
+          fi
         basedOnDependencyAnalysis: false

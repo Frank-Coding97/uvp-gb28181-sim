@@ -71,3 +71,12 @@ secrets.properties
 *.keystore
 keystore.properties
 tools/__pycache__/
+
+# iOS / Xcode
+.DS_Store
+**/xcuserdata/
+**/*.xcworkspace/xcuserdata/
+**/DerivedData/
+# xcodegen 生成的产物(pbxproj + Info.plist),从 project.yml 重新生成
+iosApp/iosApp.xcodeproj/
+iosApp/iosApp/Info.plist
