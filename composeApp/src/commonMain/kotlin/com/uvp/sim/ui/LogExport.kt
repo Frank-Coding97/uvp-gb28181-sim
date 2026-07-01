@@ -176,10 +176,8 @@ object LogExport {
 
     fun filename(kind: String, nowMs: Long): String {
         val ldt = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(TimeZone.currentSystemDefault())
-        val ts = "%04d%02d%02d-%02d%02d%02d".format(
-            ldt.year, ldt.monthNumber, ldt.dayOfMonth,
-            ldt.hour, ldt.minute, ldt.second
-        )
+        val ts = "${pad(ldt.year, 4)}${pad(ldt.monthNumber, 2)}${pad(ldt.dayOfMonth, 2)}" +
+            "-${pad(ldt.hour, 2)}${pad(ldt.minute, 2)}${pad(ldt.second, 2)}"
         return "uvp-sim-log-$kind-$ts.txt"
     }
 }
@@ -188,16 +186,14 @@ private fun formatHmsMs(epochMs: Long): String {
     if (epochMs <= 0) return "--:--:--.---"
     val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
     val ms = epochMs % 1000
-    return "%02d:%02d:%02d.%03d".format(ldt.hour, ldt.minute, ldt.second, ms)
+    return "${pad(ldt.hour, 2)}:${pad(ldt.minute, 2)}:${pad(ldt.second, 2)}.${pad(ms, 3)}"
 }
 
 private fun formatYmd(epochMs: Long): String {
     if (epochMs <= 0) return "----"
     val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
-    return "%04d-%02d-%02d %02d:%02d:%02d".format(
-        ldt.year, ldt.monthNumber, ldt.dayOfMonth,
-        ldt.hour, ldt.minute, ldt.second
-    )
+    return "${pad(ldt.year, 4)}-${pad(ldt.monthNumber, 2)}-${pad(ldt.dayOfMonth, 2)} " +
+        "${pad(ldt.hour, 2)}:${pad(ldt.minute, 2)}:${pad(ldt.second, 2)}"
 }
 
 /**

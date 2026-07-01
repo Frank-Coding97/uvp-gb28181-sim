@@ -62,14 +62,14 @@ internal fun dialogBusinessTitle(dialog: FlowItemDto.Dialog): String {
 internal fun formatHmsFlow(epochMs: Long): String {
     if (epochMs <= 0) return "--:--:--"
     val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
-    return "%02d:%02d:%02d".format(ldt.hour, ldt.minute, ldt.second)
+    return "${pad(ldt.hour, 2)}:${pad(ldt.minute, 2)}:${pad(ldt.second, 2)}"
 }
 
 internal fun formatHmsMillis(epochMs: Long): String {
     if (epochMs <= 0) return "--:--:--.---"
     val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
     val ms = epochMs % 1000
-    return "%02d:%02d:%02d.%03d".format(ldt.hour, ldt.minute, ldt.second, ms)
+    return "${pad(ldt.hour, 2)}:${pad(ldt.minute, 2)}:${pad(ldt.second, 2)}.${pad(ms, 3)}"
 }
 
 /**

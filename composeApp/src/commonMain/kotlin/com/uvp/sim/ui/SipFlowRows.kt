@@ -108,9 +108,9 @@ internal fun MediaLine(seg: DialogRowDto.MediaSegment) {
     val color = if (active) UvpColor.Warning else UvpColor.TextHint
     val mb = (seg.packetCount * 1500.0 / 1024 / 1024)  // 估算(每包≈1500B)
     val tail = if (active) {
-        "📡 RTP 推送中 · ${seg.frameCount} 帧 / ${seg.packetCount} 包 · ${"%.1f".format(mb)} MB"
+        "📡 RTP 推送中 · ${seg.frameCount} 帧 / ${seg.packetCount} 包 · ${round(mb, 1)} MB"
     } else {
-        "✓ RTP 已停 · ${seg.frameCount} 帧 / ${seg.packetCount} 包 · ${"%.1f".format(mb)} MB"
+        "✓ RTP 已停 · ${seg.frameCount} 帧 / ${seg.packetCount} 包 · ${round(mb, 1)} MB"
     }
     Row(
         modifier = Modifier

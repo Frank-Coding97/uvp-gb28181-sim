@@ -168,5 +168,5 @@ private fun rawSipBody(ev: SimEventDto): String {
 internal fun formatHmsList(epochMs: Long): String {
     if (epochMs <= 0) return "--:--:--"
     val ldt = Instant.fromEpochMilliseconds(epochMs).toLocalDateTime(TimeZone.currentSystemDefault())
-    return "%02d:%02d:%02d".format(ldt.hour, ldt.minute, ldt.second)
+    return "${pad(ldt.hour, 2)}:${pad(ldt.minute, 2)}:${pad(ldt.second, 2)}"
 }

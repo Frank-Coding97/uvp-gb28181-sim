@@ -90,7 +90,9 @@ internal fun PtzTabContent(state: DeviceControlDto) {
                 Text("巡航", fontSize = 10.sp, color = UvpColor.TextHint, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.width(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    state.cruiseTracks.toSortedMap().forEach { (trackNum, points) ->
+                    state.cruiseTracks.entries.sortedBy { it.key }.forEach { entry ->
+                        val trackNum = entry.key
+                        val points = entry.value
                         val active = state.activeCruiseTrack == trackNum
                         val bg = if (active) UvpColor.Primary else UvpColor.BorderLight
                         val fg = if (active) Color.White else UvpColor.TextSecondary

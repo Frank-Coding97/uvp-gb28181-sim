@@ -3,6 +3,7 @@ package com.uvp.sim.ui.recording
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.model.RecordSourceDto
 import com.uvp.sim.ui.model.RecordingFileDto
+import com.uvp.sim.ui.round
 import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
@@ -55,9 +56,9 @@ internal fun formatSize(bytes: Long): String = when {
 }
 
 internal fun formatBytes(bytes: Long): String = when {
-    bytes >= 1024L * 1024 * 1024 -> "%.1fGB".format(bytes / 1024.0 / 1024 / 1024)
-    bytes >= 1024L * 1024 -> "%.0fMB".format(bytes / 1024.0 / 1024)
-    bytes >= 1024L -> "%.0fKB".format(bytes / 1024.0)
+    bytes >= 1024L * 1024 * 1024 -> "${round(bytes / 1024.0 / 1024 / 1024, 1)}GB"
+    bytes >= 1024L * 1024 -> "${round(bytes / 1024.0 / 1024, 0)}MB"
+    bytes >= 1024L -> "${round(bytes / 1024.0, 0)}KB"
     else -> "${bytes}B"
 }
 
