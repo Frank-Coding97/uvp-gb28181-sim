@@ -1,0 +1,70 @@
+# XcodeGen spec for iosApp
+# Regenerate the .xcodeproj with:
+#   brew install xcodegen
+#   cd iosApp && xcodegen generate
+#
+# The Shared.framework consumed by iosApp comes from the KMP shared module:
+#   ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64
+#   ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64
+#
+# Both framework outputs land under shared/build/... and composeApp/build/...
+# xcodegen wires those paths as `frameworkSearchPaths` below.
+
+name: iosApp
+options:
+  bundleIdPrefix: com.uvp.sim
+  deploymentTarget:
+    iOS: "15.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+
+targets:
+  iosApp:
+    type: application
+    platform: iOS
+    sources:
+      - path: iosApp
+    info:
+      path: iosApp/Info.plist
+      properties:
+        CFBundleDisplayName: UVP Sim
+        CFBundleShortVersionString: "1.1.0"
+        CFBundleVersion: "1"
+        LSRequiresIPhoneOS: true
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities:
+          - armv7
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # Permissions per plan §3.4
+        NSCameraUsageDescription: "UVP Sim needs camera access to simulate a GB28181 device video stream."
+        NSMicrophoneUsageDescription: "UVP Sim needs microphone access to simulate a GB28181 device audio stream."
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.uvp.sim.ios
+        TARGETED_DEVICE_FAMILY: "1"  # iPhone only for v1.1 (spec §5)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        DEVELOPMENT_ASSET_PATHS: '"iosApp/Preview Content"'
+        # KMP-produced XCFramework paths (Debug config = Simulator; Release = arm64)
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../shared/build/bin/iosSimulatorArm64/debugFramework"
+          - "$(PROJECT_DIR)/../composeApp/build/bin/iosSimulatorArm64/debugFramework"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-framework"
+          - "Shared"
+          - "-framework"
+          - "ComposeApp"
+    preBuildScripts:
+      - name: "Build KMP Frameworks"
+        script: |
+          cd "$SRCROOT/.."
+          ./gradlew :shared:linkDebugFrameworkIosSimulatorArm64 :composeApp:linkDebugFrameworkIosSimulatorArm64
+        basedOnDependencyAnalysis: false
