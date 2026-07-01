@@ -23,12 +23,15 @@ import com.uvp.sim.gb28181.AlarmPriority
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
+import com.uvp.sim.recording.RecordingState
 import com.uvp.sim.ui.AlarmFireMode
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.BroadcastState
+import com.uvp.sim.ui.RecordingStatus
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.actions.CapabilityActions
@@ -116,6 +119,8 @@ fun IosApp() {
     var systemLogs by remember { mutableStateOf<List<SystemLog>>(emptyList()) }
     var alarmFireMode by remember { mutableStateOf(AlarmFireMode.Random) }
     var fixedAlarmTemplate by remember { mutableStateOf<AlarmPayload?>(null) }
+    var recordingState by remember { mutableStateOf<RecordingState>(RecordingState.Idle) }
+    var recordingFiles by remember { mutableStateOf<List<RecordingFile>>(emptyList()) }
 
     LaunchedEffect(engine) {
         engine.events.collect { ev ->
@@ -130,6 +135,31 @@ fun IosApp() {
         SystemLogger.flow.collect { log ->
             systemLogs = (systemLogs + log).takeLast(500)
         }
+    }
+
+    // 录像状态跟文件列表。engine.currentRecordingService() iOS 上是 NoopRecordingService,
+    // 但也是真 StateFlow(Idle / empty),v1.2 接 AVAssetWriter 时零改动 host。
+    // ensureMediaBound 触发一次装配,让 currentRecordingService 非 null。
+    LaunchedEffect(Unit) {
+        engine.ensureMediaBuilt()
+        val svc = engine.currentRecordingService() ?: return@LaunchedEffect
+        launch { svc.state.collect { recordingState = it } }
+        launch { svc.files.collect { recordingFiles = it } }
+    }
+
+    // RecordingStatus(UI 层)从 recordingState + recordingFiles 组装。
+    // 参考 Android MainActivity L137-148。
+    val recordingStatus = run {
+        val rec = recordingState as? RecordingState.Recording
+        val failed = recordingState as? RecordingState.Failed
+        RecordingStatus(
+            isRecording = rec != null,
+            source = rec?.source?.toDto(),
+            startMs = rec?.startMs,
+            segmentIndex = rec?.segmentIndex ?: 0,
+            lastError = failed?.reason,
+            files = recordingFiles.map { it.toDto() },
+        )
     }
 
     // rawSubs: Map<String, SubscriptionSnapshot> → Map<SubscriptionKind, SubscriptionStatus>。
@@ -175,7 +205,8 @@ fun IosApp() {
         // sessionMarker: iOS v1.1 无 SessionTracker(Android-only),保留 null。
         subscriptions = subscriptions,
         deviceControl = deviceControl.toDto(),
-        // recording / playback: engine 侧 iOS 走 NoopRecordingService,无对应 StateFlow,保留默认。
+        recording = recordingStatus,
+        // playback: v1.1 iOS 无回放路径,保留默认 PlaybackStatus()。
         catalogTree = catalogTree,
         alarmHistory = alarmHistory.map { it.toDto() },
         alarmFireMode = alarmFireMode,
@@ -246,10 +277,22 @@ private fun buildActions(
         }
     }
     val recording = object : RecordingActions {
-        override fun onRecordingStart() { /* v1.1: NoopRecordingService */ }
-        override fun onRecordingStop() { /* v1.1: NoopRecordingService */ }
-        override fun onRecordingDelete(id: String) { /* v1.1 */ }
-        override fun onRecordingFilterApply(filter: RecordingFilter) { /* v1.1 */ }
+        override fun onRecordingStart() {
+            scope.launch {
+                val svc = engine.currentRecordingService() ?: return@launch
+                val source = com.uvp.sim.recording.RecordSource.Manual
+                svc.start(source, engine.config.value.device.videoChannelId)
+            }
+        }
+        override fun onRecordingStop() {
+            scope.launch { engine.currentRecordingService()?.stop() }
+        }
+        override fun onRecordingDelete(id: String) {
+            scope.launch { engine.currentRecordingService()?.delete(id) }
+        }
+        override fun onRecordingFilterApply(filter: RecordingFilter) {
+            // Android 侧同样是纯 UI 本地筛选,不落 engine。
+        }
     }
     val network = object : NetworkActions {
         override fun onNetworkPreferenceChange(preference: NetworkPreference) {
