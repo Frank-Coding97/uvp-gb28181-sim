@@ -4,35 +4,58 @@ import com.uvp.sim.media.AudioCodec
 import com.uvp.sim.media.AudioFrame
 import com.uvp.sim.media.G711
 import com.uvp.sim.media.MediaTimebase
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCObjectVar
+import kotlinx.cinterop.ShortVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.get
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.value
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import platform.AVFAudio.AVAudioCommonFormat
+import platform.AVFAudio.AVAudioEngine
+import platform.AVFAudio.AVAudioFormat
+import platform.AVFAudio.AVAudioPCMBuffer
+import platform.AVFAudio.AVAudioPCMFormatInt16
+import platform.AVFAudio.AVAudioTime
+import platform.Foundation.NSError
 
 /**
  * iOS audio capture + encode.
  *
- * **M1 status**: skeleton. G.711 encoding is pure-common ready (G711.linearToAlaw),
- * but AVAudioEngine tap wiring (`installTapOnBus` uses an ObjC block, needs
- * `staticCFunction` + StableRef bridging identical to VTCompression output
- * callback) is a T2 spike prerequisite.
+ * T8-follow-up: AVAudioEngine + installTapOnBus wiring. The tap block is an ObjC
+ * block (not a C function pointer), which Kotlin/Native's cinterop wraps
+ * automatically from a Kotlin lambda when the signature matches. Contrast with
+ * [IosCameraStreamer], which needs `staticCFunction` because VTCompression's
+ * output callback is a C function pointer.
  *
- * Design when the AVAudioEngine tap lands:
+ * Design:
  *
- *   1. AVAudioEngine.inputNode → 16-bit PCM at 8kHz mono
- *   2. installTapOnBus(bufferSize = 160 samples / 20ms)
- *   3. For each buffer: samples → G711.linearToAlaw → AudioFrame emit
+ *   1. AVAudioEngine.inputNode → 16-bit interleaved PCM at 8 kHz mono
+ *   2. installTapOnBus(0, bufferSize = 160 samples / 20ms)
+ *   3. For each buffer: samples → G711.encodeAlaw/encodeUlaw → AudioFrame emit
  *   4. Timestamp: MediaTimebase.nowUs() at emit time
  *
- * The 20ms frame convention matches Android AndroidAudioStreamer.streamG711
- * for cross-platform RTP packer parity.
+ * The 20 ms frame convention matches Android AndroidAudioStreamer.streamG711
+ * for cross-platform RTP packer parity. Note the hardware may deliver a
+ * buffer with frameLength != 160 (early call, sample rate mismatch); we
+ * defensively read frameLength and encode exactly that many samples.
  */
+@OptIn(ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
 class IosAudioStreamer(private val config: AudioCaptureConfig) {
+
+    private var engine: AVAudioEngine? = null
 
     /**
      * Emit compressed audio frames.
-     *
-     * Currently returns an empty flow — see class-level TODO. The signature is
-     * final; call sites (AudioCapture.ios.kt) can consume the flow safely.
      */
     fun stream(): Flow<AudioFrame> = when (config.codec) {
         AudioCodec.G711A, AudioCodec.G711U -> streamG711()
@@ -40,23 +63,65 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     }
 
     private fun streamG711(): Flow<AudioFrame> = callbackFlow {
-        // TODO(T8-follow-up): wire AVAudioEngine + installTapOnBus.
-        // Reference impl:
-        //   val engine = AVAudioEngine()
-        //   val input = engine.inputNode
-        //   val format = AVAudioFormat(...)
-        //   input.installTapOnBus(0u, 160u, format) { buffer, time ->
-        //     val pcm = buffer.toShortArray()
-        //     val payload = ByteArray(pcm.size)
-        //     for (i in pcm.indices) {
-        //       payload[i] = if (config.codec == AudioCodec.G711A)
-        //         G711.linearToAlaw(pcm[i].toInt())
-        //       else G711.linearToUlaw(pcm[i].toInt())
-        //     }
-        //     trySend(AudioFrame(payload, MediaTimebase.nowUs(), config.codec))
-        //   }
-        //   engine.startAndReturnError(null)
-        awaitClose { /* engine.stop() */ }
+        val eng = AVAudioEngine()
+        val input = eng.inputNode
+        val format = AVAudioFormat(
+            commonFormat = AVAudioPCMFormatInt16,
+            sampleRate = SAMPLE_RATE_HZ,
+            channels = CHANNELS,
+            interleaved = true,
+        )
+
+        input.installTapOnBus(
+            bus = 0u,
+            bufferSize = BUFFER_FRAMES,
+            format = format,
+        ) { buffer: AVAudioPCMBuffer?, _: AVAudioTime? ->
+            if (buffer == null) return@installTapOnBus
+            val frames = buffer.frameLength.toInt()
+            if (frames <= 0) return@installTapOnBus
+            val channelPtr: CPointer<ShortVar> =
+                buffer.int16ChannelData?.pointed?.value ?: return@installTapOnBus
+
+            val pcm = ShortArray(frames)
+            for (i in 0 until frames) {
+                pcm[i] = channelPtr[i]
+            }
+            val frame = encodePcmToG711Frame(pcm, config.codec, MediaTimebase.nowUs())
+            trySend(frame)
+        }
+
+        eng.prepare()
+        val started = memScoped {
+            val errPtr = alloc<ObjCObjectVar<NSError?>>()
+            val ok = eng.startAndReturnError(errPtr.ptr)
+            if (!ok) {
+                val desc = errPtr.value?.localizedDescription ?: "unknown"
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_AUDIO_START_FAILED codec=${config.codec} error=$desc",
+                )
+            }
+            ok
+        }
+        if (!started) {
+            input.removeTapOnBus(0u)
+            close(IllegalStateException("AVAudioEngine.start failed"))
+            return@callbackFlow
+        }
+
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_AUDIO_START codec=${config.codec} sr=${SAMPLE_RATE_HZ.toInt()} ch=${CHANNELS.toInt()}",
+        )
+        engine = eng
+
+        awaitClose {
+            input.removeTapOnBus(0u)
+            eng.stop()
+            engine = null
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=${config.codec}")
+        }
     }
 
     private fun streamAac(): Flow<AudioFrame> = callbackFlow {
@@ -69,17 +134,28 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
 
     @Suppress("RedundantSuspendModifier")
     suspend fun stop() {
-        // no-op until AVAudioEngine is wired
+        engine?.let {
+            it.inputNode.removeTapOnBus(0u)
+            it.stop()
+        }
+        engine = null
     }
 
     /** Test hook — verify the streamer accepts the configured codec without crashing. */
     fun configuredCodec(): AudioCodec = config.codec
+
+    private companion object {
+        const val SAMPLE_RATE_HZ: Double = 8000.0
+        const val CHANNELS: UInt = 1u
+        // 20 ms @ 8 kHz = 160 samples; matches Android streamG711 and the RTP packer.
+        const val BUFFER_FRAMES: UInt = 160u
+    }
 }
 
 /**
  * Encode one 20ms PCM buffer to a G.711 [AudioFrame]. Public utility so the
- * eventual AVAudioEngine tap callback (and future iosTest fixtures) can share
- * the codec branching without duplicating the G711 select.
+ * AVAudioEngine tap callback (and iosTest fixtures) can share the codec
+ * branching without duplicating the G711 select.
  */
 internal fun encodePcmToG711Frame(
     pcm: ShortArray,
