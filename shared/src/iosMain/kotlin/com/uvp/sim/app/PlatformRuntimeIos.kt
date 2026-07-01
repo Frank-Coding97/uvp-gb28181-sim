@@ -6,7 +6,7 @@ import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
-import com.uvp.sim.recording.NoopRecordingService
+import com.uvp.sim.recording.IosRecordingService
 import com.uvp.sim.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -44,8 +44,17 @@ class PlatformRuntimeIos : PlatformRuntime {
         osdConfigSupplier: () -> StateFlow<OsdConfig>,
         profileSupplier: () -> RecordingProfile,
     ): RecordingService {
-        // TODO(v1.1): 接 AVAssetWriter。当前返回 Noop,让 AppEngine 装配链不挂。
-        return NoopRecordingService
+        // v1.1 T-recording: IosRecordingService(AVAssetWriter skeleton) 上线。
+        // AVCaptureSession 单实例 + CMSampleBuffer 灌 writer 的 feed 链留 v1.2,
+        // 当前 mp4 header 合法但没 sample —— 至少 UI 状态机 / 索引落盘 / 切片
+        // 都跑通,不再是 Noop 静默丢帧。
+        return IosRecordingService(
+            scope = scope,
+            deviceIdSupplier = deviceIdSupplier,
+            encoderConfigSupplier = encoderConfigSupplier,
+            osdConfigSupplier = osdConfigSupplier,
+            profileSupplier = profileSupplier,
+        )
     }
 
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
