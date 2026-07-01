@@ -122,16 +122,13 @@ fun App(state: AppUiState, actions: AppActions) {
                                 modifier = Modifier.fillMaxWidth().weight(1f),
                                 color = UvpColor.Bg
                             ) {
-                                // iOS 悬浮 tab bar 不占布局空间,内容底部得给它让位:
-                                //   Home Indicator inset(safe area 底部)+ 8dp 呼吸
-                                //   + 64dp tab bar 高 + 8dp 呼吸 = ~114dp
-                                // 用 windowInsetsPadding 拿真实 inset,加上 tab bar 固定高。
-                                val screenModifier = if (isFloatingBottomBar)
-                                    Modifier
-                                        .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-                                        .padding(bottom = 80.dp)  // 64 tab bar + 上下 8dp 呼吸
-                                else Modifier
-                                Box(modifier = screenModifier) {
+                                // iOS 悬浮 tab bar 的毛玻璃需要内容能滚到 bar 底下
+                                // 才有"糊"的效果 —— 不给内容加底部 padding,让 SIP 配置卡
+                                // / 能力卡末行能穿过 tab bar,毛玻璃真正显效。
+                                // 各个 Screen 里的 LazyColumn/scrollable 用 contentPadding
+                                // 保留最后一条的可见性 —— 但主视觉上 tab bar 是"漂浮在
+                                // 内容上",跟 Apple Fitness 一致。
+                                Box(modifier = Modifier.fillMaxSize()) {
                                     when (currentTab) {
                                         AppTab.Home -> HomeScreen(state, actions)
                                         AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
