@@ -68,7 +68,7 @@ object G711 {
      * with the result XORed with 0x55 to flip alternate bits as the standard
      * specifies.
      */
-    private fun linearToAlaw(pcmIn: Int): Byte {
+    fun linearToAlaw(pcmIn: Int): Byte {
         var pcm = pcmIn
         val sign = if (pcm < 0) {
             pcm = -pcm
@@ -97,7 +97,7 @@ object G711 {
      *
      * Reference: ITU-T G.711 § 2.1.
      */
-    private fun linearToUlaw(pcmIn: Int): Byte {
+    fun linearToUlaw(pcmIn: Int): Byte {
         var pcm = pcmIn
         val sign = if (pcm < 0) {
             pcm = -pcm
