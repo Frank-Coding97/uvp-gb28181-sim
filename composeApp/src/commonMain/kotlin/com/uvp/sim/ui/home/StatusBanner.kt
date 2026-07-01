@@ -67,31 +67,32 @@ internal fun StatusBanner(state: AppUiState, actions: AppActions? = null, onFeed
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(spec.bg, RoundedCornerShape(12.dp))
-            .border(1.dp, spec.border, RoundedCornerShape(12.dp))
+            .background(spec.bg, RoundedCornerShape(10.dp))
+            .border(1.dp, spec.border, RoundedCornerShape(10.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(spec.dot))
+        Box(Modifier.size(7.dp).clip(CircleShape).background(spec.dot))
         Spacer(Modifier.width(8.dp))
-        // 状态 + 附加信息竖排,占据左侧灵活空间
-        Column(modifier = Modifier.weight(1f)) {
-            Text(spec.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = spec.textColor)
-            val streamLabel = when (state.sip) {
-                SipStateDto.InCall -> "1280×720 · 25fps · LIVE"
-                SipStateDto.Registered -> "1280×720 · 预览"
-                else -> null
-            }
-            val subText = streamLabel ?: spec.extra
-            if (subText.isNotEmpty()) {
-                Text(
-                    subText, fontSize = 11.sp, color = UvpColor.TextHint,
-                    fontFamily = if (streamLabel != null) FontFamily.Monospace else FontFamily.Default,
-                    maxLines = 1
-                )
-            }
+        // 状态 + 附加信息合成一行,减少垂直高度
+        Text(spec.text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = spec.textColor)
+        val streamLabel = when (state.sip) {
+            SipStateDto.InCall -> "1280×720 · 25fps · LIVE"
+            SipStateDto.Registered -> "1280×720 · 预览"
+            else -> null
         }
-        Spacer(Modifier.width(8.dp))
+        val subText = streamLabel ?: spec.extra
+        if (subText.isNotEmpty()) {
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "· $subText",
+                fontSize = 10.sp,
+                color = UvpColor.TextHint,
+                fontFamily = if (streamLabel != null) FontFamily.Monospace else FontFamily.Default,
+                maxLines = 1
+            )
+        }
+        Spacer(Modifier.weight(1f))
         // 右侧 CTA:根据 SIP 状态显示 注册 / 取消 / 注销
         if (actions != null) {
             StatusCta(state = state, actions = actions, onFeedback = onFeedback)
@@ -110,9 +111,9 @@ private fun StatusCta(state: AppUiState, actions: AppActions, onFeedback: (Strin
                     onFeedback("正在注册…")
                 },
                 enabled = ready,
-                modifier = Modifier.height(36.dp),
-                shape = RoundedCornerShape(18.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 18.dp, vertical = 0.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = UvpColor.Primary,
                     disabledContainerColor = UvpColor.Primary.copy(alpha = 0.35f),
@@ -133,9 +134,9 @@ private fun StatusCta(state: AppUiState, actions: AppActions, onFeedback: (Strin
                     actions.onCancelConnect()
                     onFeedback("已取消注册")
                 },
-                modifier = Modifier.height(36.dp),
-                shape = RoundedCornerShape(18.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                 border = BorderStroke(1.dp, UvpColor.Warning.copy(alpha = 0.6f)),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Warning)
             ) {
@@ -148,9 +149,9 @@ private fun StatusCta(state: AppUiState, actions: AppActions, onFeedback: (Strin
                     actions.onDisconnect()
                     onFeedback("已注销")
                 },
-                modifier = Modifier.height(36.dp),
-                shape = RoundedCornerShape(18.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 0.dp),
+                modifier = Modifier.height(32.dp),
+                shape = RoundedCornerShape(16.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 0.dp),
                 border = BorderStroke(1.dp, UvpColor.Danger.copy(alpha = 0.7f)),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = UvpColor.Danger)
             ) {

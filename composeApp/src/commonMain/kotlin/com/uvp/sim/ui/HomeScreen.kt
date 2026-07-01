@@ -28,10 +28,10 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
     val toast = LocalToastHost.current
     // iOS 悬浮 tab bar 需要额外底部 padding 让最后一行不被遮:
-    //   safe area 34dp + tab bar 64dp + 顶部 20dp 视觉呼吸 = ~120dp
-    // 20dp 呼吸让 4 卡跟 tab bar 之间有明显间距,不打架。
+    //   safe area 34dp + tab bar 64dp + 32dp 明确视觉隔离 = ~130dp
+    // 32dp 呼吸让 4 卡跟 tab bar 之间有清晰间距,视觉上完全独立。
     // Android 用 docked tab bar 自己占布局空间,不需要额外 padding。
-    val extraBottom = if (isFloatingBottomBar) 120.dp else 0.dp
+    val extraBottom = if (isFloatingBottomBar) 130.dp else 0.dp
     Column(
         modifier = Modifier
             .fillMaxSize()
