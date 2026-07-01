@@ -11,27 +11,41 @@ import kotlin.concurrent.Volatile
 /**
  * iOS implementation of [CameraCapture].
  *
- * Mirrors the Android pattern: by default returns an empty flow; the
- * platform shell can attach a [IosCameraStreamer] via [setStreamer] once
- * the real pipeline lands.
+ * v1.1 wiring: [start] instantiates a fresh [IosCameraStreamer] with the
+ * configured [CaptureConfig] and returns its encoded-frame flow directly.
+ * [setStreamer] remains as a legacy hook for tests that want to inject a
+ * pre-built streamer; when set it overrides the auto-built one.
  */
 actual class CameraCapture actual constructor(private val config: CaptureConfig) {
 
     @Volatile
-    private var streamer: IosCameraStreamer? = null
+    private var injectedStreamer: IosCameraStreamer? = null
 
+    @Volatile
+    private var activeStreamer: IosCameraStreamer? = null
+
+    /**
+     * Legacy hook — pre-T4-follow-up the platform shell built the streamer
+     * externally and pushed it in. New code should just call [start]. Passing
+     * null clears the injection so [start] falls back to the auto-built path.
+     */
     fun setStreamer(streamer: IosCameraStreamer?) {
-        this.streamer = streamer
+        this.injectedStreamer = streamer
     }
 
-    actual fun start(): Flow<H264Frame> = streamer?.stream() ?: emptyFlow()
+    actual fun start(): Flow<H264Frame> {
+        val streamer = injectedStreamer ?: IosCameraStreamer(config)
+        activeStreamer = streamer
+        return streamer.stream()
+    }
 
     actual suspend fun stop() {
-        streamer?.stop()
+        activeStreamer?.stop()
+        activeStreamer = null
     }
 
     actual fun requestKeyFrame() {
-        streamer?.requestKeyFrame()
+        activeStreamer?.requestKeyFrame()
     }
 
     @Volatile
