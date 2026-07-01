@@ -21,16 +21,21 @@ import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.AlarmPriority
 import com.uvp.sim.network.TransportType
+import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.AlarmFireMode
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.BroadcastState
+import com.uvp.sim.ui.SubscriptionKind
+import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.actions.CapabilityActions
 import com.uvp.sim.ui.actions.HomeActions
 import com.uvp.sim.ui.actions.NetworkActions
 import com.uvp.sim.ui.actions.RecordingActions
+import com.uvp.sim.ui.model.NetworkStateDto
 import com.uvp.sim.ui.model.mapper.toDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -103,8 +108,12 @@ fun IosApp() {
     val catalogTree by engine.catalogTree.collectAsState()
     val alarmHistory by engine.alarmHistory.collectAsState()
     val clockOffset by engine.clockOffset.collectAsState()
+    val rawSubs by engine.subscriptions.collectAsState()
+    val currentBroadcast by engine.currentBroadcast.collectAsState()
+    val speakerOn by engine.broadcastSpeakerOn.collectAsState()
 
     var events by remember { mutableStateOf<List<SimEvent>>(emptyList()) }
+    var systemLogs by remember { mutableStateOf<List<SystemLog>>(emptyList()) }
     var alarmFireMode by remember { mutableStateOf(AlarmFireMode.Random) }
     var fixedAlarmTemplate by remember { mutableStateOf<AlarmPayload?>(null) }
 
@@ -114,20 +123,67 @@ fun IosApp() {
         }
     }
 
+    // SystemLogger.flow 是 SharedFlow(replay=0),iOS 上用本地 state 累积快照。
+    // 用 buffer.snapshot() 保持一次性对齐(重新订阅时补齐历史),后续增量走 flow。
+    LaunchedEffect(Unit) {
+        systemLogs = SystemLogger.snapshot
+        SystemLogger.flow.collect { log ->
+            systemLogs = (systemLogs + log).takeLast(500)
+        }
+    }
+
+    // rawSubs: Map<String, SubscriptionSnapshot> → Map<SubscriptionKind, SubscriptionStatus>。
+    // 未知 key 忽略(容错未来 engine 侧新增 kind)。参考 Android MainActivity L124-134。
+    val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
+        val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
+            ?: return@mapNotNull null
+        key to SubscriptionStatus(
+            active = snap.active,
+            subscriber = snap.subscriber,
+            expiresSeconds = snap.expiresSeconds,
+            remainingSeconds = snap.remainingSeconds,
+            notifyCount = snap.notifyCount,
+        )
+    }.toMap()
+
+    // BroadcastDialog(engine 内部)→ BroadcastState(UI 层)。isReceiving 用 dialog 存在与否。
+    val broadcastState = currentBroadcast.let { bd ->
+        if (bd == null) {
+            BroadcastState(speakerOn = speakerOn)
+        } else {
+            BroadcastState(
+                isReceiving = true,
+                sourceId = bd.sourceId,
+                codec = bd.codec.name,
+                localAudioPort = bd.localAudioPort,
+                remoteAudioHost = bd.remoteAudioHost,
+                remoteAudioPort = bd.remoteAudioPort,
+                rxPackets = bd.rxPackets,
+                rxBytes = bd.rxBytes,
+                seqLost = bd.seqLost,
+                decodeErrors = bd.decodeErrors,
+                speakerOn = speakerOn,
+            )
+        }
+    }
+
     val uiState = AppUiState(
         sip = sipState.toDto(),
         config = config,
         events = events.map { it.toDto() },
+        systemEvents = systemLogs.map { it.toDto() },
+        // sessionMarker: iOS v1.1 无 SessionTracker(Android-only),保留 null。
+        subscriptions = subscriptions,
         deviceControl = deviceControl.toDto(),
+        // recording / playback: engine 侧 iOS 走 NoopRecordingService,无对应 StateFlow,保留默认。
         catalogTree = catalogTree,
         alarmHistory = alarmHistory.map { it.toDto() },
         alarmFireMode = alarmFireMode,
         fixedAlarmTemplate = fixedAlarmTemplate?.toDto(),
+        broadcast = broadcastState,
+        // iOS NetworkController 是 no-op,spec 明确永远 Auto。
+        networkRuntimeState = NetworkStateDto.Auto,
         clockOffset = clockOffset.toDto(),
-        // 以下字段用默认空初值(v1.1 UI 骨架先跑起来,后续 PR 补映射):
-        //   systemEvents / sessionMarker / subscriptions /
-        //   recording / playback / lastCatalogSavedAt /
-        //   broadcast / networkRuntimeState
     )
 
     val actions = buildActions(
