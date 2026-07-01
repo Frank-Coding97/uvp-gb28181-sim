@@ -1,5 +1,9 @@
 package com.uvp.sim.network
 
+import com.uvp.sim.api.LogTag
+import com.uvp.sim.observability.ErrorCategory
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.SystemLogger
 import io.ktor.network.selector.SelectorManager
 import io.ktor.network.sockets.BoundDatagramSocket
 import io.ktor.network.sockets.Datagram
@@ -83,14 +87,62 @@ actual class RtpSender actual constructor(
         selector = sm
         tcpServer = server
         ownedScope.launch {
-            try {
-                // TODO(v1.1): iOS 实现时镜像 JVM/Android 的 expectedClientHost 验证循环
-                val client = server.accept()
-                tcpSocket = client
-                tcpWrite = client.openWriteChannel(autoFlush = true)
-            } catch (_: Throwable) { /* shutdown path */ }
+            var mismatchCount = 0
+            while (mismatchCount < MAX_ACCEPT_MISMATCH) {
+                try {
+                    val client = server.accept()
+                    val clientHost = (client.remoteAddress as? InetSocketAddress)?.hostname
+                    if (!hostMatches(expectedClientHost, clientHost)) {
+                        mismatchCount++
+                        SystemLogger.emit(
+                            LogLevel.Warning,
+                            LogTag.Network,
+                            "TCP_PASSIVE accepted from unexpected $clientHost, expected $expectedClientHost — dropped (attempt $mismatchCount/$MAX_ACCEPT_MISMATCH)",
+                            category = ErrorCategory.ProtocolViolation
+                        )
+                        runCatching { client.close() }
+                        continue
+                    }
+                    tcpSocket = client
+                    tcpWrite = client.openWriteChannel(autoFlush = true)
+                    break
+                } catch (_: Throwable) {
+                    break
+                }
+            }
+            if (mismatchCount >= MAX_ACCEPT_MISMATCH) {
+                SystemLogger.emit(
+                    LogLevel.Error,
+                    LogTag.Network,
+                    "TCP_PASSIVE give up after $MAX_ACCEPT_MISMATCH mismatched connection attempts",
+                    category = ErrorCategory.ProtocolViolation
+                )
+            }
         }
         return localPort
+    }
+
+    private companion object {
+        private const val MAX_ACCEPT_MISMATCH = 10
+
+        /**
+         * iOS 无 java.net.InetAddress 做 hostname → IP 解析,直接字面量比对 + 常见别名匹配。
+         * Ktor Native 的 `InetSocketAddress.hostname` 通常已是 IP 字面量,不需要 DNS 反查。
+         * 常见别名:localhost ↔ 127.0.0.1 ↔ ::1。
+         */
+        private fun hostMatches(expected: String?, observed: String?): Boolean {
+            if (expected == null) return true
+            if (observed == null) return true
+            if (expected == observed) return true
+            val expNorm = normalize(expected)
+            val obsNorm = normalize(observed)
+            return expNorm == obsNorm
+        }
+
+        private fun normalize(host: String): String = when (host.lowercase()) {
+            "localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1" -> "127.0.0.1"
+            else -> host
+        }
     }
 
     actual suspend fun send(packet: ByteArray) {
