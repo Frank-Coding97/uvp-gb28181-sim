@@ -27,13 +27,14 @@ import kotlinx.coroutines.flow.StateFlow
 class PlatformRuntimeIos : PlatformRuntime {
 
     override fun buildCameraCapture(config: CaptureConfig): CameraCapture {
-        // TODO(v1.1): 装 IosCameraStreamer。
-        throw UnsupportedOperationException("PlatformRuntimeIos.buildCameraCapture: pending v1.1")
+        // v1.1 T4-follow-up: CameraCapture.start() now internally builds
+        // IosCameraStreamer(config) → AVCaptureSession + VideoToolbox pipeline.
+        return CameraCapture(config)
     }
 
     override fun buildAudioCapture(config: AudioCaptureConfig): AudioCapture {
-        // TODO(v1.1): 装 IosAudioStreamer。
-        throw UnsupportedOperationException("PlatformRuntimeIos.buildAudioCapture: pending v1.1")
+        // T8-follow-up: IosAudioStreamer 已接 AVAudioEngine + installTapOnBus。
+        return AudioCapture(config)
     }
 
     override fun buildRecordingService(
