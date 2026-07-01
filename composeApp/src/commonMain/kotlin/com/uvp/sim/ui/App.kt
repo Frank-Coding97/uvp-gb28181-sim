@@ -279,9 +279,10 @@ private fun FloatingBottomBar(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            // 底部 safe area inset(Home Indicator 高度)+ 8dp 呼吸
+            // 底部 safe area inset(Home Indicator 高度)—— 紧贴 Home Indicator
+            // 顶部,不再加额外 vertical 呼吸,视觉更贴近 iOS 系统级 tab bar。
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
-            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .padding(horizontal = 12.dp)
     ) {
         // Shadow 单独一层,只在胶囊外圈渲染;不给 blur view 加阴影(会糊)
         Box(
