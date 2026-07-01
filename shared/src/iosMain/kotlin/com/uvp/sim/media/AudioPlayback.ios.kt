@@ -1,13 +1,141 @@
 package com.uvp.sim.media
 
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
+import kotlinx.cinterop.CPointer
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.ObjCObjectVar
+import kotlinx.cinterop.ShortVar
+import kotlinx.cinterop.alloc
+import kotlinx.cinterop.memScoped
+import kotlinx.cinterop.pointed
+import kotlinx.cinterop.ptr
+import kotlinx.cinterop.set
+import kotlinx.cinterop.value
+import platform.AVFAudio.AVAudioEngine
+import platform.AVFAudio.AVAudioFormat
+import platform.AVFAudio.AVAudioPCMBuffer
+import platform.AVFAudio.AVAudioPCMFormatInt16
+import platform.AVFAudio.AVAudioPlayerNode
+import platform.Foundation.NSError
+
 /**
- * iOS stub(M3 范围,plan Q6)。真实 AVAudioEngine 实现留 M4(T14)。
+ * iOS 扬声器输出 — AVAudioEngine + AVAudioPlayerNode 播 PCM Int16 单声道。
+ *
+ * 语音广播下行(§9.8)扬声器 iOS 实现,对齐 Android AudioTrack 语义。
+ *
+ * 数据流:
+ *   1. [start]:attach playerNode → connect to mainMixerNode → engine.start → playerNode.play
+ *   2. [write]:PCM ShortArray → AVAudioPCMBuffer → scheduleBuffer(nil options + no callback)
+ *   3. [stop]:playerNode.stop → engine.stop → detach
+ *
+ * 失败回退:AVAudioEngine 硬件初始化失败(session 冲突 / 无扬声器权限)一律吞掉
+ * 打 SystemLogger,不抛给上层(对齐 Android runCatching 兜底 + plan §6 Q4)。
+ *
+ * 注意:AVAudioSession 路由(扬声器 vs 听筒)不在此层管,由 IosAppHost 在启动阶段
+ * 配 `.playback` category(参考 PlatformRuntimeIos)。缺 session 配置时默认走系统当前 route。
  */
+@OptIn(ExperimentalForeignApi::class)
 actual class AudioPlayback actual constructor(
-    @Suppress("UNUSED_PARAMETER") sampleRate: Int,
-    @Suppress("UNUSED_PARAMETER") channelCount: Int
+    private val sampleRate: Int,
+    private val channelCount: Int
 ) {
-    actual fun start() {}
-    actual fun write(pcm: ShortArray) {}
-    actual fun stop() {}
+    private var engine: AVAudioEngine? = null
+    private var playerNode: AVAudioPlayerNode? = null
+    private var format: AVAudioFormat? = null
+
+    actual fun start() {
+        runCatching {
+            val eng = AVAudioEngine()
+            val node = AVAudioPlayerNode()
+            val fmt = AVAudioFormat(
+                commonFormat = AVAudioPCMFormatInt16,
+                sampleRate = sampleRate.toDouble(),
+                channels = channelCount.toUInt(),
+                interleaved = true,
+            ) ?: run {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_PLAYBACK_FORMAT_NULL sr=$sampleRate ch=$channelCount",
+                )
+                return@runCatching
+            }
+
+            eng.attachNode(node)
+            eng.connect(node, to = eng.mainMixerNode, format = fmt)
+
+            eng.prepare()
+            val ok = memScoped {
+                val errPtr = alloc<ObjCObjectVar<NSError?>>()
+                val started = eng.startAndReturnError(errPtr.ptr)
+                if (!started) {
+                    val desc = errPtr.value?.localizedDescription ?: "unknown"
+                    SystemLogger.emit(
+                        LogLevel.Error, LogTag.Media,
+                        "IOS_PLAYBACK_START_FAILED sr=$sampleRate ch=$channelCount error=$desc",
+                    )
+                }
+                started
+            }
+            if (!ok) {
+                eng.detachNode(node)
+                return@runCatching
+            }
+
+            node.play()
+            engine = eng
+            playerNode = node
+            format = fmt
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "IOS_PLAYBACK_START sr=$sampleRate ch=$channelCount",
+            )
+        }.onFailure { e ->
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_PLAYBACK_START_EXCEPTION ${e::class.simpleName}: ${e.message}",
+            )
+            engine = null
+            playerNode = null
+            format = null
+        }
+    }
+
+    actual fun write(pcm: ShortArray) {
+        val node = playerNode ?: return
+        val fmt = format ?: return
+        if (pcm.isEmpty()) return
+        runCatching {
+            val frames = pcm.size.toUInt()
+            val buffer = AVAudioPCMBuffer(pCMFormat = fmt, frameCapacity = frames) ?: return@runCatching
+            buffer.frameLength = frames
+            val channelPtr: CPointer<ShortVar> =
+                buffer.int16ChannelData?.pointed?.value ?: return@runCatching
+            for (i in 0 until pcm.size) {
+                channelPtr[i] = pcm[i]
+            }
+            // completionHandler = null:不关心播完回调,fire-and-forget
+            node.scheduleBuffer(buffer, completionHandler = null)
+        }
+    }
+
+    actual fun stop() {
+        runCatching { playerNode?.stop() }
+        runCatching {
+            val eng = engine
+            val node = playerNode
+            eng?.stop()
+            if (eng != null && node != null) {
+                eng.detachNode(node)
+            }
+        }
+        engine = null
+        playerNode = null
+        format = null
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_PLAYBACK_STOP sr=$sampleRate ch=$channelCount",
+        )
+    }
 }
