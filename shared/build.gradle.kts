@@ -56,6 +56,9 @@ kotlin {
             implementation(libs.androidx.security.crypto)
             implementation(libs.ktor.client.cio)
         }
+        iosMain.dependencies {
+            implementation(libs.ktor.client.darwin)
+        }
     }
 }
 

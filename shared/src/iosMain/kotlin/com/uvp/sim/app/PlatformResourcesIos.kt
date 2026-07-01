@@ -12,26 +12,47 @@ import io.ktor.client.engine.HttpClientEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import io.ktor.client.engine.darwin.Darwin
 import platform.Foundation.NSUserDefaults
 
 /**
- * iOS 占位资源(PR6 T6.2;Wave 3 P3-4 重命名 AndroidResourcesIos → PlatformResourcesIos;
- * Wave 4 PR-PLATFORM-RUNTIME 媒体三件套挪到 [PlatformRuntimeIos])。
+ * iOS 资源装配(v1.1 Wave 2 wire 收尾):从占位 null 转成跟 Android 对齐的 real factory。
  *
- * 全部字段 null/no-op,M1.1 接入 iOS 实现:
- *   - rtpSenderFactory:Darwin 框架原生 socket,M1.1 实现
- *   - snapshot 三件套:UIImage 编码 + NSURLSession 上传,M1.1 实现
+ * 各 factory 对应关系:
+ *   - rtpSenderFactory:构造 [RtpSender.ios](Ktor Native UDP/TCP)
+ *   - rtpReceiverFactory:走 commonMain `realBroadcastRxSource` → [RtpReceiver.ios]
+ *   - audioSinkFactory:走 commonMain `realAudioSink` → [AudioPlayback.ios](AVAudioEngine)
+ *   - playbackBuilderFactory:[IosPlaybackBuilder](镜像 Android,demuxFactory 用 IosMp4DemuxSource)
+ *   - snapshotCapture / snapshotCache:v1.1 Wave 1 C 组落地
+ *   - httpEngineFactory:Ktor Darwin engine
+ *   - localIpProvider:v1.2 上 NWPathMonitor 报告的活跃网卡 IP,当前先保留 0.0.0.0(SIP Contact 由 Registration 层 fallback 到 CFNetwork.copyLocalHostAddress)
  *   - configStore:NSUserDefaults(v1.1 A3 已落地,见下方 [ConfigStoreIos])
  */
 class PlatformResourcesIos : PlatformResources {
-    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? = null
-    override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? = null
-    override val audioSinkFactory: ((Int, Int) -> AudioSink)? = null
-    override val playbackBuilderFactory: ((CoroutineScope, AudioCodec, (String, Int, RtpMode) -> RtpSender) -> com.uvp.sim.domain.PlaybackBuilder)? = null
+    override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? =
+        { host, port, scope, mode, expectedClientHost -> RtpSender(host, port, scope, mode, expectedClientHost) }
+
+    override val rtpReceiverFactory: ((CoroutineScope) -> BroadcastRxSource)? =
+        { scope -> com.uvp.sim.network.realBroadcastRxSource(scope) }
+
+    override val audioSinkFactory: ((Int, Int) -> AudioSink)? =
+        { sampleRate, channels -> com.uvp.sim.media.realAudioSink(sampleRate, channels) }
+
+    override val playbackBuilderFactory: ((CoroutineScope, AudioCodec, (String, Int, RtpMode) -> RtpSender) -> com.uvp.sim.domain.PlaybackBuilder)? =
+        { scope, audioCodec, rtpFactory ->
+            com.uvp.sim.recording.IosPlaybackBuilder(
+                scope = scope,
+                rtpSenderFactory = rtpFactory,
+                audioCodec = audioCodec,
+            )
+        }
+
     override val localIpProvider: () -> String = { "0.0.0.0" }
-    override val snapshotCapture: SnapshotCapture? = null
-    override val snapshotCache: JpegLocalCache? = null
-    override val httpEngineFactory: (() -> HttpClientEngine)? = null
+
+    override val snapshotCapture: SnapshotCapture? = SnapshotCapture()
+    override val snapshotCache: JpegLocalCache? = JpegLocalCache()
+    override val httpEngineFactory: (() -> HttpClientEngine)? = { Darwin.create() }
+
     override val configStore: ConfigStore = ConfigStoreIos()
 }
 
