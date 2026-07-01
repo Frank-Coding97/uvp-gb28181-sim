@@ -51,6 +51,7 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -98,44 +99,67 @@ fun App(state: AppUiState, actions: AppActions) {
         )
         UvpToastHost {
             CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
+                Box(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
                     if (notificationOpen) {
                         NotificationScreen(
                             state = notificationState,
                             onBack = { notificationOpen = false },
                         )
                     } else {
-                        CompactTopBar(
-                            unreadCount = notificationState.unreadCount,
-                            onBellClick = {
-                                notificationOpen = true
-                                markAllRead()
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            CompactTopBar(
+                                unreadCount = notificationState.unreadCount,
+                                onBellClick = {
+                                    notificationOpen = true
+                                    markAllRead()
+                                }
+                            )
+                            NetworkUnavailableBanner(
+                                runtime = state.networkRuntimeState,
+                                onClick = { currentTab = AppTab.Settings }
+                            )
+                            Surface(
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                color = UvpColor.Bg
+                            ) {
+                                // iOS 悬浮 tab bar 不占布局空间,内容底部得留出 tab bar
+                                // 高度(64dp)+ 上下 padding(16dp)+ 安全区(~4dp)= 84dp,
+                                // 让最后一个 ActionTile / SIP 配置末行不被 tab bar 遮住。
+                                val bottomInset = if (isFloatingBottomBar) 84.dp else 0.dp
+                                val screenModifier = if (bottomInset > 0.dp)
+                                    Modifier.padding(bottom = bottomInset)
+                                else Modifier
+                                Box(modifier = screenModifier) {
+                                    when (currentTab) {
+                                        AppTab.Home -> HomeScreen(state, actions)
+                                        AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
+                                            state, actions,
+                                            openAlarmTarget = alarmTarget,
+                                            onAlarmTargetConsumed = { alarmTarget = false }
+                                        )
+                                        AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(
+                                            state = state,
+                                            actions = actions,
+                                        )
+                                        AppTab.Settings -> SettingsScreen(state, actions)
+                                        AppTab.Log -> LogScreen(state, actions)
+                                    }
+                                }
                             }
-                        )
-                        NetworkUnavailableBanner(
-                            runtime = state.networkRuntimeState,
-                            onClick = { currentTab = AppTab.Settings }
-                        )
-                        Surface(
-                            modifier = Modifier.fillMaxWidth().weight(1f),
-                            color = UvpColor.Bg
-                        ) {
-                            when (currentTab) {
-                                AppTab.Home -> HomeScreen(state, actions)
-                                AppTab.Capability -> com.uvp.sim.ui.capability.CapabilityScreen(
-                                    state, actions,
-                                    openAlarmTarget = alarmTarget,
-                                    onAlarmTargetConsumed = { alarmTarget = false }
-                                )
-                                AppTab.Simulate -> com.uvp.sim.ui.simulate.SimulateScreen(
-                                    state = state,
-                                    actions = actions,
-                                )
-                                AppTab.Settings -> SettingsScreen(state, actions)
-                                AppTab.Log -> LogScreen(state, actions)
+                            // Docked bottom bar 只在 Android 时占布局空间;
+                            // iOS 悬浮 tab bar 由下面的 Box.align(BottomCenter) 渲染。
+                            if (!isFloatingBottomBar) {
+                                CompactBottomBar(currentTab) { currentTab = it }
                             }
                         }
-                        CompactBottomBar(currentTab) { currentTab = it }
+                        // iOS 26 Liquid Glass 风悬浮 tab bar,不占 Column 布局空间。
+                        if (isFloatingBottomBar) {
+                            FloatingBottomBar(
+                                active = currentTab,
+                                onPick = { currentTab = it },
+                                modifier = Modifier.align(Alignment.BottomCenter)
+                            )
+                        }
                     }
                 }
             }
@@ -226,6 +250,67 @@ private fun CompactBottomBar(active: AppTab, onPick: (AppTab) -> Unit) {
                 }
             }
             // 半圆上凸的特色按钮(模拟控制)
+            SimulateAccentButton(
+                selected = active == AppTab.Simulate,
+                onClick = { onPick(AppTab.Simulate) },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 2.dp)
+            )
+        }
+    }
+}
+
+/**
+ * iOS 26 Liquid Glass 风悬浮 tab bar.
+ *
+ * 特点:
+ *   - 悬浮在内容上方,不占 Column 布局空间(由外层 Box.align 定位)
+ *   - 圆角胶囊 32dp radius,白色底色 + 柔和阴影
+ *   - 底部留出 Home Indicator 上方 8dp 呼吸,左右各 12dp 内缩
+ *   - 内部布局跟 CompactBottomBar 一致(4 tab + 中间半圆凸)
+ */
+@Composable
+private fun FloatingBottomBar(
+    active: AppTab,
+    onPick: (AppTab) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp)
+                .shadow(elevation = 12.dp, shape = RoundedCornerShape(32.dp), clip = false)
+                .clip(RoundedCornerShape(32.dp))
+                .background(UvpColor.Surface),
+            contentAlignment = Alignment.BottomStart
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(56.dp)
+                    .align(Alignment.BottomStart),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AppTab.entries.forEachIndexed { index, tab ->
+                    if (index == 2) {
+                        Box(modifier = Modifier.weight(1f).fillMaxSize())
+                    } else {
+                        BottomTabItem(
+                            tab = tab,
+                            selected = tab == active,
+                            onClick = { onPick(tab) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
             SimulateAccentButton(
                 selected = active == AppTab.Simulate,
                 onClick = { onPick(AppTab.Simulate) },
