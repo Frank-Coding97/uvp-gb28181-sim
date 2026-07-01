@@ -20,6 +20,8 @@ import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.AlarmPriority
+import com.uvp.sim.network.NetworkController
+import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
@@ -58,6 +60,9 @@ import kotlinx.coroutines.launch
 object IosAppHost {
 
     private val hostScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** NetworkController (Wave 1 A4, NWPathMonitor)。IosAppHost 起时装,close 由进程退出兜底。 */
+    val networkController: NetworkController = NetworkController()
 
     private val engine: AppEngine by lazy {
         AppEngine(
@@ -105,6 +110,8 @@ fun IosApp() {
         IosAppHost.bindLogger()
     }
 
+    val networkController = IosAppHost.networkController
+
     val sipState by engine.state.collectAsState()
     val config by engine.config.collectAsState()
     val deviceControl by engine.deviceControlState.collectAsState()
@@ -114,6 +121,7 @@ fun IosApp() {
     val rawSubs by engine.subscriptions.collectAsState()
     val currentBroadcast by engine.currentBroadcast.collectAsState()
     val speakerOn by engine.broadcastSpeakerOn.collectAsState()
+    val networkState by networkController.state.collectAsState()
 
     var events by remember { mutableStateOf<List<SimEvent>>(emptyList()) }
     var systemLogs by remember { mutableStateOf<List<SystemLog>>(emptyList()) }
@@ -121,6 +129,15 @@ fun IosApp() {
     var fixedAlarmTemplate by remember { mutableStateOf<AlarmPayload?>(null) }
     var recordingState by remember { mutableStateOf<RecordingState>(RecordingState.Idle) }
     var recordingFiles by remember { mutableStateOf<List<RecordingFile>>(emptyList()) }
+
+    // 冷启动:load persisted config → setConfig → apply network preference。参考 Android SipViewModel。
+    LaunchedEffect(Unit) {
+        val stored = engine.configStore.loadOnce(IosAppHost.defaultConfig())
+        if (stored != engine.config.value) {
+            engine.setConfig(stored)
+        }
+        networkController.apply(stored.network.preference)
+    }
 
     LaunchedEffect(engine) {
         engine.events.collect { ev ->
@@ -212,8 +229,9 @@ fun IosApp() {
         alarmFireMode = alarmFireMode,
         fixedAlarmTemplate = fixedAlarmTemplate?.toDto(),
         broadcast = broadcastState,
-        // iOS NetworkController 是 no-op,spec 明确永远 Auto。
-        networkRuntimeState = NetworkStateDto.Auto,
+        // Wave 1 A4 后 NetworkController.ios 走 NWPathMonitor,collect 真状态。
+        // iOS 不支持强制绑网卡,localIp 留空但 preference 会跟着 UI 切换 apply。
+        networkRuntimeState = networkState.toDto(),
         clockOffset = clockOffset.toDto(),
     )
 
@@ -296,9 +314,13 @@ private fun buildActions(
     }
     val network = object : NetworkActions {
         override fun onNetworkPreferenceChange(preference: NetworkPreference) {
-            // iOS NetworkController is no-op; only persist preference to config.
-            val cfg = engine.config.value
-            scope.launch { engine.updateConfig(cfg.copy(network = cfg.network.copy(preference = preference))) }
+            // Wave 1 A4:NetworkController.ios 走 NWPathMonitor,apply 记录偏好并 emit 到 state。
+            // iOS 无法强制绑网卡(系统限制),这里 apply 之后 state 会跟着 emit 反映活跃网卡的类型。
+            scope.launch {
+                IosAppHost.networkController.apply(preference)
+                val cfg = engine.config.value
+                engine.updateConfig(cfg.copy(network = cfg.network.copy(preference = preference)))
+            }
         }
     }
     return object : AppActions,

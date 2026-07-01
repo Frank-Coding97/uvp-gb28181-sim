@@ -58,10 +58,24 @@ class PlatformRuntimeIos : PlatformRuntime {
     }
 
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
-        // TODO(v1.1): 真重建 / applyVideoConfig 链路。当前 no-op。
+        // E2 wire(v1.1):
+        //
+        // iOS 端的 CameraCapture 是"每次 start() 内部 new IosCameraStreamer(config)"的
+        // 一次性对象,没有对外的 streamer ref 给我 applyCaptureConfig(参考 Android 侧
+        // `AndroidCameraStreamer.applyCaptureConfig` 内部真 rebuild)。
+        //
+        // 结果:iOS 端的"改分辨率 / 码率 / GOP 后真重建"依赖于 UI 层调 stop() → start()
+        // 完整循环,而不是无缝 applyCaptureConfig。这跟 spec §Q2("闪一下能忍")一致 —— 用户
+        // 改视频参数是低频动作,重连触发的重建就够用。
+        //
+        // v1.2 如果要做无缝 apply,得给 IosCameraStreamer 加 applyCaptureConfig(new) 方法,
+        // 参照 Android 侧的 encoder.stop / new VT session / OSD reattach 三步。
+        //
+        // Audio 侧简单:AVAudioEngine 停旧 + 建新即可,但 iOS 端 AudioCapture 同样是 start()
+        // 内部 new IosAudioStreamer,外部拿不到 streamer ref。留 stop→start 循环即可。
     }
 
     override suspend fun release() {
-        // no-op
+        // no-op(iOS 端 CameraCapture / AudioCapture / IosRecordingService 自己 release)
     }
 }
