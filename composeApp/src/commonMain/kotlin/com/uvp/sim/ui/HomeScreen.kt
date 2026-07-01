@@ -31,7 +31,11 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         modifier = Modifier.fillMaxSize().verticalScroll(scroll).padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        StatusBanner(state)
+        // 顶部 banner:状态 + 注册 CTA 合一,首屏一眼可见
+        StatusBanner(
+            state = state, actions = actions,
+            onFeedback = { msg -> toast.info(msg) }
+        )
         BroadcastIndicator(state, actions)
         CameraPreviewBox(state)
         SipConfigCard(state, actions, onFeedback = { msg ->
@@ -40,8 +44,6 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         ActionButtons(state, actions, onFeedback = { msg ->
             toast.success(msg)
         })
-        ConnectButton(state, actions, onFeedback = { msg ->
-            toast.info(msg)
-        })
+        // 底部 ConnectButton 已合并进 StatusBanner 右侧,不再单独显示
     }
 }
