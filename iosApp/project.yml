@@ -39,7 +39,7 @@ targets:
         LSRequiresIPhoneOS: true
         UILaunchScreen: {}
         UIRequiredDeviceCapabilities:
-          - armv7
+          - arm64
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # Permissions per plan §3.4
@@ -55,12 +55,18 @@ targets:
         TARGETED_DEVICE_FAMILY: "1"  # iPhone only for v1.1 (spec §5)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_ASSET_PATHS: '"iosApp/Preview Content"'
+        # 真机装机(v1.1 T15):Automatic 签名,Xcode 打开后手动选 Personal Team。
+        # Personal Team provisioning profile 7 天有效,过期插 USB ⌘R 重装即可。
+        CODE_SIGN_STYLE: Automatic
         # KMP-produced framework path. Only ComposeApp.framework — it
         # re-exports :shared so we don't init the Kotlin runtime twice
         # (F3 fix, see overnight report).
+        # 真机跑 iosArm64,Simulator 跑 iosSimulatorArm64。用 $(EFFECTIVE_PLATFORM_NAME)
+        # (-iphoneos / -iphonesimulator)+ arch 拼路径,让 Xcode 按 destination 选。
         FRAMEWORK_SEARCH_PATHS:
           - "$(inherited)"
           - "$(PROJECT_DIR)/../composeApp/build/bin/iosSimulatorArm64/debugFramework"
+          - "$(PROJECT_DIR)/../composeApp/build/bin/iosArm64/debugFramework"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-framework"
@@ -71,9 +77,15 @@ targets:
           export JAVA_HOME=/opt/homebrew/opt/openjdk@17
           export PATH="$JAVA_HOME/bin:$PATH"
           cd "$SRCROOT/.."
-          if [ "$CONFIGURATION" = "Release" ]; then
-            ./gradlew :composeApp:linkReleaseFrameworkIosSimulatorArm64
+          # PLATFORM_NAME=iphoneos(真机)/ iphonesimulator(模拟器)
+          if [ "$PLATFORM_NAME" = "iphoneos" ]; then
+            KMP_TARGET="IosArm64"
           else
-            ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64
+            KMP_TARGET="IosSimulatorArm64"
+          fi
+          if [ "$CONFIGURATION" = "Release" ]; then
+            ./gradlew :composeApp:linkReleaseFramework${KMP_TARGET}
+          else
+            ./gradlew :composeApp:linkDebugFramework${KMP_TARGET}
           fi
         basedOnDependencyAnalysis: false
