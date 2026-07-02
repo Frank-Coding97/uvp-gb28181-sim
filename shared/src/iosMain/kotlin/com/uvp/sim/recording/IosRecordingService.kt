@@ -35,13 +35,8 @@ import platform.AVFoundation.AVAssetWriterInput
 import platform.AVFoundation.AVFileTypeMPEG4
 import platform.AVFoundation.AVMediaTypeAudio
 import platform.AVFoundation.AVMediaTypeVideo
-import platform.AVFoundation.AVVideoAverageBitRateKey
-import platform.AVFoundation.AVVideoCodecH264
-import platform.AVFoundation.AVVideoCodecKey
-import platform.AVFoundation.AVVideoCompressionPropertiesKey
-import platform.AVFoundation.AVVideoHeightKey
-import platform.AVFoundation.AVVideoWidthKey
 import platform.CoreAudioTypes.kAudioFormatMPEG4AAC
+import platform.CoreFoundation.CFRelease
 import platform.CoreMedia.CMTimeMake
 import platform.Foundation.NSDocumentDirectory
 import platform.Foundation.NSError
@@ -105,9 +100,10 @@ class IosRecordingService(
     private val profileSupplier: () -> RecordingProfile,
     private val clock: Clock = Clock.System,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
-) : RecordingService {
+) : RecordingService, IosVideoFrameSink {
 
     private val mutex = Mutex()
+    private val sampleBufferBuilder = CMSampleBufferBuilder()
 
     private val _state = MutableStateFlow<RecordingState>(RecordingState.Idle)
     override val state: StateFlow<RecordingState> = _state.asStateFlow()
@@ -269,9 +265,57 @@ class IosRecordingService(
      * append to [videoInput]. Kept as stable public signature so AppEngine
      * wire-up doesn't reach into internals.
      */
-    @Suppress("UNUSED_PARAMETER")
-    fun feedVideoFrame(nalUnits: List<ByteArray>, ptsUs: Long, isKeyFrame: Boolean) {
-        // TODO(v1.2 T-record-feed): build CMSampleBuffer + append.
+    override fun feedVideoFrame(nalUnits: List<ByteArray>, ptsUs: Long, isKeyFrame: Boolean) {
+        val input = videoInput ?: return
+        val writer = assetWriter ?: return
+        if (_state.value !is RecordingState.Recording) return
+
+        if (isKeyFrame) {
+            sampleBufferBuilder.observeParameterSets(nalUnits)
+        } else if (!sampleBufferBuilder.hasFormatDescriptionInputs()) {
+            SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Media,
+                "IOS_RECORDING_VIDEO_DROP reason=missing_format ptsUs=$ptsUs",
+            )
+            return
+        }
+
+        if (!input.isReadyForMoreMediaData()) {
+            SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Media,
+                "IOS_RECORDING_VIDEO_DROP reason=input_busy ptsUs=$ptsUs",
+            )
+            return
+        }
+
+        val sample = sampleBufferBuilder.buildVideoSampleBuffer(
+            nalUnits = nalUnits,
+            ptsUs = ptsUs,
+            durationUs = 1_000_000L / encoderConfigSupplier().frameRate.coerceAtLeast(1),
+        ) ?: run {
+            SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Media,
+                "IOS_RECORDING_VIDEO_DROP reason=sample_build_failed ptsUs=$ptsUs",
+            )
+            return
+        }
+
+        try {
+            val appended = input.appendSampleBuffer(sample)
+            if (!appended) {
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Media,
+                    "IOS_RECORDING_VIDEO_APPEND_FAIL status=${writer.status} " +
+                        "msg=${writer.error?.localizedDescription ?: "unknown"}",
+                )
+            }
+        } finally {
+            CFRelease(sample)
+        }
     }
 
     /**
@@ -303,18 +347,10 @@ class IosRecordingService(
             w
         }
 
-        val compression: Map<Any?, Any?> = mapOf<Any?, Any?>(
-            AVVideoAverageBitRateKey to encCfg.bitrateBps,
-        )
-        val videoSettings: Map<Any?, Any?> = mapOf<Any?, Any?>(
-            AVVideoCodecKey to AVVideoCodecH264,
-            AVVideoWidthKey to encCfg.widthPx,
-            AVVideoHeightKey to encCfg.heightPx,
-            AVVideoCompressionPropertiesKey to compression,
-        )
+        sampleBufferBuilder.reset()
         val vIn = AVAssetWriterInput(
             mediaType = AVMediaTypeVideo,
-            outputSettings = videoSettings,
+            outputSettings = null,
         )
         vIn.expectsMediaDataInRealTime = true
         if (writer.canAddInput(vIn)) {

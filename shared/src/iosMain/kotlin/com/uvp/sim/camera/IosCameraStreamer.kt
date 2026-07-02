@@ -8,6 +8,7 @@ import com.uvp.sim.media.NalType
 import com.uvp.sim.media.VideoCodec
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.recording.IosRecordingFrameBridge
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.COpaquePointer
@@ -479,6 +480,7 @@ class IosCameraStreamer(private val config: CaptureConfig) {
         fun onEncoded(sample: CMSampleBufferRef) {
             val frame = toH264Frame(sample) ?: return
             channel.trySend(frame)
+            IosRecordingFrameBridge.onVideoFrame(frame)
         }
     }
 
@@ -619,4 +621,3 @@ internal class CameraSampleDelegate(
         didOutputSampleBuffer?.let(onSample)
     }
 }
-
