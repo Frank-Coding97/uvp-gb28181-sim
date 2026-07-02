@@ -58,19 +58,15 @@ class PlatformResourcesIos : PlatformResources {
 }
 
 /**
- * iOS 实现:NSUserDefaults + JSON 序列化持久化(v1.1 A3)。
+ * iOS 实现:NSUserDefaults + JSON 序列化持久化(v1.1 A3),device.password 走 Keychain(v1.2 C3)。
  *
- * key `com.uvp.sim.config` 存 [SimConfig] 的 JSON 明文。
- *
- * 与 Android 侧的差异(有意为之):
- *   - Android [com.uvp.sim.app.ConfigStoreAndroid] 用 AES-GCM + Android Keystore 加密
- *     device.password 字段,iOS 侧不做同等加密(NSUserDefaults 走沙箱内保护,
- *     root/JB 才可读;若后续要做等价保护应改用 Keychain,这里先满足
- *     "重启不丢配置"的最低要求)。
- *   - 不做老数据升级(iOS 侧无历史明文数据)。
- *   - decodeFromString 失败(schema 变化 / 数据损坏)静默回落 fallback。
+ * key `com.uvp.sim.config` 存 [SimConfig] 的 JSON,其中 device.password 持久化时清空。
+ * 旧 JSON 明文 password 首次 load 后迁移到 Keychain 并重写 JSON 清理明文。
  */
-class ConfigStoreIos : ConfigStore {
+class ConfigStoreIos(
+    private val jsonStore: IosConfigJsonStore = UserDefaultsConfigJsonStore(),
+    private val passwordStore: DevicePasswordStore = KeychainStore(),
+) : ConfigStore {
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -78,18 +74,51 @@ class ConfigStoreIos : ConfigStore {
     }
 
     override suspend fun loadOnce(fallback: SimConfig): SimConfig {
-        val raw = NSUserDefaults.standardUserDefaults.stringForKey(KEY_CONFIG_JSON)
-            ?: return fallback
-        return runCatching { json.decodeFromString<SimConfig>(raw) }.getOrElse { fallback }
+        val raw = jsonStore.read() ?: return fallback
+        val decoded = runCatching { json.decodeFromString<SimConfig>(raw) }.getOrElse { fallback }
+        val account = KeychainStore.accountForDeviceId(decoded.device.deviceId)
+        val keychainPassword = runCatching { passwordStore.read(account) }.getOrNull()
+        val legacyPassword = decoded.device.password
+        val restoredPassword = keychainPassword ?: legacyPassword
+        val restored = decoded.copy(device = decoded.device.copy(password = restoredPassword))
+        if (keychainPassword == null && legacyPassword.isNotEmpty()) {
+            runCatching { passwordStore.save(account, legacyPassword) }
+            saveSanitizedConfig(restored)
+        } else if (legacyPassword.isNotEmpty()) {
+            saveSanitizedConfig(restored)
+        }
+        return restored
     }
 
     override suspend fun save(config: SimConfig) {
-        val encoded = runCatching { json.encodeToString(config) }.getOrNull() ?: return
-        NSUserDefaults.standardUserDefaults.setObject(encoded, KEY_CONFIG_JSON)
+        val account = KeychainStore.accountForDeviceId(config.device.deviceId)
+        runCatching { passwordStore.save(account, config.device.password) }
+        saveSanitizedConfig(config)
+    }
+
+    private fun saveSanitizedConfig(config: SimConfig) {
+        val encoded = runCatching {
+            json.encodeToString(config.copy(device = config.device.copy(password = "")))
+        }.getOrNull() ?: return
+        jsonStore.write(encoded)
+    }
+}
+
+interface IosConfigJsonStore {
+    fun read(): String?
+    fun write(value: String)
+}
+
+class UserDefaultsConfigJsonStore : IosConfigJsonStore {
+    override fun read(): String? =
+        NSUserDefaults.standardUserDefaults.stringForKey(KEY_CONFIG_JSON)
+
+    override fun write(value: String) {
+        NSUserDefaults.standardUserDefaults.setObject(value, KEY_CONFIG_JSON)
         NSUserDefaults.standardUserDefaults.synchronize()
     }
 
     companion object {
-        private const val KEY_CONFIG_JSON = "com.uvp.sim.config"
+        const val KEY_CONFIG_JSON = "com.uvp.sim.config"
     }
 }
