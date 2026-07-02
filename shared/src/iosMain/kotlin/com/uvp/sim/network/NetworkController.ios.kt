@@ -39,9 +39,8 @@ import platform.darwin.dispatch_queue_create
  *     * 系统 path satisfied 且 uses CELLULAR → Bound(..., "cellular", "")
  *     * 系统 path satisfied 且都不是 → Bound(..., "other", "")
  *     * 系统 path 不 satisfied → Unavailable(pref, reason)
- *   - localIp 留空 "" —— iOS SDK 不便通过 K/N cinterop 拿 getifaddrs 结果,
- *     UI 层已知 iOS 上 IP 信息不显示,不影响 SIP Contact(iOS 侧 SIP 走 Auto 路由,
- *     localIp 由 socket 实际 bind 决定,不由这里提供)。
+ *   - localIp 通过 getifaddrs 读取当前活跃接口 IPv4。iOS 不强制绑定 socket,
+ *     但对外诊断和 SIP Contact fallback 应报告真实活跃身份。
  *
  * 让 UI 从 no-op 升级到"能感知当前活跃网卡类型"。
  *
@@ -132,17 +131,16 @@ actual class NetworkController actual constructor() {
             nw_path_uses_interface_type(path, nw_interface_type_other) -> "other"
             else -> "unknown"
         }
+        val localIp = IosLocalIpProvider.refresh(ifName).orEmpty()
 
         _state.value = NetworkState.Bound(
             preference = currentPreference,
             interfaceName = ifName,
-            // iOS 侧不通过 cinterop 拿 IP,UI 层已知 iOS 上该字段留空;SIP Contact
-            // 头的实际 IP 由 socket bind 时系统决定(不经过 NetworkController)。
-            localIp = ""
+            localIp = localIp
         )
         SystemLogger.emit(
             LogLevel.Info, LogTag.Network,
-            "iOS 路径已连接 pref=$currentPreference 类型=$ifName"
+            "iOS 路径已连接 pref=$currentPreference 类型=$ifName ip=${localIp.ifBlank { "unknown" }}"
         )
     }
 }

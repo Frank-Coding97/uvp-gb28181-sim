@@ -4,6 +4,7 @@ import com.uvp.sim.config.SimConfig
 import com.uvp.sim.media.AudioCodec
 import com.uvp.sim.media.AudioSink
 import com.uvp.sim.network.BroadcastRxSource
+import com.uvp.sim.network.IosLocalIpProvider
 import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.RtpSender
 import com.uvp.sim.snapshot.JpegLocalCache
@@ -25,7 +26,7 @@ import platform.Foundation.NSUserDefaults
  *   - playbackBuilderFactory:[IosPlaybackBuilder](镜像 Android,demuxFactory 用 IosMp4DemuxSource)
  *   - snapshotCapture / snapshotCache:v1.1 Wave 1 C 组落地
  *   - httpEngineFactory:Ktor Darwin engine
- *   - localIpProvider:v1.2 上 NWPathMonitor 报告的活跃网卡 IP,当前先保留 0.0.0.0(SIP Contact 由 Registration 层 fallback 到 CFNetwork.copyLocalHostAddress)
+ *   - localIpProvider:v1.2 上 getifaddrs 报告的活跃网卡 IPv4,无值时兜底 0.0.0.0
  *   - configStore:NSUserDefaults(v1.1 A3 已落地,见下方 [ConfigStoreIos])
  */
 class PlatformResourcesIos : PlatformResources {
@@ -47,7 +48,7 @@ class PlatformResourcesIos : PlatformResources {
             )
         }
 
-    override val localIpProvider: () -> String = { "0.0.0.0" }
+    override val localIpProvider: () -> String = { IosLocalIpProvider.currentActiveIp() ?: "0.0.0.0" }
 
     override val snapshotCapture: SnapshotCapture? = SnapshotCapture()
     override val snapshotCache: JpegLocalCache? = JpegLocalCache()
