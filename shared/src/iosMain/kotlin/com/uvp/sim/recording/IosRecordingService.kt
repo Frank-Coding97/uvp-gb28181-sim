@@ -6,6 +6,7 @@ import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.snapshot.SnapshotCapture
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCObjectVar
 import kotlinx.cinterop.alloc
@@ -100,6 +101,11 @@ class IosRecordingService(
     private val profileSupplier: () -> RecordingProfile,
     private val clock: Clock = Clock.System,
     private val timeZone: TimeZone = TimeZone.currentSystemDefault(),
+    private val thumbnail: IosRecordingThumbnail = IosRecordingThumbnail(
+        object : RecordingThumbnailSource {
+            override suspend fun takeJpeg(): ByteArray? = SnapshotCapture().takeJpeg()
+        },
+    ),
 ) : RecordingService, IosVideoFrameSink {
 
     private val mutex = Mutex()
@@ -435,15 +441,18 @@ class IosRecordingService(
         val durationMs = endMs - started
         val fileSize = fileSizeBytes(outputPath)
 
+        val recordingId = NSUUID().UUIDString
+        val thumbnailPath = thumbnail.captureForRecording(outputPath, recordingId)
+
         val recordingFile = RecordingFile(
-            id = NSUUID().UUIDString,
+            id = recordingId,
             startTimeMs = started,
             endTimeMs = endMs,
             durationMs = durationMs,
             channelId = channel,
             filePath = outputPath,
             sizeBytes = fileSize,
-            thumbnailPath = null,
+            thumbnailPath = thumbnailPath,
             source = source,
             type = RecordType.Time,
             secrecy = 0,
