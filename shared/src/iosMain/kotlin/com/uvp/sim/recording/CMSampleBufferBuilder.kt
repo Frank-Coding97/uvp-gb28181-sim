@@ -142,6 +142,15 @@ internal class CMSampleBufferBuilder {
         sampleOut.value
     }
 
+    /**
+     * 暴露 formatDescription 给 IosRecordingService,让 openWriter 阶段 2
+     * (第一个 keyframe 到达时)能用它做 AVAssetWriterInput sourceFormatHint。
+     *
+     * 调用方拿到 CMFormatDescriptionRef 后**必须** CFRelease。
+     */
+    internal fun buildFormatDescriptionOrNull(): CMFormatDescriptionRef? =
+        buildFormatDescription()
+
     private fun buildFormatDescription(): CMFormatDescriptionRef? = memScoped {
         val spsBytes = sps ?: return@memScoped null
         val ppsBytes = pps ?: return@memScoped null

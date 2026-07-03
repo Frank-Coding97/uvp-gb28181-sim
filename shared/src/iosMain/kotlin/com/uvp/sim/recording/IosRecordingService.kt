@@ -33,6 +33,7 @@ import platform.AVFAudio.AVNumberOfChannelsKey
 import platform.AVFAudio.AVSampleRateKey
 import platform.AVFoundation.AVAssetWriter
 import platform.AVFoundation.AVAssetWriterInput
+import platform.AVFoundation.AVAssetWriterStatusWriting
 import platform.AVFoundation.AVFileTypeMPEG4
 import platform.AVFoundation.AVMediaTypeAudio
 import platform.AVFoundation.AVMediaTypeVideo
@@ -117,6 +118,17 @@ class IosRecordingService(
     private val _files = MutableStateFlow<List<RecordingFile>>(emptyList())
     override val files: StateFlow<List<RecordingFile>> = _files.asStateFlow()
 
+    /**
+     * 2026-07-03 真机 race guard:
+     * feedVideoFrame 跑在 camera dispatch queue,stop/finalizeWriterLocked 跑在 coroutine。
+     * 之间没有 mutex,`_state` 检查跟 `input.appendSampleBuffer` 之间存在窗口 —— 若 stop
+     * 抢先把 videoInput markAsFinished,capture queue 的 append 会打进 finished input,
+     * 引发 AVAssetWriter 内部 async completion 挂死 -> stop() 的 finalize poll 卡住。
+     * 这个 flag 在 stop() 首帧关闭前置为 true,feedVideoFrame 立即弃帧。
+     */
+    @kotlin.concurrent.Volatile
+    private var inputsClosed: Boolean = false
+
     // ---- Live session refs (guarded by mutex) ----
     private var assetWriter: AVAssetWriter? = null
     private var videoInput: AVAssetWriterInput? = null
@@ -191,6 +203,8 @@ class IosRecordingService(
                 )
                 return@withLock Result.success(Unit)
             }
+            // 重开 feed 通路(上一次 stop 会关它)。
+            inputsClosed = false
             runCatching {
                 val now = clock.now()
                 val outputPath = newOutputPath(now)
@@ -232,6 +246,8 @@ class IosRecordingService(
 
     override suspend fun stop(): Result<RecordingFile?> = mutex.withLock {
         val writer = assetWriter ?: return@withLock Result.success(null)
+        // 先关闭 feed 通路,再切 state,阻止 capture queue 抢在 markAsFinished 之前 append。
+        inputsClosed = true
         val previous = _state.value as? RecordingState.Recording
         if (previous != null) {
             _state.value = RecordingState.Stopping(previous, reason = "user_stop")
@@ -272,10 +288,11 @@ class IosRecordingService(
      * wire-up doesn't reach into internals.
      */
     override fun feedVideoFrame(nalUnits: List<ByteArray>, ptsUs: Long, isKeyFrame: Boolean) {
-        val input = videoInput ?: return
+        if (inputsClosed) return
         val writer = assetWriter ?: return
         if (_state.value !is RecordingState.Recording) return
 
+        // 收 SPS/PPS(每个 keyframe 都刷)。非 keyframe 且 SPS/PPS 未就位 → 丢帧。
         if (isKeyFrame) {
             sampleBufferBuilder.observeParameterSets(nalUnits)
         } else if (!sampleBufferBuilder.hasFormatDescriptionInputs()) {
@@ -285,6 +302,19 @@ class IosRecordingService(
                 "IOS_RECORDING_VIDEO_DROP reason=missing_format ptsUs=$ptsUs",
             )
             return
+        }
+
+        // 懒启动:第一个带 SPS/PPS 的 keyframe 触发 phase2。videoInput 尚 null 时只接受 keyframe。
+        val input = videoInput ?: run {
+            if (!isKeyFrame) {
+                SystemLogger.emit(
+                    LogLevel.Debug, LogTag.Media,
+                    "IOS_RECORDING_VIDEO_DROP reason=awaiting_first_keyframe ptsUs=$ptsUs",
+                )
+                return
+            }
+            if (!startWriterWithVideo(firstKeyPtsUs = ptsUs)) return
+            videoInput ?: return
         }
 
         if (!input.isReadyForMoreMediaData()) {
@@ -337,6 +367,21 @@ class IosRecordingService(
     // Internals: writer lifecycle
     // =========================================================
 
+    /**
+     * openWriter 阶段 1(2026-07-03 真机验重构):**只建 AVAssetWriter 骨架**。
+     *
+     * AVAssetWriterInput 的 passthrough 模式(outputSettings=null)必须提供
+     * sourceFormatHint (CMVideoFormatDescription),否则 canAddInput 直接拒绝
+     * (真机 iOS 严格,Simulator 部分行为不同,昨晚 overnight 单测漏过)。
+     *
+     * 我们的 H.264 sample 编码前拿不到 SPS/PPS,构不出 formatDescription。所以:
+     *   - 起录时只建 writer(此时 writer.status = Unknown = 0),不 addInput,不 startWriting
+     *   - 等到 feedVideoFrame 收到**第一个 keyframe**(SPS/PPS 已缓存):
+     *       phase 2:build formatDescription → 用 sourceFormatHint 建 vIn →
+     *       addInput → startWriting → startSessionAtSourceTime → append
+     *
+     * Audio 走 T-A2 后续修,暂不 addInput audio(mp4 只 video track,能过 ffprobe)。
+     */
     private fun openWriter(outputPath: String, encCfg: RecordingEncoderConfig) {
         val outputUrl = NSURL(fileURLWithPath = outputPath)
         val writer = memScoped {
@@ -354,49 +399,69 @@ class IosRecordingService(
         }
 
         sampleBufferBuilder.reset()
+
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_RECORDING_OPEN_WRITER_PHASE1 status=${writer.status.toLong()} waiting for first keyframe"
+        )
+
+        assetWriter = writer
+        // videoInput/audioInput 都保留 null — 等 feedVideoFrame 第一个 keyframe 触发 phase2。
+        videoInput = null
+        audioInput = null
+    }
+
+    /**
+     * openWriter 阶段 2:第一个 keyframe 到达 + SPS/PPS 已缓存后调用。
+     * 返回 true 表示 writer 已经 Writing,可以 append sample buffer。
+     */
+    private fun startWriterWithVideo(firstKeyPtsUs: Long): Boolean {
+        val writer = assetWriter ?: return false
+        if (videoInput != null) return true // 已经启动过
+
+        val formatDescription = sampleBufferBuilder.buildFormatDescriptionOrNull() ?: run {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_RECORDING_FMT_DESC_NULL sps/pps unavailable",
+            )
+            return false
+        }
+
         val vIn = AVAssetWriterInput(
             mediaType = AVMediaTypeVideo,
             outputSettings = null,
+            sourceFormatHint = formatDescription,
         )
         vIn.expectsMediaDataInRealTime = true
-        if (writer.canAddInput(vIn)) {
-            writer.addInput(vIn)
-        } else {
+
+        val canAdd = writer.canAddInput(vIn)
+        if (!canAdd) {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Media,
-                "IOS_RECORDING_ADD_VIDEO_INPUT_REJECTED",
+                "IOS_RECORDING_ADD_VIDEO_INPUT_REJECTED_PHASE2 " +
+                    "(sourceFormatHint provided but still rejected)",
             )
+            CFRelease(formatDescription)
+            return false
         }
-
-        // Audio input (AAC 8kHz mono - matches G711 live pipeline).
-        val audioSettings: Map<Any?, Any?> = mapOf<Any?, Any?>(
-            AVFormatIDKey to kAudioFormatMPEG4AAC.toLong(),
-            AVSampleRateKey to 8000,
-            AVNumberOfChannelsKey to 1,
-        )
-        val aIn = AVAssetWriterInput(
-            mediaType = AVMediaTypeAudio,
-            outputSettings = audioSettings,
-        )
-        aIn.expectsMediaDataInRealTime = true
-        if (writer.canAddInput(aIn)) {
-            writer.addInput(aIn)
-        }
+        writer.addInput(vIn)
 
         val started = writer.startWriting()
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_RECORDING_OPEN_WRITER_PHASE2 startWriting=$started status=${writer.status.toLong()} " +
+                "firstKeyPtsUs=$firstKeyPtsUs err=${writer.error?.localizedDescription ?: "none"}"
+        )
         if (!started) {
-            val err = writer.error
-            throw IllegalStateException(
-                "AVAssetWriter.startWriting failed: ${err?.localizedDescription ?: "unknown"}",
-            )
+            CFRelease(formatDescription)
+            return false
         }
-        // startSession takes a source time - use t=0 so the first feed PTS is
-        // treated as offset 0. v1.2 feed methods supply PTS relative to this.
-        writer.startSessionAtSourceTime(CMTimeMake(value = 0L, timescale = 1_000_000))
+        // 第一个 sample 的 PTS 作为 session 起始,后续 sample PTS 都 >= 这个值。
+        writer.startSessionAtSourceTime(CMTimeMake(value = firstKeyPtsUs, timescale = 1_000_000))
 
-        assetWriter = writer
+        CFRelease(formatDescription)
         videoInput = vIn
-        audioInput = aIn
+        return true
     }
 
     /**
@@ -411,19 +476,49 @@ class IosRecordingService(
         val source = activeSource
         val isSplit = pendingSegmentSplit
 
-        videoInput?.markAsFinished()
-        audioInput?.markAsFinished()
+        val writerStatusRaw = writer.status.toLong()
+        val didWriteAny = writerStatusRaw == 1L  // AVAssetWriterStatusWriting
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_RECORDING_FINALIZE_ENTRY status=$writerStatusRaw didWriteAny=$didWriteAny " +
+                "writerErr=${writer.error?.localizedDescription ?: "none"}"
+        )
 
-        // finishWriting is async - poll a flag. iOS finalize typically <200ms.
-        finalizeDone = false
-        writer.finishWritingWithCompletionHandler {
-            finalizeDone = true
-        }
-        withContext(Dispatchers.Default) {
-            var waited = 0
-            while (!finalizeDone && waited < 30) {
-                delay(100)
-                waited += 1
+        if (didWriteAny) {
+            // writer 已 Writing (真的有 sample 灌进去) — 走 finishWriting 出有效 MP4。
+            // 只对**已 addInput** 的 input 调 markAsFinished (videoInput 现在 lazy add,
+            // audio 从不 addInput,不 mark)。
+            videoInput?.let { vi ->
+                runCatching { vi.markAsFinished() }.onFailure {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Media,
+                        "IOS_RECORDING_MARK_VIDEO_FINISHED_FAIL msg=${it.message}",
+                    )
+                }
+            }
+
+            finalizeDone = false
+            writer.finishWritingWithCompletionHandler {
+                finalizeDone = true
+            }
+            withContext(Dispatchers.Default) {
+                var waited = 0
+                while (!finalizeDone && waited < 30) {
+                    delay(100)
+                    waited += 1
+                }
+            }
+        } else {
+            // Writer 从没 startWriting(第一个 keyframe 还没到 / phase2 失败) — cancelWriting。
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_RECORDING_STOP_EMPTY status=$writerStatusRaw outputPath=$outputPath",
+            )
+            runCatching { writer.cancelWriting() }.onFailure {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_RECORDING_CANCEL_FAIL msg=${it.message}",
+                )
             }
         }
 
@@ -435,6 +530,14 @@ class IosRecordingService(
         if (outputPath == null || channel == null || started == 0L) {
             _state.value = RecordingState.Failed("finalize: missing session state")
             return Result.failure(IllegalStateException("finalize missing state"))
+        }
+
+        if (!didWriteAny) {
+            // 空 recording — 不入索引不生成缩略图,直接把 state 回 Idle 返回 null。
+            // 未落盘的 mp4 空壳文件由 iOS 沙箱自然回收;若已生成也删掉。
+            runCatching { NSFileManager.defaultManager.removeItemAtPath(outputPath, error = null) }
+            _state.value = RecordingState.Failed("no samples captured — camera stream not active")
+            return Result.success(null)
         }
 
         val endMs = clock.now().toEpochMilliseconds()
