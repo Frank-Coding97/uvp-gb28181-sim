@@ -103,6 +103,14 @@ object IosCameraController {
     private var latestFrame: CVImageBufferRef? = null
 
     /**
+     * Fix #6:latestFrame publish 是"常驻税"(每帧 CFRetain/CFRelease),但只有 SnapshotCapture
+     * 需要。用 subscribers 引用计数,只有 > 0 时 onSample 才 publishLatestFrame。
+     * PreviewOnly + 无抓拍请求时,onSample 走轻路径(仅可能的 encode 分支),不动 latest。
+     */
+    @Volatile
+    private var snapshotSubscribers: Int = 0
+
+    /**
      * T-P2-2:当前 preview config 快照,requestEncoding 首次触发 EncodingSession 时
      * 用它构造(width / height / frameRate / codec)。startPreview 时保存,releaseInternal 清。
      * null 表示 preview 未启,此时 requestEncoding 无法构造 VT session。
@@ -245,12 +253,35 @@ object IosCameraController {
 
     /**
      * 取当前最近一帧 pixel buffer,并额外 CFRetain 一次交给调用方。
-     * 调用方使用完必须 [CFRelease]。返回 null 表示尚未有帧到达。
+     * 调用方使用完必须 [CFRelease]。返回 null 表示尚未有帧到达 或 snapshot 未订阅。
+     *
+     * Fix #6:必须先 [beginSnapshotCapture] 让 onSample 开始 publish latestFrame,
+     * 否则总是 null。SnapshotCapture 用 begin/end 包裹调用。
      */
     fun latestFramePixelBuffer(): CVImageBufferRef? {
         val current = latestFrame ?: return null
         CFRetain(current)
         return current
+    }
+
+    /**
+     * Fix #6:开始订阅 latestFrame publish。SnapshotCapture 在 takeJpeg 起手调,完成后 end。
+     * 引用计数支持并发多个 SnapshotCapture 请求。
+     */
+    fun beginSnapshotCapture() {
+        snapshotSubscribers += 1
+    }
+
+    /**
+     * Fix #6:结束订阅。归零时 onSample 不再 publish latestFrame。
+     * 清理 latestFrame 以释放最后引用(下次 begin 再从 delegate 首帧填)。
+     */
+    fun endSnapshotCapture() {
+        snapshotSubscribers = maxOf(0, snapshotSubscribers - 1)
+        if (snapshotSubscribers == 0) {
+            latestFrame?.let { CFRelease(it) }
+            latestFrame = null
+        }
     }
 
     // =========================================================
@@ -431,10 +462,17 @@ object IosCameraController {
      * P2-2 补:若 encodingActive 则同时 encodeSample(sample, forceKey)。
      */
     private fun onSample(sample: CMSampleBufferRef) {
-        val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
-        publishLatestFrame(imageBuffer)
+        // Fix #6:PreviewOnly + 无 snapshot 请求时 quick exit,不做 CFRetain/CFRelease 常驻税
+        val needLatest = snapshotSubscribers > 0
+        val needEncode = _encodingActive.value
+        if (!needLatest && !needEncode) return
+
+        if (needLatest) {
+            val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
+            publishLatestFrame(imageBuffer)
+        }
         // T-P2-2:encoding active 时 encode 单帧,forceKey 从 pendingForceKey 消费一次
-        if (_encodingActive.value) {
+        if (needEncode) {
             val force = pendingForceKey
             if (force) pendingForceKey = false
             encodingSession?.encodeSample(sample, forceKey = force)

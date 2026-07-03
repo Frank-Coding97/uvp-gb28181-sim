@@ -9,6 +9,7 @@ import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.reinterpret
+import kotlinx.coroutines.delay
 import platform.CoreFoundation.CFRelease
 import platform.CoreImage.CIContext
 import platform.CoreImage.CIImage
@@ -42,21 +43,34 @@ actual class SnapshotCapture actual constructor() {
     private val ciContext: CIContext? by lazy { CIContext.contextWithOptions(null) }
 
     actual suspend fun takeJpeg(): ByteArray? {
-        // v1.3-A T-P6-1:直接从 IosCameraController 取最新一帧(替换 IosSnapshotSourceHolder path)
-        val pixelBuffer: CVImageBufferRef = IosCameraController.latestFramePixelBuffer() ?: run {
-            SystemLogger.emit(
-                level = LogLevel.Warning,
-                tag = LogTag.Media,
-                message = "SnapshotCapture.ios: latestFramePixelBuffer 为 null(preview 未启 / 首帧未到)"
-            )
-            return null
-        }
-
-        // 从这里开始:pixelBuffer 由本方法负责 CFRelease
+        // Fix #6:开始订阅 latestFrame publish;controller onSample 只在订阅期间 CFRetain 帧,
+        // PreviewOnly + 无抓拍时 onSample 走 quick-return 不做常驻税。
+        IosCameraController.beginSnapshotCapture()
         return try {
-            encodeToJpeg(pixelBuffer)
+            // 等 delegate 触发一帧:最多 poll 10 次 × 20ms = 200ms 上限
+            var pixelBuffer: CVImageBufferRef? = null
+            var waited = 0
+            while (pixelBuffer == null && waited < 10) {
+                delay(20)
+                pixelBuffer = IosCameraController.latestFramePixelBuffer()
+                waited += 1
+            }
+            if (pixelBuffer == null) {
+                SystemLogger.emit(
+                    level = LogLevel.Warning,
+                    tag = LogTag.Media,
+                    message = "SnapshotCapture.ios: 200ms 内 latestFrame 未就绪(preview 未启 / 首帧未到)"
+                )
+                return null
+            }
+            // pixelBuffer 由本方法负责 CFRelease
+            try {
+                encodeToJpeg(pixelBuffer)
+            } finally {
+                CFRelease(pixelBuffer)
+            }
         } finally {
-            CFRelease(pixelBuffer)
+            IosCameraController.endSnapshotCapture()
         }
     }
 
