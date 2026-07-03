@@ -291,8 +291,10 @@ object IosCameraController {
                     LogLevel.Warning, LogTag.Media,
                     "IOS_CAMERA_CONTROLLER_ENCODING_START_NO_CONFIG preview 未启,encoding 无 config"
                 )
-                encodingRefCount = 0  // rollback,不激活 encoding
-                return EncodingHandleImpl(generation = gen)  // handle 是 no-op,close 走 stale 路径
+                // Fix #1:rollback refCount 并返回 NoOp handle。之前返回绑定 gen 的
+                // EncodingHandleImpl 会让 handle.close 通过 generation 匹配把 refCount 减到 -1。
+                encodingRefCount = 0
+                return NoOpEncodingHandle
             }
             val session = EncodingSession(cfg) { frame ->
                 _frames.tryEmit(frame)
@@ -303,8 +305,8 @@ object IosCameraController {
                     LogLevel.Error, LogTag.Media,
                     "IOS_CAMERA_CONTROLLER_ENCODING_START_FAIL VT create failed"
                 )
-                encodingRefCount = 0  // rollback
-                return EncodingHandleImpl(generation = gen)
+                encodingRefCount = 0  // Fix #1:同上 rollback + NoOp handle
+                return NoOpEncodingHandle
             }
             encodingSession = session
             _encodingActive.value = true
@@ -346,7 +348,8 @@ object IosCameraController {
             )
             return
         }
-        encodingRefCount -= 1
+        // Fix #1 defense-in-depth:refCount clamp 到 0 底,防任何路径漂移到负数
+        encodingRefCount = maxOf(0, encodingRefCount - 1)
         val newCount = encodingRefCount
         if (newCount == 0) {
             // T-P2-2:末次 close,真 invalidate VT session。plan Q6 完全释放,不 pause。
@@ -390,6 +393,18 @@ object IosCameraController {
     /**
      * [EncodingHandle] 具体实现。持 generation 快照,close 时通过 controller 校验。
      */
+    /**
+     * Fix #1 no-op handle for encoding failure paths(no config / VT create fail).
+     * frames 立即完成的 emptyFlow → 消费方 collect 拿到 no data 且 flow completes,
+     * 不会挂死。close 完全 no-op,不进 closeHandleInternal 避免 refCount 下溢。
+     */
+    private object NoOpEncodingHandle : EncodingHandle {
+        override val frames: kotlinx.coroutines.flow.Flow<H264Frame> =
+            kotlinx.coroutines.flow.emptyFlow()
+
+        override fun close() { /* no-op — encoding never actually started */ }
+    }
+
     private class EncodingHandleImpl(private val generation: Int) : EncodingHandle {
         // T-P2-2:frames = controller 的 SharedFlow<H264Frame> 广播,所有 handle 共享同一份。
         // encoding 结束(refCount 归 0 或 stopPreview 强制归零)后 SharedFlow 不再 emit;
