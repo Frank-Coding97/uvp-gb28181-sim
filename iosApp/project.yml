@@ -61,12 +61,15 @@ targets:
         # KMP-produced framework path. Only ComposeApp.framework — it
         # re-exports :shared so we don't init the Kotlin runtime twice
         # (F3 fix, see overnight report).
-        # 真机跑 iosArm64,Simulator 跑 iosSimulatorArm64。用 $(EFFECTIVE_PLATFORM_NAME)
-        # (-iphoneos / -iphonesimulator)+ arch 拼路径,让 Xcode 按 destination 选。
-        FRAMEWORK_SEARCH_PATHS:
+        # 真机 iosArm64 / Simulator iosSimulatorArm64。用 SDK 条件把两条路径分开,
+        # 否则同时列两条 linker 会挑到错的架构报 "Building for 'iOS', but linking
+        # in object file built for 'iOS-simulator'"。
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../composeApp/build/bin/iosArm64/debugFramework"
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]":
           - "$(inherited)"
           - "$(PROJECT_DIR)/../composeApp/build/bin/iosSimulatorArm64/debugFramework"
-          - "$(PROJECT_DIR)/../composeApp/build/bin/iosArm64/debugFramework"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-framework"
