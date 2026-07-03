@@ -4,11 +4,10 @@ import com.uvp.sim.api.LogTag
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.onCompletion
 import kotlin.concurrent.Volatile
 
 /**
@@ -23,8 +22,6 @@ import kotlin.concurrent.Volatile
  * commonMain `expect class CameraCapture` 签名**零改动**,Android + JVM actual 不动。
  */
 actual class CameraCapture actual constructor(private val config: CaptureConfig) {
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     @Volatile
     private var handle: EncodingHandle? = null
@@ -42,21 +39,54 @@ actual class CameraCapture actual constructor(private val config: CaptureConfig)
         )
     }
 
-    actual fun start(): Flow<H264Frame> {
-        // 确保 controller 有 preview 拿到帧源;keepalive 通常已启,这里 launch 是幂等兜底
-        // (controller.startPreview 内部 mutex + captureSession non-null 判断保证 no-op)
-        scope.launch { IosCameraController.startPreview(config) }
-
-        // Stash config 给 requestEncoding 用(currentConfig 通常已由 startPreview 设置,兜底极端 race)
-        IosCameraController.stashConfigForEncoding(config)
-
-        val h = IosCameraController.requestEncoding()
-        handle = h
+    /**
+     * Fix #4:改成 flow builder 让 collect 起手先阻塞等 preview 就位或 fail。
+     *
+     * 之前 fire-and-forget `scope.launch { startPreview }` + 立即 requestEncoding,
+     * preview 启动失败时 caller collect frames flow 永远收不到帧也不会 complete,
+     * 表现为 "InviteMediaPipeline 挂死界面卡住无报错"。
+     *
+     * 现在:
+     *   1. collect 起手 suspend 到 controller.startPreview 返回(内部 mutex 序列化 + startRunning 已完成)
+     *   2. 检查 session.value 是否非空 → preview 起来 → 继续 requestEncoding
+     *   3. preview fail → return@flow → flow 立即 complete → caller 拿到 "无数据流结束" 信号,可判 fail
+     *   4. onCompletion 里 close handle,cancel 也走这条(caller 提前退出 collect)。
+     *
+     * 语义变化: start() 返回的 flow 从 "hot broadcast" 变 "cold flow",第一次 collect 才触发
+     * preview 启动。Multiple collect 会各自触发一次 startPreview(幂等)+ 各自持一个 handle。
+     */
+    actual fun start(): Flow<H264Frame> = flow {
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "CameraCapture.start via controller ${config.widthPx}x${config.heightPx}@${config.frameRate}"
+            "CameraCapture.start collecting ${config.widthPx}x${config.heightPx}@${config.frameRate}"
         )
-        return h.frames
+
+        // 1. 阻塞等 preview 起来(startPreview 已经在 v1.3-cross-fix-#3 里 withContext startRunning)
+        IosCameraController.startPreview(config)
+
+        // 2. preview 起动失败(无 back camera / Simulator / device 占用)→ flow 立即 complete
+        if (IosCameraController.session.value == null) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "CameraCapture.start: preview failed to start,flow completes empty (Fix #4 no-hang)"
+            )
+            return@flow
+        }
+
+        // 3. stash config + requestEncoding
+        IosCameraController.stashConfigForEncoding(config)
+        val h = IosCameraController.requestEncoding()
+        handle = h
+        emitAll(h.frames)
+    }.onCompletion {
+        // 4. caller cancel 或 flow 自然结束 → close handle 释放 encoding refcount
+        //    close 幂等,跟 stop() 的显式 close 双重触发也不会出错。
+        handle?.close()
+        handle = null
+        SystemLogger.emit(
+            LogLevel.Debug, LogTag.Media,
+            "CameraCapture.start flow onCompletion handle closed"
+        )
     }
 
     actual suspend fun stop() {
