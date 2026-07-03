@@ -139,6 +139,28 @@ fun IosApp() {
         networkController.apply(stored.network.preference)
     }
 
+    // 2026-07-03 真机验:iOS 端 IosCameraStreamer.stream() 是 callbackFlow,只有 collector
+    // 才会 wireCaptureSession → publish AVCaptureSession。不注册时无 collector,导致预览白屏
+    // 和录像 writer 空转(stop 时 markAsFinished 抛 NSInvalidArgumentException 崩溃)。
+    // 通过 keepalive 让 Registered 状态下 session 常驻:preview 有画面 + 录像能拿真 sample。
+    // InCall 时让位给 AppEngine 独立 build 的 streamer(AVCaptureSession 只能一个进程持有)。
+    LaunchedEffect(sipState) {
+        val v = config.video
+        val cc = com.uvp.sim.camera.CaptureConfig(
+            widthPx = v.resolution.widthPx,
+            heightPx = v.resolution.heightPx,
+            frameRate = v.frameRate,
+            bitrateBps = v.bitrateKbps * 1000,
+            keyframeIntervalSeconds = v.keyframeIntervalSeconds,
+            videoCodec = v.videoCodec,
+        )
+        if (sipState == com.uvp.sim.sip.SipState.Registered) {
+            com.uvp.sim.camera.CameraSessionKeepalive.start(cc)
+        } else {
+            com.uvp.sim.camera.CameraSessionKeepalive.stop()
+        }
+    }
+
     LaunchedEffect(engine) {
         engine.events.collect { ev ->
             events = (events + ev).takeLast(200)
