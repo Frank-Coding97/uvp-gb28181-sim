@@ -5,7 +5,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.interop.UIKitView
-import com.uvp.sim.camera.IosCameraSessionHolder
+import com.uvp.sim.camera.IosCameraController
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.AVFoundation.AVCaptureVideoPreviewLayer
 import platform.AVFoundation.AVLayerVideoGravityResizeAspectFill
@@ -24,7 +24,10 @@ import platform.UIKit.UIView
 @OptIn(ExperimentalForeignApi::class)
 @Composable
 actual fun PlatformCameraPreview(modifier: Modifier) {
-    val session by IosCameraSessionHolder.session.collectAsState()
+    // v1.3-A T-P1-2: 消费点从 IosCameraSessionHolder.session 迁移到 IosCameraController.session。
+    // v1.2 IosCameraStreamer 路径仍然通过 IosCameraSessionHolder.publish → controller.publishExternalSession
+    // 反向 mirror 保持兼容,P6-1 清理 stream() 后 holder 可整体删除。
+    val session by IosCameraController.session.collectAsState()
 
     UIKitView(
         factory = {

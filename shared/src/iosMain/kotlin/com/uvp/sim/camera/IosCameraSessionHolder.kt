@@ -25,5 +25,9 @@ object IosCameraSessionHolder {
 
     internal fun publish(session: AVCaptureSession?) {
         _session.value = session
+        // v1.3-A T-P1-2: mirror 到 IosCameraController,让 PlatformCameraPreview 消费
+        // controller.session 时也能感知 v1.2 IosCameraStreamer 路径的 session。
+        // P6-1 清理 v1.2 stream() 后 holder 及本 mirror 可以整体删除。
+        IosCameraController.publishExternalSession(session)
     }
 }

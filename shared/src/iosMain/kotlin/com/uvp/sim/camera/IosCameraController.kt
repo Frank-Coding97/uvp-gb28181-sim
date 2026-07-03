@@ -95,6 +95,30 @@ object IosCameraController {
     private var latestFrame: CVImageBufferRef? = null
 
     // =========================================================
+    // External session mirror (bridge for v1.2 IosCameraStreamer coexistence)
+    // =========================================================
+
+    /**
+     * v1.2 兼容桥:v1.2 [IosCameraStreamer.wireCaptureSession] 建 session 后调
+     * [IosCameraSessionHolder.publish],holder 内部转发到本方法,让 controller.session
+     * 也能反映 v1.2 路径的 session。消费点([PlatformCameraPreview])统一订阅 controller.session,
+     * 新旧路径都能上画。
+     *
+     * 保护:controller 自己在跑 preview 时忽略外部 publish(避免覆盖真身)。P6-1 清理
+     * v1.2 stream() 后本方法可以删除。
+     */
+    internal fun publishExternalSession(session: AVCaptureSession?) {
+        if (captureSession != null) {
+            SystemLogger.emit(
+                LogLevel.Debug, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_EXTERNAL_PUBLISH_IGNORED controller_owns_session"
+            )
+            return
+        }
+        _session.value = session
+    }
+
+    // =========================================================
     // Preview API
     // =========================================================
 
