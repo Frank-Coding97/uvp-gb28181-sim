@@ -13,6 +13,7 @@ import com.uvp.sim.media.H264Frame
 import com.uvp.sim.recording.IosRecordingFrameBridge
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
 import platform.AVFoundation.AVCaptureDevicePositionBack
@@ -204,6 +206,18 @@ object IosCameraController {
         val wired = wireCaptureSession(config)
         if (wired) {
             currentConfig = config  // T-P2-2:保存供 requestEncoding 构造 EncodingSession
+            // Fix #3:startRunning 是 blocking,在 IO 上下文同步等它完成再释放 mutex。
+            // 这样 stopPreview 进 mutex 时 session 已经真的 running,不会跟 pending start 抢。
+            val sessionToStart = captureSession
+            if (sessionToStart != null) {
+                withContext(Dispatchers.Default) {
+                    sessionToStart.startRunning()
+                }
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "IOS_CAMERA_CONTROLLER_PREVIEW_RUNNING"
+                )
+            }
         } else {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
@@ -217,10 +231,15 @@ object IosCameraController {
      * 停止 preview,释放 session + delegate + latest frame。幂等(未运行 no-op)。
      */
     suspend fun stopPreview() = mutex.withLock {
-        if (captureSession == null) {
-            return@withLock
-        }
+        val session = captureSession ?: return@withLock
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_CAMERA_CONTROLLER_PREVIEW_STOP")
+        // Fix #3:stopRunning 也 blocking,在 IO 上下文同步等它完成,防止 releaseInternal 后
+        // AVCaptureSession 内部还有 async work 引用被释放对象。
+        if (session.isRunning()) {
+            withContext(Dispatchers.Default) {
+                session.stopRunning()
+            }
+        }
         releaseInternal()
     }
 
@@ -494,11 +513,10 @@ object IosCameraController {
         session.addOutput(output)
         session.commitConfiguration()
 
-        // startRunning 是 blocking,dispatch 到后台 queue 避免阻塞调用者(与 v1.2 IosCameraStreamer 同款)
-        dispatch_queue_create("uvp.camera.controller.start", null).let { startQueue ->
-            dispatch_async(startQueue) { session.startRunning() }
-        }
-
+        // T-P2-2 cross-review fix #3:startRunning 从 fire-and-forget dispatch_async 改成由
+        // startPreview 内 withContext(Dispatchers.Default) 阻塞等成 running,让 mutex 一直握到
+        // session 真的 running,避免 "start 排队未执行 → stop 释放 session → 排队的 start 稍后
+        // 拉起已释放 session" 抖动导致回主页卡顿。
         captureSession = session
         captureInput = input
         captureOutput = output
@@ -523,7 +541,7 @@ object IosCameraController {
         forceEncodingReset()
 
         captureSession?.let { s ->
-            if (s.isRunning()) s.stopRunning()
+            // Fix #3:stopRunning 已由 stopPreview 在 withContext(Default) 内跑,这里只做 input/output 清理
             captureInput?.let { s.removeInput(it) }
             captureOutput?.let { s.removeOutput(it) }
         }
