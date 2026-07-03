@@ -1,7 +1,7 @@
 package com.uvp.sim.snapshot
 
 import com.uvp.sim.api.LogTag
-import com.uvp.sim.camera.IosSnapshotSourceHolder
+import com.uvp.sim.camera.IosCameraController
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
 import kotlinx.cinterop.BetaInteropApi
@@ -21,7 +21,7 @@ import platform.UIKit.UIImage
 import platform.UIKit.UIImageJPEGRepresentation
 
 /**
- * iOS 抓拍实现 — 从当前活跃 [com.uvp.sim.camera.IosCameraStreamer] 拿最新一帧 CVPixelBuffer,
+ * iOS 抓拍实现 — 从 [com.uvp.sim.camera.IosCameraController] 拿最新一帧 CVPixelBuffer,
  * 走 CIImage → CGImage → UIImage → JPEG 编码。
  *
  * 为什么不用 AVCapturePhotoOutput:那需要额外挂 output 到 AVCaptureSession,
@@ -42,21 +42,12 @@ actual class SnapshotCapture actual constructor() {
     private val ciContext: CIContext? by lazy { CIContext.contextWithOptions(null) }
 
     actual suspend fun takeJpeg(): ByteArray? {
-        val streamer = IosSnapshotSourceHolder.current
-        if (streamer == null) {
+        // v1.3-A T-P6-1:直接从 IosCameraController 取最新一帧(替换 IosSnapshotSourceHolder path)
+        val pixelBuffer: CVImageBufferRef = IosCameraController.latestFramePixelBuffer() ?: run {
             SystemLogger.emit(
                 level = LogLevel.Warning,
                 tag = LogTag.Media,
-                message = "SnapshotCapture.ios: 无活跃 IosCameraStreamer(未开流或已释放)"
-            )
-            return null
-        }
-
-        val pixelBuffer: CVImageBufferRef = streamer.latestFramePixelBuffer() ?: run {
-            SystemLogger.emit(
-                level = LogLevel.Warning,
-                tag = LogTag.Media,
-                message = "SnapshotCapture.ios: latestFramePixelBuffer 为 null(首帧未到)"
+                message = "SnapshotCapture.ios: latestFramePixelBuffer 为 null(preview 未启 / 首帧未到)"
             )
             return null
         }

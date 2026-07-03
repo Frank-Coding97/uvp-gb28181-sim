@@ -34,10 +34,11 @@ actual class CameraCapture actual constructor(private val config: CaptureConfig)
      * 相机 lifecycle),留签名兼容避免测试引用点编译红。
      */
     @Suppress("UNUSED_PARAMETER")
-    fun setStreamer(streamer: IosCameraStreamer?) {
+    fun setStreamer(streamer: Any?) {
+        // T-P6-1:IosCameraStreamer class 已删,参数类型退化为 Any?。仍保 no-op 签名兼容 v1.2 test 引用点。
         SystemLogger.emit(
             LogLevel.Debug, LogTag.Media,
-            "CameraCapture.setStreamer no-op (v1.3-A T-P4-1: controller manages camera lifecycle)"
+            "CameraCapture.setStreamer no-op (v1.3-A T-P6-1: controller manages camera lifecycle)"
         )
     }
 
