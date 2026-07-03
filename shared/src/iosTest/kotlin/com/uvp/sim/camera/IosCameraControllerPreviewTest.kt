@@ -68,19 +68,6 @@ class IosCameraControllerPreviewTest {
         // 不做 assertion on session.value,不同环境行为不同;确保没 crash 即可。
     }
 
-    @Test
-    fun requestEncoding_in_p1_1_throws_notImplementedError() {
-        val ex = kotlin.runCatching { IosCameraController.requestEncoding() }.exceptionOrNull()
-        assertNotNull(ex, "requestEncoding 应在 P1-1 骨架阶段抛 NotImplementedError")
-        assertTrue(
-            ex is NotImplementedError,
-            "expected NotImplementedError, got ${ex::class.simpleName}"
-        )
-    }
-
-    @Test
-    fun requestKeyFrame_before_encoding_is_noop() {
-        // 不抛异常即通过 —— controller 内部 guard encodingActive.value == false 时 return
-        IosCameraController.requestKeyFrame()
-    }
+    // 备注:T-P2-1 已实现 requestEncoding refCount + fake encoding,原 P1-1 NIE 测试
+    // 已迁移到 EncodingHandleRefCountTest。requestKeyFrame no-op 语义也一并覆盖到那边。
 }
