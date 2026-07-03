@@ -64,19 +64,30 @@ actual class CameraCapture actual constructor(private val config: CaptureConfig)
         // 1. 阻塞等 preview 起来(startPreview 已经在 v1.3-cross-fix-#3 里 withContext startRunning)
         IosCameraController.startPreview(config)
 
-        // 2. preview 起动失败(无 back camera / Simulator / device 占用)→ flow 立即 complete
+        // 2. preview 起动失败(无 back camera / Simulator / device 占用)→ 抛异常触发 onMediaFailure
+        //    (CodeX verify 后追加:改从 return@flow 静默 complete 为 exception,让 SIP 状态机
+        //    能 cleanup,不再卡在 InCall 零帧)
         if (IosCameraController.session.value == null) {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Media,
-                "CameraCapture.start: preview failed to start,flow completes empty (Fix #4 no-hang)"
+                "CameraCapture.start: preview failed to start (Fix #4 追加:抛异常触发 onMediaFailure)"
             )
-            return@flow
+            throw IllegalStateException(
+                "CameraCapture.start: preview failed to start (no back camera or device busy)"
+            )
         }
 
         // 3. stash config + requestEncoding
         IosCameraController.stashConfigForEncoding(config)
         val h = IosCameraController.requestEncoding()
         handle = h
+        // Fix #4 追加(CodeX verify):encoding 启动失败 → 抛异常让 InviteMediaPipeline.launchVideoSendLoop
+        // 走 catch 分支 → onMediaFailure → SIP cleanup,避免静默 empty completion 让 SIP 卡在 InCall 零帧。
+        if (h === NoOpEncodingHandle) {
+            throw IllegalStateException(
+                "CameraCapture.start: encoding failed to activate (no config or VT create returned null)"
+            )
+        }
         emitAll(h.frames)
     }.onCompletion {
         // 4. caller cancel 或 flow 自然结束 → close handle 释放 encoding refcount

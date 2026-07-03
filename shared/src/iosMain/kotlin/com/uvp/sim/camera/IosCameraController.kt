@@ -424,18 +424,6 @@ object IosCameraController {
     /**
      * [EncodingHandle] 具体实现。持 generation 快照,close 时通过 controller 校验。
      */
-    /**
-     * Fix #1 no-op handle for encoding failure paths(no config / VT create fail).
-     * frames 立即完成的 emptyFlow → 消费方 collect 拿到 no data 且 flow completes,
-     * 不会挂死。close 完全 no-op,不进 closeHandleInternal 避免 refCount 下溢。
-     */
-    private object NoOpEncodingHandle : EncodingHandle {
-        override val frames: kotlinx.coroutines.flow.Flow<H264Frame> =
-            kotlinx.coroutines.flow.emptyFlow()
-
-        override fun close() { /* no-op — encoding never actually started */ }
-    }
-
     private class EncodingHandleImpl(private val generation: Int) : EncodingHandle {
         // T-P2-2:frames = controller 的 SharedFlow<H264Frame> 广播,所有 handle 共享同一份。
         // encoding 结束(refCount 归 0 或 stopPreview 强制归零)后 SharedFlow 不再 emit;
@@ -625,4 +613,20 @@ interface EncodingHandle {
 
     /** 幂等 close。stale handle no-op。 */
     fun close()
+}
+
+/**
+ * Fix #1/#4 no-op handle for encoding failure paths(no config / VT create fail).
+ * frames 立即完成的 emptyFlow → 消费方 collect 拿到 no data 且 flow completes,
+ * 不会挂死。close 完全 no-op,不进 closeHandleInternal 避免 refCount 下溢。
+ *
+ * 提升为 file top-level internal object 便于消费方(CameraCapture)identity check(`h === NoOpEncodingHandle`)
+ * 从而把"编码启动失败"转成 flow 里的 exception,让 InviteMediaPipeline.launchVideoSendLoop 走 catch 分支
+ * → onMediaFailure → SIP 状态机 cleanup,而不是静默 empty completion(CodeX verify #4 追加发现)。
+ */
+internal object NoOpEncodingHandle : EncodingHandle {
+    override val frames: kotlinx.coroutines.flow.Flow<com.uvp.sim.media.H264Frame> =
+        kotlinx.coroutines.flow.emptyFlow()
+
+    override fun close() { /* no-op — encoding never actually started */ }
 }
