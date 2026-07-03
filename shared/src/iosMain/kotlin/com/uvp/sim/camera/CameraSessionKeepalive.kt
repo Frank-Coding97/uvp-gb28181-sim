@@ -1,73 +1,57 @@
 package com.uvp.sim.camera
 
-import com.uvp.sim.api.LogLevel
 import com.uvp.sim.api.LogTag
+import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlin.concurrent.Volatile
 
 /**
- * iOS 相机会话保活器 — 在 SIP 注册状态下常驻 collect [IosCameraStreamer.stream],
- * 让 AVCaptureSession 一直活跃,从而:
- *   - PlatformCameraPreview 挂的 AVCaptureVideoPreviewLayer 有画面(session 已 publish)
- *   - IosRecordingService 起录时能通过 IosRecordingFrameBridge 拿到实时 H.264 帧
+ * iOS 相机会话保活器 — v1.3-A T-P3-1 后为薄壳,直接 delegate 到 [IosCameraController]。
  *
- * 2026-07-03 真机验发现:iOS 端 stream() 是 callbackFlow,只有 collector 才会
- * wireCaptureSession → publish session。之前只 INVITE 拉流路径 collect,导致
- * "注册后预览白屏" + "起录后 writer 收不到 sample stop 时炸"两 bug 同源。
+ * v1.2 时期:内部 collect [IosCameraStreamer.stream] callbackFlow 让 wireCaptureSession
+ * 触发 → publish session 到 [IosCameraSessionHolder]。**耦合了 VT encoding**(handoff bug 2 修复
+ * 副作用 → v1.3-A 卡顿根因)。
+ *
+ * v1.3-A 后:startPreview 只启 AVCaptureSession + delegate,**不启 VTCompressionSession**。
+ * encoding 由 INVITE 拉流 / 录像 各自通过 [IosCameraController.requestEncoding] 拿引用计数
+ * 句柄触发。CPU 回落到"仅预览"水平,Compose 重组不再抢线。
  *
  * 生命周期:
- *   - [start] 建 streamer + 起 collector job(drop 帧)。已在运行时幂等 no-op
- *   - [stop] cancel job + 触发 IosCameraStreamer.releaseInternal(通过 awaitClose)
+ *   - [start]:scope.launch(controller.startPreview 是 suspend)。幂等由 controller 保证。
+ *   - [stop]:suspend,直接调 controller.stopPreview。
  *
- * 冲突:InCall 时 AppEngine 会独立 build CameraCapture 抢 AVCaptureSession。
- * 调用方(IosAppHost)应在 InCall 前后 stop 让 AppEngine 拥有 session。
+ * IosAppHost.LaunchedEffect(sipState) 挂点**保持不动**——签名兼容 v1.2 keepalive API。
  */
 object CameraSessionKeepalive {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    @Volatile
-    private var job: Job? = null
-
-    @Volatile
-    private var streamer: IosCameraStreamer? = null
-
-    /** 幂等:已在跑就 no-op。 */
+    /**
+     * 幂等启动 preview。scope.launch 因为 controller.startPreview 是 suspend。
+     * IosAppHost 挂点 v1.2/v1.3 都不动,继续调用 [start] 传 config。
+     */
     fun start(config: CaptureConfig) {
-        if (job?.isActive == true) return
-        val s = IosCameraStreamer(config)
-        streamer = s
-        job = scope.launch {
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_KEEPALIVE_START ${config.widthPx}x${config.heightPx}@${config.frameRate}"
-            )
-            runCatching {
-                // Drop frames — bridge (IosCameraStreamer.SampleReceiver.onEncoded)
-                // already forwards each encoded frame to IosRecordingFrameBridge
-                // for the recording pipeline. This collector's only purpose is to
-                // keep wireCaptureSession alive so the session stays published.
-                s.stream().collect { /* discard */ }
-            }.onFailure {
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Media,
-                    "IOS_CAMERA_KEEPALIVE_FAIL msg=${it.message}"
-                )
-            }
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_CAMERA_KEEPALIVE_START ${config.widthPx}x${config.heightPx}@${config.frameRate} " +
+                "(delegating to IosCameraController)"
+        )
+        scope.launch {
+            IosCameraController.startPreview(config)
         }
     }
 
+    /**
+     * suspend stop,直接调 controller。IosAppHost 挂点仍在 coroutine 内 await。
+     */
     suspend fun stop() {
-        job?.cancelAndJoin()
-        job = null
-        streamer = null
-        SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_CAMERA_KEEPALIVE_STOP")
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_CAMERA_KEEPALIVE_STOP (delegating to IosCameraController)"
+        )
+        IosCameraController.stopPreview()
     }
 }
