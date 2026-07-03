@@ -1,9 +1,9 @@
 package com.uvp.sim.camera
 
+import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -19,6 +19,7 @@ import kotlin.test.assertTrue
  *
  * 真机相关的 delegate publish latestFrame + startRunning 上画等,留 T-V 真机手工验(AC-1)。
  */
+@OptIn(ExperimentalForeignApi::class)
 class IosCameraControllerPreviewTest {
 
     private val defaultConfig = CaptureConfig(

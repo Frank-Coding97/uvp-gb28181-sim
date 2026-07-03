@@ -9,8 +9,14 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import com.uvp.sim.media.H264Frame
+import com.uvp.sim.recording.IosRecordingFrameBridge
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -94,6 +100,43 @@ object IosCameraController {
     @Volatile
     private var latestFrame: CVImageBufferRef? = null
 
+    /**
+     * T-P2-2:当前 preview config 快照,requestEncoding 首次触发 EncodingSession 时
+     * 用它构造(width / height / frameRate / codec)。startPreview 时保存,releaseInternal 清。
+     * null 表示 preview 未启,此时 requestEncoding 无法构造 VT session。
+     */
+    @Volatile
+    private var currentConfig: CaptureConfig? = null
+
+    /**
+     * T-P2-2:VTCompressionSession 生命周期封装。首次 requestEncoding 时 create,末次 close
+     * (或 forceEncodingReset)时 invalidate。SPS/PPS + AVCC→Annex-B split 都在里面。
+     */
+    @Volatile
+    private var encodingSession: EncodingSession? = null
+
+    /**
+     * T-P2-2:force-key 请求 pending 标志。requestKeyFrame 置 true,delegate.onSample 下一帧
+     * consume 并清零。VideoToolbox force-key 属性只在 encodeSample 传入 frameProperties 才生效。
+     */
+    @Volatile
+    private var pendingForceKey: Boolean = false
+
+    /**
+     * T-P2-2:frames 广播 SharedFlow。EncodingSession 产 H264Frame 后回调本 controller,
+     * 一路 tryEmit 到 _frames(所有 EncodingHandle.frames 订阅者共享),一路 forward 到
+     * [IosRecordingFrameBridge](保 v1.2 recording sink 语义)。
+     *
+     * replay=0 避免旧帧回放;extraBufferCapacity=64 匹配 v1.2 IosCameraStreamer 的 Channel 容量;
+     * DROP_OLDEST 消费不上时丢老帧不阻塞 encode 线程。
+     */
+    private val _frames = MutableSharedFlow<H264Frame>(
+        replay = 0,
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    private val framesFlow: SharedFlow<H264Frame> = _frames.asSharedFlow()
+
     // =========================================================
     // External session mirror (bridge for v1.2 IosCameraStreamer coexistence)
     // =========================================================
@@ -144,7 +187,9 @@ object IosCameraController {
             "IOS_CAMERA_CONTROLLER_PREVIEW_START ${config.widthPx}x${config.heightPx}@${config.frameRate}"
         )
         val wired = wireCaptureSession(config)
-        if (!wired) {
+        if (wired) {
+            currentConfig = config  // T-P2-2:保存供 requestEncoding 构造 EncodingSession
+        } else {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
                 "IOS_CAMERA_CONTROLLER_PREVIEW_START_FAIL"
@@ -205,10 +250,33 @@ object IosCameraController {
         encodingRefCount += 1
         val newCount = encodingRefCount
         if (newCount == 1) {
+            // T-P2-2:首次触发真 VTCompressionSession create。config 从 preview 阶段保存。
+            val cfg = currentConfig
+            if (cfg == null) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_CAMERA_CONTROLLER_ENCODING_START_NO_CONFIG preview 未启,encoding 无 config"
+                )
+                encodingRefCount = 0  // rollback,不激活 encoding
+                return EncodingHandleImpl(generation = gen)  // handle 是 no-op,close 走 stale 路径
+            }
+            val session = EncodingSession(cfg) { frame ->
+                _frames.tryEmit(frame)
+                IosRecordingFrameBridge.onVideoFrame(frame)  // 保 v1.2 recording sink 语义
+            }
+            if (!session.start()) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_CAMERA_CONTROLLER_ENCODING_START_FAIL VT create failed"
+                )
+                encodingRefCount = 0  // rollback
+                return EncodingHandleImpl(generation = gen)
+            }
+            encodingSession = session
             _encodingActive.value = true
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_START gen=$gen refCount=1 (fake, VT lifecycle T-P2-2)"
+                "IOS_CAMERA_CONTROLLER_ENCODING_START gen=$gen refCount=1 VT session live"
             )
         } else {
             SystemLogger.emit(
@@ -225,9 +293,10 @@ object IosCameraController {
      */
     fun requestKeyFrame() {
         if (!_encodingActive.value) return
+        pendingForceKey = true
         SystemLogger.emit(
             LogLevel.Debug, LogTag.Media,
-            "IOS_CAMERA_CONTROLLER_REQUEST_KEYFRAME (fake, T-P2-2 wires pendingForceKey)"
+            "IOS_CAMERA_CONTROLLER_REQUEST_KEYFRAME pendingForceKey=true"
         )
     }
 
@@ -246,10 +315,14 @@ object IosCameraController {
         encodingRefCount -= 1
         val newCount = encodingRefCount
         if (newCount == 0) {
+            // T-P2-2:末次 close,真 invalidate VT session。plan Q6 完全释放,不 pause。
+            encodingSession?.invalidate()
+            encodingSession = null
+            pendingForceKey = false
             _encodingActive.value = false
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_STOP gen=$handleGeneration (fake, T-P2-2 wires VT invalidate)"
+                "IOS_CAMERA_CONTROLLER_ENCODING_STOP gen=$handleGeneration VT invalidated"
             )
         } else {
             SystemLogger.emit(
@@ -264,7 +337,12 @@ object IosCameraController {
      * 由 [releaseInternal] 调用。
      */
     private fun forceEncodingReset() {
-        if (encodingRefCount > 0 || _encodingActive.value) {
+        if (encodingRefCount > 0 || _encodingActive.value || encodingSession != null) {
+            // T-P2-2:真 invalidate VT session
+            encodingSession?.invalidate()
+            encodingSession = null
+            pendingForceKey = false
+
             encodingGeneration += 1
             encodingRefCount = 0
             _encodingActive.value = false
@@ -279,9 +357,11 @@ object IosCameraController {
      * [EncodingHandle] 具体实现。持 generation 快照,close 时通过 controller 校验。
      */
     private class EncodingHandleImpl(private val generation: Int) : EncodingHandle {
-        // P2-2 补:frames = controller 的 SharedFlow<H264Frame> 广播;当前 fake empty
-        override val frames: kotlinx.coroutines.flow.Flow<com.uvp.sim.media.H264Frame> =
-            kotlinx.coroutines.flow.emptyFlow()
+        // T-P2-2:frames = controller 的 SharedFlow<H264Frame> 广播,所有 handle 共享同一份。
+        // encoding 结束(refCount 归 0 或 stopPreview 强制归零)后 SharedFlow 不再 emit;
+        // 订阅者调用点通过 handle.close 触发 controller 释放语义,自身 collect 应配合 handle
+        // 生命周期(见 CameraCapture.ios / IosRecordingService 消费点)。
+        override val frames: kotlinx.coroutines.flow.Flow<H264Frame> = framesFlow
 
         @Volatile
         private var closed: Boolean = false
@@ -304,7 +384,12 @@ object IosCameraController {
     private fun onSample(sample: CMSampleBufferRef) {
         val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
         publishLatestFrame(imageBuffer)
-        // P2-2 hook 位置:if (_encodingActive.value) encodingSession?.encodeSample(sample, ...)
+        // T-P2-2:encoding active 时 encode 单帧,forceKey 从 pendingForceKey 消费一次
+        if (_encodingActive.value) {
+            val force = pendingForceKey
+            if (force) pendingForceKey = false
+            encodingSession?.encodeSample(sample, forceKey = force)
+        }
     }
 
     private fun publishLatestFrame(newFrame: CVImageBufferRef) {
@@ -419,8 +504,7 @@ object IosCameraController {
     }
 
     private fun releaseInternal() {
-        // T-P2-1 stale handle 语义:stopPreview 强制归零所有 encoding handle。
-        // T-P2-2 会在此加真 VT session invalidate + CFRelease(如果 refCount > 0)。
+        // T-P2-1/2 stale handle 语义 + 真 VT invalidate 已在 forceEncodingReset 内联
         forceEncodingReset()
 
         captureSession?.let { s ->
@@ -433,6 +517,7 @@ object IosCameraController {
         captureOutput = null
         sampleDelegate = null
         _session.value = null
+        currentConfig = null
 
         latestFrame?.let { CFRelease(it) }
         latestFrame = null

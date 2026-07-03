@@ -102,19 +102,36 @@ class EncodingHandleRefCountTest {
     }
 
     @Test
-    fun handle_frames_flow_is_empty_in_p2_1_fake_stage() = runTest {
-        // P2-1 fake encoding 阶段:frames flow 是 emptyFlow(P2-2 会连到真 SharedFlow)。
-        // 断言"不 crash"即可,不需要真 collect 检查 emit 计数(emptyFlow 立即 complete)。
+    fun handle_frames_flow_is_shared_hot_flow_after_p2_2() {
+        // T-P2-2:frames 换成真 SharedFlow(所有 handle 共享同一份广播源)。
+        // 断言:任何一个 handle 的 frames 应该是 SharedFlow 类型(hot flow,不 auto-complete)。
+        // Simulator 无 camera 帧不会真 emit,但类型断言不需要 collect,可跑通。
         val h = IosCameraController.requestEncoding()
-        val count = h.frames.count { true }
-        assertEquals(0, count, "P2-1 fake encoding frames flow must be empty")
-        h.close()
+        try {
+            val f = h.frames
+            assertTrue(
+                f is kotlinx.coroutines.flow.SharedFlow<*>,
+                "T-P2-2 后 handle.frames 应为 SharedFlow,当前是 ${f::class.simpleName}"
+            )
+        } finally {
+            h.close()
+        }
     }
-}
 
-/** kotlinx.coroutines.flow.count helper stub avoids importing all extensions. */
-private suspend fun kotlinx.coroutines.flow.Flow<*>.count(predicate: (Any?) -> Boolean): Int {
-    var c = 0
-    this.collect { if (predicate(it)) c += 1 }
-    return c
+    @Test
+    fun two_handles_share_the_same_frames_flow_instance() {
+        // T-P2-2:两个 handle 拿到的 frames 应该指向同一份 SharedFlow(广播源共享)。
+        // 通过 identity(===)确认引用相同,而不是内容比较。
+        val a = IosCameraController.requestEncoding()
+        val b = IosCameraController.requestEncoding()
+        try {
+            assertTrue(
+                a.frames === b.frames,
+                "两个 handle.frames 应引用同一份 SharedFlow instance(广播源共享)"
+            )
+        } finally {
+            a.close()
+            b.close()
+        }
+    }
 }
