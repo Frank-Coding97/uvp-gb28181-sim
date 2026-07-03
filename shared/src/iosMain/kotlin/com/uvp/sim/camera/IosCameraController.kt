@@ -150,6 +150,21 @@ object IosCameraController {
      * 保护:controller 自己在跑 preview 时忽略外部 publish(避免覆盖真身)。P6-1 清理
      * v1.2 stream() 后本方法可以删除。
      */
+    /**
+     * T-P4-1 兜底 API:CameraCapture.start 极端 race 下 preview 尚未 launch 完 startPreview,
+     * currentConfig 可能为 null。这里 stash config 保 requestEncoding 有 config 可用。
+     * 已有 currentConfig 时不覆盖(避免 config 漂移)。
+     */
+    internal fun stashConfigForEncoding(config: CaptureConfig) {
+        if (currentConfig == null) {
+            currentConfig = config
+            SystemLogger.emit(
+                LogLevel.Debug, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_CONFIG_STASHED via CameraCapture (preview not yet running)"
+            )
+        }
+    }
+
     internal fun publishExternalSession(session: AVCaptureSession?) {
         if (captureSession != null) {
             SystemLogger.emit(
