@@ -73,6 +73,34 @@ class ConfigStoreIosTest {
         assertNull(passwordStore.read(""))
     }
 
+    // 2026-07-03 真机验发现:Personal Team 签名下 Keychain 写会静默 return false,
+    // 老实现无条件 sanitize JSON 导致密码彻底丢失。守住:Keychain 失败时 JSON 必须保留明文。
+    @Test
+    fun save_keeps_password_in_json_when_keychain_write_fails() = runTest {
+        val jsonStore = InMemoryJsonStore()
+        val passwordStore = FailingPasswordStore()
+        val store = ConfigStoreIos(jsonStore, passwordStore)
+
+        store.save(buildTestConfig(deviceId = "34020000001320000001", password = "keep-me"))
+
+        val persisted = json.decodeFromString<SimConfig>(jsonStore.raw ?: error("missing json"))
+        assertEquals("keep-me", persisted.device.password)
+    }
+
+    @Test
+    fun load_keeps_legacy_password_in_json_when_migration_fails() = runTest {
+        val jsonStore = InMemoryJsonStore()
+        val passwordStore = FailingPasswordStore()
+        val store = ConfigStoreIos(jsonStore, passwordStore)
+        jsonStore.write(json.encodeToString(buildTestConfig(password = "legacy-secret")))
+
+        val loaded = store.loadOnce(buildTestConfig(password = "fallback"))
+
+        assertEquals("legacy-secret", loaded.device.password)
+        val persisted = json.decodeFromString<SimConfig>(jsonStore.raw ?: error("missing json"))
+        assertEquals("legacy-secret", persisted.device.password)
+    }
+
     private fun buildTestConfig(
         deviceId: String = "34020000001320000001",
         password: String,
@@ -118,4 +146,10 @@ private class InMemoryPasswordStore : DevicePasswordStore {
         values.remove(account)
         return true
     }
+}
+
+private class FailingPasswordStore : DevicePasswordStore {
+    override fun read(account: String): String? = null
+    override fun save(account: String, password: String): Boolean = false
+    override fun delete(account: String): Boolean = false
 }

@@ -1,5 +1,7 @@
 package com.uvp.sim.app
 
+import com.uvp.sim.api.LogLevel
+import com.uvp.sim.api.LogTag
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.media.AudioCodec
 import com.uvp.sim.media.AudioSink
@@ -7,6 +9,7 @@ import com.uvp.sim.network.BroadcastRxSource
 import com.uvp.sim.network.IosLocalIpProvider
 import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.RtpSender
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.snapshot.JpegLocalCache
 import com.uvp.sim.snapshot.SnapshotCapture
 import io.ktor.client.engine.HttpClientEngine
@@ -79,12 +82,28 @@ class ConfigStoreIos(
         val account = KeychainStore.accountForDeviceId(decoded.device.deviceId)
         val keychainPassword = runCatching { passwordStore.read(account) }.getOrNull()
         val legacyPassword = decoded.device.password
+        // 2026-07-03 诊断:冷启动读 Keychain 状态。看看 read 是拿到 null,还是拿到值。
+        val status = (passwordStore as? KeychainStore)?.lastStatusForTest
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Resource,
+            "Keychain load account=$account hasValue=${keychainPassword != null} " +
+                "readStatus=$status legacyPasswordLen=${legacyPassword.length}"
+        )
         val restoredPassword = keychainPassword ?: legacyPassword
         val restored = decoded.copy(device = decoded.device.copy(password = restoredPassword))
         if (keychainPassword == null && legacyPassword.isNotEmpty()) {
-            runCatching { passwordStore.save(account, legacyPassword) }
-            saveSanitizedConfig(restored)
+            // 迁移 legacy 明文 → Keychain。写成功才 sanitize JSON,写失败保留明文
+            // (2026-07-03 真机验:Personal Team 签名下 Keychain 写会静默 return false)。
+            val migrated = runCatching { passwordStore.save(account, legacyPassword) }.getOrDefault(false)
+            if (migrated) {
+                saveSanitizedConfig(restored)
+            } else {
+                logKeychainFailure("legacy-migration")
+                // 保留 legacy 明文;下次 load 依然从 JSON 恢复。
+            }
         } else if (legacyPassword.isNotEmpty()) {
+            // Keychain 有值且 JSON 也存了明文 — 收敛到 sanitized 状态。
             saveSanitizedConfig(restored)
         }
         return restored
@@ -92,8 +111,17 @@ class ConfigStoreIos(
 
     override suspend fun save(config: SimConfig) {
         val account = KeychainStore.accountForDeviceId(config.device.deviceId)
-        runCatching { passwordStore.save(account, config.device.password) }
-        saveSanitizedConfig(config)
+        val written = runCatching { passwordStore.save(account, config.device.password) }
+            .getOrDefault(false)
+        // 2026-07-03 诊断:无条件 emit 一次 Keychain 状态,真机拿到 status 码定位根因。
+        logKeychainAttempt("save", account = account, written = written)
+        if (written) {
+            saveSanitizedConfig(config)
+        } else {
+            // Personal Team 签名下 Keychain 静默失败会被 runCatching 吞。
+            // sanitize JSON 会导致冷启动后密码彻底丢失,退回 v1.1 行为(JSON 明文)。
+            saveConfigWithPassword(config)
+        }
     }
 
     private fun saveSanitizedConfig(config: SimConfig) {
@@ -101,6 +129,30 @@ class ConfigStoreIos(
             json.encodeToString(config.copy(device = config.device.copy(password = "")))
         }.getOrNull() ?: return
         jsonStore.write(encoded)
+    }
+
+    private fun saveConfigWithPassword(config: SimConfig) {
+        val encoded = runCatching { json.encodeToString(config) }.getOrNull() ?: return
+        jsonStore.write(encoded)
+    }
+
+    private fun logKeychainFailure(phase: String) {
+        val status = (passwordStore as? KeychainStore)?.lastStatusForTest
+        SystemLogger.emit(
+            LogLevel.Warning,
+            LogTag.Resource,
+            "Keychain $phase failed status=$status — fell back to plaintext JSON"
+        )
+    }
+
+    private fun logKeychainAttempt(phase: String, account: String, written: Boolean) {
+        val status = (passwordStore as? KeychainStore)?.lastStatusForTest
+        val level = if (written) LogLevel.Info else LogLevel.Warning
+        SystemLogger.emit(
+            level,
+            LogTag.Resource,
+            "Keychain $phase account=$account written=$written status=$status"
+        )
     }
 }
 

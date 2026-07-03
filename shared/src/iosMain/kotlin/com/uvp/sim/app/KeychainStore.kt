@@ -10,6 +10,9 @@ import platform.Foundation.NSString
 import platform.Foundation.NSUTF8StringEncoding
 import platform.Foundation.create
 import platform.CoreFoundation.CFDataCreate
+import platform.CoreFoundation.CFDataGetBytePtr
+import platform.CoreFoundation.CFDataGetLength
+import platform.CoreFoundation.CFDataRef
 import platform.CoreFoundation.CFRelease
 import platform.CoreFoundation.CFStringCreateWithCString
 import platform.CoreFoundation.CFStringRef
@@ -39,9 +42,11 @@ import platform.Security.kSecMatchLimitOne
 import platform.Security.kSecReturnData
 import platform.Security.kSecUseDataProtectionKeychain
 import platform.Security.kSecValueData
+import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
+import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.value
 
 interface DevicePasswordStore {
@@ -69,8 +74,18 @@ class KeychainStore(
             val status = SecItemCopyMatching(query, result.ptr)
             lastStatusForTest = status
             if (status != errSecSuccess) return@memScoped null
-            val data = result.value as? NSData ?: return@memScoped null
-            NSString.create(data = data, encoding = NSUTF8StringEncoding) as? String
+            val rawRef = result.value ?: return@memScoped null
+            // 2026-07-03 真机 K/N interop 坑:CFDataRef `as? NSData` 有时 cast 为 null
+            // (toll-free bridging 在 kotlin native 上不稳定)。直接用 CoreFoundation API
+            // 读字节,不走 Objective-C bridging。
+            val cfData: CFDataRef = rawRef.reinterpret()
+            val length = CFDataGetLength(cfData).toInt()
+            if (length <= 0) return@memScoped null
+            val bytesPtr = CFDataGetBytePtr(cfData) ?: return@memScoped null
+            val bytes = bytesPtr.reinterpret<ByteVar>().readBytes(length)
+            CFRelease(rawRef)
+            result.value = null
+            bytes.decodeToString()
         }
     }
 
