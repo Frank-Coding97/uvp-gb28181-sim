@@ -2,6 +2,9 @@ package com.uvp.sim.recording
 
 import com.uvp.sim.api.LogTag
 import com.uvp.sim.app.RecordingEncoderConfig
+import com.uvp.sim.camera.CaptureConfig
+import com.uvp.sim.camera.EncodingHandle
+import com.uvp.sim.camera.IosCameraController
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.observability.LogLevel
@@ -143,6 +146,14 @@ class IosRecordingService(
     @kotlin.concurrent.Volatile
     private var pendingSegmentSplit: Boolean = false
 
+    /**
+     * T-P5-1:录像触发 encoding 的引用计数句柄。start 时 requestEncoding,stop 时 close。
+     * rollover 场景(pendingSegmentSplit=true)finalize 后不 close(保 VT session 常驻,
+     * 避免下段 B 起手 300ms 冷启动无帧)。start() 内幂等:handle 非 null 跳过 requestEncoding。
+     */
+    @kotlin.concurrent.Volatile
+    private var encodingHandle: EncodingHandle? = null
+
     @kotlin.concurrent.Volatile
     private var finalizeDone: Boolean = false
 
@@ -213,6 +224,23 @@ class IosRecordingService(
                 val encCfg = encoderConfigSupplier()
                 openWriter(outputPath, encCfg)
 
+                // T-P5-1:向 controller 请 encoding。rollover 场景 handle 已有,跳过避免 refCount 漂移。
+                if (encodingHandle == null) {
+                    // 用 recording encoder config 派生 CaptureConfig 让 controller 拿得到 dim/fps
+                    val captureCfg = CaptureConfig(
+                        widthPx = encCfg.widthPx,
+                        heightPx = encCfg.heightPx,
+                        frameRate = encCfg.frameRate,
+                        bitrateBps = encCfg.bitrateBps,
+                    )
+                    IosCameraController.stashConfigForEncoding(captureCfg)
+                    encodingHandle = IosCameraController.requestEncoding()
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Media,
+                        "IOS_RECORDING_ENCODING_HANDLE_ACQUIRED source=$source"
+                    )
+                }
+
                 activeOutputPath = outputPath
                 activeChannelId = channelId
                 activeStartMs = now.toEpochMilliseconds()
@@ -236,6 +264,9 @@ class IosRecordingService(
                 )
             }.recoverCatching {
                 _state.value = RecordingState.Failed(it.message ?: "unknown")
+                // T-P5-1:失败路径 close handle 避免泄漏
+                encodingHandle?.close()
+                encodingHandle = null
                 SystemLogger.emit(
                     LogLevel.Error, LogTag.Media,
                     "IOS_RECORDING_START_FAIL msg=${it.message}",
@@ -255,6 +286,9 @@ class IosRecordingService(
         pendingSegmentSplit = false
         guardJob?.cancel()
         guardJob = null
+        // T-P5-1:真 stop 时 close handle(不是 rollover)。rollover 走 runGuard 分支,那里不 close。
+        encodingHandle?.close()
+        encodingHandle = null
         finalizeWriterLocked(writer)
     }
 
