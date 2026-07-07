@@ -53,7 +53,9 @@ import platform.VideoToolbox.VTCompressionSessionRefVar
 import platform.VideoToolbox.VTSessionSetProperty
 import platform.VideoToolbox.kVTEncodeFrameOptionKey_ForceKeyFrame
 import platform.VideoToolbox.kVTCompressionPropertyKey_AllowFrameReordering
+import platform.VideoToolbox.kVTCompressionPropertyKey_ProfileLevel
 import platform.VideoToolbox.kVTCompressionPropertyKey_RealTime
+import platform.VideoToolbox.kVTProfileLevel_HEVC_Main_AutoLevel
 import platform.posix.size_tVar
 import kotlin.concurrent.Volatile
 
@@ -242,6 +244,54 @@ internal class EncodingSession(
             value = kCFBooleanFalse,
             keyName = "AllowFrameReordering",
         )
+        // T-B1-3:HEVC 分支加 ProfileLevel = HEVC_Main_AutoLevel(H.264 保持系统默认 baseline-ish)
+        if (config.videoCodec == VideoCodec.H265) {
+            val profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel
+            if (profileLevel != null) {
+                setCFTypeProperty(
+                    session = session,
+                    key = kVTCompressionPropertyKey_ProfileLevel,
+                    value = profileLevel,
+                    keyName = "ProfileLevel=HEVC_Main_AutoLevel",
+                )
+            } else {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_ENCODING_SESSION_HEVC_PROFILE_LEVEL_NULL fallback to encoder default",
+                )
+            }
+        }
+    }
+
+    /**
+     * T-B1-3:CFType 属性(如 profile level 是 CFStringRef)通用 setter。
+     * 与 `setBooleanProperty` 分开是因为后者的 value 类型是 kCFBooleanTrue/False 常量指针,
+     * 这里的 value 是 CFType(CFStringRef 等)。
+     */
+    private fun setCFTypeProperty(
+        session: VTCompressionSessionRef,
+        key: CPointer<__CFString>?,
+        value: CPointer<out CPointed>?,
+        keyName: String,
+    ) {
+        val cfKey = key ?: return
+        val cfValue = value ?: return
+        val status = VTSessionSetProperty(
+            session = session,
+            propertyKey = cfKey,
+            propertyValue = cfValue,
+        )
+        if (status != 0) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_ENCODING_SESSION_SET_PROPERTY_FAIL key=$keyName status=$status",
+            )
+        } else {
+            SystemLogger.emit(
+                LogLevel.Debug, LogTag.Media,
+                "IOS_ENCODING_SESSION_SET_PROPERTY_OK key=$keyName",
+            )
+        }
     }
 
     private fun setBooleanProperty(
