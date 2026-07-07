@@ -1,54 +1,73 @@
 package com.uvp.sim.ui
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.interop.UIKitView
 import com.uvp.sim.camera.IosCameraController
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import platform.AVFoundation.AVCaptureVideoPreviewLayer
 import platform.AVFoundation.AVLayerVideoGravityResizeAspectFill
 import platform.CoreGraphics.CGRectMake
 import platform.UIKit.UIView
 
 /**
- * iOS 相机预览 — 嵌 AVCaptureVideoPreviewLayer 到 Compose UIKitView。
+ * iOS 相机预览 — 单例 UIView 宿主模型 (2026-07-07 重构)。
  *
- * 订阅 [IosCameraSessionHolder.session]:session 就位时预览上画,
- * session 为 null 时显示空黑 UIView(AVCaptureSession 还没建)。
+ * 架构:preview UIView + AVCaptureVideoPreviewLayer 是 pipeline 的一部分,不是 UI 层的。
+ * 生命周期跟 [IosCameraController.session] 对齐,不跟 Compose composable 走。
  *
- * PreviewLayer frame 通过自定义 UIView 子类的 layoutSubviews 同步,
- * 不依赖 Compose 的 recomposition 时机。
+ * 收益 (对比旧模型 "每次 factory 新建 container + update 挂 session"):
+ * - 切 tab 单次成本:~300ms → ~0ms (UIKit 单亲约束下的 addSubview 转移是 O(1))
+ * - session 首次挂 preview layer 的 ~300ms 只付一次,不再每次切 tab 重付
+ * - session 上永远只挂一个 preview layer → 从根源消灭"连续切 3 次 app 卡死"
+ *
+ * 关键行为:
+ * - [IosCameraPreviewHost.containerView] 是模块级单例,进程内唯一实例
+ * - Session 挂载在 host init 里订阅 controller.session 一次到底,不依赖 UIKitView 生命周期
+ * - [PlatformCameraPreview] 的 UIKitView.factory 每次返回同一 containerView;UIKit 单亲约束
+ *   会自动把它从旧 hosting view detach、attach 到新的,preview layer 和 session 不动
  */
+@OptIn(ExperimentalForeignApi::class)
+internal object IosCameraPreviewHost {
+    /**
+     * Preview UIView 单例。首次访问触发 [IosCameraPreviewHost] object 装载,
+     * init 里启动 session collect 协程。
+     */
+    val containerView: CameraPreviewContainerView = CameraPreviewContainerView().apply {
+        previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill
+    }
+
+    // AVCaptureVideoPreviewLayer.session setter 要求主线程;collect 直接跑在 Main。
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    init {
+        scope.launch {
+            IosCameraController.session.collect { session ->
+                if (containerView.previewLayer.session !== session) {
+                    containerView.previewLayer.session = session
+                }
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalForeignApi::class)
 @Composable
 actual fun PlatformCameraPreview(modifier: Modifier) {
-    // v1.3-A T-P1-2: 消费点从 IosCameraSessionHolder.session 迁移到 IosCameraController.session。
-    // v1.2 IosCameraStreamer 路径仍然通过 IosCameraSessionHolder.publish → controller.publishExternalSession
-    // 反向 mirror 保持兼容,P6-1 清理 stream() 后 holder 可整体删除。
-    val session by IosCameraController.session.collectAsState()
-
+    val container = IosCameraPreviewHost.containerView
     UIKitView(
         factory = {
-            // 关键:不在 factory 里挂 session。AVCaptureVideoPreviewLayer 尚未加入 window 时
-            // attach 到 running AVCaptureSession 会同步阻塞主线程 ~9 秒(iOS 实测,2026-07-07)。
-            // Session 挂载留给 update — 那时 layer 已进入 UIView 树,setter 是几百 ms 级别。
-            val container = CameraPreviewContainerView()
-            container.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill
+            // UIKit 单亲约束:一个 UIView 只能有一个 superview。旧 hosting view 若还在,
+            // 显式让出;新 hosting view 会通过 addSubview 自动接管。
+            container.removeFromSuperview()
             container
         },
         modifier = modifier,
-        update = { view ->
-            // 引用比较:同一 session 反复 setter 会触发 AVCaptureConnection 重建,避免。
-            if (view.previewLayer.session === session) return@UIKitView
-            view.previewLayer.session = session
-        },
-        onRelease = { view ->
-            // 关键:UIView 销毁前显式解绑 session,否则 running session 上会累积残留 preview layer,
-            // AVFoundation 资源用尽后 app 卡死(实测连续切 3 次即触发)。
-            view.previewLayer.session = null
-        },
+        // 无 onRelease:containerView 是单例,不能被 dispose;session 挂载不受 UIKitView 生命周期影响
     )
 }
 
@@ -57,7 +76,7 @@ actual fun PlatformCameraPreview(modifier: Modifier) {
  * 在 [layoutSubviews] 里同步 layer frame = bounds,确保旋转/resize 正确。
  */
 @OptIn(ExperimentalForeignApi::class)
-private class CameraPreviewContainerView : UIView(frame = CGRectMake(0.0, 0.0, 0.0, 0.0)) {
+internal class CameraPreviewContainerView : UIView(frame = CGRectMake(0.0, 0.0, 0.0, 0.0)) {
     val previewLayer = AVCaptureVideoPreviewLayer()
 
     init {
