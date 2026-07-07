@@ -44,6 +44,7 @@ import platform.CoreMedia.CMSampleBufferRef
 import platform.CoreMedia.CMTimeMake
 import platform.CoreMedia.CMVideoFormatDescriptionGetH264ParameterSetAtIndex
 import platform.CoreMedia.kCMVideoCodecType_H264
+import platform.CoreMedia.kCMVideoCodecType_HEVC
 import platform.VideoToolbox.VTCompressionSessionCreate
 import platform.VideoToolbox.VTCompressionSessionEncodeFrame
 import platform.VideoToolbox.VTCompressionSessionInvalidate
@@ -105,13 +106,19 @@ internal class EncodingSession(
         val stableRef = StableRef.create(receiver)
         val refConPtr = stableRef.asCPointer()
 
+        // T-B1-2:VTCompressionSession codecType 按 config.videoCodec 分支
+        val codecType = when (config.videoCodec) {
+            VideoCodec.H264 -> kCMVideoCodecType_H264
+            VideoCodec.H265 -> kCMVideoCodecType_HEVC
+        }
+
         val session = memScoped {
             val out = alloc<VTCompressionSessionRefVar>()
             val status = VTCompressionSessionCreate(
                 allocator = null,
                 width = config.widthPx,
                 height = config.heightPx,
-                codecType = kCMVideoCodecType_H264,
+                codecType = codecType,
                 encoderSpecification = null,
                 sourceImageBufferAttributes = null,
                 compressedDataAllocator = null,
@@ -125,7 +132,7 @@ internal class EncodingSession(
         if (session == null) {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
-                "IOS_ENCODING_SESSION_CREATE_FAIL VT status non-zero"
+                "IOS_ENCODING_SESSION_CREATE_FAIL VT status non-zero codec=${config.videoCodec.label}"
             )
             stableRef.dispose()
             return false
@@ -136,7 +143,7 @@ internal class EncodingSession(
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             "IOS_ENCODING_SESSION_START ${config.widthPx}x${config.heightPx}@${config.frameRate} " +
-                "codec=H264"
+                "codec=${config.videoCodec.label}"
         )
         return true
     }
