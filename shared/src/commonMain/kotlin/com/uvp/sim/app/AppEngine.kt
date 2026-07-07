@@ -336,7 +336,12 @@ class AppEngine(
             mockGps = holders.mockGps,
             clockOffsetProvider = { holders.clockOffset.value },
             stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
-            broadcastBusy = { broadcast.current.value != null },
+            broadcastBusy = {
+                // 双重 busy 判断:
+                //   1. 已有一路 broadcast 正在跑(commonMain 状态机) — 防第二路重入
+                //   2. 平台 gate(iOS: IosAudioStreamer.activeCount > 0 表录像中) — plan §5 Q4 排队
+                broadcast.current.value != null || com.uvp.sim.media.BroadcastBusyGate.isBusy()
+            },
             simEventEmit = { ev -> holders.events.emit(ev) },
             identityService = identityService,
         )
