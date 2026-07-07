@@ -51,7 +51,14 @@ internal class CMSampleBufferBuilder {
     }
 
     fun buildAvccPayload(nalUnits: List<ByteArray>): ByteArray {
-        val filtered = nalUnits.filter { it.isNotEmpty() }
+        // AVAssetWriterInput passthrough 要求 AVCC data stream 里只有 slice NAL。
+        // SPS(7)/PPS(8) 已通过 sourceFormatHint(formatDescription) 告知 writer,
+        // 若再出现在 data stream 里,appendSampleBuffer 直接返回 false。
+        val filtered = nalUnits.filter { nal ->
+            if (nal.isEmpty()) return@filter false
+            val nalType = nal[0].toInt() and 0x1F
+            nalType != NalType.SPS && nalType != NalType.PPS
+        }
         val totalSize = filtered.sumOf { 4 + it.size }
         val out = ByteArray(totalSize)
         var offset = 0
