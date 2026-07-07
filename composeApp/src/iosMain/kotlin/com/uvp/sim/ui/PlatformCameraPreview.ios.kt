@@ -31,14 +31,23 @@ actual fun PlatformCameraPreview(modifier: Modifier) {
 
     UIKitView(
         factory = {
+            // 关键:不在 factory 里挂 session。AVCaptureVideoPreviewLayer 尚未加入 window 时
+            // attach 到 running AVCaptureSession 会同步阻塞主线程 ~9 秒(iOS 实测,2026-07-07)。
+            // Session 挂载留给 update — 那时 layer 已进入 UIView 树,setter 是几百 ms 级别。
             val container = CameraPreviewContainerView()
             container.previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill
-            container.previewLayer.session = session
             container
         },
         modifier = modifier,
         update = { view ->
+            // 引用比较:同一 session 反复 setter 会触发 AVCaptureConnection 重建,避免。
+            if (view.previewLayer.session === session) return@UIKitView
             view.previewLayer.session = session
+        },
+        onRelease = { view ->
+            // 关键:UIView 销毁前显式解绑 session,否则 running session 上会累积残留 preview layer,
+            // AVFoundation 资源用尽后 app 卡死(实测连续切 3 次即触发)。
+            view.previewLayer.session = null
         },
     )
 }
