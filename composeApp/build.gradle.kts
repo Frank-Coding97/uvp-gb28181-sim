@@ -57,6 +57,8 @@ kotlin {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.test)
         }
+        // v1.3-C: iOS SceneKit 层单测. 默认层级模板生成的 iosSimulatorArm64Test 已挂 kotlin-test,
+        // 只需目录存在(在 src/iosSimulatorArm64Test/kotlin/... 下). 不显式建 iosTest sourceSet.
     }
 }
 
