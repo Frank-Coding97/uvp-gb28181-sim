@@ -1,5 +1,6 @@
 package com.uvp.sim.camera
 
+import cnames.structs.__CFString
 import com.uvp.sim.api.LogTag
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
@@ -9,6 +10,8 @@ import com.uvp.sim.media.VideoCodec
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
 import kotlinx.cinterop.ByteVar
+import kotlinx.cinterop.CPointed
+import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -26,6 +29,7 @@ import platform.CoreFoundation.CFDictionaryCreateMutable
 import platform.CoreFoundation.CFDictionarySetValue
 import platform.CoreFoundation.CFRelease
 import platform.CoreFoundation.kCFAllocatorDefault
+import platform.CoreFoundation.kCFBooleanFalse
 import platform.CoreFoundation.kCFBooleanTrue
 import platform.CoreFoundation.kCFTypeDictionaryKeyCallBacks
 import platform.CoreFoundation.kCFTypeDictionaryValueCallBacks
@@ -45,7 +49,10 @@ import platform.VideoToolbox.VTCompressionSessionEncodeFrame
 import platform.VideoToolbox.VTCompressionSessionInvalidate
 import platform.VideoToolbox.VTCompressionSessionRef
 import platform.VideoToolbox.VTCompressionSessionRefVar
+import platform.VideoToolbox.VTSessionSetProperty
 import platform.VideoToolbox.kVTEncodeFrameOptionKey_ForceKeyFrame
+import platform.VideoToolbox.kVTCompressionPropertyKey_AllowFrameReordering
+import platform.VideoToolbox.kVTCompressionPropertyKey_RealTime
 import platform.posix.size_tVar
 import kotlin.concurrent.Volatile
 
@@ -118,6 +125,7 @@ internal class EncodingSession(
             return false
         }
         compressionSession = session
+        configureSession(session)
         receiverRef = refConPtr
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
@@ -206,6 +214,49 @@ internal class EncodingSession(
             LogLevel.Info, LogTag.Media,
             "IOS_ENCODING_SESSION_INVALIDATE"
         )
+    }
+
+    private fun configureSession(session: VTCompressionSessionRef) {
+        setBooleanProperty(
+            session = session,
+            key = kVTCompressionPropertyKey_RealTime,
+            value = kCFBooleanTrue,
+            keyName = "RealTime",
+        )
+        setBooleanProperty(
+            session = session,
+            key = kVTCompressionPropertyKey_AllowFrameReordering,
+            value = kCFBooleanFalse,
+            keyName = "AllowFrameReordering",
+        )
+    }
+
+    private fun setBooleanProperty(
+        session: VTCompressionSessionRef,
+        key: CPointer<__CFString>?,
+        value: CPointer<out CPointed>?,
+        keyName: String,
+    ) {
+        val cfKey = key ?: return
+        val cfValue = value ?: return
+        val status = VTSessionSetProperty(
+            session = session,
+            propertyKey = cfKey,
+            propertyValue = cfValue,
+        )
+        if (status != 0) {
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Media,
+                "IOS_ENCODING_SESSION_SET_PROPERTY_FAIL key=$keyName status=$status",
+            )
+        } else {
+            SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Media,
+                "IOS_ENCODING_SESSION_SET_PROPERTY_OK key=$keyName",
+            )
+        }
     }
 
     // =========================================================

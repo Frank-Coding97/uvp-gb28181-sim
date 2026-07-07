@@ -39,6 +39,7 @@ object SystemLogger {
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     private var actorJob: Job? = null
+    private var mirrorSink: ((SystemLog) -> Unit)? = null
 
     private var clock: () -> Long = { Clock.System.now().toEpochMilliseconds() }
 
@@ -69,6 +70,7 @@ object SystemLogger {
                             category = cmd.category,
                         )
                         buffer.add(log)
+                        runCatching { mirrorSink?.invoke(log) }
                         _flow.emit(log)
                     }
                     Command.Clear -> {
@@ -84,11 +86,22 @@ object SystemLogger {
                             detail = null
                         )
                         buffer.add(marker)
+                        runCatching { mirrorSink?.invoke(marker) }
                         _flow.emit(marker)
                     }
                 }
             }
         }
+    }
+
+    /**
+     * 平台侧可选镜像输出(console / os log)。
+     *
+     * - 不参与业务语义,失败不影响主 actor
+     * - iOS 用它把系统日志镜像到 Xcode console,方便真机/模拟器排障
+     */
+    fun setMirrorSink(sink: ((SystemLog) -> Unit)?) {
+        mirrorSink = sink
     }
 
     /** 业务侧 emit 入口 — 非阻塞、非 suspend、可在任意线程调用。
@@ -124,6 +137,7 @@ object SystemLogger {
         channel = newChannel()
         buffer = SystemLogBuffer(BUFFER_CAPACITY)
         seq = 0
+        mirrorSink = null
     }
 
     /**

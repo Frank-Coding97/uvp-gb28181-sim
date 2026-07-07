@@ -2,7 +2,6 @@ package com.uvp.sim
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -95,6 +94,12 @@ object IosAppHost {
 
     fun bindLogger() {
         SystemLogger.bindScope(hostScope)
+        SystemLogger.setMirrorSink { log ->
+            println(
+                "[${log.seq}] [${log.level.short}] [${log.tag.display}] ${log.message}" +
+                    (log.detail?.let { "\n$it" } ?: "")
+            )
+        }
     }
 
     val appEngine: AppEngine get() = engine
@@ -106,7 +111,7 @@ fun IosApp() {
     val engine = IosAppHost.appEngine
     val scope = IosAppHost.scope
 
-    SideEffect {
+    LaunchedEffect(Unit) {
         IosAppHost.bindLogger()
     }
 
@@ -171,8 +176,8 @@ fun IosApp() {
     // 用 buffer.snapshot() 保持一次性对齐(重新订阅时补齐历史),后续增量走 flow。
     LaunchedEffect(Unit) {
         systemLogs = SystemLogger.snapshot
-        SystemLogger.flow.collect { log ->
-            systemLogs = (systemLogs + log).takeLast(500)
+        SystemLogger.flow.collect { _ ->
+            systemLogs = SystemLogger.snapshot
         }
     }
 

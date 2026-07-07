@@ -219,7 +219,9 @@ private fun shareCurrentTab(
             val content = LogExport.formatSystemLogs(
                 logs = state.systemEvents,
                 sessionMarker = state.sessionMarker,
-                levelThreshold = com.uvp.sim.observability.LogLevel.Default,
+                // 诊断导出默认带上 Debug。系统日志 UI 仍默认隐藏 Debug,但分享给 AI
+                // 排查 iOS 录像链路时需要首帧/首 IDR/append drop 这些细粒度事件。
+                levelThreshold = com.uvp.sim.observability.LogLevel.Debug,
                 tagFilter = null,
                 nowMs = now
             )

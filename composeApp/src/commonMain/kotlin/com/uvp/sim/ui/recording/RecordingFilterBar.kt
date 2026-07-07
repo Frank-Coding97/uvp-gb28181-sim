@@ -23,7 +23,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.UvpColor
-import com.uvp.sim.ui.model.RecordingFileDto
 
 /** 顶部筛选条 — 「筛选」按钮 + 「本周」快捷 + 当前筛选 label + 「清除」. */
 @Composable
@@ -91,9 +90,11 @@ internal fun FilterBar(
 
 /** 「筛选后 N 段 · 总大小 · 总时长」summary. */
 @Composable
-internal fun SummaryBar(files: List<RecordingFileDto>) {
-    val totalBytes = files.sumOf { it.sizeBytes }
-    val totalDurationMs = files.sumOf { it.durationMs }
+internal fun SummaryBar(
+    count: Int,
+    totalBytes: Long,
+    totalDurationMs: Long,
+) {
     val sizeText = formatBytes(totalBytes)
     val durationText = formatDurationShort(totalDurationMs)
     Row(
@@ -104,7 +105,7 @@ internal fun SummaryBar(files: List<RecordingFileDto>) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text("${files.size} 段", color = UvpColor.TextSecondary, fontSize = 11.sp)
+        Text("$count 段", color = UvpColor.TextSecondary, fontSize = 11.sp)
         Text("·", color = UvpColor.TextHint, fontSize = 11.sp)
         Text(sizeText, color = UvpColor.TextSecondary, fontSize = 11.sp)
         Text("·", color = UvpColor.TextHint, fontSize = 11.sp)

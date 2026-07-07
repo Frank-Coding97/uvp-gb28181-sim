@@ -7,6 +7,7 @@ import com.uvp.sim.camera.EncodingHandle
 import com.uvp.sim.camera.IosCameraController
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
+import com.uvp.sim.media.NalType
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.snapshot.SnapshotCapture
@@ -143,8 +144,52 @@ class IosRecordingService(
     private var activeSource: RecordSource = RecordSource.Manual
     private var guardJob: Job? = null
 
+    /**
+     * 视频 PTS 归零基准。VT 输出的 CMSampleBuffer PTS 来自 CoreMedia host time,
+     * 有时是负数或极大值(实测 iOS 15+ 可能出 -1.6e9 微秒),AVAssetWriter 拒绝并
+     * 报 kCMSampleBufferError_InvalidMediaTimeStamp(-16364)。策略:第一帧记录
+     * baseline,每帧上报的 PTS 减去 baseline,session 从 0 起,严格 ≥0 单调递增。
+     * -1 表示尚未记录(下一帧就是第一帧)。releaseResources 里重置。
+     */
+    @kotlin.concurrent.Volatile
+    private var videoBaselinePtsUs: Long = -1L
+
     @kotlin.concurrent.Volatile
     private var pendingSegmentSplit: Boolean = false
+
+    // ---- Per-session diagnostics (best-effort, single-writer-ish counters) ----
+    @kotlin.concurrent.Volatile
+    private var videoFramesSeen: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var videoFramesAppended: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropMissingFormat: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropAwaitingIdr: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropPtsRegression: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropNonMonotonicPts: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropInputBusy: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropSampleBuildFailed: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var appendFailures: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var firstVideoPtsUs: Long = -1L
+
+    @kotlin.concurrent.Volatile
+    private var lastAppendedRelPtsUs: Long = -1L
 
     /**
      * T-P5-1:录像触发 encoding 的引用计数句柄。start 时 requestEncoding,stop 时 close。
@@ -223,6 +268,7 @@ class IosRecordingService(
 
                 val encCfg = encoderConfigSupplier()
                 openWriter(outputPath, encCfg)
+                resetSessionDiagnostics()
 
                 // T-P5-1:向 controller 请 encoding。rollover 场景 handle 已有,跳过避免 refCount 漂移。
                 if (encodingHandle == null) {
@@ -240,7 +286,6 @@ class IosRecordingService(
                         "IOS_RECORDING_ENCODING_HANDLE_ACQUIRED source=$source"
                     )
                 }
-
                 activeOutputPath = outputPath
                 activeChannelId = channelId
                 activeStartMs = now.toEpochMilliseconds()
@@ -253,6 +298,11 @@ class IosRecordingService(
                     segmentIndex = activeSegmentIndex,
                     source = source,
                 )
+
+                // 主动请求下一帧 IDR。必须在 state 已进入 Recording 之后再请求,
+                // 否则真机上 VT 很快回调时 feedVideoFrame 会因 state 尚未切换而丢掉首个 IDR,
+                // 短录像 stop 时 writer 仍未 startWriting,最终不入 index。
+                IosCameraController.requestKeyFrame()
                 guardJob?.cancel()
                 guardJob = scope.launch { runGuard() }
 
@@ -260,7 +310,7 @@ class IosRecordingService(
                     LogLevel.Info, LogTag.Media,
                     "IOS_RECORDING_START source=$source channel=$channelId path=$outputPath " +
                         "size=${encCfg.widthPx}x${encCfg.heightPx}@${encCfg.frameRate} " +
-                        "br=${encCfg.bitrateBps}",
+                        "br=${encCfg.bitrateBps} encodingActive=${IosCameraController.encodingActive.value}",
                 )
             }.recoverCatching {
                 _state.value = RecordingState.Failed(it.message ?: "unknown")
@@ -325,11 +375,26 @@ class IosRecordingService(
         if (inputsClosed) return
         val writer = assetWriter ?: return
         if (_state.value !is RecordingState.Recording) return
+        videoFramesSeen += 1
+        if (firstVideoPtsUs == -1L) {
+            firstVideoPtsUs = ptsUs
+            SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Media,
+                "IOS_RECORDING_FIRST_VIDEO_FRAME ptsUs=$ptsUs isKey=$isKeyFrame nalCount=${nalUnits.size}",
+            )
+        }
 
-        // 收 SPS/PPS(每个 keyframe 都刷)。非 keyframe 且 SPS/PPS 未就位 → 丢帧。
-        if (isKeyFrame) {
-            sampleBufferBuilder.observeParameterSets(nalUnits)
-        } else if (!sampleBufferBuilder.hasFormatDescriptionInputs()) {
+        // 用真实 NAL type 判 IDR。`isKeyFrame` 参数在 EncodingSession 里永远为 true
+        // (每帧都提取 SPS/PPS,不细分 IDR/non-IDR),不能作为"首帧可独立解码"的判据。
+        val hasIdrSlice = nalUnits.any {
+            it.isNotEmpty() && (it[0].toInt() and 0x1F) == NalType.IDR
+        }
+
+        // 每帧都 observe,函数内部会自行过滤只收 SPS/PPS。
+        sampleBufferBuilder.observeParameterSets(nalUnits)
+        if (!sampleBufferBuilder.hasFormatDescriptionInputs()) {
+            dropMissingFormat += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -338,20 +403,68 @@ class IosRecordingService(
             return
         }
 
-        // 懒启动:第一个带 SPS/PPS 的 keyframe 触发 phase2。videoInput 尚 null 时只接受 keyframe。
-        val input = videoInput ?: run {
-            if (!isKeyFrame) {
+        // AVAssetWriter 要求首帧必须是可独立解码的 IDR。VT encoding session 若被
+        // 复用(录像 start 时 encoding 已在跑,如同时推流),接到的首帧可能是 P frame,
+        // 触发 kCMSampleBufferError_DataFailed(-16364)。一律丢弃直到真 IDR 到来。
+        if (videoBaselinePtsUs == -1L && !hasIdrSlice) {
+            dropAwaitingIdr += 1
+            SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Media,
+                "IOS_RECORDING_VIDEO_DROP reason=awaiting_first_idr ptsUs=$ptsUs",
+            )
+            return
+        }
+        val relPtsUs = when (val decision = RecordingPtsPolicy.classify(
+            baselinePtsUs = videoBaselinePtsUs,
+            lastAppendedRelPtsUs = lastAppendedRelPtsUs,
+            rawPtsUs = ptsUs,
+        )) {
+            is RecordingPtsPolicy.Decision.FirstSample -> {
+                videoBaselinePtsUs = decision.baselinePtsUs
                 SystemLogger.emit(
-                    LogLevel.Debug, LogTag.Media,
-                    "IOS_RECORDING_VIDEO_DROP reason=awaiting_first_keyframe ptsUs=$ptsUs",
+                    LogLevel.Info,
+                    LogTag.Media,
+                    "IOS_RECORDING_FIRST_IDR ptsUs=$ptsUs nalCount=${nalUnits.size}",
+                )
+                decision.relPtsUs
+            }
+            is RecordingPtsPolicy.Decision.Accept -> decision.relPtsUs
+            is RecordingPtsPolicy.Decision.Negative -> {
+                dropPtsRegression += 1
+                SystemLogger.emit(
+                    LogLevel.Debug,
+                    LogTag.Media,
+                    "IOS_RECORDING_VIDEO_DROP reason=pts_regression rel=${decision.relPtsUs} " +
+                        "baseline=${decision.baselinePtsUs} ptsUs=$ptsUs",
                 )
                 return
             }
-            if (!startWriterWithVideo(firstKeyPtsUs = ptsUs)) return
+            is RecordingPtsPolicy.Decision.NonMonotonic -> {
+                dropNonMonotonicPts += 1
+                SystemLogger.emit(
+                    LogLevel.Debug,
+                    LogTag.Media,
+                    "IOS_RECORDING_VIDEO_DROP reason=non_monotonic_pts rel=${decision.relPtsUs} " +
+                        "last=${decision.lastAppendedRelPtsUs} rawPtsUs=$ptsUs",
+                )
+                return
+            }
+        }
+
+        // 首帧必是 IDR(上面已 gate),phase2 用相对时间 0 起 session
+        val input = videoInput ?: run {
+            if (!startWriterWithVideo(firstKeyPtsUs = relPtsUs)) return
+            SystemLogger.emit(
+                LogLevel.Info,
+                LogTag.Media,
+                "IOS_RECORDING_WRITER_BECAME_ACTIVE relPtsUs=$relPtsUs baseline=$videoBaselinePtsUs",
+            )
             videoInput ?: return
         }
 
         if (!input.isReadyForMoreMediaData()) {
+            dropInputBusy += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -362,9 +475,10 @@ class IosRecordingService(
 
         val sample = sampleBufferBuilder.buildVideoSampleBuffer(
             nalUnits = nalUnits,
-            ptsUs = ptsUs,
+            ptsUs = relPtsUs,
             durationUs = 1_000_000L / encoderConfigSupplier().frameRate.coerceAtLeast(1),
         ) ?: run {
+            dropSampleBuildFailed += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -376,12 +490,41 @@ class IosRecordingService(
         try {
             val appended = input.appendSampleBuffer(sample)
             if (!appended) {
+                appendFailures += 1
+                val err = writer.error
+                val underlying = err?.userInfo?.get("NSUnderlyingError") as? platform.Foundation.NSError
+                // 诊断 -16364(DataFailed):打出过滤前每个 NAL 的 (type, size),验证
+                // SPS(7)/PPS(8) 是否真被 buildAvccPayload 过滤;打出第一个 slice NAL 前 8
+                // 字节 hex,验证 slice NAL 数据结构。
+                val nalTypes = nalUnits.joinToString(",") { nal ->
+                    val t = if (nal.isEmpty()) -1 else (nal[0].toInt() and 0x1F)
+                    "t${t}/${nal.size}b"
+                }
+                val firstSliceNal = nalUnits.firstOrNull { nal ->
+                    nal.isNotEmpty() && (nal[0].toInt() and 0x1F).let {
+                        it != NalType.SPS && it != NalType.PPS
+                    }
+                }
+                val sliceHex = firstSliceNal
+                    ?.take(8)
+                    ?.joinToString("") { b -> (b.toInt() and 0xFF).toString(16).padStart(2, '0') }
+                    ?: "none"
                 SystemLogger.emit(
                     LogLevel.Warning,
                     LogTag.Media,
-                    "IOS_RECORDING_VIDEO_APPEND_FAIL status=${writer.status} " +
-                        "msg=${writer.error?.localizedDescription ?: "unknown"}",
+                    "IOS_RECORDING_VIDEO_APPEND_FAIL " +
+                        "status=${writer.status.toLong()} " +
+                        "errDomain=${err?.domain ?: "nil"} " +
+                        "errCode=${err?.code?.toLong() ?: 0L} " +
+                        "underlyingDomain=${underlying?.domain ?: "nil"} " +
+                        "underlyingCode=${underlying?.code?.toLong() ?: 0L} " +
+                        "rawPtsUs=$ptsUs relPtsUs=$relPtsUs baseline=$videoBaselinePtsUs " +
+                        "isKey=$isKeyFrame nals=[$nalTypes] sliceHead=$sliceHex " +
+                        "msg=${err?.localizedDescription ?: "unknown"}",
                 )
+            } else {
+                videoFramesAppended += 1
+                lastAppendedRelPtsUs = relPtsUs
             }
         } finally {
             CFRelease(sample)
@@ -515,7 +658,12 @@ class IosRecordingService(
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             "IOS_RECORDING_FINALIZE_ENTRY status=$writerStatusRaw didWriteAny=$didWriteAny " +
-                "writerErr=${writer.error?.localizedDescription ?: "none"}"
+                "writerErr=${writer.error?.localizedDescription ?: "none"} " +
+                "seen=$videoFramesSeen appended=$videoFramesAppended " +
+                "dropFmt=$dropMissingFormat dropIdr=$dropAwaitingIdr dropPts=$dropPtsRegression " +
+                "dropMono=$dropNonMonotonicPts " +
+                "dropBusy=$dropInputBusy dropSample=$dropSampleBuildFailed appendFail=$appendFailures " +
+                "firstPtsUs=$firstVideoPtsUs baseline=$videoBaselinePtsUs lastAppended=$lastAppendedRelPtsUs"
         )
 
         if (didWriteAny) {
@@ -546,7 +694,8 @@ class IosRecordingService(
             // Writer 从没 startWriting(第一个 keyframe 还没到 / phase2 失败) — cancelWriting。
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Media,
-                "IOS_RECORDING_STOP_EMPTY status=$writerStatusRaw outputPath=$outputPath",
+                "IOS_RECORDING_STOP_EMPTY status=$writerStatusRaw outputPath=$outputPath " +
+                    "reason=no_video_sample_appended",
             )
             runCatching { writer.cancelWriting() }.onFailure {
                 SystemLogger.emit(
@@ -560,6 +709,8 @@ class IosRecordingService(
         videoInput = null
         audioInput = null
         activeOutputPath = null
+        videoBaselinePtsUs = -1L
+        lastAppendedRelPtsUs = -1L
 
         if (outputPath == null || channel == null || started == 0L) {
             _state.value = RecordingState.Failed("finalize: missing session state")
@@ -599,6 +750,12 @@ class IosRecordingService(
         val updated = RecordingIndexFile(files = currentList + recordingFile)
         _files.value = updated.files
         persistIndex(updated)
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Media,
+            "IOS_RECORDING_INDEX_APPEND id=$recordingId path=$outputPath count=${updated.files.size} " +
+                "thumb=${thumbnailPath != null}",
+        )
 
         if (!isSplit) {
             _state.value = RecordingState.Idle
@@ -607,7 +764,8 @@ class IosRecordingService(
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             if (isSplit) "IOS_RECORDING_SEGMENT_ROLLOVER path=$outputPath dur=${durationMs}ms"
-            else "IOS_RECORDING_STOP path=$outputPath dur=${durationMs}ms size=${fileSize}B",
+            else "IOS_RECORDING_STOP path=$outputPath dur=${durationMs}ms size=${fileSize}B " +
+                "indexedCount=${updated.files.size}",
         )
 
         if (isSplit) {
@@ -690,18 +848,43 @@ class IosRecordingService(
     private fun persistIndex(idx: RecordingIndexFile) {
         runCatching {
             val json = RecordingIndex.encode(idx)
-            (json as NSString).writeToFile(
+            val ok = (json as NSString).writeToFile(
                 path = indexFilePath,
                 atomically = true,
                 encoding = NSUTF8StringEncoding,
                 error = null,
             )
+            if (!ok) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_RECORDING_INDEX_PERSIST_FAIL path=$indexFilePath reason=write_returned_false count=${idx.files.size}",
+                )
+            } else {
+                SystemLogger.emit(
+                    LogLevel.Debug, LogTag.Media,
+                    "IOS_RECORDING_INDEX_PERSIST_OK path=$indexFilePath count=${idx.files.size}",
+                )
+            }
         }.onFailure {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Media,
                 "IOS_RECORDING_INDEX_PERSIST_FAIL msg=${it.message}",
             )
         }
+    }
+
+    private fun resetSessionDiagnostics() {
+        videoFramesSeen = 0
+        videoFramesAppended = 0
+        dropMissingFormat = 0
+        dropAwaitingIdr = 0
+        dropPtsRegression = 0
+        dropNonMonotonicPts = 0
+        dropInputBusy = 0
+        dropSampleBuildFailed = 0
+        appendFailures = 0
+        firstVideoPtsUs = -1L
+        lastAppendedRelPtsUs = -1L
     }
 
     private companion object {
