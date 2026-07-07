@@ -79,6 +79,12 @@ internal class EncodingSession(
     private val config: CaptureConfig,
     private val onFrame: (H264Frame) -> Unit,
 ) {
+    /**
+     * T-B1-1:暴露 codec 只读字段,方便 test 与 SampleReceiver 分支使用。
+     * 单一真源:从 config.videoCodec 读,不再单独接受构造参数(plan §3.1 决策)。
+     */
+    val videoCodec: VideoCodec get() = config.videoCodec
+
     @Volatile
     private var compressionSession: VTCompressionSessionRef? = null
 
