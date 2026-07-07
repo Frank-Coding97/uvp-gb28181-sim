@@ -111,7 +111,7 @@ class IosRecordingService(
             override suspend fun takeJpeg(): ByteArray? = SnapshotCapture().takeJpeg()
         },
     ),
-) : RecordingService, IosVideoFrameSink {
+) : RecordingService, IosVideoFrameSink, IosAudioFrameSink {
 
     private val mutex = Mutex()
     private val sampleBufferBuilder = CMSampleBufferBuilder()
@@ -191,6 +191,35 @@ class IosRecordingService(
     @kotlin.concurrent.Volatile
     private var lastAppendedRelPtsUs: Long = -1L
 
+    // ---- T-B3-1:audio track state 独立字段 + 诊断计数 ----
+
+    /**
+     * 录像 session 内活跃的音频 codec。start 时 snapshot,stop 时清零。
+     * null 表示 audio 分支未启用(纯 video-only 录像)。
+     */
+    @kotlin.concurrent.Volatile
+    private var activeAudioCodec: com.uvp.sim.media.AudioCodec? = null
+
+    /** 音频 PTS 归零基准,与 video 独立(plan §3.3.2)。 */
+    @kotlin.concurrent.Volatile
+    private var audioBaselinePtsUs: Long = -1L
+
+    /** 最近一次 append 的 audio rel PTS(用于 monotonic 检查)。 */
+    @kotlin.concurrent.Volatile
+    private var lastAppendedAudioRelPtsUs: Long = -1L
+
+    @kotlin.concurrent.Volatile
+    private var audioFramesSeen: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var audioFramesAppended: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var dropAudioPtsRegression: Int = 0
+
+    @kotlin.concurrent.Volatile
+    private var audioAppendFailures: Int = 0
+
     /**
      * T-P5-1:录像触发 encoding 的引用计数句柄。start 时 requestEncoding,stop 时 close。
      * rollover 场景(pendingSegmentSplit=true)finalize 后不 close(保 VT session 常驻,
@@ -268,6 +297,8 @@ class IosRecordingService(
 
                 val encCfg = encoderConfigSupplier()
                 openWriter(outputPath, encCfg)
+                // T-B3-4:起录时 snapshot 当前音频 codec,整个录像 session 内不变(spec Q4)。
+                activeAudioCodec = encCfg.audioCodec
                 resetSessionDiagnostics()
 
                 // T-P5-1:向 controller 请 encoding。rollover 场景 handle 已有,跳过避免 refCount 漂移。
@@ -532,12 +563,143 @@ class IosRecordingService(
     }
 
     /**
-     * v1.2 hook: convert one G.711 / AAC sample to CMSampleBuffer and append
-     * to [audioInput].
+     * T-B3-3:实装 feedAudioFrame。
+     *
+     * 步骤(plan §3.3):
+     *   1. inputsClosed / audioInput == null → return + drop 分类
+     *   2. video baseline == -1(还没等 IDR)→ 丢弃(保 audio 从 IDR 附近开始)
+     *   3. RecordingPtsPolicy 分类音频 PTS
+     *   4. AAC path 剥 ADTS 头(前 7 字节)
+     *   5. G.711A path payload 原样
+     *   6. audioInput.isReadyForMoreMediaData 检查
+     *   7. audioInput.appendSampleBuffer(sample)
      */
-    @Suppress("UNUSED_PARAMETER")
+    override fun feedAudioFrame(
+        payload: ByteArray,
+        ptsUs: Long,
+        codec: com.uvp.sim.media.AudioCodec,
+    ) {
+        if (inputsClosed) {
+            dropInputBusy++
+            return
+        }
+        val input = audioInput ?: return
+        audioFramesSeen++
+
+        // audio 等 video baseline 建立后再 append(保 IDR 起点)
+        val videoBase = videoBaselinePtsUs
+        if (videoBase < 0) {
+            // 尚未收到首个 IDR,先丢弃(不算 regression)
+            return
+        }
+
+        val classify = com.uvp.sim.recording.RecordingPtsPolicy.classify(
+            baselinePtsUs = audioBaselinePtsUs,
+            lastAppendedRelPtsUs = lastAppendedAudioRelPtsUs,
+            rawPtsUs = ptsUs,
+        )
+        val relPts: Long = when (classify) {
+            is com.uvp.sim.recording.RecordingPtsPolicy.Decision.FirstSample -> {
+                audioBaselinePtsUs = ptsUs
+                0L
+            }
+            is com.uvp.sim.recording.RecordingPtsPolicy.Decision.Accept -> classify.relPtsUs
+            is com.uvp.sim.recording.RecordingPtsPolicy.Decision.Negative,
+            is com.uvp.sim.recording.RecordingPtsPolicy.Decision.NonMonotonic -> {
+                dropAudioPtsRegression++
+                return
+            }
+        }
+
+        // AAC 剥 ADTS 头(mp4 里不装 ADTS)
+        val rawPayload = when (codec) {
+            com.uvp.sim.media.AudioCodec.AAC -> {
+                if (payload.size <= 7) {
+                    dropAudioPtsRegression++
+                    return
+                }
+                payload.copyOfRange(7, payload.size)
+            }
+            else -> payload
+        }
+
+        val sampleBuf = audioSampleBuilder.build(
+            payload = rawPayload,
+            relPtsUs = relPts,
+            codec = codec,
+        )
+        if (sampleBuf == null) {
+            audioAppendFailures++
+            return
+        }
+        if (!input.readyForMoreMediaData) {
+            dropInputBusy++
+            releaseCMSampleBufferIfPossible(sampleBuf)
+            return
+        }
+        val ok = input.appendSampleBuffer(sampleBuf)
+        if (!ok) {
+            audioAppendFailures++
+        } else {
+            audioFramesAppended++
+            lastAppendedAudioRelPtsUs = relPts
+        }
+        releaseCMSampleBufferIfPossible(sampleBuf)
+    }
+
+    /** 老签名保留兜底 —— G.711A 路径,codec 默认。iOS AppHost 不应直接调这个 overload。 */
     fun feedAudioFrame(payload: ByteArray, ptsUs: Long) {
-        // TODO(v1.2 T-record-feed): build CMSampleBuffer + append.
+        val codec = activeAudioCodec ?: com.uvp.sim.media.AudioCodec.G711A
+        feedAudioFrame(payload = payload, ptsUs = ptsUs, codec = codec)
+    }
+
+    /**
+     * T-B3-2:按 codec 构造 AVAssetWriterInput(audio 侧)。
+     * G.711A → kAudioFormatALaw / 8000 Hz / mono
+     * AAC → kAudioFormatMPEG4AAC / 44100 Hz / mono
+     */
+    internal fun openAudioInput(codec: com.uvp.sim.media.AudioCodec): AVAssetWriterInput? {
+        val (formatId, sampleRate, channels) = when (codec) {
+            com.uvp.sim.media.AudioCodec.G711A -> Triple(
+                platform.CoreAudioTypes.kAudioFormatALaw,
+                8_000.0,
+                1,
+            )
+            com.uvp.sim.media.AudioCodec.G711U -> Triple(
+                platform.CoreAudioTypes.kAudioFormatULaw,
+                8_000.0,
+                1,
+            )
+            com.uvp.sim.media.AudioCodec.AAC -> Triple(
+                platform.CoreAudioTypes.kAudioFormatMPEG4AAC,
+                44_100.0,
+                1,
+            )
+        }
+        val settings: Map<Any?, Any?> = mapOf(
+            AVFormatIDKey to formatId.toLong(),
+            AVSampleRateKey to sampleRate,
+            AVNumberOfChannelsKey to channels.toLong(),
+        )
+        val aIn = AVAssetWriterInput(mediaType = platform.AVFoundation.AVMediaTypeAudio, outputSettings = settings)
+        aIn.expectsMediaDataInRealTime = true
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_RECORDING_OPEN_AUDIO_INPUT codec=${codec.label} sr=${sampleRate.toInt()} ch=$channels",
+        )
+        return aIn
+    }
+
+    /**
+     * T-B3-3 helper:CMSampleBuffer 音频构造。委托到 CMAudioSampleBufferBuilder(下方 lazy init)。
+     */
+    private val audioSampleBuilder: CMAudioSampleBufferBuilder = CMAudioSampleBufferBuilder()
+
+    /** 释放 CoreMedia object(runCatching 兜底 K/N 侧偶发 CFRelease 语义差)。 */
+    private fun releaseCMSampleBufferIfPossible(sample: platform.CoreMedia.CMSampleBufferRef?) {
+        if (sample != null) {
+            runCatching { CFRelease(sample) }
+        }
     }
 
     // =========================================================
@@ -638,6 +800,27 @@ class IosRecordingService(
 
         CFRelease(formatDescription)
         videoInput = vIn
+
+        // T-B3-4:视频 input 就绪后同步开 audio input(若 activeAudioCodec 非空)。
+        // 语义:writer.startWriting 之前必须把所有 input addInput 完;这里在
+        // startWriting 之前 addInput,addInput 失败(canAddInput false)不阻塞
+        // 起录 —— 只是这次录像没有音轨,和 v1.2 保持一致(不返回 false)。
+        activeAudioCodec?.let { codec ->
+            val aIn = openAudioInput(codec) ?: return@let
+            if (writer.canAddInput(aIn)) {
+                writer.addInput(aIn)
+                audioInput = aIn
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "IOS_RECORDING_ADD_AUDIO_INPUT_PHASE2 codec=${codec.label}",
+                )
+            } else {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_RECORDING_ADD_AUDIO_INPUT_REJECTED codec=${codec.label}",
+                )
+            }
+        }
         return true
     }
 
@@ -885,7 +1068,40 @@ class IosRecordingService(
         appendFailures = 0
         firstVideoPtsUs = -1L
         lastAppendedRelPtsUs = -1L
+        // T-B3-1: audio 侧诊断计数 + baseline 也归零
+        audioFramesSeen = 0
+        audioFramesAppended = 0
+        dropAudioPtsRegression = 0
+        audioAppendFailures = 0
+        audioBaselinePtsUs = -1L
+        lastAppendedAudioRelPtsUs = -1L
     }
+
+    // ---- T-B3-1:测试用诊断快照,暴露 audio 计数 + baseline 状态 ----
+
+    internal data class AudioDiagnosticsSnapshot(
+        val activeAudioCodec: com.uvp.sim.media.AudioCodec?,
+        val audioBaselinePtsUs: Long,
+        val lastAppendedAudioRelPtsUs: Long,
+        val audioFramesSeen: Int,
+        val audioFramesAppended: Int,
+        val dropAudioPtsRegression: Int,
+        val audioAppendFailures: Int,
+        val audioInputPresent: Boolean,
+    )
+
+    /** iosTest 用来观察 audio 侧内部 state 的窗口,不动生产语义。 */
+    internal fun snapshotAudioDiagnostics(): AudioDiagnosticsSnapshot =
+        AudioDiagnosticsSnapshot(
+            activeAudioCodec = activeAudioCodec,
+            audioBaselinePtsUs = audioBaselinePtsUs,
+            lastAppendedAudioRelPtsUs = lastAppendedAudioRelPtsUs,
+            audioFramesSeen = audioFramesSeen,
+            audioFramesAppended = audioFramesAppended,
+            dropAudioPtsRegression = dropAudioPtsRegression,
+            audioAppendFailures = audioAppendFailures,
+            audioInputPresent = audioInput != null,
+        )
 
     private companion object {
         const val GUARD_TICK_MS: Long = 30L * 1000

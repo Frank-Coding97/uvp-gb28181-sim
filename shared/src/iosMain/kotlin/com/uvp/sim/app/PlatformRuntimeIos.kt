@@ -56,7 +56,9 @@ class PlatformRuntimeIos : PlatformRuntime {
             osdConfigSupplier = osdConfigSupplier,
             profileSupplier = profileSupplier,
         )
-        IosRecordingFrameBridge.publish(service)
+        // T-B3-4:同一个 IosRecordingService 既是 IosVideoFrameSink 又是 IosAudioFrameSink,
+        // publish 二参数把它同时挂到 bridge 的 video + audio 分派点上。
+        IosRecordingFrameBridge.publish(video = service, audio = service)
         return service
     }
 
@@ -79,7 +81,8 @@ class PlatformRuntimeIos : PlatformRuntime {
     }
 
     override suspend fun release() {
-        IosRecordingFrameBridge.publish(null)
+        // T-B3-4:release 时把 video + audio sink 都清 null,防止残留引用。
+        IosRecordingFrameBridge.publish(video = null, audio = null)
         // iOS 端 CameraCapture / AudioCapture / IosRecordingService 自己 release
     }
 }
