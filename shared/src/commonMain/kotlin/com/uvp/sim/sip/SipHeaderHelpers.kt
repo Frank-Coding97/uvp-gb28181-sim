@@ -69,7 +69,17 @@ internal object SipHeaderHelpers {
      */
     fun buildSdpMediaSpec(config: SimConfig): SdpAnswer.MediaSpec {
         val v = config.video
-        val videoCodec = when (v.videoCodec) {
+        // T-B4-1:按 platform capability 过滤 offer 中的 codec —— 硬件不支持 H.265 时降级到 H.264,
+        //         避免推流到 WVP 后收方无法解码。capability set 从 PlatformVideoCapabilities 取。
+        val supported = com.uvp.sim.camera.PlatformVideoCapabilities.supportedVideoCodecs()
+        val effectiveVideoCodec = if (v.videoCodec in supported) {
+            v.videoCodec
+        } else {
+            // Fallback:capability 交集里挑第一项(H.264 优先)。
+            val fallback = supported.firstOrNull() ?: com.uvp.sim.media.VideoCodec.H264
+            fallback
+        }
+        val videoCodec = when (effectiveVideoCodec) {
             com.uvp.sim.media.VideoCodec.H264 -> 2
             com.uvp.sim.media.VideoCodec.H265 -> 5
         }
