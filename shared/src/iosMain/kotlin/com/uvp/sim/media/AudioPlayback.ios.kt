@@ -46,6 +46,10 @@ actual class AudioPlayback actual constructor(
     private var format: AVAudioFormat? = null
 
     actual fun start() {
+        // T-E1-2:先激活 AVAudioSession `.playback`(defaultToSpeaker) 让 AVAudioEngine
+        // 有输出 route。失败降级到系统默认 session(可能仍有声,可能没),不阻断后续 engine.start。
+        BroadcastAudioSession.activate(sampleRate, channelCount)
+
         runCatching {
             val eng = AVAudioEngine()
             val node = AVAudioPlayerNode()
@@ -133,6 +137,9 @@ actual class AudioPlayback actual constructor(
         engine = null
         playerNode = null
         format = null
+        // T-E1-2:deactivate 与 activate 配对,让其他 audio app 能 resume。
+        // 幂等,活跃计数在 BroadcastAudioSession 内部管。
+        BroadcastAudioSession.deactivate()
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             "IOS_PLAYBACK_STOP sr=$sampleRate ch=$channelCount",
