@@ -102,6 +102,15 @@ object IosAppHost {
         }
     }
 
+    /** T-E4-1:iOS 前后台切换 → 停 broadcast + deactivate audio session。幂等。 */
+    private val broadcastLifecycle: BroadcastLifecycleObserver by lazy {
+        BroadcastLifecycleObserver(engine = engine, scope = hostScope)
+    }
+
+    fun attachBroadcastLifecycleObserver() {
+        broadcastLifecycle.attach()
+    }
+
     val appEngine: AppEngine get() = engine
     val scope: CoroutineScope get() = hostScope
 }
@@ -113,6 +122,8 @@ fun IosApp() {
 
     LaunchedEffect(Unit) {
         IosAppHost.bindLogger()
+        // T-E4-1:注册前后台切换观察者 —— 切后台自动停 broadcast + deactivate audio session
+        IosAppHost.attachBroadcastLifecycleObserver()
     }
 
     val networkController = IosAppHost.networkController
