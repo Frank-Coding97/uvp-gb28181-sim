@@ -30,25 +30,27 @@ import kotlin.test.assertTrue
 class HevcAvccPrefixSpikeTest {
 
     @Test
-    fun cmFormatDescription_hevc_compiles_and_returns_status() = memScoped {
-        // 只验证 kCMVideoCodecType_HEVC 常量在 K/N 侧可用 + CMVideoFormatDescriptionCreate
-        // 路径类型正确。真正的 hvcC dump 留给真机 spike。
-        val outRef = alloc<kotlinx.cinterop.CPointerVar<cnames.structs.opaqueCMFormatDescription>>()
-        val status = CMVideoFormatDescriptionCreate(
-            allocator = null,
-            codecType = kCMVideoCodecType_HEVC,
-            width = 1280,
-            height = 720,
-            extensions = null,
-            formatDescriptionOut = outRef.ptr,
-        )
-        // status == noErr 或 kCMFormatDescriptionError_InvalidParameter 都可接受 —
-        // 只要没 crash 就说明 API 面 K/N 侧可用。
-        assertTrue(
-            status == 0 || status < 0,
-            "CMVideoFormatDescriptionCreate 返回 status=$status(非 crash 均可)"
-        )
-        outRef.value?.let { CFRelease(it) }
+    fun cmFormatDescription_hevc_compiles_and_returns_status() {
+        memScoped {
+            // 只验证 kCMVideoCodecType_HEVC 常量在 K/N 侧可用 + CMVideoFormatDescriptionCreate
+            // 路径类型正确。真正的 hvcC dump 留给真机 spike。
+            val outRef = alloc<kotlinx.cinterop.CPointerVar<cnames.structs.opaqueCMFormatDescription>>()
+            val status = CMVideoFormatDescriptionCreate(
+                allocator = null,
+                codecType = kCMVideoCodecType_HEVC,
+                width = 1280,
+                height = 720,
+                extensions = null,
+                formatDescriptionOut = outRef.ptr,
+            )
+            // status == noErr 或 kCMFormatDescriptionError_InvalidParameter 都可接受 —
+            // 只要没 crash 就说明 API 面 K/N 侧可用。
+            assertTrue(
+                status == 0 || status < 0,
+                "CMVideoFormatDescriptionCreate 返回 status=$status(非 crash 均可)"
+            )
+            outRef.value?.let { CFRelease(it) }
+        }
     }
 
     @Test
