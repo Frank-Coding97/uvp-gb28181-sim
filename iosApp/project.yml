@@ -30,11 +30,17 @@ targets:
     platform: iOS
     sources:
       - path: iosApp
-      # v1.3-C: SceneKit .scn 资源目录(手动转换,详见 Resources/README.md)。
-      # `optional: true` 让 Resources 缺失时不阻塞 xcodegen(占位期 .scn 未落地)。
+      # v1.3-C: SceneKit .scn 资源目录(手动转换,详见 ../Resources-README.md)。
+      # 注意:xcodegen 若用 `type: folder` 会把目录里**所有**文件(包括 md/txt)
+      # 当资源塞进 app bundle,非资源文件触发 CodeSign
+      # "code object is not signed at all"。改用 includes 白名单只签资源类型。
+      # `optional: true` 让文件缺失时不阻塞 xcodegen(占位期 .scn 未落地)。
       - path: iosApp/Resources
-        type: folder
         optional: true
+        includes:
+          - "*.scn"
+          - "*.dae"
+          - "*.usdz"
     info:
       path: iosApp/Info.plist
       properties:
