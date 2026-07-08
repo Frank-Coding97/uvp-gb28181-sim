@@ -24,6 +24,8 @@ import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.api.LogTag
+import com.uvp.sim.camera.IosCameraController
 import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.recording.RecordingState
@@ -44,7 +46,14 @@ import com.uvp.sim.ui.model.mapper.toDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlinx.datetime.Clock
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
+import kotlin.concurrent.Volatile
 
 /**
  * iOS UI host — wires AppEngine into Compose App().
@@ -59,6 +68,10 @@ import kotlinx.coroutines.launch
 object IosAppHost {
 
     private val hostScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile private var diagnosticsHeartbeatJob: Job? = null
+    @Volatile private var mainThreadWatchdogJob: Job? = null
+    @Volatile private var lastMainThreadAckMs: Long = -1L
+    @Volatile private var lastMainThreadStallLogMs: Long = -1L
 
     /** NetworkController (Wave 1 A4, NWPathMonitor)。IosAppHost 起时装,close 由进程退出兜底。 */
     val networkController: NetworkController = NetworkController()
@@ -99,6 +112,60 @@ object IosAppHost {
                 "[${log.seq}] [${log.level.short}] [${log.tag.display}] ${log.message}" +
                     (log.detail?.let { "\n$it" } ?: "")
             )
+        }
+        startDiagnosticsHeartbeat()
+        startMainThreadWatchdog()
+    }
+
+    private fun startDiagnosticsHeartbeat() {
+        diagnosticsHeartbeatJob?.cancel()
+        diagnosticsHeartbeatJob = hostScope.launch {
+            while (isActive) {
+                delay(30_000L)
+                val svc = engine.currentRecordingService()
+                SystemLogger.emit(
+                    com.uvp.sim.observability.LogLevel.Debug,
+                    LogTag.Media,
+                    buildString {
+                        append("IOS_APP_HEARTBEAT ")
+                        append("sip=").append(engine.state.value)
+                        append(" recSvc=").append(svc?.state?.value ?: "null")
+                        append(" files=").append(svc?.files?.value?.size ?: 0)
+                        append(" cameraSession=").append(IosCameraController.session.value != null)
+                        append(" encodingActive=").append(IosCameraController.encodingActive.value)
+                        append(" cameraLastSampleMs=").append(IosCameraController.lastSampleAtMs())
+                        append(" cameraSampleCount=").append(IosCameraController.sampleCount())
+                        append(" recLastFeedMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoFeedAtMs() ?: -1L)
+                        append(" recLastAppendMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoAppendAtMs() ?: -1L)
+                        append(" logs=").append(SystemLogger.snapshot.size)
+                    }
+                )
+            }
+        }
+    }
+
+    private fun startMainThreadWatchdog() {
+        mainThreadWatchdogJob?.cancel()
+        mainThreadWatchdogJob = hostScope.launch {
+            while (isActive) {
+                val probeSentAt = Clock.System.now().toEpochMilliseconds()
+                dispatch_async(dispatch_get_main_queue()) {
+                    lastMainThreadAckMs = Clock.System.now().toEpochMilliseconds()
+                }
+                delay(4_000L)
+                val now = Clock.System.now().toEpochMilliseconds()
+                val ack = lastMainThreadAckMs
+                val ackLagMs = if (ack > 0L) now - ack else Long.MAX_VALUE
+                if (ack < probeSentAt && now - lastMainThreadStallLogMs >= 10_000L) {
+                    lastMainThreadStallLogMs = now
+                    SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Warning,
+                        LogTag.Media,
+                        "IOS_MAIN_THREAD_STALL probeSentAt=$probeSentAt lastAckMs=$ack ackLagMs=$ackLagMs"
+                    )
+                }
+                delay(1_000L)
+            }
         }
     }
 
@@ -173,11 +240,16 @@ fun IosApp() {
     }
 
     // SystemLogger.flow 是 SharedFlow(replay=0),iOS 上用本地 state 累积快照。
-    // 用 buffer.snapshot() 保持一次性对齐(重新订阅时补齐历史),后续增量走 flow。
+    // iOS 上系统日志有时会被 MADService / AVFoundation 自己刷得很密,
+    // 这里改成增量追加,避免每条都整包 snapshot 重建引发额外 UI churn。
     LaunchedEffect(Unit) {
         systemLogs = SystemLogger.snapshot
-        SystemLogger.flow.collect { _ ->
-            systemLogs = SystemLogger.snapshot
+        SystemLogger.flow.collect { log ->
+            systemLogs = if (log.tag == LogTag.User && log.message == "日志已清除") {
+                emptyList()
+            } else {
+                (systemLogs + log).takeLast(500)
+            }
         }
     }
 
@@ -189,6 +261,20 @@ fun IosApp() {
         val svc = engine.currentRecordingService() ?: return@LaunchedEffect
         launch { svc.state.collect { recordingState = it } }
         launch { svc.files.collect { recordingFiles = it } }
+    }
+
+    // 主线程心跳：用于区分“UI/Main 卡死”与“后台 scope 还活着”。
+    // 如果未来再次出现“看起来整 app 卡住”，而 IOS_APP_HEARTBEAT 还在继续、
+    // 但这条不再出现，就说明更偏主线程/Compose/UIRunLoop 挂住。
+    LaunchedEffect(Unit) {
+        while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+            kotlinx.coroutines.delay(5_000L)
+            SystemLogger.emit(
+                com.uvp.sim.observability.LogLevel.Debug,
+                LogTag.Media,
+                "IOS_UI_MAIN_HEARTBEAT"
+            )
+        }
     }
 
     // RecordingStatus(UI 层)从 recordingState + recordingFiles 组装。

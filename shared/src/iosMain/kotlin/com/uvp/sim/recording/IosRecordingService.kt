@@ -191,6 +191,12 @@ class IosRecordingService(
     @kotlin.concurrent.Volatile
     private var lastAppendedRelPtsUs: Long = -1L
 
+    @kotlin.concurrent.Volatile
+    private var lastVideoFeedAtMs: Long = -1L
+
+    @kotlin.concurrent.Volatile
+    private var lastVideoAppendAtMs: Long = -1L
+
     /**
      * T-P5-1:录像触发 encoding 的引用计数句柄。start 时 requestEncoding,stop 时 close。
      * rollover 场景(pendingSegmentSplit=true)finalize 后不 close(保 VT session 常驻,
@@ -375,6 +381,7 @@ class IosRecordingService(
         if (inputsClosed) return
         val writer = assetWriter ?: return
         if (_state.value !is RecordingState.Recording) return
+        lastVideoFeedAtMs = clock.now().toEpochMilliseconds()
         videoFramesSeen += 1
         if (firstVideoPtsUs == -1L) {
             firstVideoPtsUs = ptsUs
@@ -525,6 +532,7 @@ class IosRecordingService(
             } else {
                 videoFramesAppended += 1
                 lastAppendedRelPtsUs = relPtsUs
+                lastVideoAppendAtMs = clock.now().toEpochMilliseconds()
             }
         } finally {
             CFRelease(sample)
@@ -885,7 +893,13 @@ class IosRecordingService(
         appendFailures = 0
         firstVideoPtsUs = -1L
         lastAppendedRelPtsUs = -1L
+        lastVideoFeedAtMs = -1L
+        lastVideoAppendAtMs = -1L
     }
+
+    fun lastVideoFeedAtMs(): Long = lastVideoFeedAtMs
+
+    fun lastVideoAppendAtMs(): Long = lastVideoAppendAtMs
 
     private companion object {
         const val GUARD_TICK_MS: Long = 30L * 1000

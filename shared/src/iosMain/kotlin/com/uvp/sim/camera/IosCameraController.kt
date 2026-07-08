@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.datetime.Clock
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
 import platform.AVFoundation.AVCaptureDevicePositionBack
@@ -131,6 +132,12 @@ object IosCameraController {
      */
     @Volatile
     private var pendingForceKey: Boolean = false
+
+    @Volatile
+    private var lastSampleAtMs: Long = -1L
+
+    @Volatile
+    private var sampleCount: Long = 0L
 
     /**
      * T-P2-2:frames 广播 SharedFlow。EncodingSession 产 H264Frame 后回调本 controller,
@@ -450,6 +457,11 @@ object IosCameraController {
      * P2-2 补:若 encodingActive 则同时 encodeSample(sample, forceKey)。
      */
     private fun onSample(sample: CMSampleBufferRef) {
+        sampleCount += 1
+        if (sampleCount % 25L == 0L) {
+            lastSampleAtMs = Clock.System.now().toEpochMilliseconds()
+        }
+
         // Fix #6:PreviewOnly + 无 snapshot 请求时 quick exit,不做 CFRetain/CFRelease 常驻税
         val needLatest = snapshotSubscribers > 0
         val needEncode = _encodingActive.value
@@ -595,7 +607,13 @@ object IosCameraController {
 
         latestFrame?.let { CFRelease(it) }
         latestFrame = null
+        lastSampleAtMs = -1L
+        sampleCount = 0L
     }
+
+    fun lastSampleAtMs(): Long = lastSampleAtMs
+
+    fun sampleCount(): Long = sampleCount
 }
 
 /**

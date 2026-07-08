@@ -64,9 +64,11 @@ actual fun PlatformCameraPreview(modifier: Modifier) {
             // UIKit 单亲约束:一个 UIView 只能有一个 superview。旧 hosting view 若还在,
             // 显式让出;新 hosting view 会通过 addSubview 自动接管。
             container.removeFromSuperview()
+            container.userInteractionEnabled = false
             container
         },
         modifier = modifier,
+        interactive = false,
         // 无 onRelease:containerView 是单例,不能被 dispose;session 挂载不受 UIKitView 生命周期影响
     )
 }
@@ -80,6 +82,7 @@ internal class CameraPreviewContainerView : UIView(frame = CGRectMake(0.0, 0.0, 
     val previewLayer = AVCaptureVideoPreviewLayer()
 
     init {
+        userInteractionEnabled = false
         layer.addSublayer(previewLayer)
     }
 
