@@ -107,7 +107,7 @@ private fun RecordingBadge(
     LaunchedEffect(startMs) {
         if (startMs == null) return@LaunchedEffect
         while (true) {
-            elapsedSec = ((kotlinx.datetime.Clock.System.now().toEpochMilliseconds() - startMs) / 1000)
+            elapsedSec = ((kotlin.time.Clock.System.now().toEpochMilliseconds() - startMs) / 1000)
                 .coerceAtLeast(0)
             kotlinx.coroutines.delay(1000)
         }

@@ -1,8 +1,8 @@
 package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * SIP 报文构造 façade(saga §3.5 拆分后保留外观 API,实现委派到 4 个分文件 object):

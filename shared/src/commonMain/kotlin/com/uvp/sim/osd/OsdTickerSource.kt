@@ -2,7 +2,7 @@ package com.uvp.sim.osd
 
 import com.uvp.sim.config.OsdConfig
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

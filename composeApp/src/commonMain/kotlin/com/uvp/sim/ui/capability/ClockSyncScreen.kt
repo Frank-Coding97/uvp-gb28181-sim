@@ -36,8 +36,8 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
 import kotlinx.coroutines.delay
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

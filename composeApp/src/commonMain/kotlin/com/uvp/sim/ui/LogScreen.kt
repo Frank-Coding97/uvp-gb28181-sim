@@ -36,7 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.observability.SipDialogGrouping
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * 日志页双 tab 容器 — SIP 日志 / 系统日志(spec §4 P0)。

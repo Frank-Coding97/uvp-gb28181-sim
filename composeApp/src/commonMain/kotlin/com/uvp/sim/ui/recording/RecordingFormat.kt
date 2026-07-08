@@ -4,7 +4,7 @@ import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.model.RecordSourceDto
 import com.uvp.sim.ui.model.RecordingFileDto
 import com.uvp.sim.ui.round
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime

@@ -116,6 +116,6 @@ class IosPlaybackBuilder(
     }
 
     private object WallClock : PlaybackClock {
-        override fun nowMs(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+        override fun nowMs(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
     }
 }

@@ -12,8 +12,8 @@ import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlin.math.abs
 import kotlin.test.Test
 import kotlin.test.assertEquals

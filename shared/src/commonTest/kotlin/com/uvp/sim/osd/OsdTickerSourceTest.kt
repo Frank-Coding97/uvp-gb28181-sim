@@ -5,8 +5,8 @@ import com.uvp.sim.config.OsdLayer
 import com.uvp.sim.config.OsdPosition
 import com.uvp.sim.config.OsdSize
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals

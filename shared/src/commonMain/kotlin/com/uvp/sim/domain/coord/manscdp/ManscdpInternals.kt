@@ -8,7 +8,7 @@ import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipDialogIdentityService
 import com.uvp.sim.sip.SipOutbox
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

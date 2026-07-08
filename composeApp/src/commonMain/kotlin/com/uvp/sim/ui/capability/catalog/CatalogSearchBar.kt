@@ -114,7 +114,7 @@ internal fun filterTreeByQuery(tree: List<CatalogNode>, query: String): List<Cat
 
 /** 把毫秒时间戳格式化成「刚刚 / 5 秒前 / 12 分钟前 / 3 小时前 / 4 天前」。 */
 internal fun humanizedAgo(epochMs: Long): String {
-    val nowMs = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+    val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
     val diff = (nowMs - epochMs).coerceAtLeast(0L)
     val sec = diff / 1000
     return when {

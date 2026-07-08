@@ -36,7 +36,7 @@ import com.uvp.sim.ui.recording.describeFilter
 import com.uvp.sim.ui.recording.buildRecordingListModel
 import com.uvp.sim.ui.recording.formatSize
 import com.uvp.sim.ui.recording.formatTime
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

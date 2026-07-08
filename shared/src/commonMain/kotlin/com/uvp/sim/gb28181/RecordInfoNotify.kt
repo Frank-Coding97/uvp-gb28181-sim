@@ -1,7 +1,7 @@
 package com.uvp.sim.gb28181
 
 import com.uvp.sim.recording.RecordingFile
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

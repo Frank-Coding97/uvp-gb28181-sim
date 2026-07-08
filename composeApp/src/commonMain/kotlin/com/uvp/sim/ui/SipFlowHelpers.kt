@@ -5,7 +5,7 @@ import com.uvp.sim.ui.model.DialogRowDto
 import com.uvp.sim.ui.model.FlowItemDto
 import com.uvp.sim.ui.model.SipMessageDto
 import com.uvp.sim.ui.model.SipMethodDto
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
