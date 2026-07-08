@@ -30,6 +30,11 @@ targets:
     platform: iOS
     sources:
       - path: iosApp
+      # v1.3-C: SceneKit .scn 资源目录(手动转换,详见 Resources/README.md)。
+      # `optional: true` 让 Resources 缺失时不阻塞 xcodegen(占位期 .scn 未落地)。
+      - path: iosApp/Resources
+        type: folder
+        optional: true
     info:
       path: iosApp/Info.plist
       properties:
