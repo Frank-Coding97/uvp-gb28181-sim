@@ -5,6 +5,7 @@ import com.uvp.sim.api.LogTag
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.media.MediaTimebase
+import com.uvp.sim.media.H265NalType
 import com.uvp.sim.media.NalType
 import com.uvp.sim.media.VideoCodec
 import com.uvp.sim.observability.LogLevel
@@ -43,7 +44,9 @@ import platform.CoreMedia.CMSampleBufferGetSampleAttachmentsArray
 import platform.CoreMedia.CMSampleBufferRef
 import platform.CoreMedia.CMTimeMake
 import platform.CoreMedia.CMVideoFormatDescriptionGetH264ParameterSetAtIndex
+import platform.CoreMedia.CMVideoFormatDescriptionGetHEVCParameterSetAtIndex
 import platform.CoreMedia.kCMVideoCodecType_H264
+import platform.CoreMedia.kCMVideoCodecType_HEVC
 import platform.VideoToolbox.VTCompressionSessionCreate
 import platform.VideoToolbox.VTCompressionSessionEncodeFrame
 import platform.VideoToolbox.VTCompressionSessionInvalidate
@@ -52,7 +55,9 @@ import platform.VideoToolbox.VTCompressionSessionRefVar
 import platform.VideoToolbox.VTSessionSetProperty
 import platform.VideoToolbox.kVTEncodeFrameOptionKey_ForceKeyFrame
 import platform.VideoToolbox.kVTCompressionPropertyKey_AllowFrameReordering
+import platform.VideoToolbox.kVTCompressionPropertyKey_ProfileLevel
 import platform.VideoToolbox.kVTCompressionPropertyKey_RealTime
+import platform.VideoToolbox.kVTProfileLevel_HEVC_Main_AutoLevel
 import platform.posix.size_tVar
 import kotlin.concurrent.Volatile
 
@@ -79,6 +84,12 @@ internal class EncodingSession(
     private val config: CaptureConfig,
     private val onFrame: (H264Frame) -> Unit,
 ) {
+    /**
+     * T-B1-1:暴露 codec 只读字段,方便 test 与 SampleReceiver 分支使用。
+     * 单一真源:从 config.videoCodec 读,不再单独接受构造参数(plan §3.1 决策)。
+     */
+    val videoCodec: VideoCodec get() = config.videoCodec
+
     @Volatile
     private var compressionSession: VTCompressionSessionRef? = null
 
@@ -95,9 +106,15 @@ internal class EncodingSession(
         if (compressionSession != null) return true
         if (invalidated) return false
 
-        val receiver = SampleReceiver(onFrame)
+        val receiver = SampleReceiver(config.videoCodec, onFrame)
         val stableRef = StableRef.create(receiver)
         val refConPtr = stableRef.asCPointer()
+
+        // T-B1-2:VTCompressionSession codecType 按 config.videoCodec 分支
+        val codecType = when (config.videoCodec) {
+            VideoCodec.H264 -> kCMVideoCodecType_H264
+            VideoCodec.H265 -> kCMVideoCodecType_HEVC
+        }
 
         val session = memScoped {
             val out = alloc<VTCompressionSessionRefVar>()
@@ -105,7 +122,7 @@ internal class EncodingSession(
                 allocator = null,
                 width = config.widthPx,
                 height = config.heightPx,
-                codecType = kCMVideoCodecType_H264,
+                codecType = codecType,
                 encoderSpecification = null,
                 sourceImageBufferAttributes = null,
                 compressedDataAllocator = null,
@@ -119,7 +136,7 @@ internal class EncodingSession(
         if (session == null) {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
-                "IOS_ENCODING_SESSION_CREATE_FAIL VT status non-zero"
+                "IOS_ENCODING_SESSION_CREATE_FAIL VT status non-zero codec=${config.videoCodec.label}"
             )
             stableRef.dispose()
             return false
@@ -130,7 +147,7 @@ internal class EncodingSession(
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             "IOS_ENCODING_SESSION_START ${config.widthPx}x${config.heightPx}@${config.frameRate} " +
-                "codec=H264"
+                "codec=${config.videoCodec.label}"
         )
         return true
     }
@@ -229,6 +246,54 @@ internal class EncodingSession(
             value = kCFBooleanFalse,
             keyName = "AllowFrameReordering",
         )
+        // T-B1-3:HEVC 分支加 ProfileLevel = HEVC_Main_AutoLevel(H.264 保持系统默认 baseline-ish)
+        if (config.videoCodec == VideoCodec.H265) {
+            val profileLevel = kVTProfileLevel_HEVC_Main_AutoLevel
+            if (profileLevel != null) {
+                setCFTypeProperty(
+                    session = session,
+                    key = kVTCompressionPropertyKey_ProfileLevel,
+                    value = profileLevel,
+                    keyName = "ProfileLevel=HEVC_Main_AutoLevel",
+                )
+            } else {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_ENCODING_SESSION_HEVC_PROFILE_LEVEL_NULL fallback to encoder default",
+                )
+            }
+        }
+    }
+
+    /**
+     * T-B1-3:CFType 属性(如 profile level 是 CFStringRef)通用 setter。
+     * 与 `setBooleanProperty` 分开是因为后者的 value 类型是 kCFBooleanTrue/False 常量指针,
+     * 这里的 value 是 CFType(CFStringRef 等)。
+     */
+    private fun setCFTypeProperty(
+        session: VTCompressionSessionRef,
+        key: CPointer<__CFString>?,
+        value: CPointer<out CPointed>?,
+        keyName: String,
+    ) {
+        val cfKey = key ?: return
+        val cfValue = value ?: return
+        val status = VTSessionSetProperty(
+            session = session,
+            propertyKey = cfKey,
+            propertyValue = cfValue,
+        )
+        if (status != 0) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_ENCODING_SESSION_SET_PROPERTY_FAIL key=$keyName status=$status",
+            )
+        } else {
+            SystemLogger.emit(
+                LogLevel.Debug, LogTag.Media,
+                "IOS_ENCODING_SESSION_SET_PROPERTY_OK key=$keyName",
+            )
+        }
     }
 
     private fun setBooleanProperty(
@@ -267,9 +332,12 @@ internal class EncodingSession(
      * StableRef 承载的 receiver。VideoToolbox OUTPUT_CALLBACK 在 encode 线程回调,通过
      * refCon 恢复 [SampleReceiver] 并把 CMSampleBuffer 转 [H264Frame] 通过 [onFrame] 派发。
      */
-    private class SampleReceiver(private val onFrame: (H264Frame) -> Unit) {
+    private class SampleReceiver(
+        private val codec: VideoCodec,
+        private val onFrame: (H264Frame) -> Unit,
+    ) {
         fun onEncoded(sample: CMSampleBufferRef) {
-            val frame = toH264Frame(sample) ?: return
+            val frame = toEncodedFrame(sample, codec) ?: return
             onFrame(frame)
         }
     }
@@ -293,6 +361,16 @@ internal class EncodingSession(
         }
 
         /**
+         * T-B1-4:编解码 codec 分派入口。当前 SampleReceiver.onEncoded 直接调这里,
+         * 根据 codec 走 H.264 / H.265 分支。
+         */
+        internal fun toEncodedFrame(sample: CMSampleBufferRef, codec: VideoCodec): H264Frame? =
+            when (codec) {
+                VideoCodec.H264 -> toH264Frame(sample)
+                VideoCodec.H265 -> toH265Frame(sample)
+            }
+
+        /**
          * v1.2 IosCameraStreamer.toH264Frame 逻辑搬迁:
          *   1. 提 PTS
          *   2. 判断 key frame
@@ -308,10 +386,10 @@ internal class EncodingSession(
             if (isKey) {
                 val formatDesc = CMSampleBufferGetFormatDescription(sample)
                 if (formatDesc != null) {
-                    extractParameterSet(formatDesc, index = 0uL)?.let { sps ->
+                    extractH264ParameterSet(formatDesc, index = 0uL)?.let { sps ->
                         if (sps[0].toInt() and 0x1F == NalType.SPS) nals += sps
                     }
-                    extractParameterSet(formatDesc, index = 1uL)?.let { pps ->
+                    extractH264ParameterSet(formatDesc, index = 1uL)?.let { pps ->
                         if (pps[0].toInt() and 0x1F == NalType.PPS) nals += pps
                     }
                 }
@@ -331,6 +409,73 @@ internal class EncodingSession(
         }
 
         /**
+         * T-B1-4:HEVC 版本的 toH264Frame。
+         *
+         *   1. 提 PTS
+         *   2. 判断 key frame(HEVC IDR_W_RADL / IDR_N_LP / CRA_NUT)
+         *   3. 若 key frame:从 formatDescription 提取 VPS + SPS + PPS(index 0 / 1 / 2)
+         *   4. Split AVCC(4B 长度前缀,spike 结论 T-B1-0)→ NAL 列表
+         *
+         * 与 H.264 差异:
+         *   - 参数集数量从 2(SPS/PPS)变 3(VPS/SPS/PPS)
+         *   - NAL type 从低 5 位 → `(byte0 >> 1) & 0x3F`
+         *   - key frame 由多种 NAL type 组合判断
+         */
+        internal fun toH265Frame(sample: CMSampleBufferRef): H264Frame? = memScoped {
+            val ptsCmTime = CMSampleBufferGetPresentationTimeStamp(sample)
+            val ptsUs = MediaTimebase.cmTimeToMicros(ptsCmTime)
+            val nals = mutableListOf<ByteArray>()
+
+            val blockBuffer = CMSampleBufferGetDataBuffer(sample) ?: return@memScoped null
+            val avccBytes = readBlockBuffer(blockBuffer) ?: return@memScoped null
+            val bodyNals = AnnexB.splitAvcc(avccBytes, lengthPrefixSize = 4)
+
+            // 检测 body 里是否含 HEVC IDR/CRA slice —— 若含,再拉参数集
+            val isKey = bodyNals.any { nal ->
+                if (nal.isEmpty()) return@any false
+                val t = (nal[0].toInt() ushr 1) and 0x3F
+                VideoCodec.H265.isKeyNal(t)
+            }
+
+            if (isKey) {
+                val formatDesc = CMSampleBufferGetFormatDescription(sample)
+                if (formatDesc != null) {
+                    // VPS/SPS/PPS 按 index 0/1/2 顺序
+                    extractHevcParameterSet(formatDesc, index = 0uL)?.let { vps ->
+                        if (vps.isNotEmpty() &&
+                            ((vps[0].toInt() ushr 1) and 0x3F) == H265NalType.VPS_NUT
+                        ) {
+                            nals += vps
+                        }
+                    }
+                    extractHevcParameterSet(formatDesc, index = 1uL)?.let { sps ->
+                        if (sps.isNotEmpty() &&
+                            ((sps[0].toInt() ushr 1) and 0x3F) == H265NalType.SPS_NUT
+                        ) {
+                            nals += sps
+                        }
+                    }
+                    extractHevcParameterSet(formatDesc, index = 2uL)?.let { pps ->
+                        if (pps.isNotEmpty() &&
+                            ((pps[0].toInt() ushr 1) and 0x3F) == H265NalType.PPS_NUT
+                        ) {
+                            nals += pps
+                        }
+                    }
+                }
+            }
+
+            nals += bodyNals
+            if (nals.isEmpty()) return@memScoped null
+            H264Frame(
+                nalUnits = nals,
+                timestampUs = ptsUs,
+                isKeyFrame = isKey,
+                codec = VideoCodec.H265,
+            )
+        }
+
+        /**
          * VideoToolbox 通过 sample 的 attachments 数组标注 NotSync。为 muxer 兼容,
          * 默认按 key frame 处理(over-count 40 字节/帧的 SPS/PPS 开销可接受)。
          */
@@ -341,13 +486,39 @@ internal class EncodingSession(
             return true
         }
 
-        private fun extractParameterSet(
+        private fun extractH264ParameterSet(
             formatDesc: platform.CoreMedia.CMFormatDescriptionRef,
             index: ULong,
         ): ByteArray? = memScoped {
             val sizeOut = alloc<size_tVar>()
             val dataPtrOut = alloc<CPointerVar<UByteVar>>()
             val status = CMVideoFormatDescriptionGetH264ParameterSetAtIndex(
+                videoDesc = formatDesc,
+                parameterSetIndex = index,
+                parameterSetPointerOut = dataPtrOut.ptr,
+                parameterSetSizeOut = sizeOut.ptr,
+                parameterSetCountOut = null,
+                NALUnitHeaderLengthOut = null,
+            )
+            if (status != 0) return@memScoped null
+            val size = sizeOut.value.toInt()
+            val ptr = dataPtrOut.value ?: return@memScoped null
+            if (size <= 0) return@memScoped null
+            ptr.readBytes(size)
+        }
+
+        /**
+         * T-B1-4:HEVC 参数集读取。iOS 11+ CoreMedia 才有
+         * `CMVideoFormatDescriptionGetHEVCParameterSetAtIndex`。K/N 侧 platform.CoreMedia
+         * 已把该符号带出来。VPS / SPS / PPS 分别按 index 0 / 1 / 2 拉。
+         */
+        private fun extractHevcParameterSet(
+            formatDesc: platform.CoreMedia.CMFormatDescriptionRef,
+            index: ULong,
+        ): ByteArray? = memScoped {
+            val sizeOut = alloc<size_tVar>()
+            val dataPtrOut = alloc<CPointerVar<UByteVar>>()
+            val status = CMVideoFormatDescriptionGetHEVCParameterSetAtIndex(
                 videoDesc = formatDesc,
                 parameterSetIndex = index,
                 parameterSetPointerOut = dataPtrOut.ptr,

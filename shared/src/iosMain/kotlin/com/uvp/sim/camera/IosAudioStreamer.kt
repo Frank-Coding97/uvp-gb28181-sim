@@ -54,6 +54,9 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
 
     private var engine: AVAudioEngine? = null
 
+    /** T-B2-4:AAC 分支持有的 encoder。stop 时 close。 */
+    private var aacEncoder: com.uvp.sim.media.IosAacEncoder? = null
+
     /**
      * Emit compressed audio frames.
      */
@@ -124,12 +127,83 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         }
     }
 
+    /**
+     * T-B2-4:AAC 分支。AVAudioEngine 44.1 kHz mono PCM tap → IosAacEncoder → AAC + ADTS。
+     * 20 ms 帧率(882 samples per tap chunk),encoder 内部累积到 1024 samples 才 emit
+     * 一帧 AAC(即约每 3 chunks emit 2 frame)。
+     */
     private fun streamAac(): Flow<AudioFrame> = callbackFlow {
-        // T10 explicit skip (spec §4.2): G.711A covers 99% of GB28181 platforms.
-        // If a platform truly needs AAC, throw so the caller sees the gap
-        // rather than silently getting no audio.
-        close(UnsupportedOperationException("AAC audio on iOS is a v1.1 follow-up (T10 skipped); use G711A"))
-        awaitClose { }
+        val eng = AVAudioEngine()
+        val input = eng.inputNode
+        val format = AVAudioFormat(
+            commonFormat = AVAudioPCMFormatInt16,
+            sampleRate = AAC_SAMPLE_RATE_HZ,
+            channels = CHANNELS,
+            interleaved = true,
+        )
+        val encoder = com.uvp.sim.media.IosAacEncoder(
+            pcmSampleRateHz = AAC_SAMPLE_RATE_HZ,
+            channelCount = CHANNELS,
+            aacSampleRateHz = AAC_SAMPLE_RATE_HZ,
+        )
+        aacEncoder = encoder
+
+        input.installTapOnBus(
+            bus = 0u,
+            bufferSize = AAC_BUFFER_FRAMES,
+            format = format,
+        ) { buffer: AVAudioPCMBuffer?, _: AVAudioTime? ->
+            if (buffer == null) return@installTapOnBus
+            val frames = buffer.frameLength.toInt()
+            if (frames <= 0) return@installTapOnBus
+            val channelPtr: CPointer<ShortVar> =
+                buffer.int16ChannelData?.pointed?.value ?: return@installTapOnBus
+
+            val pcm = ShortArray(frames)
+            for (i in 0 until frames) {
+                pcm[i] = channelPtr[i]
+            }
+            val aacFrames = encoder.encode(pcm, MediaTimebase.nowUs())
+            for (f in aacFrames) {
+                trySend(f)
+            }
+        }
+
+        eng.prepare()
+        val started = memScoped {
+            val errPtr = alloc<ObjCObjectVar<NSError?>>()
+            val ok = eng.startAndReturnError(errPtr.ptr)
+            if (!ok) {
+                val desc = errPtr.value?.localizedDescription ?: "unknown"
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_AUDIO_START_FAILED codec=${config.codec} error=$desc",
+                )
+            }
+            ok
+        }
+        if (!started) {
+            input.removeTapOnBus(0u)
+            encoder.close()
+            aacEncoder = null
+            close(IllegalStateException("AVAudioEngine.start failed for AAC"))
+            return@callbackFlow
+        }
+
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_AUDIO_START codec=AAC sr=${AAC_SAMPLE_RATE_HZ.toInt()} ch=${CHANNELS.toInt()}",
+        )
+        engine = eng
+
+        awaitClose {
+            input.removeTapOnBus(0u)
+            eng.stop()
+            engine = null
+            encoder.close()
+            aacEncoder = null
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=AAC")
+        }
     }
 
     @Suppress("RedundantSuspendModifier")
@@ -139,16 +213,23 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             it.stop()
         }
         engine = null
+        aacEncoder?.close()
+        aacEncoder = null
     }
 
     /** Test hook — verify the streamer accepts the configured codec without crashing. */
     fun configuredCodec(): AudioCodec = config.codec
 
-    private companion object {
+    companion object {
         const val SAMPLE_RATE_HZ: Double = 8000.0
         const val CHANNELS: UInt = 1u
         // 20 ms @ 8 kHz = 160 samples; matches Android streamG711 and the RTP packer.
         const val BUFFER_FRAMES: UInt = 160u
+
+        // T-B2-4:AAC 分支采样率 44.1 kHz(plan §3.2.2 Q5 决策);tap chunk 大小
+        // 882 samples ≈ 20 ms @ 44.1kHz(encoder 内部再累积到 1024 samples 触发 emit)
+        const val AAC_SAMPLE_RATE_HZ: Double = 44_100.0
+        const val AAC_BUFFER_FRAMES: UInt = 882u
     }
 }
 

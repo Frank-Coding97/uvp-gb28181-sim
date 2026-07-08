@@ -140,6 +140,55 @@ object IosCameraController {
     private var sampleCount: Long = 0L
 
     /**
+     * T-B1-6:HEVC 硬编能力启动时探测缓存。App 冷启一次,后续 SDP capability advertise
+     * 层 (`PlatformVideoCapabilities.ios`) 读这个字段决定是否 offer H.265。
+     *
+     * 探测方式:尝试 `VTCompressionSessionCreate(kCMVideoCodecType_HEVC, 320x240)` +
+     * 立即 invalidate。status == 0 表示硬件支持,否则 false。任何 crash / 异常都视为
+     * 不支持(runCatching 兜底,R10 缓解)。
+     *
+     * 首次访问触发探测(lazy),之后走缓存。多线程首次并发访问可能触发两次探测,不影响
+     * 结果一致性(idempotent 探测)。
+     */
+    @Volatile
+    private var _hevcHwEncodeSupported: Boolean? = null
+
+    /** T-B1-6:硬编 HEVC 支持结果,首次读时探测,后续走缓存。 */
+    val hevcHwEncodeSupported: Boolean
+        get() {
+            _hevcHwEncodeSupported?.let { return it }
+            val result = probeHevcHwEncode()
+            _hevcHwEncodeSupported = result
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "IOS_HEVC_HW_ENCODE_PROBE supported=$result",
+            )
+            return result
+        }
+
+    /**
+     * T-B1-6:实际的 HEVC 硬编探测。构建一个最小尺寸 VT session,create 成功则支持,
+     * 立即 Invalidate 释放。整段 runCatching 包一层,exception → 不支持。
+     */
+    private fun probeHevcHwEncode(): Boolean = runCatching {
+        HevcHwProbe.probe()
+    }.getOrElse {
+        SystemLogger.emit(
+            LogLevel.Warning, LogTag.Media,
+            "IOS_HEVC_HW_ENCODE_PROBE_EXCEPTION msg=${it.message} fallback=unsupported",
+        )
+        false
+    }
+
+    /**
+     * 测试可注入的探测结果覆盖 —— 仅 iosTest 使用,让 `HevcHwEncodeProbeTest` 能覆盖
+     * 硬件缺失场景。不做同步锁(测试单线程调用)。
+     */
+    internal fun overrideHevcHwEncodeSupportedForTest(value: Boolean?) {
+        _hevcHwEncodeSupported = value
+    }
+
+    /**
      * T-P2-2:frames 广播 SharedFlow。EncodingSession 产 H264Frame 后回调本 controller,
      * 一路 tryEmit 到 _frames(所有 EncodingHandle.frames 订阅者共享),一路 forward 到
      * [IosRecordingFrameBridge](保 v1.2 recording sink 语义)。
