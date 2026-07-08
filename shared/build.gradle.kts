@@ -5,14 +5,11 @@ plugins {
 }
 
 kotlin {
+    jvmToolchain(17)
+
     jvm()  // 提供 JVM target 方便跑 commonTest 单元测试
 
     androidTarget {
-        compilations.all {
-            kotlinOptions {
-                jvmTarget = "17"
-            }
-        }
     }
 
     listOf(

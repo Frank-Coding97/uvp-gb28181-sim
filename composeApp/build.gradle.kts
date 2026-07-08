@@ -6,12 +6,9 @@ plugins {
 }
 
 kotlin {
+    jvmToolchain(17)
+
     androidTarget {
-        compilations.all {
-            kotlinOptions {
-                jvmTarget = "17"
-            }
-        }
     }
 
     listOf(
