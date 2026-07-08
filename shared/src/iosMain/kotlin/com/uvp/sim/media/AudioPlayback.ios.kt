@@ -46,6 +46,19 @@ actual class AudioPlayback actual constructor(
     private var format: AVAudioFormat? = null
 
     actual fun start() {
+        // T-E1-2:先激活 AVAudioSession `.playback`(defaultToSpeaker) 让 AVAudioEngine
+        // 有输出 route。失败降级到系统默认 session(可能仍有声,可能没),不阻断后续 engine.start。
+        BroadcastAudioSession.activate(sampleRate, channelCount)
+
+        // T-E1-3 采样率转换决策(2026-07-07):
+        //
+        // 8kHz PCM Int16 直接 attach 到 mainMixerNode 走 AVAudioEngine 内建 auto-resampling。
+        // - iOS 13+ AVAudioEngine 会用 mainMixerNode.outputFormat.sampleRate(通常 44.1kHz)
+        //   自动上采样,不需要业务层挂 AVAudioConverter。
+        // - spike(T-E1-0)证实 8kHz PCM 走这条路径不 throw + PlayerNode.play 返回。
+        // - Android 上 AudioTrack(8kHz)是硬件直连,不需要 resample。iOS 交给 mixer 效果类似。
+        //
+        // 若真机联调(T-E3-4)发现破音 / 变速,回填 AVAudioConverter(8kHz → 44.1kHz)方案。
         runCatching {
             val eng = AVAudioEngine()
             val node = AVAudioPlayerNode()
@@ -133,6 +146,9 @@ actual class AudioPlayback actual constructor(
         engine = null
         playerNode = null
         format = null
+        // T-E1-2:deactivate 与 activate 配对,让其他 audio app 能 resume。
+        // 幂等,活跃计数在 BroadcastAudioSession 内部管。
+        BroadcastAudioSession.deactivate()
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             "IOS_PLAYBACK_STOP sr=$sampleRate ch=$channelCount",
