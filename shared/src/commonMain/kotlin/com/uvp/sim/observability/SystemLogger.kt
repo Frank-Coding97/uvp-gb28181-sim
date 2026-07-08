@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
+import kotlin.concurrent.Volatile
 
 /**
  * 系统日志全局入口。
@@ -45,6 +46,15 @@ object SystemLogger {
 
     val flow: SharedFlow<SystemLog> get() = _flow.asSharedFlow()
     val snapshot: List<SystemLog> get() = buffer.snapshot()
+
+    /**
+     * 诊断计数:emit 被调用的**累计次数**(在 trySend 之前自增,不受 Channel DROP_OLDEST 影响)。
+     * 用途:iOS 卡死排查——后台心跳读它的 delta 判断是否发生"日志风暴"淹没主线程收集器。
+     * 非原子自增(多线程可能少计),但只用于探测数量级(几千/秒),精度足够。
+     */
+    @Volatile
+    private var emitCallCount: Long = 0
+    val emitCount: Long get() = emitCallCount
 
     private fun newChannel() = Channel<Command>(
         capacity = CHANNEL_CAPACITY,
@@ -116,6 +126,7 @@ object SystemLogger {
         detail: String? = null,
         category: ErrorCategory? = null,
     ) {
+        emitCallCount += 1
         channel.trySend(Command.Emit(level, tag, message, detail, category))
     }
 

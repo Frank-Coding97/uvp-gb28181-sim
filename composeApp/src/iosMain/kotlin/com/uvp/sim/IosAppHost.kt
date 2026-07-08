@@ -73,6 +73,15 @@ object IosAppHost {
     @Volatile private var lastMainThreadAckMs: Long = -1L
     @Volatile private var lastMainThreadStallLogMs: Long = -1L
 
+    /**
+     * 诊断计数:IosApp 根 composable 的重组次数(SideEffect 每次成功重组 +1)。
+     * 心跳读它的 delta 判断主线程是被"重组风暴"占死(暴涨)还是"阻塞调用"卡死(不动)。
+     */
+    @Volatile var recomposeCount: Long = 0
+        private set
+
+    internal fun incRecompose() { recomposeCount += 1 }
+
     /** NetworkController (Wave 1 A4, NWPathMonitor)。IosAppHost 起时装,close 由进程退出兜底。 */
     val networkController: NetworkController = NetworkController()
 
@@ -120,8 +129,20 @@ object IosAppHost {
     private fun startDiagnosticsHeartbeat() {
         diagnosticsHeartbeatJob?.cancel()
         diagnosticsHeartbeatJob = hostScope.launch {
+            var prevEmitCount = SystemLogger.emitCount
+            var prevRecomposeCount = recomposeCount
+            var prevTickMs = Clock.System.now().toEpochMilliseconds()
             while (isActive) {
                 delay(30_000L)
+                val nowTickMs = Clock.System.now().toEpochMilliseconds()
+                val elapsedSec = ((nowTickMs - prevTickMs).coerceAtLeast(1L)) / 1000.0
+                val curEmit = SystemLogger.emitCount
+                val curRecompose = recomposeCount
+                val emitRate = ((curEmit - prevEmitCount) / elapsedSec).toLong()
+                val recomposeRate = ((curRecompose - prevRecomposeCount) / elapsedSec).toLong()
+                prevEmitCount = curEmit
+                prevRecomposeCount = curRecompose
+                prevTickMs = nowTickMs
                 val svc = engine.currentRecordingService()
                 SystemLogger.emit(
                     com.uvp.sim.observability.LogLevel.Debug,
@@ -137,6 +158,9 @@ object IosAppHost {
                         append(" cameraSampleCount=").append(IosCameraController.sampleCount())
                         append(" recLastFeedMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoFeedAtMs() ?: -1L)
                         append(" recLastAppendMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoAppendAtMs() ?: -1L)
+                        append(" memMb=").append(IosMemoryProbe.physFootprintMb())
+                        append(" emitRate=").append(emitRate).append("/s")
+                        append(" recomposeRate=").append(recomposeRate).append("/s")
                         append(" logs=").append(SystemLogger.snapshot.size)
                     }
                 )
@@ -161,7 +185,8 @@ object IosAppHost {
                     SystemLogger.emit(
                         com.uvp.sim.observability.LogLevel.Warning,
                         LogTag.Media,
-                        "IOS_MAIN_THREAD_STALL probeSentAt=$probeSentAt lastAckMs=$ack ackLagMs=$ackLagMs"
+                        "IOS_MAIN_THREAD_STALL probeSentAt=$probeSentAt lastAckMs=$ack ackLagMs=$ackLagMs " +
+                            "memMb=${IosMemoryProbe.physFootprintMb()}"
                     )
                 }
                 delay(1_000L)
@@ -184,6 +209,9 @@ object IosAppHost {
 
 @Composable
 fun IosApp() {
+    // 诊断:每次根 composable 重组 +1,心跳读 delta 判断是否重组风暴。
+    androidx.compose.runtime.SideEffect { IosAppHost.incRecompose() }
+
     val engine = IosAppHost.appEngine
     val scope = IosAppHost.scope
 
