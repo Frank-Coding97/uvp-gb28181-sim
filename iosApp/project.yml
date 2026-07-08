@@ -63,6 +63,10 @@ targets:
         # 真机装机(v1.1 T15):Automatic 签名,Xcode 打开后手动选 Personal Team。
         # Personal Team provisioning profile 7 天有效,过期插 USB ⌘R 重装即可。
         CODE_SIGN_STYLE: Automatic
+        # 老板个人 Personal Team ID(security find-identity 输出括号内那串)。
+        # xcodegen 每次重生成 pbxproj 都会用这个值,不再被历史遗留的 WQP89BUR2M 覆盖。
+        # 开源发版前需替换 / 删除此行(每人用自己 team)。
+        DEVELOPMENT_TEAM: CD3WR5D4U8
         # KMP-produced framework path. Only ComposeApp.framework — it
         # re-exports :shared so we don't init the Kotlin runtime twice
         # (F3 fix, see overnight report).
