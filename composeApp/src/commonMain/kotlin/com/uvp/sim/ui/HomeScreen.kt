@@ -39,11 +39,15 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
             .padding(start = 12.dp, end = 12.dp, top = 12.dp, bottom = 12.dp + extraBottom),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // 顶部 banner:状态 + 注册 CTA 合一,首屏一眼可见
-        StatusBanner(
-            state = state, actions = actions,
-            onFeedback = { msg -> toast.info(msg) }
-        )
+        // 顶部 banner: iOS 内联注册 CTA(HIG "状态即操作"); Android 只显示状态,注册按钮走底部独立块。
+        if (isTopStatusCtaInlined) {
+            StatusBanner(
+                state = state, actions = actions,
+                onFeedback = { msg -> toast.info(msg) }
+            )
+        } else {
+            StatusBanner(state = state)
+        }
         BroadcastIndicator(state, actions)
         CameraPreviewBox(state)
         SipConfigCard(state, actions, onFeedback = { msg ->
@@ -52,6 +56,11 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         ActionButtons(state, actions, onFeedback = { msg ->
             toast.success(msg)
         })
-        // 底部 ConnectButton 已合并进 StatusBanner 右侧,不再单独显示
+        // Android / desktop: 保留底部独立 ConnectButton(Material 传统习惯)
+        if (!isTopStatusCtaInlined) {
+            ConnectButton(state, actions, onFeedback = { msg ->
+                toast.info(msg)
+            })
+        }
     }
 }

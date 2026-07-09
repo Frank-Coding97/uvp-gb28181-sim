@@ -20,3 +20,14 @@ expect val isNetworkSelectionSupported: Boolean
  * 用途:[com.uvp.sim.ui.App] 选择 Column 布局(docked)vs Box 布局(floating)。
  */
 expect val isFloatingBottomBar: Boolean
+
+/**
+ * 主屏顶部 status banner 是否内联"注册 CTA"。
+ *
+ * - iOS: true —— iOS HIG "status-as-action" pattern,注册按钮做成 banner 右侧胶囊
+ * - Android / JVM: false —— 传统底部独立 ConnectButton
+ *
+ * 用途:[HomeScreen] 按平台选布局;iOS 首屏空间紧不能被 SIP 配置卡挤下去,
+ *   Android 有更多垂直空间,底部按钮更符合 Material 习惯。
+ */
+expect val isTopStatusCtaInlined: Boolean
