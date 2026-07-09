@@ -243,7 +243,12 @@ internal class BroadcastCoordinatorImpl(
         val inviteCseq = 1
         val invite = SipBuilders.buildOutboundInvite(
             config = config,
-            localId = targetId,
+            // From/Contact/Subject 的设备侧 ID 用 deviceId(不是 channelId),
+            // WVP 侧 InviteRequestProcessor.443 就是靠这个反查 device 的;
+            // 之前误传 targetId(channelId)导致 "requesterId 34020000001320000001/34020000001320000001"
+            // 两个 ID 相同 → WVP 把 INVITE 忽略 → 等 5s 后返回 403。
+            localId = config.device.deviceId,
+            channelId = targetId,
             platformUri = platformUri,
             sourceId = sourceId,
             deviceSsrc = deviceSsrc,

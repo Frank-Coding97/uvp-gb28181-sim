@@ -56,9 +56,10 @@ object SipInviteBuilders {
      */
     fun buildOutboundInvite(
         config: SimConfig,
-        localId: String,
+        localId: String,       // 设备侧路由用的 ID(From/Contact),GB28181 里应传 deviceId
+        channelId: String,     // 推流通道 ID(Subject 里的 senderId),语音广播 = targetId
         platformUri: String,
-        sourceId: String,
+        sourceId: String,      // 平台侧 ID(Subject 里的 receiverId)
         deviceSsrc: String,
         sdpBody: String,
         localIp: String,
@@ -81,7 +82,9 @@ object SipInviteBuilders {
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "$cseq INVITE"),
                 SipMessage.Header(SipHeader.CONTACT, "<sip:$localId@$localIp:$localPort>"),
-                SipMessage.Header(SipHeader.SUBJECT, "$sourceId:0,$localId:$deviceSsrc"),
+                // GB28181 §9.2 Subject 格式:`{senderId}:{ssrc},{receiverId}:0`
+                // 语音广播反向 INVITE:senderId = 设备侧通道(channelId), receiverId = 平台 ID
+                SipMessage.Header(SipHeader.SUBJECT, "$channelId:$deviceSsrc,$sourceId:0"),
                 SipMessage.Header(SipHeader.CONTENT_TYPE, "application/sdp"),
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
                 SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),

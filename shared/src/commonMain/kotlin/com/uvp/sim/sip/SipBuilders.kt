@@ -45,10 +45,10 @@ object SipBuilders {
     ): SipResponse = SipInviteBuilders.buildInvite200WithSdp(invite, deviceContact, toTag, sdpBody, userAgent, subject)
 
     fun buildOutboundInvite(
-        config: SimConfig, localId: String, platformUri: String, sourceId: String, deviceSsrc: String, sdpBody: String,
+        config: SimConfig, localId: String, channelId: String, platformUri: String, sourceId: String, deviceSsrc: String, sdpBody: String,
         localIp: String, localPort: Int, cseq: Int, callId: String, branch: String, fromTag: String
     ): SipRequest = SipInviteBuilders.buildOutboundInvite(
-        config, localId, platformUri, sourceId, deviceSsrc, sdpBody, localIp, localPort, cseq, callId, branch, fromTag
+        config, localId, channelId, platformUri, sourceId, deviceSsrc, sdpBody, localIp, localPort, cseq, callId, branch, fromTag
     )
 
     fun buildOutboundAck(
