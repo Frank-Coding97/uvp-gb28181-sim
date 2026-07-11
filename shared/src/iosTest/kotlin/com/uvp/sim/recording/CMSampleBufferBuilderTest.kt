@@ -16,13 +16,8 @@ class CMSampleBufferBuilderTest {
 
         val payload = builder.buildAvccPayload(listOf(sps, idr))
 
-        assertBytes(
-            byteArrayOf(
-                0, 0, 0, 3, 0x67, 0x11, 0x22,
-                0, 0, 0, 4, 0x65, 0x33, 0x44, 0x55,
-            ),
-            payload,
-        )
+        // SPS/PPS are carried by sourceFormatHint; AVCC sample payload keeps slice NALs only.
+        assertBytes(byteArrayOf(0, 0, 0, 4, 0x65, 0x33, 0x44, 0x55), payload)
     }
 
     @Test
