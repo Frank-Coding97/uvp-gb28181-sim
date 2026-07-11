@@ -346,6 +346,15 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
 
     @Suppress("RedundantSuspendModifier")
     suspend fun stop() {
+        stopSync()
+    }
+
+    /**
+     * Non-suspend variant so [AudioCapture.applyConfig] (called from a non-coroutine context)
+     * can shut down the previous engine before spawning a new one. Matches the previous
+     * suspend body 1:1 — no I/O, all AVAudioEngine calls are synchronous.
+     */
+    internal fun stopSync() {
         engine?.let {
             it.inputNode.removeTapOnBus(0u)
             it.stop()

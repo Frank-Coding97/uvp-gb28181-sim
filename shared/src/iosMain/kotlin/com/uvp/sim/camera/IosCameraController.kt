@@ -1,6 +1,7 @@
 package com.uvp.sim.camera
 
 import com.uvp.sim.api.LogTag
+import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
 import kotlinx.cinterop.ExperimentalForeignApi
@@ -24,7 +25,9 @@ import kotlin.time.Clock
 import kotlin.coroutines.suspendCoroutine
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
+import platform.AVFoundation.AVCaptureDevicePosition
 import platform.AVFoundation.AVCaptureDevicePositionBack
+import platform.AVFoundation.AVCaptureDevicePositionFront
 import platform.AVFoundation.AVCaptureDeviceTypeBuiltInWideAngleCamera
 import platform.AVFoundation.AVCaptureSession
 import platform.AVFoundation.AVCaptureSessionPreset1280x720
@@ -100,6 +103,22 @@ object IosCameraController {
     private var sampleDelegate: CameraSampleDelegate? = null
 
     /**
+     * 当前 AVCaptureSession 上挂着的物理设备(前置 或 后置)。
+     * `switchFacing` / `applyRuntimeConfig` 需要复用它对活跃设备重新 lockForConfiguration
+     * 调帧率,或直接 removeInput 换朝向。preview 未启时为 null。
+     */
+    @Volatile
+    private var activeDevice: AVCaptureDevice? = null
+
+    /**
+     * 当前摄像头朝向。跟 Android [com.uvp.sim.camera.AndroidCameraStreamer.currentFacing]
+     * 对齐:setFacing 同步更新此字段(观察者立刻可读),真正的 session 切换 dispatch 到
+     * [sessionQueue] 异步执行。preview 未启时仍持"目标朝向",下一次 startPreview 应用。
+     */
+    @Volatile
+    private var currentFacing: CameraFacing = CameraFacing.BACK
+
+    /**
      * 最近一帧 CVImageBufferRef(delegate 每帧原子替换,旧值 CFRelease)。
      * 生命周期同 v1.2 [IosCameraStreamer.latestFrame],语义完全对齐。
      */
@@ -128,6 +147,12 @@ object IosCameraController {
      */
     @Volatile
     private var encodingSession: EncodingSession? = null
+
+    private val defaultOsdConfigFlow: StateFlow<OsdConfig> =
+        MutableStateFlow(OsdConfig()).asStateFlow()
+
+    @Volatile
+    private var osdConfigFlow: StateFlow<OsdConfig> = defaultOsdConfigFlow
 
     /**
      * T-P2-2:force-key 请求 pending 标志。requestKeyFrame 置 true,delegate.onSample 下一帧
@@ -189,6 +214,49 @@ object IosCameraController {
      */
     internal fun overrideHevcHwEncodeSupportedForTest(value: Boolean?) {
         _hevcHwEncodeSupported = value
+    }
+
+    /** 测试专用:当前朝向(setFacing / applyRuntimeConfig 同步更新)。 */
+    internal fun currentFacingForTest(): CameraFacing = currentFacing
+
+    /** 测试专用:当前 config snapshot(applyRuntimeConfig 同步更新)。 */
+    internal fun currentConfigForTest(): CaptureConfig? = currentConfig
+
+    /**
+     * 测试专用:把 preview / encoding 未跑场景下的可变字段(currentFacing / currentConfig)重置到
+     * 默认。跨 test 隔离用。preview 若在跑必须先 stopPreview。
+     */
+    internal fun resetPendingStateForTest() {
+        currentFacing = CameraFacing.BACK
+        currentConfig = null
+    }
+
+    /** Install the host-owned OSD flow. Existing sessions observe its hot updates. */
+    internal fun installOsdConfigFlow(flow: StateFlow<OsdConfig>) {
+        if (osdConfigFlow === flow) return
+        osdConfigFlow = flow
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_CAMERA_CONTROLLER_OSD_FLOW_INSTALLED",
+        )
+    }
+
+    internal fun osdConfigFlowForEncoding(): StateFlow<OsdConfig> = osdConfigFlow
+
+    /** Read-only OSD source for the native preview overlay. */
+    val previewOsdConfigFlow: StateFlow<OsdConfig>
+        get() = osdConfigFlow
+
+    /** Current encoded canvas used to scale the native preview OSD. */
+    fun previewOutputSize(): Pair<Int, Int> {
+        val config = currentConfig
+        return (config?.widthPx ?: 1280) to (config?.heightPx ?: 720)
+    }
+
+    internal fun osdConfigFlowForTest(): StateFlow<OsdConfig> = osdConfigFlow
+
+    internal fun resetOsdConfigFlowForTest() {
+        osdConfigFlow = defaultOsdConfigFlow
     }
 
     /**
@@ -266,9 +334,10 @@ object IosCameraController {
             )
             return@withLock
         }
+        currentFacing = config.cameraFacing
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "IOS_CAMERA_CONTROLLER_PREVIEW_START ${config.widthPx}x${config.heightPx}@${config.frameRate}"
+            "IOS_CAMERA_CONTROLLER_PREVIEW_START ${config.widthPx}x${config.heightPx}@${config.frameRate} facing=${config.cameraFacing}"
         )
         val wired = onSessionQueue {
             wireAndStartCaptureSession(config)
@@ -277,7 +346,7 @@ object IosCameraController {
             currentConfig = config
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_PREVIEW_RUNNING"
+                "IOS_CAMERA_CONTROLLER_PREVIEW_RUNNING facing=$currentFacing"
             )
         } else {
             SystemLogger.emit(
@@ -289,10 +358,76 @@ object IosCameraController {
     }
 
     /**
+     * 运行期切换前 / 后置摄像头,fire-and-forget。跟 Android [com.uvp.sim.camera.AndroidCameraStreamer.setFacing]
+     * 语义对齐:同值 no-op;不同值 → 更新 [currentFacing] 后 dispatch 到 [sessionQueue],
+     * 若 session 已建则 beginConfiguration → removeInput → addInput(新朝向) → commitConfiguration。
+     *
+     * 不 tear down [encodingSession] —— VTCompressionSession 只关心像素 buffer,换朝向对它透明,
+     * 已发出去的 [EncodingHandle.frames] 订阅者会无缝继续拿到新朝向的编码帧。
+     *
+     * Simulator 或缺前摄的机型:defaultDeviceWithDeviceType 返回 null → 保留旧 input,log warning。
+     */
+    fun switchFacing(facing: CameraFacing) {
+        if (currentFacing == facing) return
+        currentFacing = facing
+        // preview 尚未启:仅记录目标,startPreview 时会用新值
+        if (captureSession == null) {
+            SystemLogger.emit(
+                LogLevel.Debug, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_SWITCH_FACING_PENDING facing=$facing (preview 未启,startPreview 时应用)"
+            )
+            return
+        }
+        dispatch_async(sessionQueue) {
+            reconfigureFacingOnQueue(facing)
+        }
+    }
+
+    /**
+     * 运行期改分辨率 / 帧率 / 码率 / GOP / codec / 朝向。跟 Android
+     * [com.uvp.sim.camera.AndroidCameraStreamer.applyCaptureConfig] 对齐,fire-and-forget。
+     *
+     * 语义分层:
+     * - 同值 short-circuit
+     * - 更新 [currentConfig] 后 dispatch 到 [sessionQueue]:
+     *   - 分辨率变 → session preset 换档 + 若 encoding active 则 VT session 重建(重建前 emit warning
+     *     日志方便定位卡顿)
+     *   - 朝向变 → removeInput / addInput
+     *   - 帧率变 → 若朝向未变,复用 [activeDevice] 直接 lockForConfiguration 换 min/max frame duration
+     *   - 码率 / GOP / codec 变 → 若 encoding active 则重建 VT session(inline VTSetProperty 只能改
+     *     bitrate,codec / GOP 需要重建;为了行为一致这里一律重建)
+     * - preview 未启:仅缓存,startPreview / requestEncoding 首触时会读到新值
+     */
+    fun applyRuntimeConfig(new: CaptureConfig) {
+        val old = currentConfig
+        if (old != null && old == new) return
+        currentConfig = new
+        currentFacing = new.cameraFacing
+        // preview 未启:currentConfig 已更新,startPreview 时会用新值,requestEncoding 首触
+        // 也会用最新 config 建 VT session。不 dispatch。
+        if (captureSession == null) {
+            SystemLogger.emit(
+                LogLevel.Debug, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_APPLY_RUNTIME_CONFIG_PENDING preview 未启,配置已更新等下次 startPreview"
+            )
+            return
+        }
+        dispatch_async(sessionQueue) {
+            reconfigureCaptureOnQueue(old = old, new = new)
+        }
+    }
+
+    /**
      * 停止 preview,释放 session + delegate + latest frame。幂等(未运行 no-op)。
      */
     suspend fun stopPreview() = mutex.withLock {
-        val session = captureSession ?: return@withLock
+        val session = captureSession
+        if (session == null) {
+            // Encoding handles may be reserved before preview is wired. They still
+            // need the same generation invalidation semantics as a live session.
+            forceEncodingReset()
+            return@withLock
+        }
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_CAMERA_CONTROLLER_PREVIEW_STOP")
         onSessionQueue {
             if (session.isRunning()) {
@@ -371,19 +506,21 @@ object IosCameraController {
             if (cfg == null) {
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Media,
-                    "IOS_CAMERA_CONTROLLER_ENCODING_START_NO_CONFIG preview 未启,encoding 无 config"
+                    "IOS_CAMERA_CONTROLLER_ENCODING_START_NO_CONFIG preview 未启,using lifecycle-only fallback"
                 )
-                // Fix #1:rollback refCount 并返回 NoOp handle。之前返回绑定 gen 的
-                // EncodingHandleImpl 会让 handle.close 通过 generation 匹配把 refCount 减到 -1。
-                encodingRefCount = 0
-                return NoOpEncodingHandle
+                // Keep the pre-VT lifecycle contract for callers/tests that reserve an
+                // encoding handle before preview is wired. No frames are encoded without
+                // a config, but ref-count/generation semantics remain observable.
+                _encodingActive.value = true
+                return EncodingHandleImpl(generation = gen)
             }
             // 2026-07-09 sample buffer 走 sensor 原生 LandscapeRight(1280×720),VT 保持
             // 1280×720 直接对齐 buffer 尺寸,推流跟 Android 一致 landscape 1280×720。
-            val session = EncodingSession(cfg) { frame ->
-                _frames.tryEmit(frame)
-                IosRecordingFrameBridge.onVideoFrame(frame)  // 保 v1.2 recording sink 语义
-            }
+            val session = EncodingSession(
+                config = cfg,
+                osdConfigFlow = osdConfigFlow,
+                onFrame = ::emitEncodedFrame,
+            )
             if (!session.start()) {
                 SystemLogger.emit(
                     LogLevel.Error, LogTag.Media,
@@ -543,26 +680,7 @@ object IosCameraController {
     }
 
     private fun wireAndStartCaptureSession(config: CaptureConfig): Boolean {
-        val builtInWideAngle = AVCaptureDeviceTypeBuiltInWideAngleCamera
-            ?: run {
-                SystemLogger.emit(
-                    LogLevel.Error, LogTag.Media,
-                    "AVCaptureDeviceTypeBuiltInWideAngleCamera constant null - SDK mismatch"
-                )
-                return false
-            }
-        val device: AVCaptureDevice? = AVCaptureDevice.defaultDeviceWithDeviceType(
-            deviceType = builtInWideAngle,
-            mediaType = AVMediaTypeVideo,
-            position = AVCaptureDevicePositionBack,
-        )
-        if (device == null) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "AVCaptureDevice back-camera lookup returned null (Simulator or restricted?)"
-            )
-            return false
-        }
+        val device = lookupDeviceForFacing(config.cameraFacing) ?: return false
 
         val input: AVCaptureDeviceInput = memScoped {
             val errPtr = alloc<ObjCObjectVar<NSError?>>()
@@ -638,8 +756,196 @@ object IosCameraController {
         captureInput = input
         captureOutput = output
         sampleDelegate = delegate
+        activeDevice = device
         _session.value = session
         return true
+    }
+
+    /**
+     * 按朝向解析物理 [AVCaptureDevice]。SDK 常量缺失 / Simulator 无摄像头时返回 null 并 emit error log。
+     */
+    private fun lookupDeviceForFacing(facing: CameraFacing): AVCaptureDevice? {
+        val builtInWideAngle = AVCaptureDeviceTypeBuiltInWideAngleCamera
+        if (builtInWideAngle == null) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "AVCaptureDeviceTypeBuiltInWideAngleCamera constant null - SDK mismatch"
+            )
+            return null
+        }
+        val position: AVCaptureDevicePosition = when (facing) {
+            CameraFacing.FRONT -> AVCaptureDevicePositionFront
+            CameraFacing.BACK -> AVCaptureDevicePositionBack
+        }
+        val device = AVCaptureDevice.defaultDeviceWithDeviceType(
+            deviceType = builtInWideAngle,
+            mediaType = AVMediaTypeVideo,
+            position = position,
+        )
+        if (device == null) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "AVCaptureDevice lookup returned null facing=$facing (Simulator or restricted?)"
+            )
+        }
+        return device
+    }
+
+    /**
+     * dispatched onto [sessionQueue]:把当前 [captureSession] 上挂着的 [captureInput] 换成新朝向的。
+     * 失败(找不到新设备 / addInput 被拒)时保留旧 input 继续跑,并把 [currentFacing] 回滚到旧值。
+     */
+    private fun reconfigureFacingOnQueue(target: CameraFacing) {
+        val session = captureSession ?: return
+        val previousFacing = when (target) {
+            CameraFacing.FRONT -> CameraFacing.BACK
+            CameraFacing.BACK -> CameraFacing.FRONT
+        }
+        val oldInput = captureInput
+        val newDevice = lookupDeviceForFacing(target) ?: run {
+            // 回滚 —— 保留旧 input 语义,让上层日志能看到
+            currentFacing = previousFacing
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_SWITCH_FACING_FAIL target=$target device lookup null; keeping current input"
+            )
+            return
+        }
+        val newInput: AVCaptureDeviceInput = memScoped {
+            val errPtr = alloc<ObjCObjectVar<NSError?>>()
+            val created = AVCaptureDeviceInput.deviceInputWithDevice(newDevice, errPtr.ptr)
+            if (created == null) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_CAMERA_CONTROLLER_SWITCH_FACING_INPUT_FAIL target=$target " +
+                        (errPtr.value?.localizedDescription ?: "unknown")
+                )
+                currentFacing = previousFacing
+                return@reconfigureFacingOnQueue
+            }
+            created
+        }
+
+        session.beginConfiguration()
+        var committed = false
+        try {
+            if (oldInput != null) session.removeInput(oldInput)
+            if (!session.canAddInput(newInput)) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_CAMERA_CONTROLLER_SWITCH_FACING_REJECTED target=$target session.canAddInput=false; restoring old"
+                )
+                if (oldInput != null) session.addInput(oldInput)
+                currentFacing = previousFacing
+                return
+            }
+            session.addInput(newInput)
+            captureInput = newInput
+            activeDevice = newDevice
+            currentConfig?.let { configureCaptureFrameRate(newDevice, it.frameRate) }
+            committed = true
+        } finally {
+            session.commitConfiguration()
+        }
+        if (committed) {
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_SWITCH_FACING_DONE facing=$target"
+            )
+        }
+    }
+
+    /**
+     * dispatched onto [sessionQueue]:对比 [old] / [new] 差分:
+     * - 分辨率 / preset:beginConfiguration + sessionPreset 换档
+     * - 朝向:走 [reconfigureFacingOnQueue] 同款路径(inline 展开避免嵌套 dispatch)
+     * - 帧率:复用 [activeDevice] 直接 lockForConfiguration 换 min/max frame duration
+     * - encoding 参数 / codec:若 encoding active 则重建 [EncodingSession](保留 handle refCount /
+     *   generation,不影响外部消费方)
+     */
+    private fun reconfigureCaptureOnQueue(old: CaptureConfig?, new: CaptureConfig) {
+        val session = captureSession ?: return
+
+        val facingChanged = old?.cameraFacing != new.cameraFacing
+        val resolutionChanged = old == null || old.widthPx != new.widthPx || old.heightPx != new.heightPx
+        val frameRateChanged = old == null || old.frameRate != new.frameRate
+        val encodingParamsChanged = old == null ||
+            old.bitrateBps != new.bitrateBps ||
+            old.keyframeIntervalSeconds != new.keyframeIntervalSeconds ||
+            old.videoCodec != new.videoCodec ||
+            old.widthPx != new.widthPx ||
+            old.heightPx != new.heightPx ||
+            old.frameRate != new.frameRate
+
+        if (resolutionChanged || frameRateChanged) {
+            session.beginConfiguration()
+            try {
+                if (resolutionChanged) {
+                    session.sessionPreset = pickSessionPreset(new.widthPx, new.heightPx)
+                }
+                if (frameRateChanged && !facingChanged) {
+                    // facing 会顺带调 frame rate;避免重复 lockForConfiguration
+                    activeDevice?.let { configureCaptureFrameRate(it, new.frameRate) }
+                }
+            } finally {
+                session.commitConfiguration()
+            }
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_APPLY_RUNTIME_CONFIG_SESSION " +
+                    "${new.widthPx}x${new.heightPx}@${new.frameRate} preset=${pickSessionPreset(new.widthPx, new.heightPx)}"
+            )
+        }
+
+        if (facingChanged) {
+            reconfigureFacingOnQueue(new.cameraFacing)
+        }
+
+        // encoding 侧:只在已 active 时重建,否则下一次 requestEncoding 会自然读 currentConfig
+        val runningEncoding = encodingSession
+        if (encodingParamsChanged && runningEncoding != null) {
+            rebuildEncodingSessionOnQueue(new)
+        }
+    }
+
+    /**
+     * 用新 [config] 重建 VT 编码 session。旧 session invalidate,新 session start;失败时清空并把
+     * [_encodingActive] 置 false(refCount / generation 保留,handle.close 走 stale 路径)。
+     */
+    private fun rebuildEncodingSessionOnQueue(config: CaptureConfig) {
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_CAMERA_CONTROLLER_REBUILD_ENCODING codec=${config.videoCodec.label} " +
+                "${config.widthPx}x${config.heightPx}@${config.frameRate} " +
+                "bitrate=${config.bitrateBps} gopSec=${config.keyframeIntervalSeconds}"
+        )
+        encodingSession?.invalidate()
+        pendingForceKey = false
+        val fresh = EncodingSession(
+            config = config,
+            osdConfigFlow = osdConfigFlow,
+            onFrame = ::emitEncodedFrame,
+        )
+        if (!fresh.start()) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_REBUILD_ENCODING_FAIL VT create failed; encoding halted"
+            )
+            encodingSession = null
+            _encodingActive.value = false
+            return
+        }
+        encodingSession = fresh
+        _encodingActive.value = true
+    }
+
+    /**
+     * 把编码后的 [H264Frame] 广播到 [_frames] 并转发到录像 sink。旧写法在 requestEncoding /
+     * rebuildEncodingSessionOnQueue 都要 inline 一份 lambda,提出来避免漂移。
+     */
+    private fun emitEncodedFrame(frame: H264Frame) {
+        _frames.tryEmit(frame)
+        IosRecordingFrameBridge.onVideoFrame(frame)
     }
 
     private fun pickSessionPreset(width: Int, height: Int): String {
@@ -704,6 +1010,7 @@ object IosCameraController {
         captureInput = null
         captureOutput = null
         sampleDelegate = null
+        activeDevice = null
         _session.value = null
         currentConfig = null
 

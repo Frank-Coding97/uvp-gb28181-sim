@@ -1,6 +1,8 @@
 package com.uvp.sim.camera
 
 import com.uvp.sim.media.VideoCodec
+import com.uvp.sim.config.OsdConfig
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -17,7 +19,7 @@ class EncodingSessionCodecTest {
     @Test
     fun encodingSession_exposes_h264_codec_from_config() {
         val config = CaptureConfig(videoCodec = VideoCodec.H264)
-        val session = EncodingSession(config = config, onFrame = { /* no-op */ })
+        val session = EncodingSession(config = config, osdConfigFlow = MutableStateFlow(OsdConfig()), onFrame = { /* no-op */ })
         try {
             assertEquals(VideoCodec.H264, session.videoCodec, "videoCodec 字段应从 config.videoCodec 读")
         } finally {
@@ -28,7 +30,7 @@ class EncodingSessionCodecTest {
     @Test
     fun encodingSession_exposes_h265_codec_from_config() {
         val config = CaptureConfig(videoCodec = VideoCodec.H265)
-        val session = EncodingSession(config = config, onFrame = { /* no-op */ })
+        val session = EncodingSession(config = config, osdConfigFlow = MutableStateFlow(OsdConfig()), onFrame = { /* no-op */ })
         try {
             assertEquals(VideoCodec.H265, session.videoCodec, "videoCodec 字段应从 config.videoCodec 读")
         } finally {
@@ -39,7 +41,7 @@ class EncodingSessionCodecTest {
     @Test
     fun encodingSession_default_codec_is_h264() {
         val config = CaptureConfig() // 默认 H.264
-        val session = EncodingSession(config = config, onFrame = { /* no-op */ })
+        val session = EncodingSession(config = config, osdConfigFlow = MutableStateFlow(OsdConfig()), onFrame = { /* no-op */ })
         try {
             assertEquals(VideoCodec.H264, session.videoCodec)
         } finally {

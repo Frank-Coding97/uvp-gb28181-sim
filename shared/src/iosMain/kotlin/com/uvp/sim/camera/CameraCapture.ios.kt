@@ -44,9 +44,13 @@ actual class CameraCapture actual constructor(config: CaptureConfig) {
 
     internal fun applyConfig(config: CaptureConfig) {
         this.config = config
+        pendingFacing = config.cameraFacing
+        IosCameraController.applyRuntimeConfig(config)
     }
 
     internal fun configuredConfigForTest(): CaptureConfig = config
+
+    internal fun pendingFacingForTest(): CameraFacing = pendingFacing
 
     /**
      * Fix #4:改成 flow builder 让 collect 起手先阻塞等 preview 就位或 fail。
@@ -123,18 +127,15 @@ actual class CameraCapture actual constructor(config: CaptureConfig) {
     private var pendingFacing: CameraFacing = config.cameraFacing
 
     /**
-     * iOS v1.1/v1.3 只支持后置摄像头(plan DEC-4)。前置切换请求记录 pending 但不影响
-     * running session,warning log 让平台侧看到被忽略的指令。真双摄切换见 [dual-camera-channel]。
+     * 双真实通道(dual-camera-channel):把切换意图同步落到 [IosCameraController.switchFacing],
+     * 由 controller 在 sessionQueue 上重新 addInput 新朝向的 AVCaptureDeviceInput。
+     *
+     * Simulator / 缺前摄的机型:controller 内 lookupDeviceForFacing 返回 null → 保留旧 input +
+     * 回滚 currentFacing,不影响正在跑的 session。跟 Android 侧同款 fire-and-forget 语义。
      */
     actual fun setFacing(facing: CameraFacing) {
         pendingFacing = facing
-        if (facing != CameraFacing.BACK) {
-            SystemLogger.emit(
-                level = LogLevel.Warning,
-                tag = LogTag.Media,
-                message = "iOS only supports back camera; ignoring switch to $facing",
-                detail = "pending target recorded but not applied — dual-camera lands separately"
-            )
-        }
+        config = config.copy(cameraFacing = facing)
+        IosCameraController.switchFacing(facing)
     }
 }

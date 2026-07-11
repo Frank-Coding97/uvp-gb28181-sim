@@ -2,6 +2,7 @@ package com.uvp.sim.camera
 
 import cnames.structs.__CFString
 import com.uvp.sim.api.LogTag
+import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.media.AnnexB
 import com.uvp.sim.media.H264Frame
 import com.uvp.sim.media.MediaTimebase
@@ -66,6 +67,7 @@ import platform.VideoToolbox.kVTCompressionPropertyKey_RealTime
 import platform.VideoToolbox.kVTProfileLevel_HEVC_Main_AutoLevel
 import platform.posix.size_tVar
 import kotlin.concurrent.Volatile
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * v1.3-A T-P2-2:VTCompressionSession 生命周期封装。
@@ -88,6 +90,7 @@ import kotlin.concurrent.Volatile
 @OptIn(ExperimentalForeignApi::class)
 internal class EncodingSession(
     private val config: CaptureConfig,
+    internal val osdConfigFlow: StateFlow<OsdConfig>,
     private val onFrame: (H264Frame) -> Unit,
 ) {
     /**
@@ -105,7 +108,11 @@ internal class EncodingSession(
     @Volatile
     private var invalidated: Boolean = false
 
-    private val frameProcessor = IosFrameProcessor(config.widthPx, config.heightPx)
+    private val frameProcessor = IosFrameProcessor(
+        targetWidth = config.widthPx,
+        targetHeight = config.heightPx,
+        osdConfigFlow = osdConfigFlow,
+    )
 
     /**
      * 建 VT session + wire OUTPUT_CALLBACK。成功 return true,失败 return false 并已 emit error log。

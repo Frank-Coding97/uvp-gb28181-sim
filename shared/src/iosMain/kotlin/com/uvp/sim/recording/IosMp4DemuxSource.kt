@@ -15,12 +15,21 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readBytes
 import kotlinx.cinterop.readValue
+import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.value
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import platform.CoreFoundation.CFArrayGetCount
+import platform.CoreFoundation.CFArrayGetValueAtIndex
+import platform.CoreFoundation.CFArrayRef
+import platform.CoreFoundation.CFBooleanGetValue
+import platform.CoreFoundation.CFBooleanRef
+import platform.CoreFoundation.CFDictionaryGetValue
+import platform.CoreFoundation.CFDictionaryRef
+import platform.CoreMedia.kCMSampleAttachmentKey_NotSync
 import platform.AVFoundation.AVAsset
 import platform.AVFoundation.AVAssetReader
 import platform.AVFoundation.AVAssetReaderStatusCompleted
@@ -41,36 +50,35 @@ import platform.CoreMedia.CMSampleBufferRef
 import platform.CoreMedia.CMTimeMake
 import platform.CoreMedia.CMTimeRangeMake
 import platform.CoreMedia.CMVideoFormatDescriptionGetH264ParameterSetAtIndex
+import platform.CoreMedia.kCMTimePositiveInfinity
 import platform.CoreMedia.kCMTimeZero
 import platform.Foundation.NSURL
 import platform.posix.size_tVar
 
 /**
- * iOS MP4 demux via AVAssetReader (v1.1 T-demux).
+ * iOS MP4 demux via AVAssetReader.
  *
- * Interface [Mp4DemuxSource] is codec-agnostic; this impl targets H.264 +
- * AAC/G.711 which is what IosRecordingService writes (matches Android side).
+ * Codec-agnostic in interface; impl targets H.264 + AAC/G.711 (matches what
+ * IosRecordingService writes and Android AndroidMp4DemuxSource reads).
  *
  * ## Flow
  *
- * 1. [open] - build [AVAsset] from file URL, locate video / audio track, boot
- *    an [AVAssetReader]. Peeks first sample PTS for engine PTS-shift baseline.
- * 2. [frames] - cold Flow<MediaFrame>. On collect: iterates [AVAssetReaderTrackOutput]
- *    on both tracks, emits video/audio [MediaFrame] as they arrive. Video
- *    samples are AVCC-format `[len4][NAL]...`, split via [AnnexB.splitAvcc].
- *    IDR frames prepend SPS/PPS extracted from CMFormatDescription.
- * 3. [seekTo] - AVAssetReader is one-shot; we recreate it with a new
- *    `timeRange` and mark "needs SPS/PPS before next key frame" for the video
- *    consumer to re-attach parameter sets.
- * 4. [close] - cancel outstanding readers, drop refs.
- *
- * ## Limits (v1.1)
- *
- * - Audio track raw-copy: no decode; downstream PsMuxer sees AAC raw samples
- *   as-is (matches Android AndroidMp4DemuxSource, PsMuxer supports 0x0F stream type).
- * - Sample-attachments key `NotSync` isn't parsed; we conservatively treat
- *   every frame as key-frame candidate and let downstream deduplicate via
- *   codec.isKeyNal check. Under-count risk is zero; slight overhead is fine.
+ * 1. [open] — build [AVAsset] from file URL, locate video / audio track.
+ *    Peeks first sample PTS for PlaybackEngine PTS-shift baseline.
+ * 2. [frames] — cold Flow<MediaFrame>. On collect: builds a fresh
+ *    [AVAssetReader]; if a seek is pending, uses `timeRange` starting at
+ *    the previous-sync PTS captured in [seekTo], so decode starts from a
+ *    valid IDR. Video samples are AVCC-format `[len4][NAL]...`, split via
+ *    [AnnexB.splitAvcc]. IDR frames prepend SPS/PPS extracted from
+ *    CMFormatDescription. Non-sync detection uses `kCMSampleAttachmentKey_NotSync`
+ *    on the per-sample CFDictionary.
+ * 3. [seekTo] — AVAssetReader is one-shot. Peeks the previous-sync PTS at
+ *    `targetUs` by spinning up a short reader (AVAssetReader rolls back to
+ *    the last sync sample so subsequent P/B frames stay decodable), stores
+ *    it in [pendingSeekUs], and marks SPS/PPS re-emit needed. Returns that
+ *    sync PTS so PlaybackEngine anchors the segment at the real landing
+ *    point (matches Android `SEEK_TO_PREVIOUS_SYNC` semantics).
+ * 4. [close] — drops refs; readers are per-`frames()` and cancelled in finally.
  */
 @OptIn(ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
 class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
@@ -82,6 +90,15 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
     private var pps: ByteArray? = null
 
     override var firstFramePtsUs: Long = 0L
+        private set
+
+    /**
+     * Set by [seekTo], consumed by the next [frames] collect. Value is the
+     * previous-sync PTS at or before the caller's target. `null` = no
+     * pending seek (frames() starts from the head).
+     */
+    @kotlin.concurrent.Volatile
+    internal var pendingSeekUs: Long? = null
         private set
 
     @kotlin.concurrent.Volatile
@@ -101,7 +118,6 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
             videoTrack = videoTracks?.firstOrNull()
             audioTrack = audioTracks?.firstOrNull()
 
-            // Peek first sample PTS - AVAssetReader over the first ~50ms is enough.
             firstFramePtsUs = peekFirstVideoPts()
             Unit
         }.onFailure {
@@ -115,6 +131,9 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
     override fun frames(): Flow<MediaFrame> = flow {
         val a = asset ?: error("IosMp4DemuxSource not opened")
 
+        val seekStartUs = pendingSeekUs
+        pendingSeekUs = null
+
         val reader: AVAssetReader = memScoped {
             val errPtr = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
             val r = AVAssetReader(asset = a, error = errPtr.ptr)
@@ -125,6 +144,13 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
                 )
             }
             r
+        }
+
+        if (seekStartUs != null && seekStartUs > 0L) {
+            reader.timeRange = CMTimeRangeMake(
+                start = CMTimeMake(value = seekStartUs, timescale = 1_000_000),
+                duration = kCMTimePositiveInfinity.readValue(),
+            )
         }
 
         val vTrack = videoTrack
@@ -177,17 +203,19 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
         audioTrack = null
         sps = null
         pps = null
+        pendingSeekUs = null
         Unit
     }
 
     override suspend fun seekTo(targetUs: Long): Long = withContext(Dispatchers.Default) {
-        // AVAssetReader is one-shot - collectors that need seeking must recreate
-        // the reader with a bounded timeRange. This impl signals the caller by
-        // updating needsSpsPpsBeforeNextKeyframe and returning the target as-is;
-        // the actual re-open happens on the next frames() collect (PlaybackEngine
-        // treats seekTo as a hint, not a mid-flow interrupt).
+        val a = asset ?: return@withContext firstFramePtsUs
+        val durationUs = MediaTimebase.cmTimeToMicros(a.duration)
+        val upper = if (durationUs > 0L) durationUs else Long.MAX_VALUE
+        val clamped = targetUs.coerceIn(0L, upper)
+        val syncPtsUs = peekPreviousSyncPtsUs(clamped) ?: firstFramePtsUs
+        pendingSeekUs = syncPtsUs
         needsSpsPpsBeforeNextKeyframe = true
-        targetUs
+        syncPtsUs
     }
 
     // =========================================================
@@ -240,17 +268,15 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
     // =========================================================
 
     /**
-     * VideoToolbox marks non-key frames via a `NotSync` attachment. If the
-     * array is null (mp4 usually populates it), treat as key frame - safer
-     * to over-emit SPS/PPS than under-emit.
+     * Sync frame detection via `CMSampleBufferGetSampleAttachmentsArray`.
+     * Missing / empty array → sync (raw H.264 streams sometimes lack any
+     * per-sample attachments). Otherwise defers to [isSyncFromAttachments]
+     * which walks the CFDictionary for `NotSync`.
      */
     private fun isKeyFrame(sample: CMSampleBufferRef): Boolean {
-        CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary = false)
+        val attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary = false)
             ?: return true
-        // v1.1 skeleton: read NotSync via CFArray/CFDictionary API is verbose;
-        // default true forces SPS/PPS on every frame which is safe (~40B/frame
-        // overhead). v1.2 TODO: parse kCMSampleAttachmentKey_NotSync properly.
-        return true
+        return isSyncFromAttachments(attachments)
     }
 
     private fun extractParameterSet(
@@ -321,5 +347,66 @@ class IosMp4DemuxSource(private val filePath: String) : Mp4DemuxSource {
                 } ?: 0L
             }
         }.getOrDefault(0L)
+    }
+
+    /** Scan video samples up to target and select the last sync sample. */
+    private fun peekPreviousSyncPtsUs(targetUs: Long): Long? {
+        val a = asset ?: return null
+        val vTrack = videoTrack ?: return null
+        return runCatching {
+            memScoped {
+                val errPtr = alloc<ObjCObjectVar<platform.Foundation.NSError?>>()
+                val reader = AVAssetReader(asset = a, error = errPtr.ptr)
+                if (errPtr.value != null) return@memScoped null
+                reader.timeRange = CMTimeRangeMake(
+                    start = kCMTimeZero.readValue(),
+                    duration = CMTimeMake(
+                        value = targetUs.coerceAtLeast(0L),
+                        timescale = 1_000_000,
+                    ),
+                )
+                val out = AVAssetReaderTrackOutput(track = vTrack, outputSettings = null)
+                if (reader.canAddOutput(out)) reader.addOutput(out)
+                if (!reader.startReading()) return@memScoped null
+                val index = KeyframeIndex()
+                while (true) {
+                    val sample = out.copyNextSampleBuffer() ?: break
+                    val ptsUs = MediaTimebase.cmTimeToMicros(
+                        CMSampleBufferGetPresentationTimeStamp(sample)
+                    )
+                    if (ptsUs > targetUs) break
+                    if (isKeyFrame(sample)) index.add(ptsUs)
+                }
+                reader.cancelReading()
+                index.finalizeIndex()
+                index.findPreviousSync(targetUs, fallbackUs = firstFramePtsUs)
+            }
+        }.getOrNull()
+    }
+
+    companion object {
+        /**
+         * Parse a CMSampleBuffer's SampleAttachmentsArray for `NotSync`. The
+         * array holds one CFDictionary per sample; MP4 passthrough sample
+         * buffers carry exactly 1 entry. `NotSync = kCFBooleanTrue` marks a
+         * non-sync (P/B) frame; absent or false = sync (IDR).
+         *
+         * Empty array is treated as sync — buffers may carry only per-track
+         * attachments, which for I-only streams (raw H.264) means every
+         * frame is a sync sample.
+         *
+         * Exposed internal so the NotSync-parsing test can drive it with
+         * synthetic CFArrays without needing an AVAssetReader.
+         */
+        internal fun isSyncFromAttachments(attachments: CFArrayRef): Boolean {
+            val count = CFArrayGetCount(attachments)
+            if (count <= 0L) return true
+            val first = CFArrayGetValueAtIndex(attachments, 0) ?: return true
+            val dict: CFDictionaryRef = first.reinterpret()
+            val notSyncRef = CFDictionaryGetValue(dict, kCMSampleAttachmentKey_NotSync)
+                ?: return true
+            val boolean: CFBooleanRef = notSyncRef.reinterpret()
+            return !CFBooleanGetValue(boolean)
+        }
     }
 }

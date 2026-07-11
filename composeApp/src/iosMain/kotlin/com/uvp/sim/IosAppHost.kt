@@ -22,6 +22,8 @@ import com.uvp.sim.gb28181.AlarmPriority
 import com.uvp.sim.network.NetworkController
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.TransportType
+import com.uvp.sim.observability.IosSessionStore
+import com.uvp.sim.observability.SessionTracker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.api.LogTag
@@ -48,6 +50,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlin.time.Clock
@@ -73,6 +79,12 @@ object IosAppHost {
     @Volatile private var lastMainThreadAckMs: Long = -1L
     @Volatile private var lastMainThreadStallLogMs: Long = -1L
 
+    // Install before the first Compose read so the initial UI state and all logs
+    // observe the same persisted session id.
+    init {
+        SessionTracker.install(IosSessionStore())
+    }
+
     /**
      * 诊断计数:IosApp 根 composable 的重组次数(SideEffect 每次成功重组 +1)。
      * 心跳读它的 delta 判断主线程是被"重组风暴"占死(暴涨)还是"阻塞调用"卡死(不动)。
@@ -93,6 +105,33 @@ object IosAppHost {
             parentScope = hostScope,
         )
     }
+
+    internal val osdConfigFlow: StateFlow<com.uvp.sim.config.OsdConfig> by lazy {
+        osdConfigStateFlow(
+            config = engine.config,
+            channelName = engine.currentChannelName,
+            scope = hostScope,
+        )
+    }
+
+    internal fun osdConfigStateFlow(
+        config: StateFlow<SimConfig>,
+        channelName: StateFlow<String>,
+        scope: CoroutineScope,
+    ): StateFlow<com.uvp.sim.config.OsdConfig> = combine(config, channelName) { value, name ->
+        deriveOsdConfig(value, name)
+    }.stateIn(
+        scope = scope,
+        started = SharingStarted.Eagerly,
+        initialValue = deriveOsdConfig(config.value, channelName.value),
+    )
+
+    internal fun deriveOsdConfig(
+        config: SimConfig,
+        channelName: String,
+    ): com.uvp.sim.config.OsdConfig = config.osd.copy(
+        channelName = config.osd.channelName.copy(text = channelName),
+    )
 
     // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
     // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
@@ -125,6 +164,11 @@ object IosAppHost {
                     (log.detail?.let { "\n$it" } ?: "")
             )
         }
+        SystemLogger.emit(
+            com.uvp.sim.observability.LogLevel.Info,
+            com.uvp.sim.api.LogTag.Lifecycle,
+            "应用启动 · 会话 #${SessionTracker.currentId}"
+        )
         startDiagnosticsHeartbeat()
         startMainThreadWatchdog()
     }
@@ -206,7 +250,11 @@ object IosAppHost {
         broadcastLifecycle.attach()
     }
 
-    val appEngine: AppEngine get() = engine
+    val appEngine: AppEngine
+        get() = engine.also { appEngine ->
+            val flow = osdConfigFlow
+            appEngine.setOsdConfigFlowProvider { flow }
+        }
     val scope: CoroutineScope get() = hostScope
 }
 
@@ -382,7 +430,7 @@ fun IosApp() {
         config = config,
         events = events.map { it.toDto() },
         systemEvents = systemLogs.map { it.toDto() },
-        // sessionMarker: iOS v1.1 无 SessionTracker(Android-only),保留 null。
+        sessionMarker = SessionTracker.current.toDto(),
         subscriptions = subscriptions,
         deviceControl = deviceControl.toDto(),
         recording = recordingStatus,
