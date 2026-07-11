@@ -13,7 +13,6 @@ import com.uvp.sim.media.H264Frame
 import com.uvp.sim.recording.IosRecordingFrameBridge
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,8 +20,8 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import kotlin.time.Clock
+import kotlin.coroutines.suspendCoroutine
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
 import platform.AVFoundation.AVCaptureDevicePositionBack
@@ -32,12 +31,15 @@ import platform.AVFoundation.AVCaptureSessionPreset1280x720
 import platform.AVFoundation.AVCaptureSessionPreset1920x1080
 import platform.AVFoundation.AVCaptureSessionPreset640x480
 import platform.AVFoundation.AVCaptureVideoDataOutput
+import platform.AVFoundation.AVCaptureVideoOrientationPortrait
+import platform.AVFoundation.AVFrameRateRange
 import platform.AVFoundation.AVMediaTypeVideo
 import platform.AVFoundation.defaultDeviceWithDeviceType
 import platform.CoreFoundation.CFRelease
 import platform.CoreFoundation.CFRetain
 import platform.CoreMedia.CMSampleBufferGetImageBuffer
 import platform.CoreMedia.CMSampleBufferRef
+import platform.CoreMedia.CMTimeMake
 import platform.CoreVideo.CVImageBufferRef
 import platform.CoreVideo.kCVPixelBufferPixelFormatTypeKey
 import platform.CoreVideo.kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
@@ -71,6 +73,7 @@ import kotlin.concurrent.Volatile
 object IosCameraController {
 
     private val mutex = Mutex()
+    private val sessionQueue = dispatch_queue_create("uvp.camera.session", null)
 
     // ---- Public observable state ----
 
@@ -267,21 +270,15 @@ object IosCameraController {
             LogLevel.Info, LogTag.Media,
             "IOS_CAMERA_CONTROLLER_PREVIEW_START ${config.widthPx}x${config.heightPx}@${config.frameRate}"
         )
-        val wired = wireCaptureSession(config)
+        val wired = onSessionQueue {
+            wireAndStartCaptureSession(config)
+        }
         if (wired) {
-            currentConfig = config  // T-P2-2:保存供 requestEncoding 构造 EncodingSession
-            // Fix #3:startRunning 是 blocking,在 IO 上下文同步等它完成再释放 mutex。
-            // 这样 stopPreview 进 mutex 时 session 已经真的 running,不会跟 pending start 抢。
-            val sessionToStart = captureSession
-            if (sessionToStart != null) {
-                withContext(Dispatchers.Default) {
-                    sessionToStart.startRunning()
-                }
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Media,
-                    "IOS_CAMERA_CONTROLLER_PREVIEW_RUNNING"
-                )
-            }
+            currentConfig = config
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Media,
+                "IOS_CAMERA_CONTROLLER_PREVIEW_RUNNING"
+            )
         } else {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
@@ -297,14 +294,12 @@ object IosCameraController {
     suspend fun stopPreview() = mutex.withLock {
         val session = captureSession ?: return@withLock
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_CAMERA_CONTROLLER_PREVIEW_STOP")
-        // Fix #3:stopRunning 也 blocking,在 IO 上下文同步等它完成,防止 releaseInternal 后
-        // AVCaptureSession 内部还有 async work 引用被释放对象。
-        if (session.isRunning()) {
-            withContext(Dispatchers.Default) {
+        onSessionQueue {
+            if (session.isRunning()) {
                 session.stopRunning()
             }
+            releaseInternal()
         }
-        releaseInternal()
     }
 
     /**
@@ -383,6 +378,8 @@ object IosCameraController {
                 encodingRefCount = 0
                 return NoOpEncodingHandle
             }
+            // 2026-07-09 sample buffer 走 sensor 原生 LandscapeRight(1280×720),VT 保持
+            // 1280×720 直接对齐 buffer 尺寸,推流跟 Android 一致 landscape 1280×720。
             val session = EncodingSession(cfg) { frame ->
                 _frames.tryEmit(frame)
                 IosRecordingFrameBridge.onVideoFrame(frame)  // 保 v1.2 recording sink 语义
@@ -539,7 +536,13 @@ object IosCameraController {
     // Internals: build AVCaptureSession
     // =========================================================
 
-    private fun wireCaptureSession(config: CaptureConfig): Boolean {
+    private suspend fun <T> onSessionQueue(block: () -> T): T = suspendCoroutine { continuation ->
+        dispatch_async(sessionQueue) {
+            continuation.resumeWith(runCatching(block))
+        }
+    }
+
+    private fun wireAndStartCaptureSession(config: CaptureConfig): Boolean {
         val builtInWideAngle = AVCaptureDeviceTypeBuiltInWideAngleCamera
             ?: run {
                 SystemLogger.emit(
@@ -569,24 +572,10 @@ object IosCameraController {
                     LogLevel.Error, LogTag.Media,
                     "AVCaptureDeviceInput init failed: ${errPtr.value?.localizedDescription ?: "unknown"}"
                 )
-                return@wireCaptureSession false
+                return@wireAndStartCaptureSession false
             }
             created
         }
-
-        val session = AVCaptureSession()
-        session.beginConfiguration()
-        session.sessionPreset = pickSessionPreset(config.widthPx, config.heightPx)
-
-        if (!session.canAddInput(input)) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "AVCaptureSession refused input - camera busy or restricted"
-            )
-            session.commitConfiguration()
-            return false
-        }
-        session.addInput(input)
 
         val output = AVCaptureVideoDataOutput()
         val pixelFormatKey = kCVPixelBufferPixelFormatTypeKey ?: run {
@@ -594,7 +583,6 @@ object IosCameraController {
                 LogLevel.Error, LogTag.Media,
                 "kCVPixelBufferPixelFormatTypeKey null - cannot configure output"
             )
-            session.commitConfiguration()
             return false
         }
         val nv12 = NSNumber(unsignedInt = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)
@@ -604,21 +592,48 @@ object IosCameraController {
         val queue = dispatch_queue_create("uvp.camera.controller", null)
         output.setSampleBufferDelegate(delegate, queue)
 
-        if (!session.canAddOutput(output)) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "AVCaptureSession refused output - configuration incompatible"
-            )
-            session.commitConfiguration()
-            return false
-        }
-        session.addOutput(output)
-        session.commitConfiguration()
+        val session = AVCaptureSession()
+        val started = configureThenStartSession(
+            beginConfiguration = { session.beginConfiguration() },
+            configure = {
+                session.sessionPreset = pickSessionPreset(config.widthPx, config.heightPx)
+                if (!session.canAddInput(input)) {
+                    SystemLogger.emit(
+                        LogLevel.Error, LogTag.Media,
+                        "AVCaptureSession refused input - camera busy or restricted"
+                    )
+                    false
+                } else {
+                    session.addInput(input)
+                    configureCaptureFrameRate(device, config.frameRate)
+                    if (!session.canAddOutput(output)) {
+                        SystemLogger.emit(
+                            LogLevel.Error, LogTag.Media,
+                            "AVCaptureSession refused output - configuration incompatible"
+                        )
+                        false
+                    } else {
+                        session.addOutput(output)
+                        output.connectionWithMediaType(AVMediaTypeVideo)?.let { connection ->
+                            if (connection.isVideoOrientationSupported()) {
+                                connection.setVideoOrientation(AVCaptureVideoOrientationPortrait)
+                            }
+                        }
+                        true
+                    }
+                }
+            },
+            commitConfiguration = { session.commitConfiguration() },
+            startRunning = { session.startRunning() },
+        )
+        if (!started) return false
 
-        // T-P2-2 cross-review fix #3:startRunning 从 fire-and-forget dispatch_async 改成由
-        // startPreview 内 withContext(Dispatchers.Default) 阻塞等成 running,让 mutex 一直握到
-        // session 真的 running,避免 "start 排队未执行 → stop 释放 session → 排队的 start 稍后
-        // 拉起已释放 session" 抖动导致回主页卡顿。
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_CAMERA_OUTPUT_ORIENTATION Portrait source; encoding canvas=" +
+                "${config.widthPx}x${config.heightPx}"
+        )
+
         captureSession = session
         captureInput = input
         captureOutput = output
@@ -638,14 +653,52 @@ object IosCameraController {
         return chosen ?: fallback
     }
 
+    private fun configureCaptureFrameRate(device: AVCaptureDevice, frameRate: Int) {
+        val supported = device.activeFormat.videoSupportedFrameRateRanges.any { value ->
+            val range = value as? AVFrameRateRange ?: return@any false
+            frameRate.toDouble() >= range.minFrameRate && frameRate.toDouble() <= range.maxFrameRate
+        }
+        if (!supported) {
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Media,
+                "IOS_CAMERA_FRAME_RATE_UNSUPPORTED requested=$frameRate; using device default",
+            )
+            return
+        }
+        memScoped {
+            val error = alloc<ObjCObjectVar<NSError?>>()
+            if (!device.lockForConfiguration(error.ptr)) {
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Media,
+                    "IOS_CAMERA_FRAME_RATE_LOCK_FAILED " +
+                        (error.value?.localizedDescription ?: "unknown"),
+                )
+                return@memScoped
+            }
+            try {
+                val duration = CMTimeMake(value = 1L, timescale = frameRate)
+                device.activeVideoMinFrameDuration = duration
+                device.activeVideoMaxFrameDuration = duration
+            } finally {
+                device.unlockForConfiguration()
+            }
+        }
+    }
+
     private fun releaseInternal() {
         // T-P2-1/2 stale handle 语义 + 真 VT invalidate 已在 forceEncodingReset 内联
         forceEncodingReset()
 
         captureSession?.let { s ->
-            // Fix #3:stopRunning 已由 stopPreview 在 withContext(Default) 内跑,这里只做 input/output 清理
-            captureInput?.let { s.removeInput(it) }
-            captureOutput?.let { s.removeOutput(it) }
+            s.beginConfiguration()
+            try {
+                captureInput?.let { s.removeInput(it) }
+                captureOutput?.let { s.removeOutput(it) }
+            } finally {
+                s.commitConfiguration()
+            }
         }
         captureSession = null
         captureInput = null

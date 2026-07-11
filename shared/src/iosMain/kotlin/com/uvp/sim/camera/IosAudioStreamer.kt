@@ -22,7 +22,10 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlin.concurrent.AtomicInt
 import kotlin.concurrent.Volatile
-import platform.AVFAudio.AVAudioCommonFormat
+import platform.AVFAudio.AVAudioConverter
+import platform.AVFAudio.AVAudioConverterInputStatusVar
+import platform.AVFAudio.AVAudioConverterInputStatus_HaveData
+import platform.AVFAudio.AVAudioConverterInputStatus_NoDataNow
 import platform.AVFAudio.AVAudioEngine
 import platform.AVFAudio.AVAudioFormat
 import platform.AVFAudio.AVAudioPCMBuffer
@@ -33,23 +36,19 @@ import platform.Foundation.NSError
 /**
  * iOS audio capture + encode.
  *
- * T8-follow-up: AVAudioEngine + installTapOnBus wiring. The tap block is an ObjC
- * block (not a C function pointer), which Kotlin/Native's cinterop wraps
- * automatically from a Kotlin lambda when the signature matches. Contrast with
- * [IosCameraStreamer], which needs `staticCFunction` because VTCompression's
- * output callback is a C function pointer.
+ * 2026-07-09 真机崩溃修:AVAudioEngine.installTapOnBus 的 format 参数必须匹配
+ * bus 硬件当前的原生格式(通常 48kHz Float32,由 AVAudioSession 决定),硬编码
+ * 8kHz(G.711) / 44.1kHz(AAC) 会触发 AVAEInternal SetOutputFormat NSException:
  *
- * Design:
+ *   required condition is false: [AVAudioIONodeImpl.mm:1281:SetOutputFormat:
+ *   (format.sampleRate == hwFormat.sampleRate)]
  *
- *   1. AVAudioEngine.inputNode → 16-bit interleaved PCM at 8 kHz mono
- *   2. installTapOnBus(0, bufferSize = 160 samples / 20ms)
- *   3. For each buffer: samples → G711.encodeAlaw/encodeUlaw → AudioFrame emit
- *   4. Timestamp: MediaTimebase.nowUs() at emit time
+ * 修法:tap format = inputFormatForBus(0u) 拿硬件原生格式,拿到 buffer 后走
+ * AVAudioConverter 重采样到目标格式(8kHz Int16 mono → G.711 / 44.1kHz Int16
+ * mono → AAC),再交给下游 encoder。
  *
- * The 20 ms frame convention matches Android AndroidAudioStreamer.streamG711
- * for cross-platform RTP packer parity. Note the hardware may deliver a
- * buffer with frameLength != 160 (early call, sample rate mismatch); we
- * defensively read frameLength and encode exactly that many samples.
+ * 20 ms 帧率约定跟 Android 侧 streamG711 / streamAac 保持一致,以便共用 RTP
+ * packer 逻辑。硬件 tap 用 100ms bufferSize hint,让 iOS 自行决定实际大小。
  */
 @OptIn(ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
 class IosAudioStreamer(private val config: AudioCaptureConfig) {
@@ -68,32 +67,94 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     }
 
     private fun streamG711(): Flow<AudioFrame> = callbackFlow {
+        if (!UplinkAudioSession.acquire()) {
+            close(IllegalStateException("AVAudioSession activation failed"))
+            return@callbackFlow
+        }
+        var audioSessionHeld = true
+        fun releaseAudioSession() {
+            if (!audioSessionHeld) return
+            audioSessionHeld = false
+            UplinkAudioSession.release()
+        }
+
         val eng = AVAudioEngine()
         val input = eng.inputNode
-        val format = AVAudioFormat(
+        val hwFormat = input.inputFormatForBus(0u)
+
+        if (hwFormat.sampleRate <= 0.0) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_AUDIO_START_FAILED codec=${config.codec} bus0 hw sampleRate=${hwFormat.sampleRate}"
+            )
+            releaseAudioSession()
+            close(IllegalStateException("bus0 hw sampleRate<=0"))
+            return@callbackFlow
+        }
+
+        val targetFormat = AVAudioFormat(
             commonFormat = AVAudioPCMFormatInt16,
             sampleRate = SAMPLE_RATE_HZ,
             channels = CHANNELS,
             interleaved = true,
         )
+        val converter = AVAudioConverter(fromFormat = hwFormat, toFormat = targetFormat)
+        if (converter == null) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_AUDIO_START_FAILED codec=${config.codec} converter create failed " +
+                    "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch → target=${SAMPLE_RATE_HZ.toInt()}Hz/${CHANNELS.toInt()}ch"
+            )
+            releaseAudioSession()
+            close(IllegalStateException("AVAudioConverter create failed"))
+            return@callbackFlow
+        }
+
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_AUDIO_HW_FORMAT codec=${config.codec} " +
+                "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch " +
+                "→ target=${SAMPLE_RATE_HZ.toInt()}Hz/${CHANNELS.toInt()}ch"
+        )
+
+        var tapCallbacks = 0L
+        var emittedFrames = 0L
 
         input.installTapOnBus(
             bus = 0u,
-            bufferSize = BUFFER_FRAMES,
-            format = format,
+            bufferSize = HW_TAP_BUFFER_FRAMES,
+            format = hwFormat,
         ) { buffer: AVAudioPCMBuffer?, _: AVAudioTime? ->
             if (buffer == null) return@installTapOnBus
-            val frames = buffer.frameLength.toInt()
-            if (frames <= 0) return@installTapOnBus
-            val channelPtr: CPointer<ShortVar> =
-                buffer.int16ChannelData?.pointed?.value ?: return@installTapOnBus
-
-            val pcm = ShortArray(frames)
-            for (i in 0 until frames) {
-                pcm[i] = channelPtr[i]
+            tapCallbacks += 1
+            val pcm = convertToInt16Pcm(
+                inputBuffer = buffer,
+                converter = converter,
+                targetFormat = targetFormat,
+                targetSampleRate = SAMPLE_RATE_HZ,
+                hwSampleRate = hwFormat.sampleRate,
+            ) ?: run {
+                if (tapCallbacks <= 3L) {
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Media,
+                        "IOS_AUDIO_CONVERT_EMPTY codec=${config.codec} tap=$tapCallbacks " +
+                            "inputFrames=${buffer.frameLength}",
+                    )
+                }
+                return@installTapOnBus
             }
             val frame = encodePcmToG711Frame(pcm, config.codec, MediaTimebase.nowUs())
-            trySend(frame)
+            val result = trySend(frame)
+            emittedFrames += 1
+            if (emittedFrames == 1L) {
+                SystemLogger.emit(
+                    LogLevel.Info,
+                    LogTag.Media,
+                    "IOS_AUDIO_FIRST_FRAME codec=${config.codec} samples=${pcm.size} " +
+                        "payload=${frame.payload.size} accepted=${result.isSuccess}",
+                )
+            }
         }
 
         eng.prepare()
@@ -111,6 +172,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         }
         if (!started) {
             input.removeTapOnBus(0u)
+            releaseAudioSession()
             close(IllegalStateException("AVAudioEngine.start failed"))
             return@callbackFlow
         }
@@ -128,6 +190,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             input.removeTapOnBus(0u)
             eng.stop()
             engine = null
+            releaseAudioSession()
             // T-E2-2:配对 --,clamp 不减到负(多次 close 幂等)。
             decrementActiveCountClamped()
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=${config.codec}")
@@ -135,44 +198,107 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     }
 
     /**
-     * T-B2-4:AAC 分支。AVAudioEngine 44.1 kHz mono PCM tap → IosAacEncoder → AAC + ADTS。
-     * 20 ms 帧率(882 samples per tap chunk),encoder 内部累积到 1024 samples 才 emit
-     * 一帧 AAC(即约每 3 chunks emit 2 frame)。
+     * T-B2-4:AAC 分支。tap 用硬件原生格式 → AVAudioConverter 重采样到 44.1 kHz
+     * Int16 mono → IosAacEncoder。encoder 内部累积 1024 samples 才 emit 一帧
+     * AAC(即约每 3 chunks emit 2 frame)。
      */
     private fun streamAac(): Flow<AudioFrame> = callbackFlow {
+        if (!UplinkAudioSession.acquire()) {
+            close(IllegalStateException("AVAudioSession activation failed"))
+            return@callbackFlow
+        }
+        var audioSessionHeld = true
+        fun releaseAudioSession() {
+            if (!audioSessionHeld) return
+            audioSessionHeld = false
+            UplinkAudioSession.release()
+        }
+
         val eng = AVAudioEngine()
         val input = eng.inputNode
-        val format = AVAudioFormat(
+        val hwFormat = input.inputFormatForBus(0u)
+        val targetSampleRate = targetAudioSampleRate(config)
+
+        if (hwFormat.sampleRate <= 0.0) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_AUDIO_START_FAILED codec=AAC bus0 hw sampleRate=${hwFormat.sampleRate}"
+            )
+            releaseAudioSession()
+            close(IllegalStateException("bus0 hw sampleRate<=0"))
+            return@callbackFlow
+        }
+
+        val targetFormat = AVAudioFormat(
             commonFormat = AVAudioPCMFormatInt16,
-            sampleRate = AAC_SAMPLE_RATE_HZ,
+            sampleRate = targetSampleRate,
             channels = CHANNELS,
             interleaved = true,
         )
+        val converter = AVAudioConverter(fromFormat = hwFormat, toFormat = targetFormat)
+        if (converter == null) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_AUDIO_START_FAILED codec=AAC converter create failed " +
+                    "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch → target=${targetSampleRate.toInt()}Hz/${CHANNELS.toInt()}ch"
+            )
+            releaseAudioSession()
+            close(IllegalStateException("AVAudioConverter create failed for AAC"))
+            return@callbackFlow
+        }
+
         val encoder = com.uvp.sim.media.IosAacEncoder(
-            pcmSampleRateHz = AAC_SAMPLE_RATE_HZ,
+            pcmSampleRateHz = targetSampleRate,
             channelCount = CHANNELS,
-            aacSampleRateHz = AAC_SAMPLE_RATE_HZ,
+            aacSampleRateHz = targetSampleRate,
         )
         aacEncoder = encoder
 
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_AUDIO_HW_FORMAT codec=AAC " +
+                "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch " +
+                "→ target=${targetSampleRate.toInt()}Hz/${CHANNELS.toInt()}ch"
+        )
+
+        var tapCallbacks = 0L
+        var emittedFrames = 0L
+
         input.installTapOnBus(
             bus = 0u,
-            bufferSize = AAC_BUFFER_FRAMES,
-            format = format,
+            bufferSize = HW_TAP_BUFFER_FRAMES,
+            format = hwFormat,
         ) { buffer: AVAudioPCMBuffer?, _: AVAudioTime? ->
             if (buffer == null) return@installTapOnBus
-            val frames = buffer.frameLength.toInt()
-            if (frames <= 0) return@installTapOnBus
-            val channelPtr: CPointer<ShortVar> =
-                buffer.int16ChannelData?.pointed?.value ?: return@installTapOnBus
-
-            val pcm = ShortArray(frames)
-            for (i in 0 until frames) {
-                pcm[i] = channelPtr[i]
+            tapCallbacks += 1
+            val pcm = convertToInt16Pcm(
+                inputBuffer = buffer,
+                converter = converter,
+                targetFormat = targetFormat,
+                targetSampleRate = targetSampleRate,
+                hwSampleRate = hwFormat.sampleRate,
+            ) ?: run {
+                if (tapCallbacks <= 3L) {
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Media,
+                        "IOS_AUDIO_CONVERT_EMPTY codec=AAC tap=$tapCallbacks inputFrames=${buffer.frameLength}",
+                    )
+                }
+                return@installTapOnBus
             }
             val aacFrames = encoder.encode(pcm, MediaTimebase.nowUs())
             for (f in aacFrames) {
-                trySend(f)
+                val result = trySend(f)
+                emittedFrames += 1
+                if (emittedFrames == 1L) {
+                    SystemLogger.emit(
+                        LogLevel.Info,
+                        LogTag.Media,
+                        "IOS_AUDIO_FIRST_FRAME codec=AAC samples=${pcm.size} " +
+                            "payload=${f.payload.size} accepted=${result.isSuccess}",
+                    )
+                }
             }
         }
 
@@ -193,13 +319,16 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             input.removeTapOnBus(0u)
             encoder.close()
             aacEncoder = null
+            releaseAudioSession()
             close(IllegalStateException("AVAudioEngine.start failed for AAC"))
             return@callbackFlow
         }
 
+        activeCountAtomic.incrementAndGet()
+
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "IOS_AUDIO_START codec=AAC sr=${AAC_SAMPLE_RATE_HZ.toInt()} ch=${CHANNELS.toInt()}",
+            "IOS_AUDIO_START codec=AAC sr=${targetSampleRate.toInt()} ch=${CHANNELS.toInt()}",
         )
         engine = eng
 
@@ -209,6 +338,8 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             engine = null
             encoder.close()
             aacEncoder = null
+            releaseAudioSession()
+            decrementActiveCountClamped()
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=AAC")
         }
     }
@@ -230,21 +361,12 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     fun configuredCodec(): AudioCodec = config.codec
 
     companion object {
-        /**
-         * T-E2-2 · 全局录像 audio tap 活跃计数。
-         *
-         * [BroadcastBusyGate] iOS actual 读这个值:> 0 表示"有 tap 在采集 mic",
-         * broadcast 走 ERROR busy 分支(plan §5 Q4 排队策略)。
-         *
-         * 嵌套 start/stop 3 次 activeCount = 3;3 次 stop 后归 0;多余 stop 不减到负(clamp)。
-         */
         val activeCount: Int
             get() = activeCountAtomic.value
 
         internal val activeCountAtomic: AtomicInt = AtomicInt(0)
 
         internal fun decrementActiveCountClamped() {
-            // Clamp-safe decrement:if 0,do nothing;else --。多次 close/stop 幂等。
             while (true) {
                 val v = activeCountAtomic.value
                 if (v <= 0) return
@@ -252,25 +374,87 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             }
         }
 
-        /** 测试 hook — 重置 activeCount(fixtures 兜底)。 */
         internal fun resetActiveCountForTest() {
             activeCountAtomic.value = 0
         }
 
         const val SAMPLE_RATE_HZ: Double = 8000.0
         const val CHANNELS: UInt = 1u
-        // 20 ms @ 8 kHz = 160 samples; matches Android streamG711 and the RTP packer.
-        const val BUFFER_FRAMES: UInt = 160u
 
-        // T-B2-4:AAC 分支采样率 44.1 kHz(plan §3.2.2 Q5 决策);tap chunk 大小
-        // 882 samples ≈ 20 ms @ 44.1kHz(encoder 内部再累积到 1024 samples 触发 emit)
+        // AAC 分支采样率 44.1 kHz(plan §3.2.2 Q5 决策)。
         const val AAC_SAMPLE_RATE_HZ: Double = 44_100.0
-        const val AAC_BUFFER_FRAMES: UInt = 882u
+
+        // 硬件 tap bufferSize:100ms @ 48kHz ≈ 4800 samples,系统会按需自行决定实际值。
+        const val HW_TAP_BUFFER_FRAMES: UInt = 4800u
     }
 }
 
 /**
- * Encode one 20ms PCM buffer to a G.711 [AudioFrame]. Public utility so the
+ * 用 AVAudioConverter 把硬件 buffer 重采样到 Int16 mono 目标格式,返回 Kotlin ShortArray。
+ *
+ * pull-based:每次调用只喂一次输入 buffer(通过 [inputBlock]),本轮没有更多数据时
+ * 返回 NoDataNow。converter 会跨 tap 回调持续复用,不能返回 EndOfStream,否则首轮
+ * 转换后会把整条实时音频流标记为结束。
+ * 内部按采样率比 + 冗余系数预估 output frameCapacity,避免 output 溢出。
+ */
+@OptIn(ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
+private fun convertToInt16Pcm(
+    inputBuffer: AVAudioPCMBuffer,
+    converter: AVAudioConverter,
+    targetFormat: AVAudioFormat,
+    targetSampleRate: Double,
+    hwSampleRate: Double,
+): ShortArray? {
+    val inFrames = inputBuffer.frameLength.toInt()
+    if (inFrames <= 0) return null
+
+    // 采样率比推导 output frames,加 32 冗余避免边界丢帧。
+    val ratio = targetSampleRate / hwSampleRate
+    val outCapacity = ((inFrames * ratio).toInt() + 32).coerceAtLeast(64).toUInt()
+    val outBuffer = AVAudioPCMBuffer(
+        pCMFormat = targetFormat,
+        frameCapacity = outCapacity,
+    ) ?: return null
+
+    var provided = false
+    val inputBlock: (uint: UInt, outStatus: CPointer<AVAudioConverterInputStatusVar>?) -> AVAudioPCMBuffer? = block@{ _, outStatus ->
+        if (provided) {
+            outStatus?.pointed?.value = AVAudioConverterInputStatus_NoDataNow
+            return@block null
+        }
+        provided = true
+        outStatus?.pointed?.value = AVAudioConverterInputStatus_HaveData
+        inputBuffer
+    }
+
+    memScoped {
+        val errPtr = alloc<ObjCObjectVar<NSError?>>()
+        converter.convertToBuffer(
+            outBuffer,
+            error = errPtr.ptr,
+            withInputFromBlock = inputBlock,
+        )
+        errPtr.value?.let { err ->
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_AUDIO_CONVERT_ERROR ${err.localizedDescription}"
+            )
+        }
+    }
+
+    val outFrames = outBuffer.frameLength.toInt()
+    if (outFrames <= 0) return null
+
+    val outPtr: CPointer<ShortVar> = outBuffer.int16ChannelData?.pointed?.value ?: return null
+    val pcm = ShortArray(outFrames)
+    for (i in 0 until outFrames) {
+        pcm[i] = outPtr[i]
+    }
+    return pcm
+}
+
+/**
+ * Encode one PCM buffer to a G.711 [AudioFrame]. Public utility so the
  * AVAudioEngine tap callback (and iosTest fixtures) can share the codec
  * branching without duplicating the G711 select.
  */

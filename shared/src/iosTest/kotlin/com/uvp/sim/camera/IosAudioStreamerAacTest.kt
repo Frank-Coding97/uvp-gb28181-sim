@@ -31,9 +31,14 @@ class IosAudioStreamerAacTest {
     }
 
     @Test
-    fun companion_const_aac_sample_rate_and_buffer_frames() {
+    fun companion_const_target_sample_rates() {
         assertEquals(44_100.0, IosAudioStreamer.AAC_SAMPLE_RATE_HZ)
-        // 20ms @ 44.1kHz ≈ 882
-        assertTrue(IosAudioStreamer.AAC_BUFFER_FRAMES.toInt() in 800..900)
+        assertEquals(8_000.0, IosAudioStreamer.SAMPLE_RATE_HZ)
+    }
+
+    @Test
+    fun companion_const_hw_tap_buffer_frames_reasonable() {
+        // 2026-07-09 hw sampleRate 冲突修:tap 用硬件原生格式,bufferSize hint 100ms @ 48kHz。
+        assertTrue(IosAudioStreamer.HW_TAP_BUFFER_FRAMES.toInt() in 1024..8192)
     }
 }

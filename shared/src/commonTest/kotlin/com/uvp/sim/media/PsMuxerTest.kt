@@ -54,6 +54,24 @@ class PsMuxerTest {
         assertTrue(findStartCode(ps, 0xBC) >= 0, "PSM (0xBC) must be present in key frame")
     }
 
+    @Test fun systemHeaderDeclaresAudioStreamWhenAudioCodecIsConfigured() {
+        val muxer = PsMuxer().apply { audioCodec = AudioCodec.G711A }
+        val frame = H264Frame(
+            nalUnits = listOf(nal(NalType.SPS, 16), nal(NalType.PPS, 8), nal(NalType.IDR, 100)),
+            timestampUs = 0,
+            isKeyFrame = true,
+        )
+
+        val ps = muxer.muxFrame(frame)
+        val systemHeader = findStartCode(ps, 0xBB)
+
+        assertTrue(systemHeader >= 0)
+        val headerLength = ((ps[systemHeader + 4].toInt() and 0xFF) shl 8) or
+            (ps[systemHeader + 5].toInt() and 0xFF)
+        assertEquals(12, headerLength, "audio-enabled system header must include one audio stream bound")
+        assertEquals(0xC0, ps[systemHeader + 15].toInt() and 0xFF)
+    }
+
     @Test fun nonKeyFrameHasNoSystemHeader() {
         val frame = H264Frame(
             nalUnits = listOf(nal(NalType.NON_IDR, 50)),

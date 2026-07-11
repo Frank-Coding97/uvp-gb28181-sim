@@ -94,21 +94,24 @@ object IosAppHost {
         )
     }
 
+    // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
+    // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
+    // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
     fun defaultConfig() = SimConfig(
         gbVersion = GbVersion.V2022,
         server = ServerConfig(
             ip = "",
             port = 0,
             serverId = "",
-            domain = ""
+            domain = "3402000000"
         ),
         device = DeviceConfig(
-            deviceId = "",
-            videoChannelId = "",
-            alarmChannelId = "",
-            username = "",
+            deviceId = "34020000001320000001",
+            videoChannelId = "34020000001320000010",
+            alarmChannelId = "34020000001340000001",
+            username = "34020000001320000001",
             password = "",
-            frontChannelId = "",
+            frontChannelId = "34020000001320000020",
         ),
         transport = TransportType.UDP,
         keepaliveIntervalSeconds = 60,
@@ -253,8 +256,14 @@ fun IosApp() {
     // 2026-07-03 真机验:iOS 端 IosCameraStreamer.stream() 是 callbackFlow,只有 collector
     // 才会 wireCaptureSession → publish AVCaptureSession。不注册时无 collector,导致预览白屏
     // 和录像 writer 空转(stop 时 markAsFinished 抛 NSInvalidArgumentException 崩溃)。
-    // 通过 keepalive 让 Registered 状态下 session 常驻:preview 有画面 + 录像能拿真 sample。
-    // InCall 时让位给 AppEngine 独立 build 的 streamer(AVCaptureSession 只能一个进程持有)。
+    // 通过 keepalive 让 Registered / InCall 状态下 session 常驻:preview 有画面 + 录像能拿
+    // 真 sample + 推流 encoding session 有 AVCaptureSession sample 输入。
+    //
+    // 2026-07-09 真机验(WVP 点播 iOS bug 3/3):旧逻辑在 sipState InCall 时 stop keepalive,
+    // 走 IosCameraController.stopPreview → releaseInternal → forceEncodingReset,把推流用的
+    // VT encoding session + AVCaptureSession 一并杀掉,推流只吃到 4 帧就断了。修法:InCall 也
+    // 保持 keepalive,让 preview session 陪着推流跑完;点播结束 sipState 回到 Registered 时
+    // 依然是 start(幂等);Disconnected/Error 才 stop。
     LaunchedEffect(sipState) {
         val v = config.video
         val cc = com.uvp.sim.camera.CaptureConfig(
@@ -265,7 +274,9 @@ fun IosApp() {
             keyframeIntervalSeconds = v.keyframeIntervalSeconds,
             videoCodec = v.videoCodec,
         )
-        if (sipState == com.uvp.sim.sip.SipState.Registered) {
+        val keepAlive = sipState == com.uvp.sim.sip.SipState.Registered ||
+            sipState == com.uvp.sim.sip.SipState.InCall
+        if (keepAlive) {
             com.uvp.sim.camera.CameraSessionKeepalive.start(cc)
         } else {
             com.uvp.sim.camera.CameraSessionKeepalive.stop()

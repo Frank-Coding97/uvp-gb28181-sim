@@ -25,6 +25,12 @@ kotlin {
         iosArm64(),
         iosSimulatorArm64()
     ).forEach { iosTarget ->
+        iosTarget.compilations.getByName("main") {
+            cinterops.create("uvpfilament") {
+                defFile(project.file("src/nativeInterop/cinterop/uvpfilament.def"))
+                compilerOpts("-I${project.file("src/nativeInterop/cinterop").absolutePath}")
+            }
+        }
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true

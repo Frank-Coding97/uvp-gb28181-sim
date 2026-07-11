@@ -21,6 +21,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++17"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     IPHONEOS_DEPLOYMENT_TARGET: "15.0"
 
@@ -41,6 +42,12 @@ targets:
           - "*.scn"
           - "*.dae"
           - "*.usdz"
+      # Filament iOS 直接复用 Android 的原始 GLB，避免 USDZ 材质转换损失。
+      - path: ../composeApp/src/androidMain/assets/security_camera.glb
+        buildPhase: resources
+      # Android/iOS 共享同一张 PTZ 预览缩略图。
+      - path: ../composeApp/src/androidMain/assets/ptz_scene_thumbnail.png
+        buildPhase: resources
     info:
       path: iosApp/Info.plist
       properties:
@@ -64,6 +71,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.uvp.sim.ios
         TARGETED_DEVICE_FAMILY: "1"  # iPhone only for v1.1 (spec §5)
+        # The KMP simulator framework is built for Apple Silicon. Keep Xcode
+        # from also trying to link an x86_64 simulator binary on this host.
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_ASSET_PATHS: '"iosApp/Preview Content"'
         # 真机装机(v1.1 T15):Automatic 签名,Xcode 打开后手动选 Personal Team。
@@ -73,6 +83,10 @@ targets:
         # xcodegen 每次重生成 pbxproj 都会用这个值,不再被历史遗留的 WQP89BUR2M 覆盖。
         # 开源发版前需替换 / 删除此行(每人用自己 team)。
         DEVELOPMENT_TEAM: CD3WR5D4U8
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../.build/filament-ios/filament/include"
+        SWIFT_OBJC_BRIDGING_HEADER: "$(PROJECT_DIR)/iosApp/iosApp-Bridging-Header.h"
         # KMP-produced framework path. Only ComposeApp.framework — it
         # re-exports :shared so we don't init the Kotlin runtime twice
         # (F3 fix, see overnight report).
@@ -89,7 +103,40 @@ targets:
           - "$(inherited)"
           - "-framework"
           - "ComposeApp"
+        "OTHER_LDFLAGS[sdk=iphoneos*]":
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphoneos/libfilament-all.a"
+          - "-force_load"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphoneos/libfilament-all.a"
+          - "-lc++"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "QuartzCore"
+          - "-framework"
+          - "CoreVideo"
+          - "-framework"
+          - "ImageIO"
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]":
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphonesimulator/libfilament-all.a"
+          - "-force_load"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphonesimulator/libfilament-all.a"
+          - "-lc++"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "QuartzCore"
+          - "-framework"
+          - "CoreVideo"
+          - "-framework"
+          - "ImageIO"
     preBuildScripts:
+      - name: "Prepare Filament iOS"
+        script: |
+          cd "$SRCROOT/.."
+          ./scripts/prepare-filament-ios.sh "$SRCROOT/../.build/filament-ios"
+        basedOnDependencyAnalysis: false
       - name: "Build KMP Frameworks"
         script: |
           export JAVA_HOME=/opt/homebrew/opt/openjdk@17

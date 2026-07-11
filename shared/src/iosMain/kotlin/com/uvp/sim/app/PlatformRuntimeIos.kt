@@ -27,15 +27,15 @@ import kotlinx.coroutines.flow.StateFlow
  */
 class PlatformRuntimeIos : PlatformRuntime {
 
+    private var cameraCaptureRef: CameraCapture? = null
+    private var audioCaptureRef: AudioCapture? = null
+
     override fun buildCameraCapture(config: CaptureConfig): CameraCapture {
-        // v1.1 T4-follow-up: CameraCapture.start() now internally builds
-        // IosCameraStreamer(config) → AVCaptureSession + VideoToolbox pipeline.
-        return CameraCapture(config)
+        return cameraCaptureRef ?: CameraCapture(config).also { cameraCaptureRef = it }
     }
 
     override fun buildAudioCapture(config: AudioCaptureConfig): AudioCapture {
-        // T8-follow-up: IosAudioStreamer 已接 AVAudioEngine + installTapOnBus。
-        return AudioCapture(config)
+        return audioCaptureRef ?: AudioCapture(config).also { audioCaptureRef = it }
     }
 
     override fun buildRecordingService(
@@ -63,26 +63,14 @@ class PlatformRuntimeIos : PlatformRuntime {
     }
 
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
-        // E2 wire(v1.1):
-        //
-        // iOS 端的 CameraCapture 是"每次 start() 内部 new IosCameraStreamer(config)"的
-        // 一次性对象,没有对外的 streamer ref 给我 applyCaptureConfig(参考 Android 侧
-        // `AndroidCameraStreamer.applyCaptureConfig` 内部真 rebuild)。
-        //
-        // 结果:iOS 端的"改分辨率 / 码率 / GOP 后真重建"依赖于 UI 层调 stop() → start()
-        // 完整循环,而不是无缝 applyCaptureConfig。这跟 spec §Q2("闪一下能忍")一致 —— 用户
-        // 改视频参数是低频动作,重连触发的重建就够用。
-        //
-        // v1.2 如果要做无缝 apply,得给 IosCameraStreamer 加 applyCaptureConfig(new) 方法,
-        // 参照 Android 侧的 encoder.stop / new VT session / OSD reattach 三步。
-        //
-        // Audio 侧简单:AVAudioEngine 停旧 + 建新即可,但 iOS 端 AudioCapture 同样是 start()
-        // 内部 new IosAudioStreamer,外部拿不到 streamer ref。留 stop→start 循环即可。
+        cameraCaptureRef?.applyConfig(captureConfig)
+        audioCaptureRef?.applyConfig(audioConfig)
     }
 
     override suspend fun release() {
         // T-B3-4:release 时把 video + audio sink 都清 null,防止残留引用。
         IosRecordingFrameBridge.publish(video = null, audio = null)
-        // iOS 端 CameraCapture / AudioCapture / IosRecordingService 自己 release
+        cameraCaptureRef = null
+        audioCaptureRef = null
     }
 }

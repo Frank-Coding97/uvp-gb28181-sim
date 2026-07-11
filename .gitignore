@@ -54,6 +54,7 @@ npm-debug.log*
 # Generated
 generated/
 **/generated/
+.build/
 
 # Test reports
 test-results/

@@ -21,7 +21,10 @@ import kotlin.concurrent.Volatile
  *
  * commonMain `expect class CameraCapture` 签名**零改动**,Android + JVM actual 不动。
  */
-actual class CameraCapture actual constructor(private val config: CaptureConfig) {
+actual class CameraCapture actual constructor(config: CaptureConfig) {
+
+    @Volatile
+    private var config: CaptureConfig = config
 
     @Volatile
     private var handle: EncodingHandle? = null
@@ -38,6 +41,12 @@ actual class CameraCapture actual constructor(private val config: CaptureConfig)
             "CameraCapture.setStreamer no-op (v1.3-A T-P6-1: controller manages camera lifecycle)"
         )
     }
+
+    internal fun applyConfig(config: CaptureConfig) {
+        this.config = config
+    }
+
+    internal fun configuredConfigForTest(): CaptureConfig = config
 
     /**
      * Fix #4:改成 flow builder 让 collect 起手先阻塞等 preview 就位或 fail。

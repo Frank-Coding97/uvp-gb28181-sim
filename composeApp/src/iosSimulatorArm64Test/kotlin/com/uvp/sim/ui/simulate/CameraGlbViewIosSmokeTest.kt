@@ -1,8 +1,6 @@
 package com.uvp.sim.ui.simulate
 
 import com.uvp.sim.ui.model.DeviceControlDto
-import com.uvp.sim.ui.simulate.scenekit.SceneKitCameraScene
-import com.uvp.sim.ui.simulate.scenekit.SceneKitEffectDispatcher
 import kotlin.test.Test
 import kotlin.test.assertNotNull
 
@@ -13,18 +11,15 @@ import kotlin.test.assertNotNull
  *
  * 这里只验证:
  * - DTO 默认构造不崩
- * - Scene + Dispatcher 组合能挂起来(underlying wiring 没有类型错)
+ * - Filament-backed DTO boundary remains constructible on the iOS target
  */
 class CameraGlbViewIosSmokeTest {
 
     @Test
     fun default_dto_and_wiring_composes_types_correctly() {
         val dto = DeviceControlDto()
-        val scene = SceneKitCameraScene()
-        val dispatcher = SceneKitEffectDispatcher(scene)
-        // 类型编译过关即 pass, 不真挂 UIKitView (要 test host xctest runner).
+        // Native UIView creation requires an app host; this test covers the
+        // Kotlin boundary while Xcode build covers the ObjC++ bridge itself.
         assertNotNull(dto)
-        assertNotNull(scene)
-        assertNotNull(dispatcher)
     }
 }

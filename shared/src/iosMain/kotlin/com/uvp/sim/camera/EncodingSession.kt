@@ -16,6 +16,7 @@ import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.CPointerVar
 import kotlinx.cinterop.COpaquePointer
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.IntVar
 import kotlinx.cinterop.StableRef
 import kotlinx.cinterop.UByteVar
 import kotlinx.cinterop.alloc
@@ -28,10 +29,12 @@ import kotlinx.cinterop.staticCFunction
 import kotlinx.cinterop.value
 import platform.CoreFoundation.CFDictionaryCreateMutable
 import platform.CoreFoundation.CFDictionarySetValue
+import platform.CoreFoundation.CFNumberCreate
 import platform.CoreFoundation.CFRelease
 import platform.CoreFoundation.kCFAllocatorDefault
 import platform.CoreFoundation.kCFBooleanFalse
 import platform.CoreFoundation.kCFBooleanTrue
+import platform.CoreFoundation.kCFNumberSInt32Type
 import platform.CoreFoundation.kCFTypeDictionaryKeyCallBacks
 import platform.CoreFoundation.kCFTypeDictionaryValueCallBacks
 import platform.CoreMedia.CMBlockBufferGetDataLength
@@ -55,6 +58,9 @@ import platform.VideoToolbox.VTCompressionSessionRefVar
 import platform.VideoToolbox.VTSessionSetProperty
 import platform.VideoToolbox.kVTEncodeFrameOptionKey_ForceKeyFrame
 import platform.VideoToolbox.kVTCompressionPropertyKey_AllowFrameReordering
+import platform.VideoToolbox.kVTCompressionPropertyKey_AverageBitRate
+import platform.VideoToolbox.kVTCompressionPropertyKey_ExpectedFrameRate
+import platform.VideoToolbox.kVTCompressionPropertyKey_MaxKeyFrameInterval
 import platform.VideoToolbox.kVTCompressionPropertyKey_ProfileLevel
 import platform.VideoToolbox.kVTCompressionPropertyKey_RealTime
 import platform.VideoToolbox.kVTProfileLevel_HEVC_Main_AutoLevel
@@ -98,6 +104,8 @@ internal class EncodingSession(
 
     @Volatile
     private var invalidated: Boolean = false
+
+    private val frameProcessor = IosFrameProcessor(config.widthPx, config.heightPx)
 
     /**
      * 建 VT session + wire OUTPUT_CALLBACK。成功 return true,失败 return false 并已 emit error log。
@@ -161,8 +169,11 @@ internal class EncodingSession(
         val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
         val pts = CMSampleBufferGetPresentationTimeStamp(sample)
         val duration = CMTimeMake(value = 1L, timescale = config.frameRate)
+        val processedBuffer = frameProcessor.process(imageBuffer)
+        val bufferToEncode = processedBuffer ?: imageBuffer
 
-        if (forceKey) {
+        try {
+            if (forceKey) {
             val dict = CFDictionaryCreateMutable(
                 allocator = kCFAllocatorDefault,
                 capacity = 1L,
@@ -178,7 +189,7 @@ internal class EncodingSession(
                 try {
                     VTCompressionSessionEncodeFrame(
                         session = session,
-                        imageBuffer = imageBuffer,
+                        imageBuffer = bufferToEncode,
                         presentationTimeStamp = pts,
                         duration = duration,
                         frameProperties = dict.reinterpret(),
@@ -192,7 +203,7 @@ internal class EncodingSession(
                 // fallback: encode without force-key rather than stall the pipeline
                 VTCompressionSessionEncodeFrame(
                     session = session,
-                    imageBuffer = imageBuffer,
+                    imageBuffer = bufferToEncode,
                     presentationTimeStamp = pts,
                     duration = duration,
                     frameProperties = null,
@@ -200,16 +211,19 @@ internal class EncodingSession(
                     infoFlagsOut = null,
                 )
             }
-        } else {
-            VTCompressionSessionEncodeFrame(
-                session = session,
-                imageBuffer = imageBuffer,
-                presentationTimeStamp = pts,
-                duration = duration,
-                frameProperties = null,
-                sourceFrameRefcon = null,
-                infoFlagsOut = null,
-            )
+            } else {
+                VTCompressionSessionEncodeFrame(
+                    session = session,
+                    imageBuffer = bufferToEncode,
+                    presentationTimeStamp = pts,
+                    duration = duration,
+                    frameProperties = null,
+                    sourceFrameRefcon = null,
+                    infoFlagsOut = null,
+                )
+            }
+        } finally {
+            processedBuffer?.let { CFRelease(it) }
         }
     }
 
@@ -234,6 +248,7 @@ internal class EncodingSession(
     }
 
     private fun configureSession(session: VTCompressionSessionRef) {
+        val tuning = encodingTuning(config)
         setBooleanProperty(
             session = session,
             key = kVTCompressionPropertyKey_RealTime,
@@ -245,6 +260,24 @@ internal class EncodingSession(
             key = kVTCompressionPropertyKey_AllowFrameReordering,
             value = kCFBooleanFalse,
             keyName = "AllowFrameReordering",
+        )
+        setInt32Property(
+            session,
+            kVTCompressionPropertyKey_AverageBitRate,
+            tuning.averageBitRateBps,
+            "AverageBitRate",
+        )
+        setInt32Property(
+            session,
+            kVTCompressionPropertyKey_ExpectedFrameRate,
+            tuning.expectedFrameRate,
+            "ExpectedFrameRate",
+        )
+        setInt32Property(
+            session,
+            kVTCompressionPropertyKey_MaxKeyFrameInterval,
+            tuning.maxKeyFrameInterval,
+            "MaxKeyFrameInterval",
         )
         // T-B1-3:HEVC 分支加 ProfileLevel = HEVC_Main_AutoLevel(H.264 保持系统默认 baseline-ish)
         if (config.videoCodec == VideoCodec.H265) {
@@ -262,6 +295,21 @@ internal class EncodingSession(
                     "IOS_ENCODING_SESSION_HEVC_PROFILE_LEVEL_NULL fallback to encoder default",
                 )
             }
+        }
+    }
+
+    private fun setInt32Property(
+        session: VTCompressionSessionRef,
+        key: CPointer<__CFString>?,
+        value: Int,
+        keyName: String,
+    ) = memScoped {
+        val nativeValue = alloc<IntVar>().apply { this.value = value }
+        val number = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, nativeValue.ptr) ?: return@memScoped
+        try {
+            setCFTypeProperty(session, key, number, "$keyName=$value")
+        } finally {
+            CFRelease(number)
         }
     }
 

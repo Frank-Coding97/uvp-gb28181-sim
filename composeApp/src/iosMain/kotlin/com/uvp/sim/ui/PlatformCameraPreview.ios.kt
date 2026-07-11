@@ -9,6 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import platform.AVFoundation.AVCaptureVideoOrientationPortrait
 import platform.AVFoundation.AVCaptureVideoPreviewLayer
 import platform.AVFoundation.AVLayerVideoGravityResizeAspectFill
 import platform.CoreGraphics.CGRectMake
@@ -49,6 +50,14 @@ internal object IosCameraPreviewHost {
             IosCameraController.session.collect { session ->
                 if (containerView.previewLayer.session !== session) {
                     containerView.previewLayer.session = session
+                    // 2026-07-09:sensor 原生 LandscapeRight,用户手机竖着看需要 preview
+                    // layer 单独 rotate 到 Portrait。这个 connection 跟 sample delegate 的
+                    // output connection 是独立的两条路,不影响推流方向(1280x720 landscape)。
+                    containerView.previewLayer.connection?.let { conn ->
+                        if (conn.isVideoOrientationSupported()) {
+                            conn.setVideoOrientation(AVCaptureVideoOrientationPortrait)
+                        }
+                    }
                 }
             }
         }
