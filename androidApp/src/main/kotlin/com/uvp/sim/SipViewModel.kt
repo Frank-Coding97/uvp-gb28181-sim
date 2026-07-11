@@ -507,15 +507,18 @@ class SipViewModel @JvmOverloads constructor(
     companion object {
         private const val MAX_EVENT_LOG = 200
 
-        // 首次启动默认值(全空,强制用户填)
+        // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
+        // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
+        // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
         private const val WVP_IP = ""
         private const val WVP_PORT = 0
         private const val WVP_SERVER_ID = ""
-        private const val WVP_DOMAIN = ""
+        private const val WVP_DOMAIN = "3402000000"
         private const val WVP_PASSWORD = ""
-        private const val DEVICE_ID = ""
-        private const val VIDEO_CHANNEL_ID = ""
-        private const val ALARM_CHANNEL_ID = ""
+        private const val DEVICE_ID = "34020000001320000001"
+        private const val VIDEO_CHANNEL_ID = "34020000001320000010"
+        private const val FRONT_CHANNEL_ID = "34020000001320000020"
+        private const val ALARM_CHANNEL_ID = "34020000001340000001"
 
         fun defaultConfig() = SimConfig(
             gbVersion = GbVersion.V2022,
@@ -529,7 +532,7 @@ class SipViewModel @JvmOverloads constructor(
                 alarmChannelId = ALARM_CHANNEL_ID,
                 username = DEVICE_ID,
                 password = WVP_PASSWORD,
-                frontChannelId = "",
+                frontChannelId = FRONT_CHANNEL_ID,
             ),
             transport = TransportType.UDP,
             keepaliveIntervalSeconds = 60,
