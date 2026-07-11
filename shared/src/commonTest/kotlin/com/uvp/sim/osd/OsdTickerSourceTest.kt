@@ -16,6 +16,20 @@ import kotlin.test.assertTrue
 
 class OsdTickerSourceTest {
 
+    @Test
+    fun explicit_config_snapshot_does_not_tear_with_flow_value() {
+        val flowConfig = OsdConfig().copy(
+            channelName = OsdConfig().channelName.copy(text = "new"),
+        )
+        val captured = flowConfig.copy(
+            channelName = flowConfig.channelName.copy(text = "captured"),
+        )
+        val source = OsdTickerSource(MutableStateFlow(flowConfig))
+
+        assertEquals("captured", source.snapshot(captured).channelName)
+        assertEquals("new", source.snapshot().channelName)
+    }
+
     private fun layer(
         enabled: Boolean = false,
         text: String = ""

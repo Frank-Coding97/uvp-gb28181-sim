@@ -25,7 +25,11 @@ class OsdTickerSource(
     private val timeZone: TimeZone = TimeZone.currentSystemDefault()
 ) {
     fun snapshot(): OsdSnapshot {
-        val cfg = config.value
+        return snapshot(config.value)
+    }
+
+    /** Build text from the exact config snapshot captured by the frame renderer. */
+    fun snapshot(cfg: OsdConfig): OsdSnapshot {
         return OsdSnapshot(
             timestamp = if (cfg.timestamp.enabled) formatNow() else null,
             channelName = cfg.channelName.text.takeIf { cfg.channelName.enabled && it.isNotEmpty() },
