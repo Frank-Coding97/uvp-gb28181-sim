@@ -76,7 +76,7 @@ class BroadcastCoordinatorIosIntegrationTest {
         // AudioSink 用真的 AudioPlayback.ios wrapper(commonMain realAudioSink 的对应物)
         val ap = AudioPlayback(sampleRate = 8000, channelCount = 1)
         val sink = object : AudioSink {
-            override fun start() = ap.start()
+            override fun start(): Boolean = ap.start()
             override fun write(pcm: ShortArray) = ap.write(pcm)
             override fun stop() = ap.stop()
         }

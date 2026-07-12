@@ -15,15 +15,16 @@ actual class AudioPlayback actual constructor(
 ) {
     private var line: SourceDataLine? = null
 
-    actual fun start() {
-        runCatching {
+    actual fun start(): Boolean {
+        return runCatching {
             val format = AudioFormat(sampleRate.toFloat(), 16, channelCount, true, false) // signed LE
             val info = DataLine.Info(SourceDataLine::class.java, format)
             val l = AudioSystem.getLine(info) as SourceDataLine
             l.open(format)
             l.start()
             line = l
-        }.onFailure { line = null }
+            true
+        }.onFailure { line = null }.getOrDefault(false)
     }
 
     actual fun write(pcm: ShortArray) {

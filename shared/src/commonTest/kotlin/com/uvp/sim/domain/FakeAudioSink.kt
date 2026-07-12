@@ -11,7 +11,10 @@ class FakeAudioSink : AudioSink {
     var writeCount = 0
         private set
 
-    override fun start() { startCount++ }
+    /** cross-review R1 #7 支持模拟启动失败(默认成功)。 */
+    var startResult: Boolean = true
+
+    override fun start(): Boolean { startCount++; return startResult }
     override fun write(pcm: ShortArray) { writeCount++ }
     override fun stop() { stopCount++ }
 }

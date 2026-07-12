@@ -344,7 +344,9 @@ internal class BroadcastCoordinatorImpl(
                         "语音广播 TCP 主动已连平台 ${answer.remoteIp}:${answer.remotePort}"
                     )
                 }
-                _current.value = bc.copy(
+                // cross-review R1 #7:sink.start() 可能因音频硬件失败,先探启动结果再切 Talking,
+                // 否则设备静默,平台以为广播已建立却收不到 RTP。
+                val updatedBc = bc.copy(
                     state = BroadcastDialogState.Talking,
                     remoteTag = remoteTag,
                     remoteAudioHost = answer.remoteIp,
@@ -352,13 +354,26 @@ internal class BroadcastCoordinatorImpl(
                     codec = codec,
                     remoteSourceIp = envelope.sourceIp,
                 )
+                _current.value = updatedBc
                 _state.value = BroadcastDialogState.Talking
+                val playbackOk = startBroadcastRx()
+                if (!playbackOk) {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Media,
+                        "语音广播 audio sink 启动失败 → BYE + teardown"
+                    )
+                    sendBroadcastBye(updatedBc, remoteTag)
+                    val dur = nowMs() - bc.createdAtMs
+                    if (tearDownIfActive()) {
+                        simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                    }
+                    return
+                }
                 simEventEmit(SimEvent.BroadcastInvited(bc.sourcePlatformUri, bc.localAudioPort))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Media,
                     "语音广播建立(Talking)codec=${codec.name} mode=$broadcastMode ← ${answer.remoteIp}:${answer.remotePort}"
                 )
-                startBroadcastRx()
             }
             in 400..699 -> {
                 val dur = nowMs() - bc.createdAtMs
@@ -525,11 +540,24 @@ internal class BroadcastCoordinatorImpl(
         return false
     }
 
-    private fun startBroadcastRx() {
-        val receiver = rtpReceiver ?: return
+    /**
+     * cross-review R1 #7:sink.start() 失败时返回 false,让上层 handleBroadcastInviteResponse
+     * 走 BYE + teardown 路径,不再把广播标记为已建立。
+     */
+    private fun startBroadcastRx(): Boolean {
+        val receiver = rtpReceiver ?: return false
         // R3 #6 (full preset MEDIUM/performance):原每包 scope.launch{ handleRxPacket } 在 RTP 热路径
         // 每包起一条 coroutine,sustained stream 下调度抖动 + 创建无界 work。
         // 改成 receiver callback 只 trySend 到 bounded channel(64),单 consumer 顺序消费。
+        val sink = resolvedAudioSinkFactory(8000, 1)
+        if (!sink.start()) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "AUDIO_SINK_START_FAILED codec=8kHz/mono → 上层需 BYE + teardown"
+            )
+            runCatching { sink.stop() }
+            return false
+        }
         rxPacketChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
         rxJob = receiver.start { rtp ->
             rxPacketChannel?.trySend(rtp)
@@ -540,8 +568,6 @@ internal class BroadcastCoordinatorImpl(
                 handleRxPacket(rtp)
             }
         }
-        val sink = resolvedAudioSinkFactory(8000, 1)
-        sink.start()
         audioPlayback = sink
         audioPlayJob = scope.launch {
             for (pcm in audioChannel) {
@@ -560,6 +586,7 @@ internal class BroadcastCoordinatorImpl(
                 simEventEmit(SimEvent.BroadcastPacketRx(rxPackets, rxBytes, bc.codec.name))
             }
         }
+        return true
     }
 
     /**

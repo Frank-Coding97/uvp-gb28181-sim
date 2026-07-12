@@ -63,7 +63,7 @@ class BroadcastInviteSequenceTest {
     }
 
     private class FakeAudioSink : com.uvp.sim.media.AudioSink {
-        override fun start() {}
+        override fun start(): Boolean = true
         override fun write(pcm: ShortArray) {}
         override fun stop() {}
     }

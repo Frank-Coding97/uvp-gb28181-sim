@@ -66,7 +66,7 @@ class BroadcastCleanupTest {
         var startCount = 0
         var stopCount = 0
         var writeCount = 0
-        override fun start() { startCount++ }
+        override fun start(): Boolean { startCount++; return true }
         override fun write(pcm: ShortArray) { writeCount++ }
         override fun stop() { stopCount++ }
     }

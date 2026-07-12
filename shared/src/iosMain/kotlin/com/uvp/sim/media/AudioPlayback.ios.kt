@@ -39,18 +39,18 @@ actual class AudioPlayback actual constructor(
     private var converter: AVAudioConverter? = null
     private val lock = NSLock()
 
-    actual fun start() {
+    actual fun start(): Boolean {
         lock.lock()
         try {
-            if (engine != null) return
+            if (engine != null) return true
             if (!BroadcastAudioSession.activate(sampleRate, channelCount)) {
                 SystemLogger.emit(
                     LogLevel.Error, LogTag.Media,
                     "IOS_PLAYBACK_SESSION_UNAVAILABLE sr=$sampleRate ch=$channelCount",
                 )
-                return
+                return false
             }
-            runCatching {
+            return runCatching {
                 val eng = AVAudioEngine()
                 val node = AVAudioPlayerNode()
                 val sourceFmt = AVAudioFormat(
@@ -112,7 +112,7 @@ actual class AudioPlayback actual constructor(
                 outputFormat = null
                 converter = null
                 BroadcastAudioSession.deactivate()
-            }
+            }.isSuccess
         } finally {
             lock.unlock()
         }

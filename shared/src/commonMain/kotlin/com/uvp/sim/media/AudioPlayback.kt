@@ -9,7 +9,12 @@ package com.uvp.sim.media
  * 实现内部对硬件异常做 try-catch,start/write/stop 不抛(plan §6 失败回退)。
  */
 expect class AudioPlayback(sampleRate: Int, channelCount: Int) {
-    fun start()
+    /**
+     * cross-review R1 #7:启动结果显式返回。
+     * true = 设备/引擎/线路启动成功,可以调 write;
+     * false = 启动失败,内部已 log + 释放资源,调用方需要走失败路径(BYE / teardown)。
+     */
+    fun start(): Boolean
     fun write(pcm: ShortArray)
     fun stop()
 }
@@ -19,7 +24,8 @@ expect class AudioPlayback(sampleRate: Int, channelCount: Int) {
  * 单测可注入 fake(expect class 不可继承)。
  */
 interface AudioSink {
-    fun start()
+    /** cross-review R1 #7:同 [AudioPlayback.start],true 表示启动成功。 */
+    fun start(): Boolean
     fun write(pcm: ShortArray)
     fun stop()
 }
@@ -28,7 +34,7 @@ interface AudioSink {
 fun realAudioSink(sampleRate: Int, channelCount: Int): AudioSink {
     val ap = AudioPlayback(sampleRate, channelCount)
     return object : AudioSink {
-        override fun start() = ap.start()
+        override fun start(): Boolean = ap.start()
         override fun write(pcm: ShortArray) = ap.write(pcm)
         override fun stop() = ap.stop()
     }
