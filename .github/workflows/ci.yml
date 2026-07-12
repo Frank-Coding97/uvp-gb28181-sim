@@ -49,9 +49,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.konan
-          key: konan-${{ runner.os }}-kotlin-2.1.0-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: konan-${{ runner.os }}-kotlin-2.2.21-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: |
-            konan-${{ runner.os }}-kotlin-2.1.0-
+            konan-${{ runner.os }}-kotlin-2.2.21-
             konan-${{ runner.os }}-
 
       - name: Compile shared metadata (KMP fast-fail)
