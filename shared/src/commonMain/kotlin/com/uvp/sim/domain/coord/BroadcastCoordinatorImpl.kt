@@ -133,12 +133,20 @@ internal class BroadcastCoordinatorImpl(
         val msg = envelope.message
         return when (msg) {
             is SipResponse -> {
-                val cseqMethod = msg.cseqRaw()?.split(" ")?.getOrNull(1)?.let { SipMethod.fromString(it) }
+                val cseqRaw = msg.cseqRaw()
+                val cseqParts = cseqRaw?.split(" ")
+                val cseqMethod = cseqParts?.getOrNull(1)?.let { SipMethod.fromString(it) }
+                val cseqNum = cseqParts?.getOrNull(0)?.trim()?.toIntOrNull()
                 val bc = _current.value
-                if (cseqMethod == SipMethod.INVITE && bc != null && msg.callId() == bc.callId) {
+                if (cseqMethod != SipMethod.INVITE || bc == null || msg.callId() != bc.callId) {
+                    RoutingResult.Skip
+                } else if (!verifyBroadcastResponseOrDrop(envelope, msg, bc, cseqNum)) {
+                    // 校验失败已日志 warning,当作 Handled 防止其他 coordinator 误处理伪造响应。
+                    RoutingResult.Handled
+                } else {
                     handleBroadcastInviteResponse(envelope, msg, bc)
                     RoutingResult.Handled
-                } else RoutingResult.Skip
+                }
             }
             is SipRequest -> {
                 if (msg.method == SipMethod.BYE) {
@@ -442,6 +450,53 @@ internal class BroadcastCoordinatorImpl(
             remoteTag = remoteTag ?: "",
             remoteSourceIp = remoteSourceIp,
         )
+
+    /**
+     * cross-review R1 #1(CRITICAL/security):SIP 响应必须来自登记平台且 dialog identity 一致。
+     *
+     * 仅 Call-ID 匹配 → 攻击者可用 LAN 抓包重放 / 伪造 2xx,
+     * 控制 SDP 里的 RTP 地址触发到攻击者的 ACK/TCP/RTP。
+     *
+     * 校验三层:
+     * 1. envelope.sourceIp ∈ {config.server.ip} ∪ allowList(传输层)
+     * 2. CSeq number == bc.cseq(会话内交易一致性)
+     * 3. 已建立后再来的响应必须 To-tag == bc.remoteTag(dialog identity)
+     */
+    private fun verifyBroadcastResponseOrDrop(
+        envelope: com.uvp.sim.network.SipEnvelope,
+        resp: SipResponse,
+        bc: BroadcastDialog,
+        cseqNum: Int?,
+    ): Boolean {
+        if (!com.uvp.sim.sip.PlatformAuthorizer.isResponseFromAuthorizedPlatform(envelope, config)) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 BROADCAST INVITE 响应: 未授权来源 sourceIp=${envelope.sourceIp} " +
+                    "(expected=${config.server.ip}) callId=${bc.callId} → 丢弃",
+            )
+            return false
+        }
+        if (cseqNum != null && cseqNum != bc.cseq) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 BROADCAST INVITE 响应: CSeq=$cseqNum 期望=${bc.cseq} callId=${bc.callId} → 丢弃",
+            )
+            return false
+        }
+        val establishedTag = bc.remoteTag
+        if (establishedTag != null) {
+            val respTag = SipHeaderHelpers.parseTag(resp.toHeader() ?: "")
+            if (respTag.isEmpty() || respTag != establishedTag) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "拒绝 BROADCAST INVITE 响应: To-tag=$respTag 已建立=${establishedTag} " +
+                        "callId=${bc.callId} → 丢弃",
+                )
+                return false
+            }
+        }
+        return true
+    }
 
     private suspend fun verifyMidDialogOrReject(
         envelope: com.uvp.sim.network.SipEnvelope,

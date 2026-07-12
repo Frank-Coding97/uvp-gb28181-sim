@@ -91,6 +91,22 @@ internal object PlatformAuthorizer {
     }
 
     /**
+     * cross-review R1 #1(CRITICAL/security):SIP 响应来源校验。
+     *
+     * 引用 codex 原文:
+     *   "广播 INVITE 的 2xx 响应只按 Call-ID 匹配,没有在进入 handleBroadcastInviteResponse
+     *    前校验来源 IP、远端 tag 或已知对端。攻击者只需伪造匹配 Call-ID 的 2xx,
+     *    就能控制 SDP 中的 RTP 地址,触发 ACK、状态切换和到攻击者地址的 TCP/RTP 连接。"
+     *
+     * Response 里没有 From 头的对端身份保证(平台可能重写 host),只能靠传输层 sourceIp。
+     * SIP 层的 dialog identity(To tag / CSeq)由调用方在拿到响应后再校验。
+     */
+    fun isResponseFromAuthorizedPlatform(envelope: SipEnvelope, config: SimConfig): Boolean {
+        if (envelope.message !is SipResponse) return false
+        return isSourceIpAllowed(envelope.sourceIp, config.server.ip, config.server.allowList)
+    }
+
+    /**
      * 通用 source IP 匹配:命中 expectedServerIp 或 allowList 任一条目即通过。
      *
      * 跟 [com.uvp.sim.network.ServerAllowList.enforce] 配对:那是出栈 connect 前校验,
