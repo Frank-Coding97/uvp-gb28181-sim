@@ -493,17 +493,32 @@ internal class BroadcastCoordinatorImpl(
             )
             return false
         }
-        if (cseqNum != null && cseqNum != bc.cseq) {
+        // R1 verify-followup:CSeq 必填 + 数值必须能解析。缺失或畸形一律拒绝,
+        // 否则攻击者只需省略/破坏 CSeq 头就能绕过 CSeq 校验。
+        if (cseqNum == null || cseqNum != bc.cseq) {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Lifecycle,
-                "拒绝 BROADCAST INVITE 响应: CSeq=$cseqNum 期望=${bc.cseq} callId=${bc.callId} → 丢弃",
+                "拒绝 BROADCAST INVITE 响应: CSeq=${cseqNum ?: "<invalid>"} 期望=${bc.cseq} " +
+                    "callId=${bc.callId} → 丢弃",
             )
             return false
         }
+        // R1 verify-followup:2xx/final 响应必须携带非空 To-tag,dialog identity 必需项。
+        // 首个 2xx 时用 respTag 建立 dialog, 后续必须与已存 remoteTag 完全一致。
+        // 1xx (100..199) 由调用方在 handleBroadcastInviteResponse 里直接跳过,不走本校验(cseqMethod 只在这里被过滤,所以我们检查 status 分类)。
         val establishedTag = bc.remoteTag
-        if (establishedTag != null) {
+        val statusCode = resp.statusCode
+        if (statusCode in 200..699) {
             val respTag = SipHeaderHelpers.parseTag(resp.toHeader() ?: "")
-            if (respTag.isEmpty() || respTag != establishedTag) {
+            if (respTag.isEmpty()) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "拒绝 BROADCAST INVITE 响应: status=$statusCode 缺 To-tag " +
+                        "callId=${bc.callId} → 丢弃",
+                )
+                return false
+            }
+            if (establishedTag != null && respTag != establishedTag) {
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Lifecycle,
                     "拒绝 BROADCAST INVITE 响应: To-tag=$respTag 已建立=${establishedTag} " +
