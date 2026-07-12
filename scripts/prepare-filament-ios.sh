@@ -2,9 +2,32 @@
 set -eu
 
 VERSION="1.71.6"
+# cross-review R1 #6:官方 release SHA-256(2026-07-12 通过本地已下载 tgz 校验)。
+# 更新 VERSION 时必须同步更新此值,否则下载后 checksum 校验失败拒绝解包。
+EXPECTED_SHA256="dc4d46a14660649bd99f667e5ff7b41c3aec3ba93b93d0073513920440cd1efc"
 ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)/.build/filament-ios}"
 ARCHIVE="$ROOT/filament-v${VERSION}-ios.tgz"
 DIST="$ROOT/filament"
+
+verify_archive() {
+  # 优先 shasum(macOS 默认),兜底 sha256sum(Linux CI)。
+  actual=""
+  if command -v shasum >/dev/null 2>&1; then
+    actual=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')
+  elif command -v sha256sum >/dev/null 2>&1; then
+    actual=$(sha256sum "$ARCHIVE" | awk '{print $1}')
+  else
+    echo "prepare-filament-ios: neither shasum nor sha256sum available; cannot verify integrity" >&2
+    exit 1
+  fi
+  if [ "$actual" != "$EXPECTED_SHA256" ]; then
+    echo "prepare-filament-ios: SHA-256 mismatch for $ARCHIVE" >&2
+    echo "  expected: $EXPECTED_SHA256" >&2
+    echo "  actual:   $actual" >&2
+    rm -f "$ARCHIVE"
+    exit 1
+  fi
+}
 
 if [ ! -f "$DIST/include/filament/Engine.h" ]; then
   mkdir -p "$ROOT"
@@ -13,6 +36,7 @@ if [ ! -f "$DIST/include/filament/Engine.h" ]; then
       "https://github.com/google/filament/releases/download/v${VERSION}/filament-v${VERSION}-ios.tgz" \
       -o "$ARCHIVE"
   fi
+  verify_archive
   tar -xzf "$ARCHIVE" -C "$ROOT"
 fi
 
