@@ -17,6 +17,7 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import kotlinx.coroutines.channels.SendChannel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -65,6 +66,14 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     private var aacEncoder: com.uvp.sim.media.IosAacEncoder? = null
 
     /**
+     * cross-review R1 #8:当前活跃 callbackFlow 的 SendChannel。
+     * stopSync 通过它主动 close,让消费者从 collect 自然退出,避免 applyConfig
+     * 替换 streamer 后旧消费者悬挂等旧 flow 永远不产数据。
+     */
+    @Volatile
+    private var activeChannel: SendChannel<AudioFrame>? = null
+
+    /**
      * Emit compressed audio frames.
      */
     fun stream(): Flow<AudioFrame> = when (config.codec) {
@@ -73,6 +82,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     }
 
     private fun streamG711(): Flow<AudioFrame> = callbackFlow {
+        activeChannel = channel
         if (!acquireAudioSession()) {
             close(IllegalStateException("AVAudioSession activation failed"))
             return@callbackFlow
@@ -190,6 +200,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             input.removeTapOnBus(0u)
             eng.stop()
             engine = null
+            activeChannel = null
             releaseAudioSession()
             releaseActiveCount()
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=${config.codec}")
@@ -202,6 +213,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
      * AAC(即约每 3 chunks emit 2 frame)。
      */
     private fun streamAac(): Flow<AudioFrame> = callbackFlow {
+        activeChannel = channel
         if (!acquireAudioSession()) {
             close(IllegalStateException("AVAudioSession activation failed"))
             return@callbackFlow
@@ -331,6 +343,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             engine = null
             encoder.close()
             aacEncoder = null
+            activeChannel = null
             releaseAudioSession()
             releaseActiveCount()
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=AAC")
@@ -355,6 +368,10 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         engine = null
         aacEncoder?.close()
         aacEncoder = null
+        // cross-review R1 #8:主动 close 活跃 flow,让消费者 collect 自然退出。
+        // applyConfig 替换 streamer 时,旧 collect 不再无限挂等。
+        activeChannel?.close()
+        activeChannel = null
         // callbackFlow 的 awaitClose 可能尚未执行；先归还共享 AVAudioSession lease，
         // 让最后一个媒体 owner 负责停用全局 session。
         releaseAudioSession()
