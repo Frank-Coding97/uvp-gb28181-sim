@@ -8,8 +8,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
 import kotlin.time.Clock
-import kotlin.concurrent.Volatile
 
 /**
  * 系统日志全局入口。
@@ -25,6 +27,7 @@ import kotlin.concurrent.Volatile
  * 平台壳启动时调用 [bindScope] 绑定一个长生命周期 scope(MainActivity 的 lifecycleScope
  * 或 iOS 的 GlobalScope),解绑时(很罕见)调用 [resetForTest]。
  */
+@OptIn(ExperimentalAtomicApi::class)
 object SystemLogger {
 
     private const val BUFFER_CAPACITY = 1000
@@ -50,11 +53,12 @@ object SystemLogger {
     /**
      * 诊断计数:emit 被调用的**累计次数**(在 trySend 之前自增,不受 Channel DROP_OLDEST 影响)。
      * 用途:iOS 卡死排查——后台心跳读它的 delta 判断是否发生"日志风暴"淹没主线程收集器。
-     * 非原子自增(多线程可能少计),但只用于探测数量级(几千/秒),精度足够。
+     *
+     * cross-review R2 #3:原 `@Volatile Long += 1` 非原子, 并发调用会低报,
+     * 反而可能掩盖本函数想捕获的日志风暴信号。改用 AtomicLong 保证并发计数准确。
      */
-    @Volatile
-    private var emitCallCount: Long = 0
-    val emitCount: Long get() = emitCallCount
+    private val emitCallCount = AtomicLong(0L)
+    val emitCount: Long get() = emitCallCount.load()
 
     private fun newChannel() = Channel<Command>(
         capacity = CHANNEL_CAPACITY,
@@ -126,7 +130,7 @@ object SystemLogger {
         detail: String? = null,
         category: ErrorCategory? = null,
     ) {
-        emitCallCount += 1
+        emitCallCount.incrementAndFetch()
         channel.trySend(Command.Emit(level, tag, message, detail, category))
     }
 

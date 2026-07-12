@@ -88,11 +88,17 @@ object IosAppHost {
     /**
      * 诊断计数:IosApp 根 composable 的重组次数(SideEffect 每次成功重组 +1)。
      * 心跳读它的 delta 判断主线程是被"重组风暴"占死(暴涨)还是"阻塞调用"卡死(不动)。
+     *
+     * cross-review R2 #3:改 AtomicLong,跟 SystemLogger.emitCount 同款,防低报掩盖风暴信号。
      */
-    @Volatile var recomposeCount: Long = 0
-        private set
+    @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+    private val _recomposeCount = kotlin.concurrent.atomics.AtomicLong(0L)
 
-    internal fun incRecompose() { recomposeCount += 1 }
+    @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+    val recomposeCount: Long get() = _recomposeCount.load()
+
+    @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+    internal fun incRecompose() { _recomposeCount.incrementAndFetch() }
 
     /** NetworkController (Wave 1 A4, NWPathMonitor)。IosAppHost 起时装,close 由进程退出兜底。 */
     val networkController: NetworkController = NetworkController()
