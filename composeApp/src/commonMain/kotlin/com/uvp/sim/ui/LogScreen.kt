@@ -2,6 +2,10 @@ package com.uvp.sim.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -148,10 +152,11 @@ private fun AppBarIcon(
     tint: Color,
     onClick: () -> Unit
 ) {
+    // cross-review R3 #3: 48dp Material min touch target(WCAG 2.5.5 / iOS HIG 44pt / Android 48dp)
     Box(
         modifier = Modifier
-            .size(36.dp)
-            .clickable(onClick = onClick),
+            .size(48.dp)
+            .clickable(onClick = onClick, role = Role.Button),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -167,9 +172,14 @@ private fun AppBarIcon(
 private fun LogTabChip(label: String, active: Boolean, onClick: () -> Unit) {
     val bg = if (active) UvpColor.Primary else Color.Transparent
     val textColor = if (active) Color.White else UvpColor.TextSecondary
+    // cross-review R3 #4: 加 Tab role + selected 语义,让 TalkBack/VoiceOver 能宣读"页签 · 已选中/未选中"
     Box(
         modifier = Modifier
             .background(bg, RoundedCornerShape(6.dp))
+            .semantics {
+                role = Role.Tab
+                selected = active
+            }
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 6.dp)
     ) {
