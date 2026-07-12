@@ -16,7 +16,6 @@ import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
-import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.AlarmPriority
 import com.uvp.sim.network.NetworkController
@@ -37,6 +36,7 @@ import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.BroadcastState
 import com.uvp.sim.ui.RecordingStatus
+import com.uvp.sim.ui.SipEventBuffer
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.actions.CapabilityActions
@@ -285,7 +285,7 @@ fun IosApp() {
     val speakerOn by engine.broadcastSpeakerOn.collectAsState()
     val networkState by networkController.state.collectAsState()
 
-    var events by remember { mutableStateOf<List<SimEvent>>(emptyList()) }
+    val sipEventBuffer = remember { SipEventBuffer() }
     var systemLogs by remember { mutableStateOf<List<SystemLog>>(emptyList()) }
     var alarmFireMode by remember { mutableStateOf(AlarmFireMode.Random) }
     var fixedAlarmTemplate by remember { mutableStateOf<AlarmPayload?>(null) }
@@ -333,7 +333,7 @@ fun IosApp() {
 
     LaunchedEffect(engine) {
         engine.events.collect { ev ->
-            events = (events + ev).takeLast(200)
+            sipEventBuffer.append(ev)
         }
     }
 
@@ -428,7 +428,7 @@ fun IosApp() {
     val uiState = AppUiState(
         sip = sipState.toDto(),
         config = config,
-        events = events.map { it.toDto() },
+        events = sipEventBuffer.events.map { it.toDto() },
         systemEvents = systemLogs.map { it.toDto() },
         sessionMarker = SessionTracker.current.toDto(),
         subscriptions = subscriptions,
@@ -451,6 +451,7 @@ fun IosApp() {
         scope = scope,
         onAlarmModeChange = { alarmFireMode = it },
         onFixedAlarmSave = { fixedAlarmTemplate = it },
+        onClearSipLogs = sipEventBuffer::clear,
         currentMode = { alarmFireMode },
         currentFixed = { fixedAlarmTemplate },
     )
@@ -463,6 +464,7 @@ private fun buildActions(
     scope: CoroutineScope,
     onAlarmModeChange: (AlarmFireMode) -> Unit,
     onFixedAlarmSave: (AlarmPayload) -> Unit,
+    onClearSipLogs: () -> Unit,
     currentMode: () -> AlarmFireMode,
     currentFixed: () -> AlarmPayload?,
 ): AppActions {
@@ -471,7 +473,7 @@ private fun buildActions(
         override fun onCancelConnect() { scope.launch { engine.cancelConnect() } }
         override fun onDisconnect() { scope.launch { engine.disconnect() } }
         override fun onConfigSave(updated: SimConfig) { scope.launch { engine.updateConfig(updated) } }
-        override fun onClearSipLogs() { /* v1.1: engine no clear-sip API; leave to later PR */ }
+        override fun onClearSipLogs() { onClearSipLogs() }
         override fun onClearSystemLogs() { SystemLogger.clear() }
         override fun onConsumeDeviceEffect() { engine.consumeEffect() }
     }
