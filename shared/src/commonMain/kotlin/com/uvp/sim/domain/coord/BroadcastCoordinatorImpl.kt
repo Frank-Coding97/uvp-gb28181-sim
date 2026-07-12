@@ -209,7 +209,7 @@ internal class BroadcastCoordinatorImpl(
 
     // ---------- BroadcastInvoker 实现 ----------
 
-    override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
+    override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String): BroadcastInviteStart {
         // ManscdpRouter 已做 busy 检查;到这里说明无活跃 broadcast
         val mode = when (config.audioTransport) {
             com.uvp.sim.config.AudioTransportType.UDP -> RtpMode.UDP
@@ -224,7 +224,7 @@ internal class BroadcastCoordinatorImpl(
             runCatching { receiver.close() }
             simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, 0))
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "语音广播绑定本地端口失败 → 放弃 INVITE")
-            return
+            return BroadcastInviteStart.RtpBindFailed
         }
         rtpReceiver = receiver
         broadcastLocalAudioPort = boundPort
@@ -282,17 +282,19 @@ internal class BroadcastCoordinatorImpl(
             createdAtMs = nowMs(),
         )
         _state.value = BroadcastDialogState.Inviting
-        runCatching {
-            outbox.send(invite).getOrThrow()
+        val sendResult = runCatching { outbox.send(invite).getOrThrow() }
+        return if (sendResult.isSuccess) {
             simEventEmit(SimEvent.BroadcastInvited(platformUri, boundPort))
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
                 "反向 INVITE 已发: 通道 $targetId → $platformUri, ssrc=$deviceSsrc 本地音频端口=$boundPort"
             )
-        }.onFailure {
+            BroadcastInviteStart.Started
+        } else {
             // R2 #1 (verify-followup):用 stateMutex 串行化失败 teardown
             tearDownIfActive()
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("send broadcast INVITE", it))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("send broadcast INVITE", sendResult.exceptionOrNull()!!))
+            BroadcastInviteStart.InviteSendFailed
         }
     }
 

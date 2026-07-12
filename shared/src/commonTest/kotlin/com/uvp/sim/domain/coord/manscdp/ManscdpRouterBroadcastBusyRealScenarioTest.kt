@@ -22,9 +22,11 @@ class ManscdpRouterBroadcastBusyRealScenarioTest {
     private class Recorder : BroadcastInvoker {
         var invoked = 0
         val calledSourceIds = mutableListOf<String>()
-        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
+        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String):
+            com.uvp.sim.domain.coord.BroadcastInviteStart {
             invoked += 1
             calledSourceIds += sourceId
+            return com.uvp.sim.domain.coord.BroadcastInviteStart.Started
         }
     }
 

@@ -21,8 +21,10 @@ class ManscdpRouterBroadcastBusyTest {
 
     private class Recorder : BroadcastInvoker {
         var invoked = 0
-        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
+        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String):
+            com.uvp.sim.domain.coord.BroadcastInviteStart {
             invoked += 1
+            return com.uvp.sim.domain.coord.BroadcastInviteStart.Started
         }
     }
 

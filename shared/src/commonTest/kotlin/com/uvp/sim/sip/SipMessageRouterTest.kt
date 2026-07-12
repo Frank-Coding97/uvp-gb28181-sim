@@ -98,7 +98,8 @@ class SipMessageRouterTest {
         override fun setSpeaker(on: Boolean) {}
         override suspend fun stop(reason: BroadcastEndReason) {}
         override fun debugSnapshot(): BroadcastDebugSnapshot = BroadcastDebugSnapshot(0, 0, false)
-        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {}
+        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) =
+            com.uvp.sim.domain.coord.BroadcastInviteStart.Started
         override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
             val msg = envelope.message
             calls += msg
