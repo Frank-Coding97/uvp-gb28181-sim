@@ -54,6 +54,10 @@ import platform.Foundation.NSError
 class IosAudioStreamer(private val config: AudioCaptureConfig) {
 
     private var engine: AVAudioEngine? = null
+    /** 该 streamer 是否持有全局 BroadcastBusyGate 的 audio lease。 */
+    private val activeCountLease = AtomicInt(0)
+    /** 该 streamer 是否持有 UplinkAudioSession lease，stopSync 时也必须归还。 */
+    private val audioSessionLease = AtomicInt(0)
 
     /** T-B2-4:AAC 分支持有的 encoder。stop 时 close。 */
     private var aacEncoder: com.uvp.sim.media.IosAacEncoder? = null
@@ -67,15 +71,9 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     }
 
     private fun streamG711(): Flow<AudioFrame> = callbackFlow {
-        if (!UplinkAudioSession.acquire()) {
+        if (!acquireAudioSession()) {
             close(IllegalStateException("AVAudioSession activation failed"))
             return@callbackFlow
-        }
-        var audioSessionHeld = true
-        fun releaseAudioSession() {
-            if (!audioSessionHeld) return
-            audioSessionHeld = false
-            UplinkAudioSession.release()
         }
 
         val eng = AVAudioEngine()
@@ -178,7 +176,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         }
 
         // T-E2-2:activeCount++ 只在真正 start 成功后,与 stop 侧的 -- 配对。
-        activeCountAtomic.incrementAndGet()
+        acquireActiveCount()
 
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
@@ -191,8 +189,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             eng.stop()
             engine = null
             releaseAudioSession()
-            // T-E2-2:配对 --,clamp 不减到负(多次 close 幂等)。
-            decrementActiveCountClamped()
+            releaseActiveCount()
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=${config.codec}")
         }
     }
@@ -203,15 +200,9 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
      * AAC(即约每 3 chunks emit 2 frame)。
      */
     private fun streamAac(): Flow<AudioFrame> = callbackFlow {
-        if (!UplinkAudioSession.acquire()) {
+        if (!acquireAudioSession()) {
             close(IllegalStateException("AVAudioSession activation failed"))
             return@callbackFlow
-        }
-        var audioSessionHeld = true
-        fun releaseAudioSession() {
-            if (!audioSessionHeld) return
-            audioSessionHeld = false
-            UplinkAudioSession.release()
         }
 
         val eng = AVAudioEngine()
@@ -324,7 +315,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             return@callbackFlow
         }
 
-        activeCountAtomic.incrementAndGet()
+        acquireActiveCount()
 
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
@@ -339,7 +330,7 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             encoder.close()
             aacEncoder = null
             releaseAudioSession()
-            decrementActiveCountClamped()
+            releaseActiveCount()
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_STOP codec=AAC")
         }
     }
@@ -362,8 +353,30 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         engine = null
         aacEncoder?.close()
         aacEncoder = null
-        // T-E2-2:activeCount 不在 stop() 里减,统一走 callbackFlow 的 awaitClose 路径。
-        // awaitClose 会在 Flow 被 cancel/close 时保证触发一次,与 increment 严格配对。
+        // callbackFlow 的 awaitClose 可能尚未执行；先归还 AVAudioSession lease，
+        // 否则下一次 Broadcast 会继承旧的 PlayAndRecord active 状态。
+        releaseAudioSession()
+        // stopSync 可能早于 callbackFlow 的 awaitClose 执行,必须在这里释放 lease;
+        // releaseActiveCount 幂等,awaitClose 随后再调用不会重复递减。
+        releaseActiveCount()
+    }
+
+    private fun acquireActiveCount() {
+        if (activeCountLease.compareAndSet(0, 1)) activeCountAtomic.incrementAndGet()
+    }
+
+    private fun acquireAudioSession(): Boolean {
+        if (!UplinkAudioSession.acquire()) return false
+        audioSessionLease.value = 1
+        return true
+    }
+
+    private fun releaseAudioSession() {
+        if (audioSessionLease.compareAndSet(1, 0)) UplinkAudioSession.release()
+    }
+
+    private fun releaseActiveCount() {
+        if (activeCountLease.compareAndSet(1, 0)) decrementActiveCountClamped()
     }
 
     /** Test hook — verify the streamer accepts the configured codec without crashing. */

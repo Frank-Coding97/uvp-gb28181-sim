@@ -3,6 +3,7 @@ package com.uvp.sim.media
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
+import kotlinx.cinterop.BetaInteropApi
 import kotlinx.cinterop.CPointer
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.ObjCObjectVar
@@ -13,145 +14,182 @@ import kotlinx.cinterop.pointed
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.set
 import kotlinx.cinterop.value
+import platform.AVFAudio.AVAudioConverter
+import platform.AVFAudio.AVAudioConverterInputStatusVar
+import platform.AVFAudio.AVAudioConverterInputStatus_HaveData
+import platform.AVFAudio.AVAudioConverterInputStatus_NoDataNow
 import platform.AVFAudio.AVAudioEngine
 import platform.AVFAudio.AVAudioFormat
 import platform.AVFAudio.AVAudioPCMBuffer
 import platform.AVFAudio.AVAudioPCMFormatInt16
 import platform.AVFAudio.AVAudioPlayerNode
 import platform.Foundation.NSError
+import platform.Foundation.NSLock
 
-/**
- * iOS 扬声器输出 — AVAudioEngine + AVAudioPlayerNode 播 PCM Int16 单声道。
- *
- * 语音广播下行(§9.8)扬声器 iOS 实现,对齐 Android AudioTrack 语义。
- *
- * 数据流:
- *   1. [start]:attach playerNode → connect to mainMixerNode → engine.start → playerNode.play
- *   2. [write]:PCM ShortArray → AVAudioPCMBuffer → scheduleBuffer(nil options + no callback)
- *   3. [stop]:playerNode.stop → engine.stop → detach
- *
- * 失败回退:AVAudioEngine 硬件初始化失败(session 冲突 / 无扬声器权限)一律吞掉
- * 打 SystemLogger,不抛给上层(对齐 Android runCatching 兜底 + plan §6 Q4)。
- *
- * 注意:AVAudioSession 路由(扬声器 vs 听筒)不在此层管,由 IosAppHost 在启动阶段
- * 配 `.playback` category(参考 PlatformRuntimeIos)。缺 session 配置时默认走系统当前 route。
- */
-@OptIn(ExperimentalForeignApi::class)
+/** iOS 扬声器输出。输入 PCM16 先转换到音频图输出格式，再交给 PlayerNode。 */
+@OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
 actual class AudioPlayback actual constructor(
     private val sampleRate: Int,
-    private val channelCount: Int
+    private val channelCount: Int,
 ) {
     private var engine: AVAudioEngine? = null
     private var playerNode: AVAudioPlayerNode? = null
-    private var format: AVAudioFormat? = null
+    private var inputFormat: AVAudioFormat? = null
+    private var outputFormat: AVAudioFormat? = null
+    private var converter: AVAudioConverter? = null
+    private val lock = NSLock()
 
     actual fun start() {
-        // T-E1-2:先激活 AVAudioSession `.playback`(defaultToSpeaker) 让 AVAudioEngine
-        // 有输出 route。失败降级到系统默认 session(可能仍有声,可能没),不阻断后续 engine.start。
-        BroadcastAudioSession.activate(sampleRate, channelCount)
-
-        // T-E1-3 采样率转换决策(2026-07-07):
-        //
-        // 8kHz PCM Int16 直接 attach 到 mainMixerNode 走 AVAudioEngine 内建 auto-resampling。
-        // - iOS 13+ AVAudioEngine 会用 mainMixerNode.outputFormat.sampleRate(通常 44.1kHz)
-        //   自动上采样,不需要业务层挂 AVAudioConverter。
-        // - spike(T-E1-0)证实 8kHz PCM 走这条路径不 throw + PlayerNode.play 返回。
-        // - Android 上 AudioTrack(8kHz)是硬件直连,不需要 resample。iOS 交给 mixer 效果类似。
-        //
-        // 若真机联调(T-E3-4)发现破音 / 变速,回填 AVAudioConverter(8kHz → 44.1kHz)方案。
-        runCatching {
-            val eng = AVAudioEngine()
-            val node = AVAudioPlayerNode()
-            val fmt = AVAudioFormat(
-                commonFormat = AVAudioPCMFormatInt16,
-                sampleRate = sampleRate.toDouble(),
-                channels = channelCount.toUInt(),
-                interleaved = true,
-            ) ?: run {
+        lock.lock()
+        try {
+            if (engine != null) return
+            if (!BroadcastAudioSession.activate(sampleRate, channelCount)) {
                 SystemLogger.emit(
                     LogLevel.Error, LogTag.Media,
-                    "IOS_PLAYBACK_FORMAT_NULL sr=$sampleRate ch=$channelCount",
+                    "IOS_PLAYBACK_SESSION_UNAVAILABLE sr=$sampleRate ch=$channelCount",
                 )
-                return@runCatching
+                return
             }
-
-            eng.attachNode(node)
-            eng.connect(node, to = eng.mainMixerNode, format = fmt)
-
-            eng.prepare()
-            val ok = memScoped {
-                val errPtr = alloc<ObjCObjectVar<NSError?>>()
-                val started = eng.startAndReturnError(errPtr.ptr)
-                if (!started) {
-                    val desc = errPtr.value?.localizedDescription ?: "unknown"
-                    SystemLogger.emit(
-                        LogLevel.Error, LogTag.Media,
-                        "IOS_PLAYBACK_START_FAILED sr=$sampleRate ch=$channelCount error=$desc",
-                    )
+            runCatching {
+                val eng = AVAudioEngine()
+                val node = AVAudioPlayerNode()
+                val sourceFmt = AVAudioFormat(
+                    commonFormat = AVAudioPCMFormatInt16,
+                    sampleRate = sampleRate.toDouble(),
+                    channels = channelCount.toUInt(),
+                    interleaved = true,
+                ) ?: error("source format unavailable")
+                val mixerFmt = eng.mainMixerNode.outputFormatForBus(0u)
+                require(mixerFmt.sampleRate > 0.0 && mixerFmt.channelCount > 0u) {
+                    "mixer format unavailable sr=${mixerFmt.sampleRate} ch=${mixerFmt.channelCount}"
                 }
-                started
-            }
-            if (!ok) {
-                eng.detachNode(node)
-                return@runCatching
-            }
+                val cvt = AVAudioConverter(fromFormat = sourceFmt, toFormat = mixerFmt)
+                    ?: error("converter unavailable")
 
-            node.play()
-            engine = eng
-            playerNode = node
-            format = fmt
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Media,
-                "IOS_PLAYBACK_START sr=$sampleRate ch=$channelCount",
-            )
-        }.onFailure { e ->
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "IOS_PLAYBACK_START_EXCEPTION ${e::class.simpleName}: ${e.message}",
-            )
-            engine = null
-            playerNode = null
-            format = null
+                eng.attachNode(node)
+                // 真机不接受把 8 kHz 输入格式直接设为 PlayerNode 输出格式。
+                eng.connect(node, to = eng.mainMixerNode, format = mixerFmt)
+                eng.prepare()
+                val started = memScoped {
+                    val errPtr = alloc<ObjCObjectVar<NSError?>>()
+                    val ok = eng.startAndReturnError(errPtr.ptr)
+                    if (!ok) {
+                        SystemLogger.emit(
+                            LogLevel.Error,
+                            LogTag.Media,
+                            "IOS_PLAYBACK_START_FAILED sr=$sampleRate ch=$channelCount " +
+                                "error=${errPtr.value?.localizedDescription ?: "unknown"}",
+                        )
+                    }
+                    ok
+                }
+                if (!started) {
+                    eng.detachNode(node)
+                    error("AVAudioEngine.start failed")
+                }
+
+                node.play()
+                engine = eng
+                playerNode = node
+                inputFormat = sourceFmt
+                outputFormat = mixerFmt
+                converter = cvt
+                SystemLogger.emit(
+                    LogLevel.Info,
+                    LogTag.Media,
+                    "IOS_PLAYBACK_START sr=$sampleRate ch=$channelCount " +
+                        "out=${mixerFmt.sampleRate}Hz/${mixerFmt.channelCount}ch",
+                )
+            }.onFailure { e ->
+                SystemLogger.emit(
+                    LogLevel.Error,
+                    LogTag.Media,
+                    "IOS_PLAYBACK_START_EXCEPTION ${e::class.simpleName}: ${e.message}",
+                )
+                engine = null
+                playerNode = null
+                inputFormat = null
+                outputFormat = null
+                converter = null
+                BroadcastAudioSession.deactivate()
+            }
+        } finally {
+            lock.unlock()
         }
     }
 
     actual fun write(pcm: ShortArray) {
-        val node = playerNode ?: return
-        val fmt = format ?: return
         if (pcm.isEmpty()) return
-        runCatching {
-            val frames = pcm.size.toUInt()
-            val buffer = AVAudioPCMBuffer(pCMFormat = fmt, frameCapacity = frames) ?: return@runCatching
-            buffer.frameLength = frames
-            val channelPtr: CPointer<ShortVar> =
-                buffer.int16ChannelData?.pointed?.value ?: return@runCatching
-            for (i in 0 until pcm.size) {
-                channelPtr[i] = pcm[i]
+        lock.lock()
+        try {
+            val node = playerNode ?: return
+            val sourceFmt = inputFormat ?: return
+            val targetFmt = outputFormat ?: return
+            val cvt = converter ?: return
+            runCatching {
+                val input = AVAudioPCMBuffer(
+                    pCMFormat = sourceFmt,
+                    frameCapacity = pcm.size.toUInt(),
+                ) ?: return@runCatching
+                input.frameLength = pcm.size.toUInt()
+                val inputPtr: CPointer<ShortVar> =
+                    input.int16ChannelData?.pointed?.value ?: return@runCatching
+                for (i in pcm.indices) inputPtr[i] = pcm[i]
+
+                val ratio = targetFmt.sampleRate / sourceFmt.sampleRate
+                val capacity = (pcm.size * ratio).toInt().coerceAtLeast(1).toUInt() + 32u
+                val output = AVAudioPCMBuffer(
+                    pCMFormat = targetFmt,
+                    frameCapacity = capacity,
+                ) ?: return@runCatching
+                var provided = false
+                val inputBlock: (UInt, CPointer<AVAudioConverterInputStatusVar>?) -> AVAudioPCMBuffer? =
+                    block@{ _, status ->
+                        if (provided) {
+                            status?.pointed?.value = AVAudioConverterInputStatus_NoDataNow
+                            return@block null
+                        }
+                        provided = true
+                        status?.pointed?.value = AVAudioConverterInputStatus_HaveData
+                        input
+                    }
+                memScoped {
+                    val errPtr = alloc<ObjCObjectVar<NSError?>>()
+                    cvt.convertToBuffer(output, error = errPtr.ptr, withInputFromBlock = inputBlock)
+                    errPtr.value?.let { error ->
+                        SystemLogger.emit(
+                            LogLevel.Warning,
+                            LogTag.Media,
+                            "IOS_PLAYBACK_CONVERT_FAILED ${error.localizedDescription}",
+                        )
+                    }
+                }
+                if (output.frameLength > 0u) node.scheduleBuffer(output, completionHandler = null)
             }
-            // completionHandler = null:不关心播完回调,fire-and-forget
-            node.scheduleBuffer(buffer, completionHandler = null)
+        } finally {
+            lock.unlock()
         }
     }
 
     actual fun stop() {
-        runCatching { playerNode?.stop() }
-        runCatching {
-            val eng = engine
-            val node = playerNode
-            eng?.stop()
-            if (eng != null && node != null) {
-                eng.detachNode(node)
+        lock.lock()
+        try {
+            runCatching { playerNode?.stop() }
+            runCatching {
+                val eng = engine
+                val node = playerNode
+                eng?.stop()
+                if (eng != null && node != null) eng.detachNode(node)
             }
+            engine = null
+            playerNode = null
+            inputFormat = null
+            outputFormat = null
+            converter = null
+            BroadcastAudioSession.deactivate()
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_PLAYBACK_STOP sr=$sampleRate ch=$channelCount")
+        } finally {
+            lock.unlock()
         }
-        engine = null
-        playerNode = null
-        format = null
-        // T-E1-2:deactivate 与 activate 配对,让其他 audio app 能 resume。
-        // 幂等,活跃计数在 BroadcastAudioSession 内部管。
-        BroadcastAudioSession.deactivate()
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Media,
-            "IOS_PLAYBACK_STOP sr=$sampleRate ch=$channelCount",
-        )
     }
 }

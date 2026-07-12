@@ -11,7 +11,6 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
 import platform.AVFAudio.AVAudioSession
-import platform.AVFAudio.AVAudioSessionCategoryOptionDefaultToSpeaker
 import platform.AVFAudio.AVAudioSessionCategoryPlayback
 import platform.AVFAudio.AVAudioSessionModeDefault
 import platform.AVFAudio.AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
@@ -66,7 +65,8 @@ object BroadcastAudioSession {
                 val cat = session.setCategory(
                     category = AVAudioSessionCategoryPlayback,
                     mode = AVAudioSessionModeDefault,
-                    options = AVAudioSessionCategoryOptionDefaultToSpeaker,
+                    // DefaultToSpeaker 只对 PlayAndRecord 生效;Playback 本身走扬声器。
+                    options = 0u,
                     error = err.ptr,
                 )
                 if (!cat) {
