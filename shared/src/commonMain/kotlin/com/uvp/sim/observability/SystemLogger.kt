@@ -27,7 +27,6 @@ import kotlin.time.Clock
  * 平台壳启动时调用 [bindScope] 绑定一个长生命周期 scope(MainActivity 的 lifecycleScope
  * 或 iOS 的 GlobalScope),解绑时(很罕见)调用 [resetForTest]。
  */
-@OptIn(ExperimentalAtomicApi::class)
 object SystemLogger {
 
     private const val BUFFER_CAPACITY = 1000
@@ -56,8 +55,14 @@ object SystemLogger {
      *
      * cross-review R2 #3:原 `@Volatile Long += 1` 非原子, 并发调用会低报,
      * 反而可能掩盖本函数想捕获的日志风暴信号。改用 AtomicLong 保证并发计数准确。
+     *
+     * cross-review R3 #6:opt-in 范围收窄到诊断计数字段/getter,不再扩散到整个 object。
+     * pre-channel 计数保留(在 trySend 之前),这样也统计到被 DROP_OLDEST 丢弃的 emit — 那正是探测日志风暴的关键信号。
      */
+    @OptIn(ExperimentalAtomicApi::class)
     private val emitCallCount = AtomicLong(0L)
+
+    @OptIn(ExperimentalAtomicApi::class)
     val emitCount: Long get() = emitCallCount.load()
 
     private fun newChannel() = Channel<Command>(
@@ -123,6 +128,7 @@ object SystemLogger {
      * [category] 可选 — Error/Warning 级别带上可让结构化日志查询更高效;
      * Info/Debug 级别 emit 时不强制(默认 null)。老调用点(2/3/4 参 message+detail)继续工作。
      */
+    @OptIn(ExperimentalAtomicApi::class)
     fun emit(
         level: LogLevel,
         tag: LogTag,
