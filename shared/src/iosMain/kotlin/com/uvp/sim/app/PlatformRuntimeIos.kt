@@ -79,7 +79,7 @@ class PlatformRuntimeIos : PlatformRuntime {
 
     override suspend fun release() {
         // callbackFlow 的 awaitClose 不一定已完成；显式 stop 归还 AVAudioEngine
-        // 和 UplinkAudioSession lease，再清理 video + audio sink 引用。
+        // 和共享 AVAudioSession lease，再清理 video + audio sink 引用。
         runCatching { audioCaptureRef?.stop() }
         IosRecordingFrameBridge.publish(video = null, audio = null)
         cameraCaptureRef = null

@@ -34,7 +34,7 @@ class ManscdpRouterBroadcastBusyTest {
     fun recording_active_returns_error_and_skips_invite() = runTest {
         val f = SubRouterTestFixtures.newFixture(this)
         val invoker = Recorder()
-        var busy = true // 模拟 iOS gate 报告 recording-active
+        var busy = true // 模拟平台媒体资源冲突
         val r = BroadcastSubRouter(f.ctx, invoker, broadcastBusy = { busy })
 
         assertTrue(r.handle("Broadcast", broadcastXml, fromUri = null))

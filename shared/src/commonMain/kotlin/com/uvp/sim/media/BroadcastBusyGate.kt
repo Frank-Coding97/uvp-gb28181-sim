@@ -7,12 +7,10 @@ package com.uvp.sim.media
  * 回 `Result=ERROR busy` 不发 INVITE(排队策略,plan §5 Q4 决策)。
  *
  * 平台 actual 实现:
- * - iOS:读 [com.uvp.sim.camera.IosAudioStreamer] 的 activeCount(录像 audio tap 计数)
- * - Android:常量 false(Android 现网 broadcast 与录像同 category 已跑通)
- * - JVM:常量 false(无冲突场景,仅 smoke)
+ * - iOS / Android / JVM:当前均为常量 false。iOS 的采集和播放由共享 AVAudioSession 协调器处理。
  *
  * ⚠️ 注:老的 `broadcastBusy = { broadcast.current.value != null }` 是"防第二路 broadcast"
- * 保护,与本 gate 语义不冲突。本 gate 关注"录像 vs 广播"冲突,由 Router 分支叠加使用。
+ * 保护,与本 gate 语义不冲突。本 gate 留作未来无法通过媒体协调器解决的物理资源冲突。
  */
 expect object BroadcastBusyGate {
     fun isBusy(): Boolean

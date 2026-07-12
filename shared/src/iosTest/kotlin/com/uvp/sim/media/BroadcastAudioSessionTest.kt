@@ -3,6 +3,7 @@ package com.uvp.sim.media
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -42,10 +43,12 @@ class BroadcastAudioSessionTest {
     fun activate_is_idempotent() {
         val first = BroadcastAudioSession.activate(sampleRate = 8000, channels = 1)
         val second = BroadcastAudioSession.activate(sampleRate = 8000, channels = 1)
-        // 两次都不 throw;第二次至少与第一次结果一致(幂等)。
-        assertTrue(first == second || first || second)
-        // 如果第一次成功,第二次也应报告 active
-        if (first) assertTrue(BroadcastAudioSession.isActive)
+        if (first) {
+            assertTrue(second)
+            assertTrue(BroadcastAudioSession.isActive)
+        } else {
+            assertEquals(second, BroadcastAudioSession.isActive)
+        }
     }
 
     @Test

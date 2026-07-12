@@ -342,7 +342,7 @@ class AppEngine(
             broadcastBusy = {
                 // 双重 busy 判断:
                 //   1. 已有一路 broadcast 正在跑(commonMain 状态机) — 防第二路重入
-                //   2. 平台 gate(iOS: IosAudioStreamer.activeCount > 0 表录像中) — plan §5 Q4 排队
+                //   2. 平台 gate — 预留给无法由媒体协调器化解的物理资源冲突
                 val broadcastActive = broadcast.current.value != null
                 val platformBusy = com.uvp.sim.media.BroadcastBusyGate.isBusy()
                 if (broadcastActive || platformBusy) {

@@ -10,6 +10,7 @@ import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.value
+import kotlin.concurrent.AtomicInt
 import platform.AVFAudio.AVAudioSession
 import platform.AVFAudio.AVAudioSessionCategoryOptionDefaultToSpeaker
 import platform.AVFAudio.AVAudioSessionCategoryPlayAndRecord
@@ -35,44 +36,48 @@ internal class AudioSessionLeaseCounter {
     }
 }
 
+/** A once-only handle for one owner of the process-wide iOS audio session. */
+internal class IosAudioSessionLease internal constructor(
+    private val onRelease: () -> Unit,
+) {
+    private val released = AtomicInt(0)
+
+    fun release() {
+        if (released.compareAndSet(0, 1)) onRelease()
+    }
+}
+
+/**
+ * Process-wide AVAudioSession owner for both the uplink microphone and broadcast playback.
+ *
+ * iOS exposes a single AVAudioSession to the process. Keeping a stable PlayAndRecord category
+ * while either side is alive lets the input and output AVAudioEngine instances coexist without
+ * reconfiguring the hardware route underneath the other side.
+ */
 @OptIn(ExperimentalForeignApi::class, BetaInteropApi::class)
-internal object UplinkAudioSession {
+internal object IosAudioSessionCoordinator {
     private val lock = NSLock()
     private val leases = AudioSessionLeaseCounter()
 
-    fun acquire(): Boolean {
+    fun acquire(): IosAudioSessionLease? {
         lock.lock()
         try {
-            if (!leases.acquire()) return true
-            val activated = configureAndActivate()
-            if (!activated) leases.release()
-            return activated
+            val firstLease = leases.acquire()
+            if (firstLease && !configureAndActivate()) {
+                leases.release()
+                return null
+            }
+            return IosAudioSessionLease { release() }
         } finally {
             lock.unlock()
         }
     }
 
-    fun release() {
+    private fun release() {
         lock.lock()
         try {
             if (!leases.release()) return
-            val session = AVAudioSession.sharedInstance()
-            memScoped {
-                val error = alloc<ObjCObjectVar<NSError?>>()
-                val ok = session.setActive(
-                    active = false,
-                    withOptions = AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation,
-                    error = error.ptr,
-                )
-                if (!ok) {
-                    SystemLogger.emit(
-                        LogLevel.Warning,
-                        LogTag.Media,
-                        "IOS_UPLINK_AUDIO_SESSION_DEACTIVATE_FAILED " +
-                            (error.value?.localizedDescription ?: "unknown"),
-                    )
-                }
-            }
+            deactivate()
         } finally {
             lock.unlock()
         }
@@ -92,7 +97,7 @@ internal object UplinkAudioSession {
                 SystemLogger.emit(
                     LogLevel.Error,
                     LogTag.Media,
-                    "IOS_UPLINK_AUDIO_SESSION_CATEGORY_FAILED " +
+                    "IOS_AUDIO_SESSION_CATEGORY_FAILED " +
                         (categoryError.value?.localizedDescription ?: "unknown"),
                 )
                 return@memScoped false
@@ -104,13 +109,35 @@ internal object UplinkAudioSession {
                 SystemLogger.emit(
                     LogLevel.Error,
                     LogTag.Media,
-                    "IOS_UPLINK_AUDIO_SESSION_ACTIVATE_FAILED " +
+                    "IOS_AUDIO_SESSION_ACTIVATE_FAILED " +
                         (activeError.value?.localizedDescription ?: "unknown"),
                 )
                 return@memScoped false
             }
-            SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_UPLINK_AUDIO_SESSION_ACTIVE")
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_SESSION_ACTIVE mode=play-and-record")
             true
+        }
+    }
+
+    private fun deactivate() {
+        val session = AVAudioSession.sharedInstance()
+        memScoped {
+            val error = alloc<ObjCObjectVar<NSError?>>()
+            val ok = session.setActive(
+                active = false,
+                withOptions = AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation,
+                error = error.ptr,
+            )
+            if (!ok) {
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Media,
+                    "IOS_AUDIO_SESSION_DEACTIVATE_FAILED " +
+                        (error.value?.localizedDescription ?: "unknown"),
+                )
+            } else {
+                SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_AUDIO_SESSION_DEACTIVATED")
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ import com.uvp.sim.media.AudioCodec
 import com.uvp.sim.media.AudioSink
 import com.uvp.sim.network.BroadcastRxSource
 import com.uvp.sim.network.IosLocalIpProvider
+import com.uvp.sim.network.IosSigpipeGuard
 import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.RtpSender
 import com.uvp.sim.observability.SystemLogger
@@ -33,6 +34,10 @@ import platform.Foundation.NSUserDefaults
  *   - configStore:NSUserDefaults(v1.1 A3 已落地,见下方 [ConfigStoreIos])
  */
 class PlatformResourcesIos : PlatformResources {
+    init {
+        IosSigpipeGuard.install()
+    }
+
     override val rtpSenderFactory: ((String, Int, CoroutineScope, RtpMode, String?) -> RtpSender)? =
         { host, port, scope, mode, expectedClientHost -> RtpSender(host, port, scope, mode, expectedClientHost) }
 

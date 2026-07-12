@@ -32,6 +32,7 @@ import platform.AVFAudio.AVAudioPCMBuffer
 import platform.AVFAudio.AVAudioPCMFormatInt16
 import platform.AVFAudio.AVAudioTime
 import platform.Foundation.NSError
+import platform.Foundation.NSLock
 
 /**
  * iOS audio capture + encode.
@@ -54,10 +55,11 @@ import platform.Foundation.NSError
 class IosAudioStreamer(private val config: AudioCaptureConfig) {
 
     private var engine: AVAudioEngine? = null
-    /** 该 streamer 是否持有全局 BroadcastBusyGate 的 audio lease。 */
+    /** 活跃输入 tap 的诊断计数；不再作为 Broadcast 拒绝条件。 */
     private val activeCountLease = AtomicInt(0)
-    /** 该 streamer 是否持有 UplinkAudioSession lease，stopSync 时也必须归还。 */
-    private val audioSessionLease = AtomicInt(0)
+    /** 该 streamer 持有的共享 AVAudioSession lease，stopSync 时也必须归还。 */
+    private val audioSessionLock = NSLock()
+    private var audioSessionLease: IosAudioSessionLease? = null
 
     /** T-B2-4:AAC 分支持有的 encoder。stop 时 close。 */
     private var aacEncoder: com.uvp.sim.media.IosAacEncoder? = null
@@ -353,8 +355,8 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         engine = null
         aacEncoder?.close()
         aacEncoder = null
-        // callbackFlow 的 awaitClose 可能尚未执行；先归还 AVAudioSession lease，
-        // 否则下一次 Broadcast 会继承旧的 PlayAndRecord active 状态。
+        // callbackFlow 的 awaitClose 可能尚未执行；先归还共享 AVAudioSession lease，
+        // 让最后一个媒体 owner 负责停用全局 session。
         releaseAudioSession()
         // stopSync 可能早于 callbackFlow 的 awaitClose 执行,必须在这里释放 lease;
         // releaseActiveCount 幂等,awaitClose 随后再调用不会重复递减。
@@ -366,13 +368,25 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
     }
 
     private fun acquireAudioSession(): Boolean {
-        if (!UplinkAudioSession.acquire()) return false
-        audioSessionLease.value = 1
-        return true
+        audioSessionLock.lock()
+        try {
+            if (audioSessionLease != null) return true
+            val lease = IosAudioSessionCoordinator.acquire() ?: return false
+            audioSessionLease = lease
+            return true
+        } finally {
+            audioSessionLock.unlock()
+        }
     }
 
     private fun releaseAudioSession() {
-        if (audioSessionLease.compareAndSet(1, 0)) UplinkAudioSession.release()
+        audioSessionLock.lock()
+        val lease = try {
+            audioSessionLease.also { audioSessionLease = null }
+        } finally {
+            audioSessionLock.unlock()
+        }
+        lease?.release()
     }
 
     private fun releaseActiveCount() {

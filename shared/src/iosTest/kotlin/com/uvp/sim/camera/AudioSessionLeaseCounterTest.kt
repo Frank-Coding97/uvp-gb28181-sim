@@ -27,4 +27,26 @@ class AudioSessionLeaseCounterTest {
         assertFalse(counter.release())
         assertEquals(0, counter.count)
     }
+
+    @Test
+    fun broadcast_release_keeps_uplink_lease_active() {
+        val counter = AudioSessionLeaseCounter()
+
+        assertTrue(counter.acquire(), "uplink acquires and activates the shared session")
+        assertFalse(counter.acquire(), "broadcast reuses the active shared session")
+        assertFalse(counter.release(), "stopping broadcast must not deactivate uplink")
+        assertEquals(1, counter.count)
+        assertTrue(counter.release(), "the final uplink release deactivates the session")
+    }
+
+    @Test
+    fun uplink_release_keeps_broadcast_lease_active() {
+        val counter = AudioSessionLeaseCounter()
+
+        assertTrue(counter.acquire(), "broadcast acquires and activates the shared session")
+        assertFalse(counter.acquire(), "uplink reuses the active shared session")
+        assertFalse(counter.release(), "stopping uplink must not deactivate broadcast")
+        assertEquals(1, counter.count)
+        assertTrue(counter.release(), "the final broadcast release deactivates the session")
+    }
 }

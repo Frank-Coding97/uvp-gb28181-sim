@@ -6,12 +6,10 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotNull
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 /**
- * T-E2-2:iOS BroadcastBusyGate actual 分支测试(读 IosAudioStreamer.activeCount)。
+ * iOS 上行采集与广播播放共用 AVAudioSession,不能因 audio tap 活跃拒绝广播。
  */
 class BroadcastBusyGateIosTest {
 
@@ -33,18 +31,16 @@ class BroadcastBusyGateIosTest {
     }
 
     @Test
-    fun busy_when_active_count_gt_zero() {
-        // 模拟录像启动导致 activeCount++
+    fun active_uplink_does_not_block_broadcast() {
         IosAudioStreamer.activeCountAtomic.value = 1
-        assertTrue(BroadcastBusyGate.isBusy())
-        val reason = BroadcastBusyGate.busyReason()
-        assertNotNull(reason)
-        assertEquals("recording-active", reason)
+        assertFalse(BroadcastBusyGate.isBusy())
+        assertNull(BroadcastBusyGate.busyReason())
     }
 
     @Test
-    fun still_busy_when_multiple_active_streams() {
+    fun multiple_uplink_streams_do_not_block_broadcast() {
         IosAudioStreamer.activeCountAtomic.value = 3
-        assertTrue(BroadcastBusyGate.isBusy())
+        assertFalse(BroadcastBusyGate.isBusy())
+        assertNull(BroadcastBusyGate.busyReason())
     }
 }

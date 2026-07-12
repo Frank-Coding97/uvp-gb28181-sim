@@ -12,9 +12,9 @@ import kotlin.test.assertTrue
  * T-E4-0:iOS 真机场景 busy 分支专项(与 T-E2-5 语义互补,聚焦"多个 SN + 平台重试"节奏)。
  *
  * 场景:
- *   1. iOS 录像中 → 平台喊 SN=1 → busy 分支 ERROR
+ *   1. 平台媒体资源忙 → 平台喊 SN=1 → busy 分支 ERROR
  *   2. 平台重试 SN=2 (5-10s 后) → 仍 busy → ERROR
- *   3. 录像结束 (busy = false) → 平台 SN=3 → OK + 发 INVITE
+ *   3. 资源释放 (busy = false) → 平台 SN=3 → OK + 发 INVITE
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class ManscdpRouterBroadcastBusyRealScenarioTest {
@@ -43,7 +43,7 @@ class ManscdpRouterBroadcastBusyRealScenarioTest {
         // SN=1 → busy → ERROR
         r.handle("Broadcast", broadcastXml(1), fromUri = null)
         runCurrent()
-        assertEquals(0, invoker.invoked, "SN=1 期间录像中,不应发 INVITE")
+        assertEquals(0, invoker.invoked, "SN=1 期间资源忙,不应发 INVITE")
 
         // SN=2 平台重试 → busy → ERROR
         r.handle("Broadcast", broadcastXml(2), fromUri = null)

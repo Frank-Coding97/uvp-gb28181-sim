@@ -6,7 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * T-E2-4:验 IosAudioStreamer.activeCount 计数正确性(嵌套 start/stop 3 次不泄漏)。
+ * 验 IosAudioStreamer.activeCount 诊断计数正确性(嵌套 start/stop 3 次不泄漏)。
  *
  * 由于 CoreAudio 在 iosSimulator 上启动 tap 可能受权限限制(mic 需要授权),
  * 本测试**直接操作 companion object 的 activeCountAtomic**,验计数语义 + clamp。
