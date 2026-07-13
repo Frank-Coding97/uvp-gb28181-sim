@@ -214,6 +214,53 @@ internal class RecordingFileStore(
         NSFileManager.defaultManager.ensureDir(parent)
     }
 
+    /**
+     * cross-review R3 #2:load 时清理孤儿缩略图。
+     *
+     * 触发场景:delete() 里主录像已删但缩略图 deleteFile 失败(权限/沙盒瞬时错),
+     * 缩略图变 orphan(索引里没对应 recording 引用)。老代码里没有回收路径,orphan
+     * 会一直占空间且可能残留用户以为已删的画面。
+     *
+     * 策略:扫 baseDir 递归找所有 .jpg,如果其绝对路径不在传入的 indexFiles 的
+     * thumbnailPath 集合里,直接删。thumbnailPath 已经在 loadIndex 里 rebase 到
+     * 绝对路径,对比时用 set 即可。
+     *
+     * 失败静默 warning,不影响主 load 流程。
+     */
+    suspend fun scanAndDeleteOrphanThumbnails(indexFiles: List<RecordingFile>) {
+        withContext(Dispatchers.Default) {
+            runCatching {
+                val referenced = indexFiles.mapNotNull { it.thumbnailPath }.toSet()
+                val fm = NSFileManager.defaultManager
+                @Suppress("UNCHECKED_CAST")
+                val enumerator = fm.enumeratorAtPath(baseDir) ?: return@runCatching
+                var scanned = 0
+                var deleted = 0
+                while (true) {
+                    val item = enumerator.nextObject() as? String ?: break
+                    if (!item.endsWith(".jpg")) continue
+                    val absolute = (baseDir as NSString).stringByAppendingPathComponent(item)
+                    scanned++
+                    if (absolute in referenced) continue
+                    if (fm.removeItemAtPath(absolute, error = null)) {
+                        deleted++
+                    }
+                }
+                if (scanned > 0 || deleted > 0) {
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Media,
+                        "IOS_RECORDING_THUMBNAIL_ORPHAN_SCAN scanned=$scanned deleted=$deleted",
+                    )
+                }
+            }.onFailure {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "IOS_RECORDING_THUMBNAIL_ORPHAN_SCAN_FAIL msg=${it.message}",
+                )
+            }
+        }
+    }
+
     /** 读文件大小,失败或不存在返回 0。 */
     fun fileSizeBytes(path: String): Long {
         val fm = NSFileManager.defaultManager

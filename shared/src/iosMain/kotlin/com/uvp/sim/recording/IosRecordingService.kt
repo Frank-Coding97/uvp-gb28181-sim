@@ -177,7 +177,15 @@ class IosRecordingService(
     // =========================================================
 
     override suspend fun load(): Unit = mutex.withLock {
-        _files.value = fileStore.loadIndex()
+        val loaded = fileStore.loadIndex()
+        _files.value = loaded
+        // cross-review R3 #2:load 后异步扫描 orphan 缩略图并回收。
+        // delete() 缩略图删除失败(权限/瞬时 IO)是 best-effort,不阻塞主 delete,
+        // 但会留下 orphan JPG 占空间且残留画面。启动时扫一遍兜底。
+        // 用 scope.launch 是因为 orphan scan 走磁盘遍历,不该阻塞 load()。
+        scope.launch {
+            runCatching { fileStore.scanAndDeleteOrphanThumbnails(loaded) }
+        }
     }
 
     override suspend fun start(source: RecordSource, channelId: String): Result<Unit> =
