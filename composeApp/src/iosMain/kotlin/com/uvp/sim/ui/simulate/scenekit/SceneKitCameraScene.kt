@@ -1,5 +1,8 @@
 package com.uvp.sim.ui.simulate.scenekit
 
+import com.uvp.sim.api.LogTag
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.SystemLogger
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.alloc
 import kotlinx.cinterop.memScoped
@@ -90,33 +93,35 @@ class SceneKitCameraScene {
         // 一个没有完整几何的 scene。sceneWithURL 是同步加载，返回后才允许 UIKitView attach。
         val bundle = NSBundle.mainBundle
         val url: NSURL? = bundle.URLForResource(resourceName, withExtension = "usdz")
-        println("[SceneKit] bundle URL=$url  bundlePath=${bundle.bundlePath}")
+        SystemLogger.emit(LogLevel.Debug, LogTag.Resource, "SCENEKIT_BUNDLE_URL=$url path=${bundle.bundlePath}")
         if (url != null) {
             val loaded = runCatching {
                 memScoped {
                     val err = alloc<kotlinx.cinterop.ObjCObjectVar<NSError?>>()
                     SCNScene.sceneWithURL(url, options = null, error = err.ptr)
                 }
-            }.onFailure { println("[SceneKit] sceneWithURL threw: $it") }
+            }.onFailure { SystemLogger.emit(LogLevel.Warning, LogTag.Resource, "SCENEKIT_SCENE_WITH_URL_THREW: $it") }
                 .getOrNull()
-            println("[SceneKit] sceneWithURL(usdz)=$loaded")
+            SystemLogger.emit(LogLevel.Debug, LogTag.Resource, "SCENEKIT_SCENE_WITH_URL(usdz)=$loaded")
             if (loaded != null && adoptScene(loaded, tag = "sceneWithURL-usdz")) {
                 return true
             }
         } else {
-            // usdz 不在 bundle 说明 xcodegen / project.yml 没把资源打进去,
-            // 直接 fallback,老板从 log 就能定位问题.
-            println("[SceneKit] WARN: security_camera.usdz not in main bundle, check project.yml Resources includes")
+            // usdz 不在 bundle 说明 xcodegen / project.yml 没把资源打进去,直接 fallback.
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Resource,
+                "SCENEKIT_USDZ_MISSING(security_camera.usdz not in main bundle, check project.yml Resources)"
+            )
         }
 
-        // 兼容旧 .scn 资源。若 USDZ 能打开但没有可渲染几何，也继续走这里。
+        // 兼容旧 .scn 资源。若 USDZ 能打开但没有可渲染几何,也继续走这里。
         val scn: SCNScene? = SCNScene.sceneNamed("$resourceName.scn")
-        println("[SceneKit] sceneNamed(scn)=$scn")
+        SystemLogger.emit(LogLevel.Debug, LogTag.Resource, "SCENEKIT_SCENE_NAMED(scn)=$scn")
         if (scn != null && adoptScene(scn, tag = "sceneNamed-scn")) {
             return true
         }
 
-        println("[SceneKit] falling back to procedural scene")
+        SystemLogger.emit(LogLevel.Info, LogTag.Resource, "SCENEKIT_FALLBACK_PROCEDURAL")
         return loadFallbackScene()
     }
 
@@ -127,7 +132,7 @@ class SceneKitCameraScene {
     private fun adoptScene(scene: SCNScene, tag: String): Boolean {
         val geometryCount = countRenderableGeometry(scene.rootNode)
         if (geometryCount == 0) {
-            println("[SceneKit] $tag rejected: no renderable geometry")
+            SystemLogger.emit(LogLevel.Warning, LogTag.Resource, "SCENEKIT_ADOPT_REJECTED tag=$tag reason=no_geometry")
             return false
         }
         scnScene = scene
@@ -142,11 +147,10 @@ class SceneKitCameraScene {
         )
         scene.lightingEnvironment.intensity = 2.0
         val children = scene.rootNode.childNodes
-        println("[SceneKit] $tag loaded, rootNode.childNodes=${children.size}")
-        children.forEachIndexed { idx, child ->
-            (child as? SCNNode)?.let { println("[SceneKit]   [$idx] name=${it.name}") }
-        }
-        println("[SceneKit] $tag geometryCount=$geometryCount")
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Resource,
+            "SCENEKIT_ADOPT_OK tag=$tag rootChildren=${children.size} geometryCount=$geometryCount"
+        )
         return true
     }
 
@@ -362,7 +366,10 @@ class SceneKitCameraScene {
         val fovDeg = 60.0
         val fovHalfRad = fovDeg * 0.5 * kotlin.math.PI / 180.0
         val distance = (radius / kotlin.math.tan(fovHalfRad)) * 1.3
-        println("[SceneKit] scene bounds center=(${center.x},${center.y},${center.z}) r=$radius camDist=$distance")
+        SystemLogger.emit(
+            LogLevel.Debug, LogTag.Resource,
+            "SCENEKIT_CAMERA_FIT center=(${center.x},${center.y},${center.z}) r=$radius dist=$distance"
+        )
 
         val cam = platform.SceneKit.SCNCamera().apply {
             zNear = kotlin.math.max(0.01, radius * 0.01)

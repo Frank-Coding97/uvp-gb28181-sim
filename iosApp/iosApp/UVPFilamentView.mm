@@ -83,7 +83,6 @@ constexpr double4 kBackgroundColor = {0.149, 0.196, 0.220, 1.0};
     double _lastFrameTime;
     double _selfTestStart;
     BOOL _selfTestActive;
-    BOOL _didLogFirstFrame;
 }
 - (float)easedValueFrom:(float)from to:(float)to phase:(double)phase;
 - (void)updateProjection;
@@ -112,8 +111,8 @@ constexpr double4 kBackgroundColor = {0.149, 0.196, 0.220, 1.0};
     metalLayer.opaque = YES;
 
     _engine = Engine::create(Engine::Backend::METAL);
-    NSLog(@"[Filament] engine=%p metalDevice=%p", _engine, metalLayer.device);
     if (!_engine) {
+        NSLog(@"[Filament] engine create failed (backend=Metal)");
         return;
     }
     _renderer = _engine->createRenderer();
@@ -127,7 +126,6 @@ constexpr double4 kBackgroundColor = {0.149, 0.196, 0.220, 1.0};
     _renderer->setClearOptions({.clear = true, .clearColor = kBackgroundColor});
 
     _swapChain = _engine->createSwapChain((__bridge void*)self.layer);
-    NSLog(@"[Filament] renderer=%p swapChain=%p", _renderer, _swapChain);
     _materialProvider = createUbershaderProvider(
             _engine, UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
 
@@ -166,7 +164,6 @@ constexpr double4 kBackgroundColor = {0.149, 0.196, 0.220, 1.0};
 
 - (void)loadModel {
     NSString* path = [NSBundle.mainBundle pathForResource:@"security_camera" ofType:@"glb"];
-    NSLog(@"[Filament] GLB path=%@", path);
     if (!path) {
         NSLog(@"[Filament] security_camera.glb missing from iOS app bundle");
         return;
@@ -178,7 +175,6 @@ constexpr double4 kBackgroundColor = {0.149, 0.196, 0.220, 1.0};
     }
     _asset = _assetLoader->createAsset(
             static_cast<const uint8_t*>(data.bytes), static_cast<uint32_t>(data.length));
-    NSLog(@"[Filament] asset=%p bytes=%lu", _asset, (unsigned long)data.length);
     if (!_asset) {
         NSLog(@"[Filament] glTF asset creation failed");
         return;
@@ -397,11 +393,6 @@ constexpr double4 kBackgroundColor = {0.149, 0.196, 0.220, 1.0};
     }
     _renderer->setClearOptions(clear);
     if (_renderer->beginFrame(_swapChain)) {
-        if (!_didLogFirstFrame) {
-            const auto viewport = _filamentView->getViewport();
-            NSLog(@"[Filament] first frame viewport=%u x %u", viewport.width, viewport.height);
-            _didLogFirstFrame = YES;
-        }
         _renderer->render(_filamentView);
         _renderer->endFrame();
     }
