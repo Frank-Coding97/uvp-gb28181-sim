@@ -30,6 +30,7 @@ class PlatformRuntimeIos : PlatformRuntime {
 
     private var cameraCaptureRef: CameraCapture? = null
     private var audioCaptureRef: AudioCapture? = null
+    private var recordingServiceRef: RecordingService? = null
 
     override fun buildCameraCapture(config: CaptureConfig): CameraCapture {
         return cameraCaptureRef ?: CameraCapture(config).also { cameraCaptureRef = it }
@@ -46,6 +47,10 @@ class PlatformRuntimeIos : PlatformRuntime {
         osdConfigSupplier: () -> StateFlow<OsdConfig>,
         profileSupplier: () -> RecordingProfile,
     ): RecordingService {
+        // cross-review R1 #6:runtime 需 own recording service 单例。
+        // 重复构建时复用同一实例,避免旧 service 仍持有 writer / guard job
+        // 而新 service 抢走 frame sink → 未收尾文件 / 资源泄漏 / 状态与 UI 脱节。
+        recordingServiceRef?.let { return it }
         val osdConfigFlow = osdConfigSupplier()
         IosCameraController.installOsdConfigFlow(osdConfigFlow)
         // v1.1 T-recording: IosRecordingService(AVAssetWriter skeleton) 上线。
@@ -59,6 +64,7 @@ class PlatformRuntimeIos : PlatformRuntime {
             osdConfigSupplier = { osdConfigFlow },
             profileSupplier = profileSupplier,
         )
+        recordingServiceRef = service
         // T-B3-4:同一个 IosRecordingService 既是 IosVideoFrameSink 又是 IosAudioFrameSink,
         // publish 二参数把它同时挂到 bridge 的 video + audio 分派点上。
         IosRecordingFrameBridge.publish(video = service, audio = service)
@@ -78,10 +84,17 @@ class PlatformRuntimeIos : PlatformRuntime {
     }
 
     override suspend fun release() {
-        // callbackFlow 的 awaitClose 不一定已完成；显式 stop 归还 AVAudioEngine
-        // 和共享 AVAudioSession lease，再清理 video + audio sink 引用。
+        // cross-review R1 #6:释放顺序严格
+        //   (1) 先停活跃录像:如果 runtime 释放时还在录像,stop() 会 finalize writer /
+        //       删空 mp4 / 持久化 index / 取消 guard job;不 stop 就解 bridge 会让
+        //       IosRecordingFrameBridge sink 变 null 而 writer / guard 还活着,产生
+        //       未收尾文件 + 资源泄漏 + UI 状态与磁盘不一致。
+        //   (2) 再停 audio capture:归还 AVAudioEngine + AVAudioSession lease
+        //   (3) 最后解 bridge 发布 + 清引用
+        runCatching { recordingServiceRef?.stop() }
         runCatching { audioCaptureRef?.stop() }
         IosRecordingFrameBridge.publish(video = null, audio = null)
+        recordingServiceRef = null
         cameraCaptureRef = null
         audioCaptureRef = null
     }
