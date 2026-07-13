@@ -88,7 +88,15 @@ private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, A
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(
+                start = 12.dp,
+                end = 12.dp,
+                top = 12.dp,
+                // 悬浮 tab bar 底部预留(iOS 130dp / 其他 0dp)
+                bottom = 12.dp + floatingBottomBarReservedBottom
+            ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SettingsEntry(

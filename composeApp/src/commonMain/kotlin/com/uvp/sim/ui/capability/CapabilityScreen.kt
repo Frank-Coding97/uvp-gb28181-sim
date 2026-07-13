@@ -43,6 +43,7 @@ import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.floatingBottomBarReservedBottom
 import com.uvp.sim.ui.simulate.SimulateScreen
 
 /**
@@ -103,7 +104,13 @@ fun CapabilityScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(UvpColor.Bg)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(
+                start = 14.dp,
+                end = 14.dp,
+                top = 10.dp,
+                // 悬浮 tab bar 底部预留(iOS 130dp / 其他 0dp),让第二排 tile 不被遮
+                bottom = 10.dp + floatingBottomBarReservedBottom
+            ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

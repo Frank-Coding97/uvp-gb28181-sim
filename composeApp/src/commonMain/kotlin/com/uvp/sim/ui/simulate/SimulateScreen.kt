@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.floatingBottomBarReservedBottom
 import com.uvp.sim.ui.model.DeviceEffectDto
 import kotlinx.coroutines.delay
 
@@ -87,7 +88,13 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
             modifier = Modifier
                 .fillMaxSize()
                 .background(UvpColor.Bg)
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .padding(
+                    start = 12.dp,
+                    end = 12.dp,
+                    top = 10.dp,
+                    // 悬浮 tab bar 底部预留,让 PtzHudPanel 不被遮 —— iOS=130dp/其他=0dp
+                    bottom = 10.dp + floatingBottomBarReservedBottom
+                )
         ) {
             MonitoringStage(
                 state = deviceControl,

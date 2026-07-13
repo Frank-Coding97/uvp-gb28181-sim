@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -56,7 +57,14 @@ fun SipFlowView(items: List<FlowItemDto>) {
     val expandedClusters = remember { mutableStateOf(setOf<Long>()) }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)
+        modifier = Modifier.fillMaxSize(),
+        // 悬浮 tab bar 底部预留(iOS 130dp / 其他 0dp) —— 让最后一条能滚出 tab bar
+        contentPadding = PaddingValues(
+            start = 12.dp,
+            end = 12.dp,
+            top = 8.dp,
+            bottom = 8.dp + floatingBottomBarReservedBottom
+        )
     ) {
         itemsIndexed(items) { _, item ->
             when (item) {
