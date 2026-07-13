@@ -21,10 +21,15 @@ import com.uvp.sim.gb28181.AlarmPriority
 import com.uvp.sim.network.NetworkController
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.TransportType
+import com.uvp.sim.observability.HeartbeatCounters
+import com.uvp.sim.observability.HeartbeatThresholds
 import com.uvp.sim.observability.IosSessionStore
 import com.uvp.sim.observability.SessionTracker
 import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.observability.WatchdogState
+import com.uvp.sim.observability.evaluateMainThreadWatchdog
+import com.uvp.sim.observability.heartbeatLoop
 import com.uvp.sim.api.LogTag
 import com.uvp.sim.camera.IosCameraController
 import com.uvp.sim.recording.RecordingFile
@@ -57,6 +62,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
 import kotlin.time.Clock
+import kotlin.concurrent.atomics.incrementAndFetch
 import platform.darwin.dispatch_async
 import platform.darwin.dispatch_get_main_queue
 import kotlin.concurrent.Volatile
@@ -77,7 +83,6 @@ object IosAppHost {
     @Volatile private var diagnosticsHeartbeatJob: Job? = null
     @Volatile private var mainThreadWatchdogJob: Job? = null
     @Volatile private var lastMainThreadAckMs: Long = -1L
-    @Volatile private var lastMainThreadStallLogMs: Long = -1L
 
     // Install before the first Compose read so the initial UI state and all logs
     // observe the same persisted session id.
@@ -179,51 +184,63 @@ object IosAppHost {
         startMainThreadWatchdog()
     }
 
+    private val heartbeatCounters = object : HeartbeatCounters {
+        override val emitCount: Long get() = SystemLogger.emitCount
+        override val recomposeCount: Long get() = this@IosAppHost.recomposeCount
+        override val logBufferSize: Int get() = SystemLogger.snapshot.size
+    }
+
     private fun startDiagnosticsHeartbeat() {
         diagnosticsHeartbeatJob?.cancel()
         diagnosticsHeartbeatJob = hostScope.launch {
-            var prevEmitCount = SystemLogger.emitCount
-            var prevRecomposeCount = recomposeCount
-            var prevTickMs = Clock.System.now().toEpochMilliseconds()
-            while (isActive) {
-                delay(30_000L)
-                val nowTickMs = Clock.System.now().toEpochMilliseconds()
-                val elapsedSec = ((nowTickMs - prevTickMs).coerceAtLeast(1L)) / 1000.0
-                val curEmit = SystemLogger.emitCount
-                val curRecompose = recomposeCount
-                val emitRate = ((curEmit - prevEmitCount) / elapsedSec).toLong()
-                val recomposeRate = ((curRecompose - prevRecomposeCount) / elapsedSec).toLong()
-                prevEmitCount = curEmit
-                prevRecomposeCount = curRecompose
-                prevTickMs = nowTickMs
-                val svc = engine.currentRecordingService()
-                SystemLogger.emit(
-                    com.uvp.sim.observability.LogLevel.Debug,
-                    LogTag.Media,
-                    buildString {
-                        append("IOS_APP_HEARTBEAT ")
-                        append("sip=").append(engine.state.value)
-                        append(" recSvc=").append(svc?.state?.value ?: "null")
-                        append(" files=").append(svc?.files?.value?.size ?: 0)
-                        append(" cameraSession=").append(IosCameraController.session.value != null)
-                        append(" encodingActive=").append(IosCameraController.encodingActive.value)
-                        append(" cameraLastSampleMs=").append(IosCameraController.lastSampleAtMs())
-                        append(" cameraSampleCount=").append(IosCameraController.sampleCount())
-                        append(" recLastFeedMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoFeedAtMs() ?: -1L)
-                        append(" recLastAppendMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoAppendAtMs() ?: -1L)
-                        append(" memMb=").append(IosMemoryProbe.physFootprintMb())
-                        append(" emitRate=").append(emitRate).append("/s")
-                        append(" recomposeRate=").append(recomposeRate).append("/s")
-                        append(" logs=").append(SystemLogger.snapshot.size)
-                    }
-                )
-            }
+            heartbeatLoop(
+                counters = heartbeatCounters,
+                intervalMillis = 30_000L,
+                thresholds = HeartbeatThresholds(),
+                onSample = { sample ->
+                    val svc = engine.currentRecordingService()
+                    SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Debug,
+                        LogTag.Media,
+                        buildString {
+                            append("IOS_APP_HEARTBEAT ")
+                            append("sip=").append(engine.state.value)
+                            append(" recSvc=").append(svc?.state?.value ?: "null")
+                            append(" files=").append(svc?.files?.value?.size ?: 0)
+                            append(" cameraSession=").append(IosCameraController.session.value != null)
+                            append(" encodingActive=").append(IosCameraController.encodingActive.value)
+                            append(" cameraLastSampleMs=").append(IosCameraController.lastSampleAtMs())
+                            append(" cameraSampleCount=").append(IosCameraController.sampleCount())
+                            append(" recLastFeedMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoFeedAtMs() ?: -1L)
+                            append(" recLastAppendMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoAppendAtMs() ?: -1L)
+                            append(" memMb=").append(IosMemoryProbe.physFootprintMb())
+                            append(" emitRate=").append(sample.emitRate).append("/s")
+                            append(" recomposeRate=").append(sample.recomposeRate).append("/s")
+                            append(" logs=").append(sample.logBufferSize)
+                        }
+                    )
+                },
+                onWarn = { sample ->
+                    // cross-review R2 #4:观测链路补 Warning 级信号,方便告警系统抓。
+                    SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Warning,
+                        LogTag.Media,
+                        buildString {
+                            append("IOS_APP_HEARTBEAT_WARN ")
+                            if (sample.emitStorm) append("emitStorm=").append(sample.emitRate).append("/s ")
+                            if (sample.recomposeStorm) append("recomposeStorm=").append(sample.recomposeRate).append("/s ")
+                            if (sample.recomposeStalled) append("recomposeStalled=true ")
+                        }.trimEnd()
+                    )
+                },
+            )
         }
     }
 
     private fun startMainThreadWatchdog() {
         mainThreadWatchdogJob?.cancel()
         mainThreadWatchdogJob = hostScope.launch {
+            var state = WatchdogState()
             while (isActive) {
                 val probeSentAt = Clock.System.now().toEpochMilliseconds()
                 dispatch_async(dispatch_get_main_queue()) {
@@ -231,14 +248,18 @@ object IosAppHost {
                 }
                 delay(4_000L)
                 val now = Clock.System.now().toEpochMilliseconds()
-                val ack = lastMainThreadAckMs
-                val ackLagMs = if (ack > 0L) now - ack else Long.MAX_VALUE
-                if (ack < probeSentAt && now - lastMainThreadStallLogMs >= 10_000L) {
-                    lastMainThreadStallLogMs = now
+                val decision = evaluateMainThreadWatchdog(
+                    probeSentAtMs = probeSentAt,
+                    ackAtMs = lastMainThreadAckMs,
+                    nowMs = now,
+                    state = state,
+                )
+                state = decision.newState
+                if (decision.stalled) {
                     SystemLogger.emit(
                         com.uvp.sim.observability.LogLevel.Warning,
                         LogTag.Media,
-                        "IOS_MAIN_THREAD_STALL probeSentAt=$probeSentAt lastAckMs=$ack ackLagMs=$ackLagMs " +
+                        "IOS_MAIN_THREAD_STALL probeSentAt=$probeSentAt lastAckMs=$lastMainThreadAckMs ackLagMs=${decision.ackLagMs} " +
                             "memMb=${IosMemoryProbe.physFootprintMb()}"
                     )
                 }
