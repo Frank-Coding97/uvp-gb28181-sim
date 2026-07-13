@@ -280,11 +280,29 @@ class IosRecordingService(
     override suspend fun delete(id: String): Result<Unit> = mutex.withLock {
         runCatching {
             val target = _files.value.firstOrNull { it.id == id } ?: return@runCatching
-            fileStore.deleteFile(target.filePath)
+            // cross-review R2 #4:主录像文件删除失败要向上报错,不能"UI 说删了磁盘还在"。
+            // 缩略图 best-effort(失败仅 log,不阻塞 delete),因为它是派生数据。
+            val fileDeleted = fileStore.deleteFile(target.filePath)
+            if (!fileDeleted) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_RECORDING_DELETE_ABORT id=$id path=${target.filePath} reason=file_delete_failed",
+                )
+                throw IllegalStateException("recording file delete failed for $id")
+            }
             target.thumbnailPath?.let { fileStore.deleteFile(it) }
             val updated = RecordingIndex.remove(RecordingIndexFile(files = _files.value), id)
             _files.value = updated.files
-            fileStore.persistIndex(updated)
+            // cross-review R2 #4:索引持久化失败必须传播,否则重启后录像索引恢复"删掉的"条目。
+            val indexOk = fileStore.persistIndex(updated)
+            if (!indexOk) {
+                SystemLogger.emit(
+                    LogLevel.Error, LogTag.Media,
+                    "IOS_RECORDING_DELETE_INDEX_FAIL id=$id path=${target.filePath} " +
+                        "reason=persist_returned_false — 磁盘文件已删,但重启后索引可能回滚",
+                )
+                throw IllegalStateException("recording index persist failed after delete for $id")
+            }
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_RECORDING_DELETE id=$id")
         }
     }

@@ -222,12 +222,26 @@ internal class RecordingFileStore(
         return v?.longLongValue ?: 0L
     }
 
-    /** 删单个文件(缺失 / 权限失败 静默,由上层判断)。 */
-    suspend fun deleteFile(path: String) {
-        withContext(Dispatchers.Default) {
-            runCatching {
-                NSFileManager.defaultManager.removeItemAtPath(path, error = null)
-            }
+    /**
+     * 删单个文件。
+     *
+     * 返回是否可以视为"删除已达成":
+     *   - true = 文件真被删掉,或本来就不存在(等价效果)
+     *   - false = 存在但删除失败(权限 / 沙盒 / 硬件错误),上层需保留索引避免"UI 说删了但磁盘还在"
+     *
+     * cross-review R2 #4:老 API 静默失败让 delete() 无法感知文件残留,导致隐私清理和状态一致性双失败。
+     */
+    suspend fun deleteFile(path: String): Boolean = withContext(Dispatchers.Default) {
+        val fm = NSFileManager.defaultManager
+        if (!fm.fileExistsAtPath(path)) return@withContext true
+        runCatching {
+            fm.removeItemAtPath(path, error = null)
+        }.getOrElse {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Media,
+                "IOS_RECORDING_DELETE_FILE_FAIL path=$path msg=${it.message}",
+            )
+            false
         }
     }
 }
