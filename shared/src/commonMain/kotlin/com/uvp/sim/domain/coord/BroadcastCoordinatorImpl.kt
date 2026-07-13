@@ -580,8 +580,35 @@ internal class BroadcastCoordinatorImpl(
             return false
         }
         rxPacketChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
-        rxJob = receiver.start { rtp ->
+        val startedJob = receiver.start { rtp ->
             rxPacketChannel?.trySend(rtp)
+        }
+        rxJob = startedJob
+        // cross-review R3 #3:rxJob 意外结束时(UDP socket 错、TCP EOF/半包、非取消异常)
+        // 通知协调器,避免 rxJob 静默死掉但状态仍停在 Talking/Recording,形成用户不可见
+        // 且无法自动恢复的假会话。判定:invokeOnCompletion 触发时,若 _current 仍存在且
+        // rxJob 引用还是 startedJob(排除 stale 竞态),就是"未主动 teardown 就 rxJob 死了"
+        // → 触发 BYE + tearDown + BroadcastEnded(Error)。
+        startedJob.invokeOnCompletion { cause ->
+            if (cause is kotlinx.coroutines.CancellationException) return@invokeOnCompletion
+            // 用协调器 scope 跑清理,invokeOnCompletion callback 在 undispatched 上下文,
+            // 不能直接 suspend 调 BYE / tearDown。
+            scope.launch {
+                if (rxJob !== startedJob) return@launch
+                val bc = _current.value ?: return@launch
+                val remoteTag = bc.remoteTag
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Media,
+                    "BROADCAST_RX_UNEXPECTED_EXIT cause=${cause?.message ?: "eof/half-packet"} " +
+                        "remoteTag=${remoteTag ?: "none"} → tearDown${if (remoteTag != null) " + BYE" else ""}"
+                )
+                // 只有 dialog 已完成(remoteTag 存在)才发 BYE,否则底层对话未建立时发 BYE 无意义
+                if (remoteTag != null) sendBroadcastBye(bc, remoteTag)
+                val dur = nowMs() - bc.createdAtMs
+                if (tearDownIfActive()) {
+                    simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                }
+            }
         }
         rxConsumerJob = scope.launch {
             val ch = rxPacketChannel ?: return@launch
