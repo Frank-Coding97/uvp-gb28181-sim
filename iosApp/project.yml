@@ -55,9 +55,13 @@ targets:
         CFBundleShortVersionString: "1.1.0"
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
+        # UILaunchScreen 仅用白底,不显示 UIImageName - 因为 SplashLogo 是方形
+        # 蓝底 PNG(从 launcher icon 缩),iOS 96pt 居中显示时肉眼是"蓝方块一闪"。
+        # 让系统 splash 视觉纯白 ~300ms → Compose SplashScreen (commonMain 共享,
+        # 4 层品牌屏) 接管,和 Android 端 windowSplashScreenBackground=白 +
+        # splash_icon_blank 隐形 icon 策略完全一致。
         UILaunchScreen:
           UIColorName: SplashBackground
-          UIImageName: SplashLogo
         UIRequiredDeviceCapabilities:
           - arm64
         UISupportedInterfaceOrientations:
