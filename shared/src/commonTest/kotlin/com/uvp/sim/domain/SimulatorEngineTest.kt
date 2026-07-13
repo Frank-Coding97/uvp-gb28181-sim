@@ -38,7 +38,7 @@ class SimulatorEngineTest {
             videoChannelId = "34020000001320000001",
             alarmChannelId = "34020000001340000001",
             username = "34020000001110000001",
-            password = "wvp2025!!!"
+            password = "test-password"
         ),
         transport = TransportType.UDP,
         keepaliveIntervalSeconds = 60
@@ -81,7 +81,7 @@ class SimulatorEngineTest {
             val authedReq = transport.sent[1] as SipRequest
             val authHeader = authedReq.firstHeader(SipHeader.AUTHORIZATION)
             assertNotNull(authHeader)
-            val ha1 = Md5.hashHex("34020000001110000001:3402000000:wvp2025!!!")
+            val ha1 = Md5.hashHex("34020000001110000001:3402000000:test-password")
             val ha2 = Md5.hashHex("REGISTER:${authedReq.requestUri}")
             val expected = Md5.hashHex("$ha1:testnonce:$ha2")
             assertTrue(authHeader.contains("response=\"$expected\""))

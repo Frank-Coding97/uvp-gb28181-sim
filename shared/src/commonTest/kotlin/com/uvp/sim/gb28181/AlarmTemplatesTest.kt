@@ -21,7 +21,7 @@ class AlarmTemplatesTest {
             videoChannelId = "34020000001310000001",
             alarmChannelId = "34020000001340000001",
             username = "34020000001320000001",
-            password = "12345678"
+            password = "test-password"
         ),
         mockPosition = GeoPoint(116.404, 39.915)
     )

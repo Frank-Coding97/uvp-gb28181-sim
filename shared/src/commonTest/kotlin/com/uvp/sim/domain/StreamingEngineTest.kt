@@ -59,7 +59,7 @@ class StreamingEngineTest {
             videoChannelId = "35020000001320000001",
             alarmChannelId = "35020000001340000001",
             username = "35020000001310000001",
-            password = "wvp_sip_password"
+            password = "test-password"
         ),
         transport = TransportType.UDP,
         keepaliveIntervalSeconds = 60

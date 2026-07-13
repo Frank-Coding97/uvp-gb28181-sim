@@ -85,12 +85,12 @@ class DigestAuthTest {
         val auth = DigestAuth.buildResponse(
             challenge = challenge,
             username = "34020000001110000001",
-            password = "wvp2025!!!",
+            password = "test-password",
             method = "REGISTER",
             uri = "sip:34020000002000000001@3402000000"
         )
         // 手算验证
-        val ha1 = Md5.hashHex("34020000001110000001:3402000000:wvp2025!!!")
+        val ha1 = Md5.hashHex("34020000001110000001:3402000000:test-password")
         val ha2 = Md5.hashHex("REGISTER:sip:34020000002000000001@3402000000")
         val expectedResponse = Md5.hashHex("$ha1:1234abcd5678efgh:$ha2")
         assertTrue(auth.contains("response=\"$expectedResponse\""), "Response 应该匹配手算值")

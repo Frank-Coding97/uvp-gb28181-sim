@@ -24,7 +24,7 @@ class AlarmStatusResponseTest {
             videoChannelId = "34020000001320000001",
             alarmChannelId = "34020000001340000001",
             username = "admin",
-            password = "12345"
+            password = "test-password"
         )
     )
 

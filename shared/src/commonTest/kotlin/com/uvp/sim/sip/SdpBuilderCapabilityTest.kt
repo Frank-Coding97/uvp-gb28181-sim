@@ -38,7 +38,7 @@ class SdpBuilderCapabilityTest {
             videoChannelId = "34020000001320000002",
             alarmChannelId = "34020000001340000001",
             username = "34020000001320000001",
-            password = "12345678",
+            password = "test-password",
         ),
         video = VideoProfile(videoCodec = videoCodec),
     )

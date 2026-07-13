@@ -39,7 +39,7 @@ class OptionsHandlingTest {
             videoChannelId = "34020000001320000001",
             alarmChannelId = "34020000001340000001",
             username = "34020000001110000001",
-            password = "wvp2025!!!"
+            password = "test-password"
         ),
         transport = TransportType.UDP,
         keepaliveIntervalSeconds = 60,
