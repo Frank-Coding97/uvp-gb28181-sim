@@ -110,4 +110,10 @@ data class RecordingEncoderConfig(
      * 按此构造 AVAssetWriterInput。Android 侧当前忽略(录像仅 mp4 video track)。
      */
     val audioCodec: com.uvp.sim.media.AudioCodec? = null,
+    /**
+     * 2026-07-13 加 HEVC 录像支持:视频 codec(跟随推流 codec)。
+     * iOS 侧 CMSampleBufferBuilder 按此判定 NAL 头结构 + AVAssetWriter format description
+     * 用 H264 或 HEVC 版本;Android 侧当前不用(CameraX VideoCapture 自己识别硬编)。
+     */
+    val videoCodec: com.uvp.sim.media.VideoCodec = com.uvp.sim.media.VideoCodec.H264,
 )

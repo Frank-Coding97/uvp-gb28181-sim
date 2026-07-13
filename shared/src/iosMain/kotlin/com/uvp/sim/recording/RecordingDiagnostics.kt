@@ -74,6 +74,13 @@ internal class RecordingDiagnostics {
     @Volatile
     var activeAudioCodec: com.uvp.sim.media.AudioCodec? = null
 
+    /**
+     * 2026-07-13 HEVC 支持:录像 session 内活跃的视频 codec。start 时 snapshot,
+     * feedVideoFrame / sampleBufferBuilder 按此判定 NAL 头结构。默认 H.264。
+     */
+    @Volatile
+    var activeVideoCodec: com.uvp.sim.media.VideoCodec = com.uvp.sim.media.VideoCodec.H264
+
     /** 音频 PTS 归零基准,与 video 独立(plan §3.3.2)。 */
     @Volatile
     var audioBaselinePtsUs: Long = -1L

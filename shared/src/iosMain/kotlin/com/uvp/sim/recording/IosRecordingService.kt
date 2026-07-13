@@ -200,6 +200,9 @@ class IosRecordingService(
                 openWriter(outputPath, encCfg)
                 // T-B3-4:起录时 snapshot 当前音频 codec,整个录像 session 内不变(spec Q4)。
                 diag.activeAudioCodec = encCfg.audioCodec
+                // 2026-07-13 HEVC:同款 snapshot video codec,feedVideoFrame IDR 判据 +
+                // sampleBufferBuilder 都靠这个字段做 H.264/H.265 分派。
+                diag.activeVideoCodec = encCfg.videoCodec
                 diag.reset()
 
                 // T-P5-1:向 controller 请 encoding。rollover 场景 handle 已有,跳过避免 refCount 漂移。
@@ -312,11 +315,17 @@ class IosRecordingService(
 
         // 用真实 NAL type 判 IDR。`isKeyFrame` 参数在 EncodingSession 里永远为 true
         // (每帧都提取 SPS/PPS,不细分 IDR/non-IDR),不能作为"首帧可独立解码"的判据。
-        val hasIdrSlice = nalUnits.any {
-            it.isNotEmpty() && (it[0].toInt() and 0x1F) == NalType.IDR
+        //
+        // 2026-07-13 HEVC:判据必须过 activeVideoCodec —— H.264 用 low 5-bit == 5,H.265 用
+        // (byte>>1)&0x3F ∈ {19,20,21}。硬编 `& 0x1F == IDR` 在 H.265 下永远命中不到,导致
+        // 一直卡在 dropAwaitingIdr,writer 死等 IDR 直到 stop。
+        val activeVideoCodec = diag.activeVideoCodec
+        val hasIdrSlice = nalUnits.any { nal ->
+            if (nal.isEmpty()) return@any false
+            activeVideoCodec.isKeyNal(activeVideoCodec.nalType(nal[0]))
         }
 
-        // 每帧都 observe,函数内部会自行过滤只收 SPS/PPS。
+        // 每帧都 observe,函数内部会自行过滤只收参数集(H.264 SPS/PPS / H.265 VPS/SPS/PPS)。
         sampleBufferBuilder.observeParameterSets(nalUnits)
         if (!sampleBufferBuilder.hasFormatDescriptionInputs()) {
             diag.dropMissingFormat += 1
@@ -637,6 +646,20 @@ class IosRecordingService(
         val updated = RecordingIndexFile(files = currentList + recordingFile)
         _files.value = updated.files
         fileStore.persistIndex(updated)
+        // 2026-07-13 现场诊断:老板报告"iOS 多次录像列表始终只显示一条"。
+        // finalize 用的 currentList 若是 emptyList(冷启动漏调 load 的老包 / load 失败),
+        // 之前的历史记录会被 persist 覆盖。这里 emit 每次 append 前后的 size + 前 3 条 id,
+        // 让老板真机日志能直接看到"append 语义有没有被 reset 到 empty 起点"。
+        val expectedSize = currentList.size + 1
+        val actualSize = updated.files.size
+        val logLevel = if (actualSize == expectedSize) LogLevel.Debug else LogLevel.Error
+        val previewIds = updated.files.take(3).joinToString(",") { it.id.take(8) }
+        SystemLogger.emit(
+            logLevel, LogTag.Media,
+            "IOS_RECORDING_INDEX_STATE before=${currentList.size} after=$actualSize " +
+                "expected=$expectedSize appendedId=${recordingFile.id.take(8)} " +
+                "previewIds=[$previewIds]",
+        )
         SystemLogger.emit(
             LogLevel.Info,
             LogTag.Media,

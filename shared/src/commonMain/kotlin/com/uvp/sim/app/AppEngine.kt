@@ -606,6 +606,7 @@ class AppEngine(
             bitrateBps = v.bitrateKbps * 1000,
             keyframeIntervalSeconds = v.keyframeIntervalSeconds,
             audioCodec = v.audioCodec,
+            videoCodec = v.videoCodec,
         )
     }
 

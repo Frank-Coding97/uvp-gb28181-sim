@@ -73,7 +73,7 @@ internal class RecordingWriterSession(
     val audioSampleBuilder: CMAudioSampleBufferBuilder = CMAudioSampleBufferBuilder()
 
     /** phase 1:build AVAssetWriter,keeps inputs null。 */
-    fun openWriter(outputPath: String, @Suppress("UNUSED_PARAMETER") encCfg: RecordingEncoderConfig) {
+    fun openWriter(outputPath: String, encCfg: RecordingEncoderConfig) {
         val outputUrl = NSURL(fileURLWithPath = outputPath)
         val writer = memScoped {
             val errPtr = alloc<ObjCObjectVar<NSError?>>()
@@ -90,10 +90,14 @@ internal class RecordingWriterSession(
         }
 
         sampleBufferBuilder.reset()
+        // 2026-07-13 HEVC:codec 必须先于 observeParameterSets 生效,否则 H.265 NAL header
+        // 会被当 H.264 解 → VPS/SPS/PPS 一个都识别不了 → 永远 didWriteAny=false。
+        sampleBufferBuilder.configureCodec(encCfg.videoCodec)
 
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "IOS_RECORDING_OPEN_WRITER_PHASE1 status=${writer.status.toLong()} waiting for first keyframe"
+            "IOS_RECORDING_OPEN_WRITER_PHASE1 status=${writer.status.toLong()} " +
+                "videoCodec=${encCfg.videoCodec.label} waiting for first keyframe"
         )
 
         assetWriter = writer
