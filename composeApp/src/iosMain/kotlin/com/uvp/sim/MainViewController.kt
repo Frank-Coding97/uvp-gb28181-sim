@@ -1,5 +1,6 @@
 package com.uvp.sim
 
+import androidx.compose.ui.uikit.OnFocusBehavior
 import androidx.compose.ui.window.ComposeUIViewController
 import com.uvp.sim.api.LogTag
 import com.uvp.sim.observability.LogLevel
@@ -27,7 +28,13 @@ import platform.darwin.NSObject
 @Suppress("FunctionName", "unused")  // Called from Swift via KMP-generated binding
 @OptIn(ExperimentalForeignApi::class)
 fun MainViewController(): UIViewController {
-    val controller = ComposeUIViewController {
+    // OnFocusBehavior.DoNothing: 关掉 Compose Multiplatform 默认的"焦点整体上推"
+    // 策略,改由 UI 侧的 Modifier.imePadding()(见 App.kt)接管键盘避让,避免
+    // 悬浮 tab bar 被顶到屏幕顶部。SwiftUI 侧同步 .ignoresSafeArea(.keyboard)
+    // 关掉 UIKit 的自动 keyboard avoidance —— 见 ContentView.swift。
+    val controller = ComposeUIViewController(configure = {
+        onFocusBehavior = OnFocusBehavior.DoNothing
+    }) {
         IosApp()
     }
     val target = TapLoggerTarget(viewProvider = { controller.view }).also {

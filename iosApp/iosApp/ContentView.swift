@@ -13,10 +13,16 @@ import ComposeApp
 ///   - The floating tab bar itself handles its own safe-area inset via
 ///     WindowInsets.safeDrawing.only(Bottom), and paints its blur / capsule
 ///     background so content underneath is visible with a frosted glass look.
+///   - Keyboard: opt out of SwiftUI's automatic keyboard avoidance so the
+///     whole Compose view isn't shifted up when a text field gains focus
+///     (which used to push the floating tab bar to the top of the screen).
+///     Keyboard insets are consumed inside Compose via WindowInsets.ime /
+///     Modifier.imePadding() — see App.kt / MainViewController.kt.
 struct ContentView: View {
     var body: some View {
         ComposeView()
             .ignoresSafeArea(.container, edges: .bottom)
+            .ignoresSafeArea(.keyboard)
     }
 }
 

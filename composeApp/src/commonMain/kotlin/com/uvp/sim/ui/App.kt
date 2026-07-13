@@ -10,6 +10,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,9 +18,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.exclude
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -49,6 +53,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -57,6 +62,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,6 +89,7 @@ val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
  * 自定义顶栏(36dp)和底栏(56dp)代替 Material3 默认的 64/80dp,
  * 给主屏内容腾出关键的 30+ dp 高度,让"注册"按钮回到一眼可见的范围。
  */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun App(state: AppUiState, actions: AppActions) {
     UvpTheme {
@@ -97,16 +106,38 @@ fun App(state: AppUiState, actions: AppActions) {
                 currentTab = AppTab.Settings
             }
         )
+        val keyboard = LocalSoftwareKeyboardController.current
+        val focus = LocalFocusManager.current
         UvpToastHost {
             CompositionLocalProvider(LocalAppNavigator provides navigator) {
-                Box(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
+                // 点击输入框以外的空白区域 → 收起键盘 + 清焦点。
+                // iOS 系统键盘本身没有隐藏键,靠 app 自己响应。
+                // detectTapGestures 只在 pointer event 未被子元素消费时触发 →
+                // 输入框 / 按钮 / clickable 区域内的点击照旧,不受影响。
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(UvpColor.Bg)
+                        .pointerInput(Unit) {
+                            detectTapGestures(onTap = {
+                                keyboard?.hide()
+                                focus.clearFocus()
+                            })
+                        }
+                ) {
                     if (notificationOpen) {
                         NotificationScreen(
                             state = notificationState,
                             onBack = { notificationOpen = false },
                         )
                     } else {
-                        Column(modifier = Modifier.fillMaxSize()) {
+                        // imePadding: 键盘弹起时收缩内容区(TopBar / weight(1f) Surface /
+                        // 可能的 Android docked bottom bar 一起),悬浮 tab bar 在此 Column
+                        // 之外(下面 Box.align(BottomCenter)),不受影响 —— 它靠自身的
+                        // safeDrawing.only(Bottom) 拿到 ime 高度,自然抬到键盘上方。
+                        // 配合 iOS 侧关掉 SwiftUI keyboard avoidance + Compose
+                        // OnFocusBehavior.DoNothing,输入体验统一走 Compose 侧管理。
+                        Column(modifier = Modifier.fillMaxSize().imePadding()) {
                             CompactTopBar(
                                 unreadCount = notificationState.unreadCount,
                                 onBellClick = {
@@ -280,10 +311,16 @@ private fun FloatingBottomBar(
     onPick: (AppTab) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 排除 ime:键盘弹起时 TabBar 保持在 home indicator 上方(不跟随键盘上移),
+    // 让键盘从下往上把 TabBar 遮住 —— 符合 iOS 编辑态标准行为
+    // (Notes / Reminders 编辑时 tab bar 也是被键盘盖住)。
+    val bottomInset = WindowInsets.safeDrawing
+        .exclude(WindowInsets.ime)
+        .only(WindowInsetsSides.Bottom)
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+            .windowInsetsPadding(bottomInset)
             .padding(horizontal = 40.dp)
     ) {
         Box(
