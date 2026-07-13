@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -31,17 +32,20 @@ object SystemLogger {
 
     private const val BUFFER_CAPACITY = 1000
     private const val CHANNEL_CAPACITY = 256
+    private const val MIRROR_CHANNEL_CAPACITY = 64
 
 
     private var buffer = SystemLogBuffer(BUFFER_CAPACITY)
     private var seq: Long = 0
     private var channel: Channel<Command> = newChannel()
+    private var mirrorChannel: Channel<SystemLog> = newMirrorChannel()
     private val _flow = MutableSharedFlow<SystemLog>(
         replay = 0,
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     private var actorJob: Job? = null
+    private var mirrorJob: Job? = null
     private var mirrorSink: ((SystemLog) -> Unit)? = null
 
     private var clock: () -> Long = { Clock.System.now().toEpochMilliseconds() }
@@ -65,14 +69,33 @@ object SystemLogger {
     @OptIn(ExperimentalAtomicApi::class)
     val emitCount: Long get() = emitCallCount.load()
 
+    /**
+     * 诊断计数:mirror channel 因 DROP_OLDEST 或未 bindScope 而**丢弃**的镜像日志次数。
+     *
+     * cross-review R2 #5:mirrorSink 挪出 log actor 关键路径后,若平台 sink(如 iOS println)
+     * 阻塞或滞后,mirror channel 会自己 DROP_OLDEST 消化压力,而主 log actor 不受影响。
+     * 这个计数让排障时能看到 "镜像通道自己有多大压力",不会静默退化。
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    private val mirrorDroppedCount = AtomicLong(0L)
+
+    @OptIn(ExperimentalAtomicApi::class)
+    val mirrorDropped: Long get() = mirrorDroppedCount.load()
+
     private fun newChannel() = Channel<Command>(
         capacity = CHANNEL_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+
+    private fun newMirrorChannel() = Channel<SystemLog>(
+        capacity = MIRROR_CHANNEL_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
 
     /** 绑定到平台 scope。重复绑定会取消旧 actor 启新的。 */
     fun bindScope(scope: CoroutineScope) {
         actorJob?.cancel()
+        mirrorJob?.cancel()
         actorJob = scope.launch {
             for (cmd in channel) {
                 when (cmd) {
@@ -89,7 +112,7 @@ object SystemLogger {
                             category = cmd.category,
                         )
                         buffer.add(log)
-                        runCatching { mirrorSink?.invoke(log) }
+                        forwardToMirror(log)
                         _flow.emit(log)
                     }
                     Command.Clear -> {
@@ -105,11 +128,30 @@ object SystemLogger {
                             detail = null
                         )
                         buffer.add(marker)
-                        runCatching { mirrorSink?.invoke(marker) }
+                        forwardToMirror(marker)
                         _flow.emit(marker)
                     }
                 }
             }
+        }
+        mirrorJob = scope.launch {
+            for (log in mirrorChannel) {
+                runCatching { mirrorSink?.invoke(log) }
+            }
+        }
+    }
+
+    /**
+     * 把 log 递交给独立的 mirror 通道。非阻塞,失败(通道满 / 已关闭)累加诊断计数。
+     *
+     * cross-review R2 #5:mirrorSink 若阻塞不会再饿死 log actor —— 独立 consumer + DROP_OLDEST
+     * 让镜像通道自己承担背压,主排障通道(buffer / _flow)保持畅通。
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    private fun forwardToMirror(log: SystemLog) {
+        val result: ChannelResult<Unit> = mirrorChannel.trySend(log)
+        if (result.isFailure) {
+            mirrorDroppedCount.incrementAndFetch()
         }
     }
 
@@ -154,8 +196,12 @@ object SystemLogger {
     internal fun resetForTest() {
         actorJob?.cancel()
         actorJob = null
+        mirrorJob?.cancel()
+        mirrorJob = null
         runCatching { channel.close() }
+        runCatching { mirrorChannel.close() }
         channel = newChannel()
+        mirrorChannel = newMirrorChannel()
         buffer = SystemLogBuffer(BUFFER_CAPACITY)
         seq = 0
         mirrorSink = null
@@ -167,6 +213,7 @@ object SystemLogger {
      */
     internal fun shutdownForTest() {
         runCatching { channel.close() }
+        runCatching { mirrorChannel.close() }
     }
 
     /** 屏蔽密码/令牌字段(spec §6 隐私):password=xxx → password=****。
