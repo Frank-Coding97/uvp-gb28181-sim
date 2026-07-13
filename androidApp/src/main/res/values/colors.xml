@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- UVP 品牌主色 - 跟 composeApp/.../ui/Theme.kt UvpColor.Primary 严格一致 -->
+    <color name="uvp_primary">#1890FF</color>
+</resources>

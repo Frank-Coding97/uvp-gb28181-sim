@@ -129,5 +129,5 @@ internal fun MonitoringStage(
     }
 }
 
-/** 中性深紫蓝(午夜蓝),跟 Filament clearColor 同色,给 Compose 层兜底. */
-internal val CameraStageBase = Color(0xFF0E1A36)
+/** 中性蓝灰,与 Android/iOS Filament clearColor 同色,给 Compose 层兜底. */
+internal val CameraStageBase = Color(0xFF263238)

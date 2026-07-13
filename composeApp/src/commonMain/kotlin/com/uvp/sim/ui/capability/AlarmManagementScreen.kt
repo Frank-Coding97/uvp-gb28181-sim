@@ -98,7 +98,7 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
         type = type,
         typeParam = typeParam.ifBlank { null },
         timeMs = if (minutesAgo > 0)
-            kotlinx.datetime.Clock.System.now().toEpochMilliseconds() - minutesAgo * 60_000L
+            kotlin.time.Clock.System.now().toEpochMilliseconds() - minutesAgo * 60_000L
         else 0L,
         description = description,
         longitude = longitude.toDoubleOrNull(),

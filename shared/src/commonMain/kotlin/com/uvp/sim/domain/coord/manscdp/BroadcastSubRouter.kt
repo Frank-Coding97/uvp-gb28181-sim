@@ -69,20 +69,40 @@ internal class BroadcastSubRouter(
             )
             return
         }
+        // cross-review R1 #2:资源预留 + INVITE 送出必须在回 OK 之前,
+        // 否则 RTP 绑定 / INVITE outbox 失败时平台以为广播已接受却永远等不到反向 INVITE。
+        val sourceId = query.sourceId ?: ""
+        ctx.simEventEmit(SimEvent.BroadcastReceived(sourceId = sourceId, targetId = targetId))
+        val platformUri = "sip:$sourceId@${ctx.config.server.domain}"
+        val startResult = broadcastInvoker.fireBroadcastInvite(sourceId, platformUri, targetId)
+        if (startResult != com.uvp.sim.domain.coord.BroadcastInviteStart.Started) {
+            sendBroadcastResponseMessage(
+                BroadcastResponse.build(
+                    deviceId = myId, sn = sn,
+                    result = BroadcastResponse.Result.ERROR,
+                    reason = when (startResult) {
+                        com.uvp.sim.domain.coord.BroadcastInviteStart.RtpBindFailed -> "rtp bind failed"
+                        com.uvp.sim.domain.coord.BroadcastInviteStart.InviteSendFailed -> "invite send failed"
+                        com.uvp.sim.domain.coord.BroadcastInviteStart.Started -> "unreachable"
+                    },
+                )
+            )
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Network,
+                "语音广播启动失败($startResult) source=$sourceId target=$targetId → 回 ERROR,不发 INVITE",
+            )
+            return
+        }
         sendBroadcastResponseMessage(
             BroadcastResponse.build(
                 deviceId = myId, sn = sn,
                 result = BroadcastResponse.Result.OK,
             )
         )
-        val sourceId = query.sourceId ?: ""
-        ctx.simEventEmit(SimEvent.BroadcastReceived(sourceId = sourceId, targetId = targetId))
         SystemLogger.emit(
             LogLevel.Info, LogTag.Network,
-            "收到语音广播请求 source=$sourceId target=$targetId → 已回 OK,主动 INVITE 平台",
+            "收到语音广播请求 source=$sourceId target=$targetId → INVITE 已发 + 回 OK",
         )
-        val platformUri = "sip:$sourceId@${ctx.config.server.domain}"
-        broadcastInvoker.fireBroadcastInvite(sourceId, platformUri, targetId)
     }
 
     private suspend fun sendBroadcastResponseMessage(xmlBody: String) {

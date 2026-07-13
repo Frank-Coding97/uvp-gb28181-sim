@@ -43,7 +43,7 @@ class CatalogNotifyBuilderTest {
     }
 
     @Test
-    fun `build emits Parental 1 for Device, BusinessGroup, VirtualOrg`() {
+    fun `build emits Parental 1 for Device BusinessGroup VirtualOrg`() {
         val tree = listOf(
             root(),
             CatalogNode("g1", CatalogNodeType.BusinessGroup, "G", rootId),

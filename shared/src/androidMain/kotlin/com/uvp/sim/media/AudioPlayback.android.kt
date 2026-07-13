@@ -16,8 +16,8 @@ actual class AudioPlayback actual constructor(
 ) {
     private var track: AudioTrack? = null
 
-    actual fun start() {
-        runCatching {
+    actual fun start(): Boolean {
+        return runCatching {
             val bufSize = AudioTrack.getMinBufferSize(
                 sampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
@@ -41,7 +41,8 @@ actual class AudioPlayback actual constructor(
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
             track?.play()
-        }.onFailure { track = null }
+            track != null
+        }.onFailure { track = null }.getOrDefault(false)
     }
 
     actual fun write(pcm: ShortArray) {

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DevicesOther
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MovieFilter
 import androidx.compose.material.icons.outlined.NetworkCheck
@@ -75,15 +76,27 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
             title = "网络",
             onBack = { page = SettingsPage.Index }
         ) { NetworkSettingsPage(state, actions) }
+        SettingsPage.About -> SettingsSubPage(
+            title = "关于",
+            onBack = { page = SettingsPage.Index }
+        ) { AboutScreen() }
     }
 }
 
-private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network }
+private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, About }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(
+                start = 12.dp,
+                end = 12.dp,
+                top = 12.dp,
+                // 悬浮 tab bar 底部预留(iOS 130dp / 其他 0dp)
+                bottom = 12.dp + floatingBottomBarReservedBottom
+            ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         SettingsEntry(
@@ -110,15 +123,19 @@ private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
             description = "时间戳 · 通道名 · 自定义水印",
             onClick = { onPick(SettingsPage.Osd) }
         )
+        if (isNetworkSelectionSupported) {
+            SettingsEntry(
+                icon = Icons.Outlined.NetworkCheck,
+                title = "网络",
+                description = "Wi-Fi / 蜂窝 选择",
+                onClick = { onPick(SettingsPage.Network) }
+            )
+        }
         SettingsEntry(
-            icon = Icons.Outlined.NetworkCheck,
-            title = "网络",
-            description = if (isNetworkSelectionSupported)
-                "Wi-Fi / 蜂窝 选择"
-            else
-                "仅 Android 支持",
-            enabled = isNetworkSelectionSupported,
-            onClick = { onPick(SettingsPage.Network) }
+            icon = Icons.Outlined.Info,
+            title = "关于",
+            description = "版本 · 开源仓库 · 联系作者",
+            onClick = { onPick(SettingsPage.About) }
         )
     }
 }
@@ -172,6 +189,8 @@ private fun SettingsSubPage(
     content: @Composable () -> Unit
 ) {
     PlatformBackHandler(enabled = true, onBack = onBack)
+    // SubPageContainer 提供 tab bar 自动隐藏 + iOS 左边缘 swipe-back 手势。
+    SubPageContainer(onBack = onBack) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -195,6 +214,7 @@ private fun SettingsSubPage(
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
         content()
+    }
     }
 }
 

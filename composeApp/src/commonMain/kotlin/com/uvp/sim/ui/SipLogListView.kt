@@ -7,6 +7,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -54,7 +55,13 @@ fun SipLogListView(events: List<SimEventDto>) {
         Spacer(Modifier.height(8.dp))
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+            modifier = Modifier.fillMaxSize(),
+            // 悬浮 tab bar 底部预留(iOS 130dp / 其他 0dp) —— 让最后一条能滚出 tab bar
+            contentPadding = PaddingValues(
+                start = 12.dp,
+                end = 12.dp,
+                bottom = floatingBottomBarReservedBottom
+            ),
             verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
             items(filtered.size) { idx ->

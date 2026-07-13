@@ -90,7 +90,8 @@ class ManscdpRouterTest {
     }
 
     private object NoopBroadcastInvoker : BroadcastInvoker {
-        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {}
+        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) =
+            com.uvp.sim.domain.coord.BroadcastInviteStart.Started
     }
 
     private fun incomingMessage(callId: String, xmlBody: String): SipRequest = SipRequest(
@@ -137,10 +138,12 @@ class ManscdpRouterTest {
         var capturedSource = ""
         var capturedTarget = ""
         val customInvoker = object : BroadcastInvoker {
-            override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
+            override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String):
+                com.uvp.sim.domain.coord.BroadcastInviteStart {
                 invoked++
                 capturedSource = sourceId
                 capturedTarget = targetId
+                return com.uvp.sim.domain.coord.BroadcastInviteStart.Started
             }
         }
         val router = newRouter(this, transport, broadcastInvoker = customInvoker)

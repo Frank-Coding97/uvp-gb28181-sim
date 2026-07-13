@@ -4,9 +4,11 @@ import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
+import com.uvp.sim.camera.IosCameraController
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
-import com.uvp.sim.recording.NoopRecordingService
+import com.uvp.sim.recording.IosRecordingFrameBridge
+import com.uvp.sim.recording.IosRecordingService
 import com.uvp.sim.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -26,14 +28,15 @@ import kotlinx.coroutines.flow.StateFlow
  */
 class PlatformRuntimeIos : PlatformRuntime {
 
+    private var cameraCaptureRef: CameraCapture? = null
+    private var audioCaptureRef: AudioCapture? = null
+
     override fun buildCameraCapture(config: CaptureConfig): CameraCapture {
-        // TODO(v1.1): 装 IosCameraStreamer。
-        throw UnsupportedOperationException("PlatformRuntimeIos.buildCameraCapture: pending v1.1")
+        return cameraCaptureRef ?: CameraCapture(config).also { cameraCaptureRef = it }
     }
 
     override fun buildAudioCapture(config: AudioCaptureConfig): AudioCapture {
-        // TODO(v1.1): 装 IosAudioStreamer。
-        throw UnsupportedOperationException("PlatformRuntimeIos.buildAudioCapture: pending v1.1")
+        return audioCaptureRef ?: AudioCapture(config).also { audioCaptureRef = it }
     }
 
     override fun buildRecordingService(
@@ -43,15 +46,43 @@ class PlatformRuntimeIos : PlatformRuntime {
         osdConfigSupplier: () -> StateFlow<OsdConfig>,
         profileSupplier: () -> RecordingProfile,
     ): RecordingService {
-        // TODO(v1.1): 接 AVAssetWriter。当前返回 Noop,让 AppEngine 装配链不挂。
-        return NoopRecordingService
+        val osdConfigFlow = osdConfigSupplier()
+        IosCameraController.installOsdConfigFlow(osdConfigFlow)
+        // v1.1 T-recording: IosRecordingService(AVAssetWriter skeleton) 上线。
+        // AVCaptureSession 单实例 + CMSampleBuffer 灌 writer 的 feed 链留 v1.2,
+        // 当前 mp4 header 合法但没 sample —— 至少 UI 状态机 / 索引落盘 / 切片
+        // 都跑通,不再是 Noop 静默丢帧。
+        val service = IosRecordingService(
+            scope = scope,
+            deviceIdSupplier = deviceIdSupplier,
+            encoderConfigSupplier = encoderConfigSupplier,
+            osdConfigSupplier = { osdConfigFlow },
+            profileSupplier = profileSupplier,
+        )
+        // T-B3-4:同一个 IosRecordingService 既是 IosVideoFrameSink 又是 IosAudioFrameSink,
+        // publish 二参数把它同时挂到 bridge 的 video + audio 分派点上。
+        IosRecordingFrameBridge.publish(video = service, audio = service)
+        return service
     }
 
+    /**
+     * v1.3 起真实生效:
+     *   - [CameraCapture.applyConfig] 同步刷新 facade + 调 [IosCameraController.applyRuntimeConfig]
+     *     → 若 preview 在跑:sessionQueue 上换 preset / 帧率 / 输入设备,并按需重建 VT encoder
+     *   - [AudioCapture.applyConfig] 先 stopSync 旧 [IosAudioStreamer](避免 AVAudioEngine 泄漏)
+     *     再构造新实例,下一次 start() 用新 codec / sampleRate
+     */
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
-        // TODO(v1.1): 真重建 / applyVideoConfig 链路。当前 no-op。
+        cameraCaptureRef?.applyConfig(captureConfig)
+        audioCaptureRef?.applyConfig(audioConfig)
     }
 
     override suspend fun release() {
-        // no-op
+        // callbackFlow 的 awaitClose 不一定已完成；显式 stop 归还 AVAudioEngine
+        // 和共享 AVAudioSession lease，再清理 video + audio sink 引用。
+        runCatching { audioCaptureRef?.stop() }
+        IosRecordingFrameBridge.publish(video = null, audio = null)
+        cameraCaptureRef = null
+        audioCaptureRef = null
     }
 }

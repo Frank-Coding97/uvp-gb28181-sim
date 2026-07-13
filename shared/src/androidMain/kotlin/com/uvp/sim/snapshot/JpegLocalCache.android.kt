@@ -2,7 +2,7 @@ package com.uvp.sim.snapshot
 
 import android.content.Context
 import java.io.File
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

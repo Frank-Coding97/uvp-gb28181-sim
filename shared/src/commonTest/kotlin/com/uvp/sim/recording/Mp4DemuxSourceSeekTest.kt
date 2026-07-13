@@ -1,5 +1,6 @@
 package com.uvp.sim.recording
 
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.runTest

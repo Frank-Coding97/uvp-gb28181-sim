@@ -2,6 +2,10 @@ package com.uvp.sim.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,7 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.observability.SipDialogGrouping
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * 日志页双 tab 容器 — SIP 日志 / 系统日志(spec §4 P0)。
@@ -148,10 +152,11 @@ private fun AppBarIcon(
     tint: Color,
     onClick: () -> Unit
 ) {
+    // cross-review R3 #3: 48dp Material min touch target(WCAG 2.5.5 / iOS HIG 44pt / Android 48dp)
     Box(
         modifier = Modifier
-            .size(36.dp)
-            .clickable(onClick = onClick),
+            .size(48.dp)
+            .clickable(onClick = onClick, role = Role.Button),
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -167,9 +172,14 @@ private fun AppBarIcon(
 private fun LogTabChip(label: String, active: Boolean, onClick: () -> Unit) {
     val bg = if (active) UvpColor.Primary else Color.Transparent
     val textColor = if (active) Color.White else UvpColor.TextSecondary
+    // cross-review R3 #4: 加 Tab role + selected 语义,让 TalkBack/VoiceOver 能宣读"页签 · 已选中/未选中"
     Box(
         modifier = Modifier
             .background(bg, RoundedCornerShape(6.dp))
+            .semantics {
+                role = Role.Tab
+                selected = active
+            }
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 6.dp)
     ) {
@@ -219,7 +229,9 @@ private fun shareCurrentTab(
             val content = LogExport.formatSystemLogs(
                 logs = state.systemEvents,
                 sessionMarker = state.sessionMarker,
-                levelThreshold = com.uvp.sim.observability.LogLevel.Default,
+                // 诊断导出默认带上 Debug。系统日志 UI 仍默认隐藏 Debug,但分享给 AI
+                // 排查 iOS 录像链路时需要首帧/首 IDR/append drop 这些细粒度事件。
+                levelThreshold = com.uvp.sim.observability.LogLevel.Debug,
                 tagFilter = null,
                 nowMs = now
             )

@@ -96,7 +96,8 @@ class ManscdpIngressAuthorizationTest {
     }
 
     private object NoopBroadcastInvoker : BroadcastInvoker {
-        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {}
+        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) =
+            com.uvp.sim.domain.coord.BroadcastInviteStart.Started
     }
 
     private fun catalogQueryMessage(

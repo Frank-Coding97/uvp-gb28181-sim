@@ -1,7 +1,7 @@
 package com.uvp.sim.gb28181
 
 import com.uvp.sim.config.GeoPoint
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

@@ -1,6 +1,6 @@
 package com.uvp.sim.ui.model
 
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * UI 层 SIP Date 校时偏移 DTO. 镜像 com.uvp.sim.domain.ClockOffset.

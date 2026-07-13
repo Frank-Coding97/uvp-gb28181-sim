@@ -18,14 +18,19 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class BroadcastSubRouterTest {
 
-    private class RecordingInvoker : BroadcastInvoker {
+    private class RecordingInvoker(
+        private val outcome: com.uvp.sim.domain.coord.BroadcastInviteStart =
+            com.uvp.sim.domain.coord.BroadcastInviteStart.Started,
+    ) : BroadcastInvoker {
         var invoked = 0
         var source = ""
         var target = ""
-        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
+        override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String):
+            com.uvp.sim.domain.coord.BroadcastInviteStart {
             invoked += 1
             source = sourceId
             target = targetId
+            return outcome
         }
     }
 

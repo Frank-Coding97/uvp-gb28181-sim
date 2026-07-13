@@ -8,7 +8,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
+import kotlin.concurrent.atomics.AtomicLong
+import kotlin.concurrent.atomics.ExperimentalAtomicApi
+import kotlin.concurrent.atomics.incrementAndFetch
+import kotlin.time.Clock
 
 /**
  * 系统日志全局入口。
@@ -28,31 +31,82 @@ object SystemLogger {
 
     private const val BUFFER_CAPACITY = 1000
     private const val CHANNEL_CAPACITY = 256
+    private const val MIRROR_CHANNEL_CAPACITY = 64
 
 
     private var buffer = SystemLogBuffer(BUFFER_CAPACITY)
     private var seq: Long = 0
     private var channel: Channel<Command> = newChannel()
+    private var mirrorChannel: Channel<SystemLog> = newMirrorChannel()
     private val _flow = MutableSharedFlow<SystemLog>(
         replay = 0,
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     private var actorJob: Job? = null
+    private var mirrorJob: Job? = null
+    private var mirrorSink: ((SystemLog) -> Unit)? = null
 
     private var clock: () -> Long = { Clock.System.now().toEpochMilliseconds() }
 
     val flow: SharedFlow<SystemLog> get() = _flow.asSharedFlow()
     val snapshot: List<SystemLog> get() = buffer.snapshot()
 
+    /**
+     * 诊断计数:emit 被调用的**累计次数**(在 trySend 之前自增,不受 Channel DROP_OLDEST 影响)。
+     * 用途:iOS 卡死排查——后台心跳读它的 delta 判断是否发生"日志风暴"淹没主线程收集器。
+     *
+     * cross-review R2 #3:原 `@Volatile Long += 1` 非原子, 并发调用会低报,
+     * 反而可能掩盖本函数想捕获的日志风暴信号。改用 AtomicLong 保证并发计数准确。
+     *
+     * cross-review R3 #6:opt-in 范围收窄到诊断计数字段/getter,不再扩散到整个 object。
+     * pre-channel 计数保留(在 trySend 之前),这样也统计到被 DROP_OLDEST 丢弃的 emit — 那正是探测日志风暴的关键信号。
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    private val emitCallCount = AtomicLong(0L)
+
+    @OptIn(ExperimentalAtomicApi::class)
+    val emitCount: Long get() = emitCallCount.load()
+
+    /**
+     * 诊断计数:mirror channel 因 DROP_OLDEST 或未 bindScope 而**丢弃**的镜像日志次数。
+     *
+     * cross-review R2 #5:mirrorSink 挪出 log actor 关键路径后,若平台 sink(如 iOS println)
+     * 阻塞或滞后,mirror channel 会自己 DROP_OLDEST 消化压力,而主 log actor 不受影响。
+     * 这个计数让排障时能看到 "镜像通道自己有多大压力",不会静默退化。
+     */
+    @OptIn(ExperimentalAtomicApi::class)
+    private val mirrorDroppedCount = AtomicLong(0L)
+
+    @OptIn(ExperimentalAtomicApi::class)
+    val mirrorDropped: Long get() = mirrorDroppedCount.load()
+
     private fun newChannel() = Channel<Command>(
         capacity = CHANNEL_CAPACITY,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
 
+    /**
+     * cross-review R4 verify (CodeX findings): DROP_OLDEST 下 `trySend()` 返回 success
+     * (因为它成功淘汰了旧元素),此前 `if (result.isFailure) ++drop` 永远不会计数
+     * → mirrorDropped 一直是 0,违反"探测 mirror 阻塞压力"的原意。
+     *
+     * 修法:用 `onUndeliveredElement` — 元素被 DROP_OLDEST 淘汰时会走该回调,
+     * 关闭/取消场景也一并计入(那也是"没送到 sink"的失败)。
+     */
+    private fun newMirrorChannel() = Channel<SystemLog>(
+        capacity = MIRROR_CHANNEL_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        onUndeliveredElement = {
+            @OptIn(ExperimentalAtomicApi::class)
+            mirrorDroppedCount.incrementAndFetch()
+        },
+    )
+
     /** 绑定到平台 scope。重复绑定会取消旧 actor 启新的。 */
     fun bindScope(scope: CoroutineScope) {
         actorJob?.cancel()
+        mirrorJob?.cancel()
         actorJob = scope.launch {
             for (cmd in channel) {
                 when (cmd) {
@@ -69,6 +123,7 @@ object SystemLogger {
                             category = cmd.category,
                         )
                         buffer.add(log)
+                        forwardToMirror(log)
                         _flow.emit(log)
                     }
                     Command.Clear -> {
@@ -84,11 +139,40 @@ object SystemLogger {
                             detail = null
                         )
                         buffer.add(marker)
+                        forwardToMirror(marker)
                         _flow.emit(marker)
                     }
                 }
             }
         }
+        mirrorJob = scope.launch {
+            for (log in mirrorChannel) {
+                runCatching { mirrorSink?.invoke(log) }
+            }
+        }
+    }
+
+    /**
+     * 把 log 递交给独立的 mirror 通道。非阻塞。
+     *
+     * cross-review R2 #5:mirrorSink 若阻塞不会再饿死 log actor —— 独立 consumer + DROP_OLDEST
+     * 让镜像通道自己承担背压,主排障通道(buffer / _flow)保持畅通。
+     *
+     * cross-review R4:DROP_OLDEST 淘汰不通过 [ChannelResult.isFailure] 感知(trySend 仍成功),
+     * 由 [newMirrorChannel] 的 `onUndeliveredElement` 回调统一计数,本函数只 trySend。
+     */
+    private fun forwardToMirror(log: SystemLog) {
+        mirrorChannel.trySend(log)
+    }
+
+    /**
+     * 平台侧可选镜像输出(console / os log)。
+     *
+     * - 不参与业务语义,失败不影响主 actor
+     * - iOS 用它把系统日志镜像到 Xcode console,方便真机/模拟器排障
+     */
+    fun setMirrorSink(sink: ((SystemLog) -> Unit)?) {
+        mirrorSink = sink
     }
 
     /** 业务侧 emit 入口 — 非阻塞、非 suspend、可在任意线程调用。
@@ -96,6 +180,7 @@ object SystemLogger {
      * [category] 可选 — Error/Warning 级别带上可让结构化日志查询更高效;
      * Info/Debug 级别 emit 时不强制(默认 null)。老调用点(2/3/4 参 message+detail)继续工作。
      */
+    @OptIn(ExperimentalAtomicApi::class)
     fun emit(
         level: LogLevel,
         tag: LogTag,
@@ -103,6 +188,7 @@ object SystemLogger {
         detail: String? = null,
         category: ErrorCategory? = null,
     ) {
+        emitCallCount.incrementAndFetch()
         channel.trySend(Command.Emit(level, tag, message, detail, category))
     }
 
@@ -120,10 +206,15 @@ object SystemLogger {
     internal fun resetForTest() {
         actorJob?.cancel()
         actorJob = null
+        mirrorJob?.cancel()
+        mirrorJob = null
         runCatching { channel.close() }
+        runCatching { mirrorChannel.close() }
         channel = newChannel()
+        mirrorChannel = newMirrorChannel()
         buffer = SystemLogBuffer(BUFFER_CAPACITY)
         seq = 0
+        mirrorSink = null
     }
 
     /**
@@ -132,6 +223,7 @@ object SystemLogger {
      */
     internal fun shutdownForTest() {
         runCatching { channel.close() }
+        runCatching { mirrorChannel.close() }
     }
 
     /** 屏蔽密码/令牌字段(spec §6 隐私):password=xxx → password=****。

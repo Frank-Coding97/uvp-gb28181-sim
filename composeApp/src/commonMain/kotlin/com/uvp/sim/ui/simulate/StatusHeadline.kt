@@ -90,7 +90,7 @@ internal fun useTickingNow(intervalMs: Long): Long {
     return now
 }
 
-private fun currentTimeMs(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
+private fun currentTimeMs(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
 
 internal fun hasMotion(state: DeviceControlDto): Boolean {
     return state.panSpeed != 0f || state.tiltSpeed != 0f || state.zoomSpeed != 0f

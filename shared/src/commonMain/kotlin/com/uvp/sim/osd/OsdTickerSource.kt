@@ -2,7 +2,7 @@ package com.uvp.sim.osd
 
 import com.uvp.sim.config.OsdConfig
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
@@ -25,7 +25,11 @@ class OsdTickerSource(
     private val timeZone: TimeZone = TimeZone.currentSystemDefault()
 ) {
     fun snapshot(): OsdSnapshot {
-        val cfg = config.value
+        return snapshot(config.value)
+    }
+
+    /** Build text from the exact config snapshot captured by the frame renderer. */
+    fun snapshot(cfg: OsdConfig): OsdSnapshot {
         return OsdSnapshot(
             timestamp = if (cfg.timestamp.enabled) formatNow() else null,
             channelName = cfg.channelName.text.takeIf { cfg.channelName.enabled && it.isNotEmpty() },

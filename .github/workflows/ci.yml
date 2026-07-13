@@ -49,9 +49,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.konan
-          key: konan-${{ runner.os }}-kotlin-2.1.0-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: konan-${{ runner.os }}-kotlin-2.2.21-${{ hashFiles('gradle/libs.versions.toml') }}
           restore-keys: |
-            konan-${{ runner.os }}-kotlin-2.1.0-
+            konan-${{ runner.os }}-kotlin-2.2.21-
             konan-${{ runner.os }}-
 
       - name: Compile shared metadata (KMP fast-fail)
@@ -71,6 +71,59 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
+          path: |
+            **/build/reports/tests/**
+            **/build/test-results/**/*.xml
+            **/build/outputs/logs/**
+          retention-days: 7
+          if-no-files-found: ignore
+
+  ios-check:
+    name: iOS Compile Check (macos / jdk17)
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Java 17 (temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle (with wrapper validation)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Cache Konan (KMP iOS prebuilt)
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: konan-macos-kotlin-2.2.21-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            konan-macos-kotlin-2.2.21-
+            konan-macos-
+
+      - name: Compile shared iosArm64
+        run: ./gradlew :shared:compileKotlinIosArm64 --stacktrace
+
+      - name: Compile shared iosSimulatorArm64
+        run: ./gradlew :shared:compileKotlinIosSimulatorArm64 --stacktrace
+
+      - name: Run shared iosSimulatorArm64 tests (KT-79384 遗留风险)
+        continue-on-error: true
+        run: ./gradlew :shared:iosSimulatorArm64Test --stacktrace
+
+      - name: Upload iOS test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-reports
           path: |
             **/build/reports/tests/**
             **/build/test-results/**/*.xml

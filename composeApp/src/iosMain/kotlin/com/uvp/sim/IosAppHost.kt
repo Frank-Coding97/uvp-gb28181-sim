@@ -2,7 +2,6 @@ package com.uvp.sim
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -17,25 +16,56 @@ import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
-import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.AlarmPriority
+import com.uvp.sim.network.NetworkController
+import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.TransportType
+import com.uvp.sim.observability.HeartbeatCounters
+import com.uvp.sim.observability.HeartbeatThresholds
+import com.uvp.sim.observability.IosSessionStore
+import com.uvp.sim.observability.SessionTracker
+import com.uvp.sim.observability.SystemLog
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.observability.WatchdogState
+import com.uvp.sim.observability.evaluateMainThreadWatchdog
+import com.uvp.sim.observability.heartbeatLoop
+import com.uvp.sim.api.LogTag
+import com.uvp.sim.camera.IosCameraController
+import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
+import com.uvp.sim.recording.RecordingState
 import com.uvp.sim.ui.AlarmFireMode
 import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.BroadcastState
+import com.uvp.sim.ui.RecordingStatus
+import com.uvp.sim.ui.SipEventBuffer
+import com.uvp.sim.ui.SubscriptionKind
+import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.actions.CapabilityActions
 import com.uvp.sim.ui.actions.HomeActions
 import com.uvp.sim.ui.actions.NetworkActions
 import com.uvp.sim.ui.actions.RecordingActions
+import com.uvp.sim.ui.model.NetworkStateDto
 import com.uvp.sim.ui.model.mapper.toDto
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import kotlin.time.Clock
+import kotlin.concurrent.atomics.incrementAndFetch
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
+import kotlin.concurrent.Volatile
 
 /**
  * iOS UI host — wires AppEngine into Compose App().
@@ -50,6 +80,33 @@ import kotlinx.coroutines.launch
 object IosAppHost {
 
     private val hostScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile private var diagnosticsHeartbeatJob: Job? = null
+    @Volatile private var mainThreadWatchdogJob: Job? = null
+    @Volatile private var lastMainThreadAckMs: Long = -1L
+
+    // Install before the first Compose read so the initial UI state and all logs
+    // observe the same persisted session id.
+    init {
+        SessionTracker.install(IosSessionStore())
+    }
+
+    /**
+     * 诊断计数:IosApp 根 composable 的重组次数(SideEffect 每次成功重组 +1)。
+     * 心跳读它的 delta 判断主线程是被"重组风暴"占死(暴涨)还是"阻塞调用"卡死(不动)。
+     *
+     * cross-review R2 #3:改 AtomicLong,跟 SystemLogger.emitCount 同款,防低报掩盖风暴信号。
+     */
+    @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+    private val _recomposeCount = kotlin.concurrent.atomics.AtomicLong(0L)
+
+    @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+    val recomposeCount: Long get() = _recomposeCount.load()
+
+    @OptIn(kotlin.concurrent.atomics.ExperimentalAtomicApi::class)
+    internal fun incRecompose() { _recomposeCount.incrementAndFetch() }
+
+    /** NetworkController (Wave 1 A4, NWPathMonitor)。IosAppHost 起时装,close 由进程退出兜底。 */
+    val networkController: NetworkController = NetworkController()
 
     private val engine: AppEngine by lazy {
         AppEngine(
@@ -60,21 +117,51 @@ object IosAppHost {
         )
     }
 
+    internal val osdConfigFlow: StateFlow<com.uvp.sim.config.OsdConfig> by lazy {
+        osdConfigStateFlow(
+            config = engine.config,
+            channelName = engine.currentChannelName,
+            scope = hostScope,
+        )
+    }
+
+    internal fun osdConfigStateFlow(
+        config: StateFlow<SimConfig>,
+        channelName: StateFlow<String>,
+        scope: CoroutineScope,
+    ): StateFlow<com.uvp.sim.config.OsdConfig> = combine(config, channelName) { value, name ->
+        deriveOsdConfig(value, name)
+    }.stateIn(
+        scope = scope,
+        started = SharingStarted.Eagerly,
+        initialValue = deriveOsdConfig(config.value, channelName.value),
+    )
+
+    internal fun deriveOsdConfig(
+        config: SimConfig,
+        channelName: String,
+    ): com.uvp.sim.config.OsdConfig = config.osd.copy(
+        channelName = config.osd.channelName.copy(text = channelName),
+    )
+
+    // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
+    // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
+    // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
     fun defaultConfig() = SimConfig(
         gbVersion = GbVersion.V2022,
         server = ServerConfig(
             ip = "",
             port = 0,
             serverId = "",
-            domain = ""
+            domain = "3402000000"
         ),
         device = DeviceConfig(
-            deviceId = "",
-            videoChannelId = "",
-            alarmChannelId = "",
-            username = "",
+            deviceId = "34020000001320000001",
+            videoChannelId = "34020000001320000010",
+            alarmChannelId = "34020000001340000001",
+            username = "34020000001320000001",
             password = "",
-            frontChannelId = "",
+            frontChannelId = "34020000001320000020",
         ),
         transport = TransportType.UDP,
         keepaliveIntervalSeconds = 60,
@@ -82,20 +169,137 @@ object IosAppHost {
 
     fun bindLogger() {
         SystemLogger.bindScope(hostScope)
+        SystemLogger.setMirrorSink { log ->
+            println(
+                "[${log.seq}] [${log.level.short}] [${log.tag.display}] ${log.message}" +
+                    (log.detail?.let { "\n$it" } ?: "")
+            )
+        }
+        SystemLogger.emit(
+            com.uvp.sim.observability.LogLevel.Info,
+            com.uvp.sim.api.LogTag.Lifecycle,
+            "应用启动 · 会话 #${SessionTracker.currentId}"
+        )
+        startDiagnosticsHeartbeat()
+        startMainThreadWatchdog()
     }
 
-    val appEngine: AppEngine get() = engine
+    private val heartbeatCounters = object : HeartbeatCounters {
+        override val emitCount: Long get() = SystemLogger.emitCount
+        override val recomposeCount: Long get() = this@IosAppHost.recomposeCount
+        override val logBufferSize: Int get() = SystemLogger.snapshot.size
+    }
+
+    private fun startDiagnosticsHeartbeat() {
+        diagnosticsHeartbeatJob?.cancel()
+        diagnosticsHeartbeatJob = hostScope.launch {
+            heartbeatLoop(
+                counters = heartbeatCounters,
+                intervalMillis = 30_000L,
+                thresholds = HeartbeatThresholds(),
+                onSample = { sample ->
+                    val svc = engine.currentRecordingService()
+                    SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Debug,
+                        LogTag.Media,
+                        buildString {
+                            append("IOS_APP_HEARTBEAT ")
+                            append("sip=").append(engine.state.value)
+                            append(" recSvc=").append(svc?.state?.value ?: "null")
+                            append(" files=").append(svc?.files?.value?.size ?: 0)
+                            append(" cameraSession=").append(IosCameraController.session.value != null)
+                            append(" encodingActive=").append(IosCameraController.encodingActive.value)
+                            append(" cameraLastSampleMs=").append(IosCameraController.lastSampleAtMs())
+                            append(" cameraSampleCount=").append(IosCameraController.sampleCount())
+                            append(" recLastFeedMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoFeedAtMs() ?: -1L)
+                            append(" recLastAppendMs=").append((svc as? com.uvp.sim.recording.IosRecordingService)?.lastVideoAppendAtMs() ?: -1L)
+                            append(" memMb=").append(IosMemoryProbe.physFootprintMb())
+                            append(" emitRate=").append(sample.emitRate).append("/s")
+                            append(" recomposeRate=").append(sample.recomposeRate).append("/s")
+                            append(" logs=").append(sample.logBufferSize)
+                        }
+                    )
+                },
+                onWarn = { sample ->
+                    // cross-review R2 #4:观测链路补 Warning 级信号,方便告警系统抓。
+                    SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Warning,
+                        LogTag.Media,
+                        buildString {
+                            append("IOS_APP_HEARTBEAT_WARN ")
+                            if (sample.emitStorm) append("emitStorm=").append(sample.emitRate).append("/s ")
+                            if (sample.recomposeStorm) append("recomposeStorm=").append(sample.recomposeRate).append("/s ")
+                            if (sample.recomposeStalled) append("recomposeStalled=true ")
+                        }.trimEnd()
+                    )
+                },
+            )
+        }
+    }
+
+    private fun startMainThreadWatchdog() {
+        mainThreadWatchdogJob?.cancel()
+        mainThreadWatchdogJob = hostScope.launch {
+            var state = WatchdogState()
+            while (isActive) {
+                val probeSentAt = Clock.System.now().toEpochMilliseconds()
+                dispatch_async(dispatch_get_main_queue()) {
+                    lastMainThreadAckMs = Clock.System.now().toEpochMilliseconds()
+                }
+                delay(4_000L)
+                val now = Clock.System.now().toEpochMilliseconds()
+                val decision = evaluateMainThreadWatchdog(
+                    probeSentAtMs = probeSentAt,
+                    ackAtMs = lastMainThreadAckMs,
+                    nowMs = now,
+                    state = state,
+                )
+                state = decision.newState
+                if (decision.stalled) {
+                    SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Warning,
+                        LogTag.Media,
+                        "IOS_MAIN_THREAD_STALL probeSentAt=$probeSentAt lastAckMs=$lastMainThreadAckMs ackLagMs=${decision.ackLagMs} " +
+                            "memMb=${IosMemoryProbe.physFootprintMb()}"
+                    )
+                }
+                delay(1_000L)
+            }
+        }
+    }
+
+    /** T-E4-1:iOS 前后台切换 → 停 broadcast + deactivate audio session。幂等。 */
+    private val broadcastLifecycle: BroadcastLifecycleObserver by lazy {
+        BroadcastLifecycleObserver(engine = engine, scope = hostScope)
+    }
+
+    fun attachBroadcastLifecycleObserver() {
+        broadcastLifecycle.attach()
+    }
+
+    val appEngine: AppEngine
+        get() = engine.also { appEngine ->
+            val flow = osdConfigFlow
+            appEngine.setOsdConfigFlowProvider { flow }
+        }
     val scope: CoroutineScope get() = hostScope
 }
 
 @Composable
 fun IosApp() {
+    // 诊断:每次根 composable 重组 +1,心跳读 delta 判断是否重组风暴。
+    androidx.compose.runtime.SideEffect { IosAppHost.incRecompose() }
+
     val engine = IosAppHost.appEngine
     val scope = IosAppHost.scope
 
-    SideEffect {
+    LaunchedEffect(Unit) {
         IosAppHost.bindLogger()
+        // T-E4-1:注册前后台切换观察者 —— 切后台自动停 broadcast + deactivate audio session
+        IosAppHost.attachBroadcastLifecycleObserver()
     }
+
+    val networkController = IosAppHost.networkController
 
     val sipState by engine.state.collectAsState()
     val config by engine.config.collectAsState()
@@ -103,31 +307,174 @@ fun IosApp() {
     val catalogTree by engine.catalogTree.collectAsState()
     val alarmHistory by engine.alarmHistory.collectAsState()
     val clockOffset by engine.clockOffset.collectAsState()
+    val rawSubs by engine.subscriptions.collectAsState()
+    val currentBroadcast by engine.currentBroadcast.collectAsState()
+    val speakerOn by engine.broadcastSpeakerOn.collectAsState()
+    val networkState by networkController.state.collectAsState()
 
-    var events by remember { mutableStateOf<List<SimEvent>>(emptyList()) }
+    val sipEventBuffer = remember { SipEventBuffer() }
+    var systemLogs by remember { mutableStateOf<List<SystemLog>>(emptyList()) }
     var alarmFireMode by remember { mutableStateOf(AlarmFireMode.Random) }
     var fixedAlarmTemplate by remember { mutableStateOf<AlarmPayload?>(null) }
+    var recordingState by remember { mutableStateOf<RecordingState>(RecordingState.Idle) }
+    var recordingFiles by remember { mutableStateOf<List<RecordingFile>>(emptyList()) }
+
+    // 冷启动:load persisted config → setConfig → apply network preference。参考 Android SipViewModel。
+    LaunchedEffect(Unit) {
+        val stored = engine.configStore.loadOnce(IosAppHost.defaultConfig())
+        if (stored != engine.config.value) {
+            engine.setConfig(stored)
+        }
+        networkController.apply(stored.network.preference)
+    }
+
+    // 2026-07-03 真机验:iOS 端 IosCameraStreamer.stream() 是 callbackFlow,只有 collector
+    // 才会 wireCaptureSession → publish AVCaptureSession。不注册时无 collector,导致预览白屏
+    // 和录像 writer 空转(stop 时 markAsFinished 抛 NSInvalidArgumentException 崩溃)。
+    // 通过 keepalive 让 Registered / InCall 状态下 session 常驻:preview 有画面 + 录像能拿
+    // 真 sample + 推流 encoding session 有 AVCaptureSession sample 输入。
+    //
+    // 2026-07-09 真机验(WVP 点播 iOS bug 3/3):旧逻辑在 sipState InCall 时 stop keepalive,
+    // 走 IosCameraController.stopPreview → releaseInternal → forceEncodingReset,把推流用的
+    // VT encoding session + AVCaptureSession 一并杀掉,推流只吃到 4 帧就断了。修法:InCall 也
+    // 保持 keepalive,让 preview session 陪着推流跑完;点播结束 sipState 回到 Registered 时
+    // 依然是 start(幂等);Disconnected/Error 才 stop。
+    LaunchedEffect(sipState) {
+        val v = config.video
+        val cc = com.uvp.sim.camera.CaptureConfig(
+            widthPx = v.resolution.widthPx,
+            heightPx = v.resolution.heightPx,
+            frameRate = v.frameRate,
+            bitrateBps = v.bitrateKbps * 1000,
+            keyframeIntervalSeconds = v.keyframeIntervalSeconds,
+            videoCodec = v.videoCodec,
+        )
+        val keepAlive = sipState == com.uvp.sim.sip.SipState.Registered ||
+            sipState == com.uvp.sim.sip.SipState.InCall
+        if (keepAlive) {
+            com.uvp.sim.camera.CameraSessionKeepalive.start(cc)
+        } else {
+            com.uvp.sim.camera.CameraSessionKeepalive.stop()
+        }
+    }
 
     LaunchedEffect(engine) {
         engine.events.collect { ev ->
-            events = (events + ev).takeLast(200)
+            sipEventBuffer.append(ev)
+        }
+    }
+
+    // SystemLogger.flow 是 SharedFlow(replay=0),iOS 上用本地 state 累积快照。
+    // iOS 上系统日志有时会被 MADService / AVFoundation 自己刷得很密,
+    // 这里改成增量追加,避免每条都整包 snapshot 重建引发额外 UI churn。
+    LaunchedEffect(Unit) {
+        systemLogs = SystemLogger.snapshot
+        SystemLogger.flow.collect { log ->
+            systemLogs = if (log.tag == LogTag.User && log.message == "日志已清除") {
+                emptyList()
+            } else {
+                (systemLogs + log).takeLast(500)
+            }
+        }
+    }
+
+    // 录像状态跟文件列表。IosRecordingService 已在 PlatformRuntimeIos 装配,
+    // ensureMediaBound 触发一次装配后拿到实例。
+    //
+    // 冷启动必须显式调 svc.load() 从 <Documents>/recordings/index.json 恢复内存态,
+    // 否则 _files StateFlow 停留在构造时的 emptyList,退出 App 再进来录像列表就空了
+    // (跟 androidApp/SipViewModel.wireRecordingService 对齐,那边 line 264 也是这么做)。
+    LaunchedEffect(Unit) {
+        engine.ensureMediaBuilt()
+        val svc = engine.currentRecordingService() ?: return@LaunchedEffect
+        runCatching { svc.load() }
+        launch { svc.state.collect { recordingState = it } }
+        launch { svc.files.collect { recordingFiles = it } }
+    }
+
+    // 主线程心跳：用于区分“UI/Main 卡死”与“后台 scope 还活着”。
+    // 如果未来再次出现“看起来整 app 卡住”，而 IOS_APP_HEARTBEAT 还在继续、
+    // 但这条不再出现，就说明更偏主线程/Compose/UIRunLoop 挂住。
+    LaunchedEffect(Unit) {
+        while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+            kotlinx.coroutines.delay(5_000L)
+            SystemLogger.emit(
+                com.uvp.sim.observability.LogLevel.Debug,
+                LogTag.Media,
+                "IOS_UI_MAIN_HEARTBEAT"
+            )
+        }
+    }
+
+    // RecordingStatus(UI 层)从 recordingState + recordingFiles 组装。
+    // 参考 Android MainActivity L137-148。
+    val recordingStatus = run {
+        val rec = recordingState as? RecordingState.Recording
+        val failed = recordingState as? RecordingState.Failed
+        RecordingStatus(
+            isRecording = rec != null,
+            source = rec?.source?.toDto(),
+            startMs = rec?.startMs,
+            segmentIndex = rec?.segmentIndex ?: 0,
+            lastError = failed?.reason,
+            files = recordingFiles.map { it.toDto() },
+        )
+    }
+
+    // rawSubs: Map<String, SubscriptionSnapshot> → Map<SubscriptionKind, SubscriptionStatus>。
+    // 未知 key 忽略(容错未来 engine 侧新增 kind)。参考 Android MainActivity L124-134。
+    val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
+        val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
+            ?: return@mapNotNull null
+        key to SubscriptionStatus(
+            active = snap.active,
+            subscriber = snap.subscriber,
+            expiresSeconds = snap.expiresSeconds,
+            remainingSeconds = snap.remainingSeconds,
+            notifyCount = snap.notifyCount,
+        )
+    }.toMap()
+
+    // BroadcastDialog(engine 内部)→ BroadcastState(UI 层)。isReceiving 用 dialog 存在与否。
+    val broadcastState = currentBroadcast.let { bd ->
+        if (bd == null) {
+            BroadcastState(speakerOn = speakerOn)
+        } else {
+            BroadcastState(
+                isReceiving = true,
+                sourceId = bd.sourceId,
+                codec = bd.codec.name,
+                localAudioPort = bd.localAudioPort,
+                remoteAudioHost = bd.remoteAudioHost,
+                remoteAudioPort = bd.remoteAudioPort,
+                rxPackets = bd.rxPackets,
+                rxBytes = bd.rxBytes,
+                seqLost = bd.seqLost,
+                decodeErrors = bd.decodeErrors,
+                speakerOn = speakerOn,
+            )
         }
     }
 
     val uiState = AppUiState(
         sip = sipState.toDto(),
         config = config,
-        events = events.map { it.toDto() },
+        events = sipEventBuffer.events.map { it.toDto() },
+        systemEvents = systemLogs.map { it.toDto() },
+        sessionMarker = SessionTracker.current.toDto(),
+        subscriptions = subscriptions,
         deviceControl = deviceControl.toDto(),
+        recording = recordingStatus,
+        // playback: v1.1 iOS 无回放路径,保留默认 PlaybackStatus()。
         catalogTree = catalogTree,
         alarmHistory = alarmHistory.map { it.toDto() },
         alarmFireMode = alarmFireMode,
         fixedAlarmTemplate = fixedAlarmTemplate?.toDto(),
+        broadcast = broadcastState,
+        // Wave 1 A4 后 NetworkController.ios 走 NWPathMonitor,collect 真状态。
+        // iOS 不支持强制绑网卡,localIp 留空但 preference 会跟着 UI 切换 apply。
+        networkRuntimeState = networkState.toDto(),
         clockOffset = clockOffset.toDto(),
-        // 以下字段用默认空初值(v1.1 UI 骨架先跑起来,后续 PR 补映射):
-        //   systemEvents / sessionMarker / subscriptions /
-        //   recording / playback / lastCatalogSavedAt /
-        //   broadcast / networkRuntimeState
     )
 
     val actions = buildActions(
@@ -135,6 +482,7 @@ fun IosApp() {
         scope = scope,
         onAlarmModeChange = { alarmFireMode = it },
         onFixedAlarmSave = { fixedAlarmTemplate = it },
+        onClearSipLogs = sipEventBuffer::clear,
         currentMode = { alarmFireMode },
         currentFixed = { fixedAlarmTemplate },
     )
@@ -147,6 +495,7 @@ private fun buildActions(
     scope: CoroutineScope,
     onAlarmModeChange: (AlarmFireMode) -> Unit,
     onFixedAlarmSave: (AlarmPayload) -> Unit,
+    onClearSipLogs: () -> Unit,
     currentMode: () -> AlarmFireMode,
     currentFixed: () -> AlarmPayload?,
 ): AppActions {
@@ -155,7 +504,7 @@ private fun buildActions(
         override fun onCancelConnect() { scope.launch { engine.cancelConnect() } }
         override fun onDisconnect() { scope.launch { engine.disconnect() } }
         override fun onConfigSave(updated: SimConfig) { scope.launch { engine.updateConfig(updated) } }
-        override fun onClearSipLogs() { /* v1.1: engine no clear-sip API; leave to later PR */ }
+        override fun onClearSipLogs() { onClearSipLogs() }
         override fun onClearSystemLogs() { SystemLogger.clear() }
         override fun onConsumeDeviceEffect() { engine.consumeEffect() }
     }
@@ -190,16 +539,32 @@ private fun buildActions(
         }
     }
     val recording = object : RecordingActions {
-        override fun onRecordingStart() { /* v1.1: NoopRecordingService */ }
-        override fun onRecordingStop() { /* v1.1: NoopRecordingService */ }
-        override fun onRecordingDelete(id: String) { /* v1.1 */ }
-        override fun onRecordingFilterApply(filter: RecordingFilter) { /* v1.1 */ }
+        override fun onRecordingStart() {
+            scope.launch {
+                val svc = engine.currentRecordingService() ?: return@launch
+                val source = com.uvp.sim.recording.RecordSource.Manual
+                svc.start(source, engine.config.value.device.videoChannelId)
+            }
+        }
+        override fun onRecordingStop() {
+            scope.launch { engine.currentRecordingService()?.stop() }
+        }
+        override fun onRecordingDelete(id: String) {
+            scope.launch { engine.currentRecordingService()?.delete(id) }
+        }
+        override fun onRecordingFilterApply(filter: RecordingFilter) {
+            // Android 侧同样是纯 UI 本地筛选,不落 engine。
+        }
     }
     val network = object : NetworkActions {
         override fun onNetworkPreferenceChange(preference: NetworkPreference) {
-            // iOS NetworkController is no-op; only persist preference to config.
-            val cfg = engine.config.value
-            scope.launch { engine.updateConfig(cfg.copy(network = cfg.network.copy(preference = preference))) }
+            // Wave 1 A4:NetworkController.ios 走 NWPathMonitor,apply 记录偏好并 emit 到 state。
+            // iOS 无法强制绑网卡(系统限制),这里 apply 之后 state 会跟着 emit 反映活跃网卡的类型。
+            scope.launch {
+                IosAppHost.networkController.apply(preference)
+                val cfg = engine.config.value
+                engine.updateConfig(cfg.copy(network = cfg.network.copy(preference = preference)))
+            }
         }
     }
     return object : AppActions,

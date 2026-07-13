@@ -1,6 +1,6 @@
 package com.uvp.sim.observability
 
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * 当前进程会话标识。每次进程冷启动 sessionId 自增。

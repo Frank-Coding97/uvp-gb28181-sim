@@ -236,7 +236,11 @@ object SdpAnswer {
         append("c=IN IP4 ").append(localIp).append("\r\n")
         append("t=0 0\r\n")
         val proto = if (transport == SdpTransport.TCP) "TCP/RTP/AVP" else "RTP/AVP"
-        append("m=audio ").append(localAudioPort).append(' ').append(proto).append(" 8 0\r\n")
+        // TCP 主动模式下 receiver.bind() 返回 0(不监听,connect 时才建连),
+        // 但 SDP m=audio port=0 会被严格 GB28181 平台判非法 403。
+        // 按 RFC 4145 §4.3 用 discard port 9 占位,平台会从 200 OK 里下发真实 IP:port。
+        val offerPort = if (localAudioPort <= 0) 9 else localAudioPort
+        append("m=audio ").append(offerPort).append(' ').append(proto).append(" 8 0\r\n")
         append("a=rtpmap:8 PCMA/8000\r\n")
         append("a=rtpmap:0 PCMU/8000\r\n")
         append("a=recvonly\r\n")

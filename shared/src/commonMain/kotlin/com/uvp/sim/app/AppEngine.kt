@@ -32,6 +32,9 @@ import com.uvp.sim.network.TransportType
 import com.uvp.sim.network.UdpSipTransport
 import com.uvp.sim.sip.SipOutboxImpl
 import com.uvp.sim.sip.SipState
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import io.ktor.client.HttpClient
 import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
@@ -336,7 +339,22 @@ class AppEngine(
             mockGps = holders.mockGps,
             clockOffsetProvider = { holders.clockOffset.value },
             stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
-            broadcastBusy = { broadcast.current.value != null },
+            broadcastBusy = {
+                // 双重 busy 判断:
+                //   1. 已有一路 broadcast 正在跑(commonMain 状态机) — 防第二路重入
+                //   2. 平台 gate — 预留给无法由媒体协调器化解的物理资源冲突
+                val broadcastActive = broadcast.current.value != null
+                val platformBusy = com.uvp.sim.media.BroadcastBusyGate.isBusy()
+                if (broadcastActive || platformBusy) {
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Network,
+                        "BROADCAST_BUSY current=$broadcastActive platform=$platformBusy " +
+                            "reason=${com.uvp.sim.media.BroadcastBusyGate.busyReason() ?: "broadcast-active"}",
+                    )
+                }
+                broadcastActive || platformBusy
+            },
             simEventEmit = { ev -> holders.events.emit(ev) },
             identityService = identityService,
         )
@@ -386,9 +404,13 @@ class AppEngine(
     fun currentRecordingService(): com.uvp.sim.recording.RecordingService? = recordingService
 
     suspend fun cancelConnect() {
-        val eng = engine ?: return
-        try { eng.cancelRegister() } catch (_: Throwable) {}
-        try { eng.shutdown() } catch (_: Throwable) {}
+        val eng = engine
+        try { eng?.cancelRegister() } catch (_: Throwable) {}
+        try { eng?.shutdown() } catch (_: Throwable) {}
+        // Engine shutdown 只会取消媒体 job；iOS 的 callbackFlow awaitClose
+        // 可能异步执行。显式 stop 保证 AVAudioEngine 和 BroadcastBusyGate lease
+        // 在取消连接/重注册时立即释放，即使 engine 已经被清空。
+        try { audioCapture?.stop() } catch (_: Throwable) {}
         try { transport?.close() } catch (_: Throwable) {}
         try { snapshotHttp?.close() } catch (_: Throwable) {}
         bridgeJobsMutex.withLock { bridgeJobs.forEach { it.cancel() }; bridgeJobs.clear() }
@@ -398,9 +420,12 @@ class AppEngine(
     }
 
     suspend fun disconnect() {
-        val eng = engine ?: return
-        try { eng.unregister() } catch (_: Throwable) {}
-        try { eng.shutdown() } catch (_: Throwable) {}
+        val eng = engine
+        try { eng?.unregister() } catch (_: Throwable) {}
+        try { eng?.shutdown() } catch (_: Throwable) {}
+        // unregister 会停止正常的 INVITE 流，但仍补一次 facade stop，覆盖
+        // engine 在注册中途失败或 callbackFlow 尚未完成 awaitClose 的情况。
+        try { audioCapture?.stop() } catch (_: Throwable) {}
         try { transport?.close() } catch (_: Throwable) {}
         try { snapshotHttp?.close() } catch (_: Throwable) {}
         bridgeJobsMutex.withLock { bridgeJobs.forEach { it.cancel() }; bridgeJobs.clear() }
@@ -580,6 +605,8 @@ class AppEngine(
             frameRate = v.frameRate,
             bitrateBps = v.bitrateKbps * 1000,
             keyframeIntervalSeconds = v.keyframeIntervalSeconds,
+            audioCodec = v.audioCodec,
+            videoCodec = v.videoCodec,
         )
     }
 

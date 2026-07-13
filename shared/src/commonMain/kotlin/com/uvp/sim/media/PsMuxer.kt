@@ -35,7 +35,7 @@ class PsMuxer {
 
         // 2. Key frame extras
         if (frame.isKeyFrame) {
-            appendSystemHeader(out)
+            appendSystemHeader(out, audioCodec)
             appendProgramStreamMap(out, frame.codec, audioCodec)
         }
 
@@ -109,17 +109,18 @@ class PsMuxer {
         out += 0xF8.toByte()  // 5 reserved bits + 3 stuffing length = 0
     }
 
-    private fun appendSystemHeader(out: MutableList<Byte>) {
+    private fun appendSystemHeader(out: MutableList<Byte>, audioCodec: AudioCodec?) {
+        val hasAudio = audioCodec != null
         // system_header_start_code 0x000001BB
         out += 0x00; out += 0x00; out += 0x01; out += 0xBB.toByte()
-        // header_length (16 bits) — 9 bytes following
-        out += 0x00; out += 0x09
+        // Base header + video bound = 9 bytes; optional audio bound adds 3.
+        out += 0x00; out += if (hasAudio) 0x0C else 0x09
         // rate_bound (1+22+1 bits) — 50000
         out += 0x80.toByte()
         out += 0xC4.toByte()
         out += 0xE1.toByte()
-        // audio_bound(6) + fixed(1) + CSPS(1) — 0 audio
-        out += 0x04
+        // audio_bound(6) + fixed(1) + CSPS(1)
+        out += if (hasAudio) 0x04 else 0x00
         // system_audio_lock(1)+system_video_lock(1)+marker(1)+video_bound(5)
         out += 0xE1.toByte()
         // packet_rate_restriction(1) + reserved(7)
@@ -128,6 +129,12 @@ class PsMuxer {
         out += 0xE0.toByte()
         out += 0xE8.toByte()
         out += 0x14
+        if (hasAudio) {
+            // stream_id_C0 + P-STD audio buffer bound (scale=0, size=32 × 128 bytes)
+            out += 0xC0.toByte()
+            out += 0xC0.toByte()
+            out += 0x20
+        }
     }
 
     private fun appendProgramStreamMap(

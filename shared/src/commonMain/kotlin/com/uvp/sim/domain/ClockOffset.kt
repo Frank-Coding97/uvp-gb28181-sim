@@ -1,8 +1,8 @@
 package com.uvp.sim.domain
 
 import kotlin.time.TimeSource
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * SIP Date 头校时偏移状态(M5 batch2 §4.15 重定义)。

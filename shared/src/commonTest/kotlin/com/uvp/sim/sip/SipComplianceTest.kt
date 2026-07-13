@@ -3,7 +3,7 @@ package com.uvp.sim.sip
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull

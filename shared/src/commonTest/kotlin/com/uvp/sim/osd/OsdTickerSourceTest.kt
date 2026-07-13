@@ -5,8 +5,8 @@ import com.uvp.sim.config.OsdLayer
 import com.uvp.sim.config.OsdPosition
 import com.uvp.sim.config.OsdSize
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -15,6 +15,20 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class OsdTickerSourceTest {
+
+    @Test
+    fun explicit_config_snapshot_does_not_tear_with_flow_value() {
+        val flowConfig = OsdConfig().copy(
+            channelName = OsdConfig().channelName.copy(text = "new"),
+        )
+        val captured = flowConfig.copy(
+            channelName = flowConfig.channelName.copy(text = "captured"),
+        )
+        val source = OsdTickerSource(MutableStateFlow(flowConfig))
+
+        assertEquals("captured", source.snapshot(captured).channelName)
+        assertEquals("new", source.snapshot().channelName)
+    }
 
     private fun layer(
         enabled: Boolean = false,

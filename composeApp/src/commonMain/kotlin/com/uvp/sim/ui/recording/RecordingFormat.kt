@@ -4,7 +4,7 @@ import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.model.RecordSourceDto
 import com.uvp.sim.ui.model.RecordingFileDto
 import com.uvp.sim.ui.round
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -13,6 +13,25 @@ import kotlinx.datetime.toLocalDateTime
  * 录像 tab 共享的格式化 / 分组 / 筛选辅助函数.
  * 全部 KMP-friendly,无平台依赖.
  */
+
+internal data class RecordingListModel(
+    val filteredFiles: List<RecordingFileDto>,
+    val groupedFiles: List<Pair<String, List<RecordingFileDto>>>,
+    val totalBytes: Long,
+    val totalDurationMs: Long,
+) {
+    val isEmpty: Boolean get() = filteredFiles.isEmpty()
+    val count: Int get() = filteredFiles.size
+
+    companion object {
+        val Empty = RecordingListModel(
+            filteredFiles = emptyList(),
+            groupedFiles = emptyList(),
+            totalBytes = 0L,
+            totalDurationMs = 0L,
+        )
+    }
+}
 
 internal fun groupByDate(
     files: List<RecordingFileDto>,
@@ -74,6 +93,23 @@ internal fun describeFilter(filter: RecordingFilter, tz: TimeZone): String {
     val s = Instant.fromEpochMilliseconds(filter.startMs).toLocalDateTime(tz).date
     val e = Instant.fromEpochMilliseconds(filter.endMs).toLocalDateTime(tz).date
     return if (s == e) formatDate(s) else "${formatDate(s)} ~ ${formatDate(e)}"
+}
+
+internal fun buildRecordingListModel(
+    files: List<RecordingFileDto>,
+    filter: RecordingFilter?,
+    tz: TimeZone,
+): RecordingListModel {
+    val filtered = filter?.applyToDto(files) ?: files
+    val grouped = groupByDate(filtered, tz)
+    val totalBytes = filtered.sumOf { it.sizeBytes }
+    val totalDurationMs = filtered.sumOf { it.durationMs }
+    return RecordingListModel(
+        filteredFiles = filtered,
+        groupedFiles = grouped,
+        totalBytes = totalBytes,
+        totalDurationMs = totalDurationMs,
+    )
 }
 
 internal fun RecordSourceDto.label(): String = when (this) {

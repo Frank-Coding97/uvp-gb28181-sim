@@ -33,7 +33,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * [BroadcastCoordinator] 真实现(PR5 T5.3 GREEN)。
@@ -133,12 +133,20 @@ internal class BroadcastCoordinatorImpl(
         val msg = envelope.message
         return when (msg) {
             is SipResponse -> {
-                val cseqMethod = msg.cseqRaw()?.split(" ")?.getOrNull(1)?.let { SipMethod.fromString(it) }
+                val cseqRaw = msg.cseqRaw()
+                val cseqParts = cseqRaw?.split(" ")
+                val cseqMethod = cseqParts?.getOrNull(1)?.let { SipMethod.fromString(it) }
+                val cseqNum = cseqParts?.getOrNull(0)?.trim()?.toIntOrNull()
                 val bc = _current.value
-                if (cseqMethod == SipMethod.INVITE && bc != null && msg.callId() == bc.callId) {
+                if (cseqMethod != SipMethod.INVITE || bc == null || msg.callId() != bc.callId) {
+                    RoutingResult.Skip
+                } else if (!verifyBroadcastResponseOrDrop(envelope, msg, bc, cseqNum)) {
+                    // 校验失败已日志 warning,当作 Handled 防止其他 coordinator 误处理伪造响应。
+                    RoutingResult.Handled
+                } else {
                     handleBroadcastInviteResponse(envelope, msg, bc)
                     RoutingResult.Handled
-                } else RoutingResult.Skip
+                }
             }
             is SipRequest -> {
                 if (msg.method == SipMethod.BYE) {
@@ -201,7 +209,7 @@ internal class BroadcastCoordinatorImpl(
 
     // ---------- BroadcastInvoker 实现 ----------
 
-    override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String) {
+    override suspend fun fireBroadcastInvite(sourceId: String, platformUri: String, targetId: String): BroadcastInviteStart {
         // ManscdpRouter 已做 busy 检查;到这里说明无活跃 broadcast
         val mode = when (config.audioTransport) {
             com.uvp.sim.config.AudioTransportType.UDP -> RtpMode.UDP
@@ -216,7 +224,7 @@ internal class BroadcastCoordinatorImpl(
             runCatching { receiver.close() }
             simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, 0))
             SystemLogger.emit(LogLevel.Warning, LogTag.Media, "语音广播绑定本地端口失败 → 放弃 INVITE")
-            return
+            return BroadcastInviteStart.RtpBindFailed
         }
         rtpReceiver = receiver
         broadcastLocalAudioPort = boundPort
@@ -243,7 +251,12 @@ internal class BroadcastCoordinatorImpl(
         val inviteCseq = 1
         val invite = SipBuilders.buildOutboundInvite(
             config = config,
-            localId = targetId,
+            // From/Contact/Subject 的设备侧 ID 用 deviceId(不是 channelId),
+            // WVP 侧 InviteRequestProcessor.443 就是靠这个反查 device 的;
+            // 之前误传 targetId(channelId)导致 "requesterId 34020000001320000001/34020000001320000001"
+            // 两个 ID 相同 → WVP 把 INVITE 忽略 → 等 5s 后返回 403。
+            localId = config.device.deviceId,
+            channelId = targetId,
             platformUri = platformUri,
             sourceId = sourceId,
             deviceSsrc = deviceSsrc,
@@ -269,17 +282,19 @@ internal class BroadcastCoordinatorImpl(
             createdAtMs = nowMs(),
         )
         _state.value = BroadcastDialogState.Inviting
-        runCatching {
-            outbox.send(invite).getOrThrow()
+        val sendResult = runCatching { outbox.send(invite).getOrThrow() }
+        return if (sendResult.isSuccess) {
             simEventEmit(SimEvent.BroadcastInvited(platformUri, boundPort))
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Media,
                 "反向 INVITE 已发: 通道 $targetId → $platformUri, ssrc=$deviceSsrc 本地音频端口=$boundPort"
             )
-        }.onFailure {
+            BroadcastInviteStart.Started
+        } else {
             // R2 #1 (verify-followup):用 stateMutex 串行化失败 teardown
             tearDownIfActive()
-            simEventEmit(com.uvp.sim.domain.transportErrorOf("send broadcast INVITE", it))
+            simEventEmit(com.uvp.sim.domain.transportErrorOf("send broadcast INVITE", sendResult.exceptionOrNull()!!))
+            BroadcastInviteStart.InviteSendFailed
         }
     }
 
@@ -329,7 +344,9 @@ internal class BroadcastCoordinatorImpl(
                         "语音广播 TCP 主动已连平台 ${answer.remoteIp}:${answer.remotePort}"
                     )
                 }
-                _current.value = bc.copy(
+                // cross-review R1 #7:sink.start() 可能因音频硬件失败,先探启动结果再切 Talking,
+                // 否则设备静默,平台以为广播已建立却收不到 RTP。
+                val updatedBc = bc.copy(
                     state = BroadcastDialogState.Talking,
                     remoteTag = remoteTag,
                     remoteAudioHost = answer.remoteIp,
@@ -337,13 +354,26 @@ internal class BroadcastCoordinatorImpl(
                     codec = codec,
                     remoteSourceIp = envelope.sourceIp,
                 )
+                _current.value = updatedBc
                 _state.value = BroadcastDialogState.Talking
+                val playbackOk = startBroadcastRx()
+                if (!playbackOk) {
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Media,
+                        "语音广播 audio sink 启动失败 → BYE + teardown"
+                    )
+                    sendBroadcastBye(updatedBc, remoteTag)
+                    val dur = nowMs() - bc.createdAtMs
+                    if (tearDownIfActive()) {
+                        simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                    }
+                    return
+                }
                 simEventEmit(SimEvent.BroadcastInvited(bc.sourcePlatformUri, bc.localAudioPort))
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Media,
                     "语音广播建立(Talking)codec=${codec.name} mode=$broadcastMode ← ${answer.remoteIp}:${answer.remotePort}"
                 )
-                startBroadcastRx()
             }
             in 400..699 -> {
                 val dur = nowMs() - bc.createdAtMs
@@ -438,6 +468,68 @@ internal class BroadcastCoordinatorImpl(
             remoteSourceIp = remoteSourceIp,
         )
 
+    /**
+     * cross-review R1 #1(CRITICAL/security):SIP 响应必须来自登记平台且 dialog identity 一致。
+     *
+     * 仅 Call-ID 匹配 → 攻击者可用 LAN 抓包重放 / 伪造 2xx,
+     * 控制 SDP 里的 RTP 地址触发到攻击者的 ACK/TCP/RTP。
+     *
+     * 校验三层:
+     * 1. envelope.sourceIp ∈ {config.server.ip} ∪ allowList(传输层)
+     * 2. CSeq number == bc.cseq(会话内交易一致性)
+     * 3. 已建立后再来的响应必须 To-tag == bc.remoteTag(dialog identity)
+     */
+    private fun verifyBroadcastResponseOrDrop(
+        envelope: com.uvp.sim.network.SipEnvelope,
+        resp: SipResponse,
+        bc: BroadcastDialog,
+        cseqNum: Int?,
+    ): Boolean {
+        if (!com.uvp.sim.sip.PlatformAuthorizer.isResponseFromAuthorizedPlatform(envelope, config)) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 BROADCAST INVITE 响应: 未授权来源 sourceIp=${envelope.sourceIp} " +
+                    "(expected=${config.server.ip}) callId=${bc.callId} → 丢弃",
+            )
+            return false
+        }
+        // R1 verify-followup:CSeq 必填 + 数值必须能解析。缺失或畸形一律拒绝,
+        // 否则攻击者只需省略/破坏 CSeq 头就能绕过 CSeq 校验。
+        if (cseqNum == null || cseqNum != bc.cseq) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "拒绝 BROADCAST INVITE 响应: CSeq=${cseqNum ?: "<invalid>"} 期望=${bc.cseq} " +
+                    "callId=${bc.callId} → 丢弃",
+            )
+            return false
+        }
+        // R1 verify-followup:2xx/final 响应必须携带非空 To-tag,dialog identity 必需项。
+        // 首个 2xx 时用 respTag 建立 dialog, 后续必须与已存 remoteTag 完全一致。
+        // 1xx (100..199) 由调用方在 handleBroadcastInviteResponse 里直接跳过,不走本校验(cseqMethod 只在这里被过滤,所以我们检查 status 分类)。
+        val establishedTag = bc.remoteTag
+        val statusCode = resp.statusCode
+        if (statusCode in 200..699) {
+            val respTag = SipHeaderHelpers.parseTag(resp.toHeader() ?: "")
+            if (respTag.isEmpty()) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "拒绝 BROADCAST INVITE 响应: status=$statusCode 缺 To-tag " +
+                        "callId=${bc.callId} → 丢弃",
+                )
+                return false
+            }
+            if (establishedTag != null && respTag != establishedTag) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "拒绝 BROADCAST INVITE 响应: To-tag=$respTag 已建立=${establishedTag} " +
+                        "callId=${bc.callId} → 丢弃",
+                )
+                return false
+            }
+        }
+        return true
+    }
+
     private suspend fun verifyMidDialogOrReject(
         envelope: com.uvp.sim.network.SipEnvelope,
         req: SipRequest,
@@ -463,11 +555,24 @@ internal class BroadcastCoordinatorImpl(
         return false
     }
 
-    private fun startBroadcastRx() {
-        val receiver = rtpReceiver ?: return
+    /**
+     * cross-review R1 #7:sink.start() 失败时返回 false,让上层 handleBroadcastInviteResponse
+     * 走 BYE + teardown 路径,不再把广播标记为已建立。
+     */
+    private fun startBroadcastRx(): Boolean {
+        val receiver = rtpReceiver ?: return false
         // R3 #6 (full preset MEDIUM/performance):原每包 scope.launch{ handleRxPacket } 在 RTP 热路径
         // 每包起一条 coroutine,sustained stream 下调度抖动 + 创建无界 work。
         // 改成 receiver callback 只 trySend 到 bounded channel(64),单 consumer 顺序消费。
+        val sink = resolvedAudioSinkFactory(8000, 1)
+        if (!sink.start()) {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "AUDIO_SINK_START_FAILED codec=8kHz/mono → 上层需 BYE + teardown"
+            )
+            runCatching { sink.stop() }
+            return false
+        }
         rxPacketChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
         rxJob = receiver.start { rtp ->
             rxPacketChannel?.trySend(rtp)
@@ -478,8 +583,6 @@ internal class BroadcastCoordinatorImpl(
                 handleRxPacket(rtp)
             }
         }
-        val sink = resolvedAudioSinkFactory(8000, 1)
-        sink.start()
         audioPlayback = sink
         audioPlayJob = scope.launch {
             for (pcm in audioChannel) {
@@ -498,6 +601,7 @@ internal class BroadcastCoordinatorImpl(
                 simEventEmit(SimEvent.BroadcastPacketRx(rxPackets, rxBytes, bc.codec.name))
             }
         }
+        return true
     }
 
     /**

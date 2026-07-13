@@ -5,14 +5,20 @@ plugins {
 }
 
 kotlin {
+    jvmToolchain(17)
+
+    // 全项目 opt-in Kotlin 2.2.x 新 stable 化的 experimental API
+    sourceSets.all {
+        languageSettings {
+            optIn("kotlin.time.ExperimentalTime")
+            optIn("kotlin.experimental.ExperimentalObjCName")
+            optIn("kotlinx.cinterop.ExperimentalForeignApi")
+        }
+    }
+
     jvm()  // 提供 JVM target 方便跑 commonTest 单元测试
 
     androidTarget {
-        compilations.all {
-            kotlinOptions {
-                jvmTarget = "17"
-            }
-        }
     }
 
     listOf(
@@ -55,6 +61,9 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.security.crypto)
             implementation(libs.ktor.client.cio)
+        }
+        iosMain.dependencies {
+            implementation(libs.ktor.client.darwin)
         }
     }
 }

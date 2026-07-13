@@ -155,7 +155,16 @@ internal class InviteMediaPipeline(
         onMediaFailure: suspend (cid: String, reason: String) -> Unit,
     ): Job = shared.scope.launch(start = CoroutineStart.LAZY) {
         try {
+            var audioFrameCount = 0L
             audio.start().collect { aFrame ->
+                audioFrameCount += 1
+                if (audioFrameCount == 1L) {
+                    com.uvp.sim.observability.SystemLogger.emit(
+                        com.uvp.sim.observability.LogLevel.Info,
+                        LogTag.Media,
+                        "RTP_AUDIO_FIRST_FRAME codec=${aFrame.codec} payload=${aFrame.payload.size}",
+                    )
+                }
                 val ps = muxer.muxAudio(aFrame)
                 val timestamp90k = aFrame.timestampUs * 9 / 100
                 rtpMutex.withLock {

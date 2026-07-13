@@ -21,6 +21,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.9"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++17"
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     IPHONEOS_DEPLOYMENT_TARGET: "15.0"
 
@@ -30,6 +31,23 @@ targets:
     platform: iOS
     sources:
       - path: iosApp
+      # v1.3-C: SceneKit .scn 资源目录(手动转换,详见 ../Resources-README.md)。
+      # 注意:xcodegen 若用 `type: folder` 会把目录里**所有**文件(包括 md/txt)
+      # 当资源塞进 app bundle,非资源文件触发 CodeSign
+      # "code object is not signed at all"。改用 includes 白名单只签资源类型。
+      # `optional: true` 让文件缺失时不阻塞 xcodegen(占位期 .scn 未落地)。
+      - path: iosApp/Resources
+        optional: true
+        includes:
+          - "*.scn"
+          - "*.dae"
+          - "*.usdz"
+      # Filament iOS 直接复用 Android 的原始 GLB，避免 USDZ 材质转换损失。
+      - path: ../composeApp/src/androidMain/assets/security_camera.glb
+        buildPhase: resources
+      # Android/iOS 共享同一张 PTZ 预览缩略图。
+      - path: ../composeApp/src/androidMain/assets/ptz_scene_thumbnail.png
+        buildPhase: resources
     info:
       path: iosApp/Info.plist
       properties:
@@ -37,9 +55,15 @@ targets:
         CFBundleShortVersionString: "1.1.0"
         CFBundleVersion: "1"
         LSRequiresIPhoneOS: true
-        UILaunchScreen: {}
+        # UILaunchScreen 仅用白底,不显示 UIImageName - 因为 SplashLogo 是方形
+        # 蓝底 PNG(从 launcher icon 缩),iOS 96pt 居中显示时肉眼是"蓝方块一闪"。
+        # 让系统 splash 视觉纯白 ~300ms → Compose SplashScreen (commonMain 共享,
+        # 4 层品牌屏) 接管,和 Android 端 windowSplashScreenBackground=白 +
+        # splash_icon_blank 隐形 icon 策略完全一致。
+        UILaunchScreen:
+          UIColorName: SplashBackground
         UIRequiredDeviceCapabilities:
-          - armv7
+          - arm64
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         # Permissions per plan §3.4
@@ -53,27 +77,122 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.uvp.sim.ios
         TARGETED_DEVICE_FAMILY: "1"  # iPhone only for v1.1 (spec §5)
+        # The KMP simulator framework is built for Apple Silicon. Keep Xcode
+        # from also trying to link an x86_64 simulator binary on this host.
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         DEVELOPMENT_ASSET_PATHS: '"iosApp/Preview Content"'
+        # 真机装机(v1.1 T15):Automatic 签名,Xcode 打开后手动选 Personal Team。
+        # Personal Team provisioning profile 7 天有效,过期插 USB ⌘R 重装即可。
+        CODE_SIGN_STYLE: Automatic
+        # 老板个人 Personal Team ID(security find-identity 输出括号内那串)。
+        # xcodegen 每次重生成 pbxproj 都会用这个值,不再被历史遗留的 WQP89BUR2M 覆盖。
+        # 开源发版前需替换 / 删除此行(每人用自己 team)。
+        DEVELOPMENT_TEAM: CD3WR5D4U8
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../.build/filament-ios/filament/include"
+        SWIFT_OBJC_BRIDGING_HEADER: "$(PROJECT_DIR)/iosApp/iosApp-Bridging-Header.h"
         # KMP-produced framework path. Only ComposeApp.framework — it
         # re-exports :shared so we don't init the Kotlin runtime twice
         # (F3 fix, see overnight report).
-        FRAMEWORK_SEARCH_PATHS:
+        # 真机 iosArm64 / Simulator iosSimulatorArm64。用 SDK 条件把两条路径分开,
+        # 否则同时列两条 linker 会挑到错的架构报 "Building for 'iOS', but linking
+        # in object file built for 'iOS-simulator'"。
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]":
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../composeApp/build/bin/iosArm64/debugFramework"
+        "FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]":
           - "$(inherited)"
           - "$(PROJECT_DIR)/../composeApp/build/bin/iosSimulatorArm64/debugFramework"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-framework"
           - "ComposeApp"
+        "OTHER_LDFLAGS[sdk=iphoneos*]":
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphoneos/libfilament-all.a"
+          - "-force_load"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphoneos/libfilament-all.a"
+          - "-lc++"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "QuartzCore"
+          - "-framework"
+          - "CoreVideo"
+          - "-framework"
+          - "ImageIO"
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]":
+          - "$(inherited)"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphonesimulator/libfilament-all.a"
+          - "-force_load"
+          - "$(PROJECT_DIR)/../.build/filament-ios/lib/iphonesimulator/libfilament-all.a"
+          - "-lc++"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "QuartzCore"
+          - "-framework"
+          - "CoreVideo"
+          - "-framework"
+          - "ImageIO"
     preBuildScripts:
+      - name: "Prepare Filament iOS"
+        script: |
+          cd "$SRCROOT/.."
+          ./scripts/prepare-filament-ios.sh "$SRCROOT/../.build/filament-ios"
+        basedOnDependencyAnalysis: false
       - name: "Build KMP Frameworks"
         script: |
           export JAVA_HOME=/opt/homebrew/opt/openjdk@17
           export PATH="$JAVA_HOME/bin:$PATH"
           cd "$SRCROOT/.."
-          if [ "$CONFIGURATION" = "Release" ]; then
-            ./gradlew :composeApp:linkReleaseFrameworkIosSimulatorArm64
+          # PLATFORM_NAME=iphoneos(真机)/ iphonesimulator(模拟器)
+          if [ "$PLATFORM_NAME" = "iphoneos" ]; then
+            KMP_TARGET="IosArm64"
           else
-            ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64
+            KMP_TARGET="IosSimulatorArm64"
+          fi
+          if [ "$CONFIGURATION" = "Release" ]; then
+            ./gradlew :composeApp:linkReleaseFramework${KMP_TARGET}
+          else
+            ./gradlew :composeApp:linkDebugFramework${KMP_TARGET}
+          fi
+        basedOnDependencyAnalysis: false
+      - name: "Sync Compose Resources"
+        # Compose Multiplatform iOS 资源(commonMain/composeResources/drawable/*)必须
+        # 拷到 app bundle 根,runtime 在 `Bundle.main.bundlePath/compose-resources/` 找。
+        # `syncComposeResourcesForIos` 会:
+        #   1. 从 XCode 注入的 PLATFORM_NAME / CONFIGURATION / ARCHS 推断 target
+        #   2. 把资源同步到 composeApp/build/bin/${TARGET}/${CONFIG}Framework/compose-resources/
+        # 然后 rsync 到 ${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/compose-resources/,
+        # 让 App Bundle 里出现 `compose-resources/composeResources/<pkg>/drawable/*`。
+        # xcodegen 里不直接 folder-ref,因为 folder-ref 会把整个目录名作为顶层加进
+        # bundle,runtime 找不到(找的是 bundle root/compose-resources)。
+        script: |
+          export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+          export PATH="$JAVA_HOME/bin:$PATH"
+          cd "$SRCROOT/.."
+          ./gradlew :composeApp:syncComposeResourcesForIos
+
+          if [ "$PLATFORM_NAME" = "iphoneos" ]; then
+            KMP_TARGET="iosArm64"
+          else
+            KMP_TARGET="iosSimulatorArm64"
+          fi
+          if [ "$CONFIGURATION" = "Release" ]; then
+            KMP_CONFIG="releaseFramework"
+          else
+            KMP_CONFIG="debugFramework"
+          fi
+          SRC="composeApp/build/bin/${KMP_TARGET}/${KMP_CONFIG}/compose-resources"
+          DEST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/compose-resources"
+          if [ -d "$SRC" ]; then
+            mkdir -p "$DEST"
+            rsync -a --delete "$SRC/" "$DEST/"
+            echo "Compose resources synced: $SRC -> $DEST"
+          else
+            echo "warning: compose-resources dir not found at $SRC" >&2
           fi
         basedOnDependencyAnalysis: false

@@ -41,8 +41,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.SubPageContainer
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.floatingBottomBarReservedBottom
 import com.uvp.sim.ui.simulate.SimulateScreen
 
 /**
@@ -73,24 +75,33 @@ fun CapabilityScreen(
         }
     }
 
+    // 子页统一走 SubPageContainer —— 自动隐藏 tab bar + iOS 左边缘 swipe-back 手势。
     if (showCatalog) {
-        CatalogManagementScreen(
-            state = state,
-            actions = actions,
-            onBack = { showCatalog = false }
-        )
+        SubPageContainer(onBack = { showCatalog = false }) {
+            CatalogManagementScreen(
+                state = state,
+                actions = actions,
+                onBack = { showCatalog = false }
+            )
+        }
         return
     }
     if (showRecording) {
-        RecordingSubScreen(state = state, actions = actions, onBack = { showRecording = false })
+        SubPageContainer(onBack = { showRecording = false }) {
+            RecordingSubScreen(state = state, actions = actions, onBack = { showRecording = false })
+        }
         return
     }
     if (showAlarm) {
-        AlarmManagementScreen(state = state, actions = actions, onBack = { showAlarm = false })
+        SubPageContainer(onBack = { showAlarm = false }) {
+            AlarmManagementScreen(state = state, actions = actions, onBack = { showAlarm = false })
+        }
         return
     }
     if (showClockSync) {
-        ClockSyncScreen(state = state, onBack = { showClockSync = false })
+        SubPageContainer(onBack = { showClockSync = false }) {
+            ClockSyncScreen(state = state, onBack = { showClockSync = false })
+        }
         return
     }
 
@@ -103,7 +114,13 @@ fun CapabilityScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(UvpColor.Bg)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(
+                start = 14.dp,
+                end = 14.dp,
+                top = 10.dp,
+                // 悬浮 tab bar 底部预留(iOS 130dp / 其他 0dp),让第二排 tile 不被遮
+                bottom = 10.dp + floatingBottomBarReservedBottom
+            ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

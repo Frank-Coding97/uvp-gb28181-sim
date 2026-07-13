@@ -9,7 +9,7 @@ import com.uvp.sim.ui.model.SessionMarkerDto
 import com.uvp.sim.ui.model.SimEventDto
 import com.uvp.sim.ui.model.SipMessageDto
 import com.uvp.sim.ui.model.SystemLogDto
-import kotlinx.datetime.Instant
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

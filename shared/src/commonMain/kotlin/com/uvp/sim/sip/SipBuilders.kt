@@ -1,8 +1,8 @@
 package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 
 /**
  * SIP 报文构造 façade(saga §3.5 拆分后保留外观 API,实现委派到 4 个分文件 object):
@@ -45,10 +45,10 @@ object SipBuilders {
     ): SipResponse = SipInviteBuilders.buildInvite200WithSdp(invite, deviceContact, toTag, sdpBody, userAgent, subject)
 
     fun buildOutboundInvite(
-        config: SimConfig, localId: String, platformUri: String, sourceId: String, deviceSsrc: String, sdpBody: String,
+        config: SimConfig, localId: String, channelId: String, platformUri: String, sourceId: String, deviceSsrc: String, sdpBody: String,
         localIp: String, localPort: Int, cseq: Int, callId: String, branch: String, fromTag: String
     ): SipRequest = SipInviteBuilders.buildOutboundInvite(
-        config, localId, platformUri, sourceId, deviceSsrc, sdpBody, localIp, localPort, cseq, callId, branch, fromTag
+        config, localId, channelId, platformUri, sourceId, deviceSsrc, sdpBody, localIp, localPort, cseq, callId, branch, fromTag
     )
 
     fun buildOutboundAck(

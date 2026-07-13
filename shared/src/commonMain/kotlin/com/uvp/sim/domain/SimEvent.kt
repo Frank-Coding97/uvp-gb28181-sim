@@ -1,7 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.sip.SipMessage
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 
 /**
  * High-level events emitted by [SimulatorEngine] for the UI to render.

@@ -196,11 +196,24 @@ class SipViewModel @JvmOverloads constructor(
     val networkState: StateFlow<com.uvp.sim.network.NetworkState> = networkController.state
 
     init {
-        // Wave 4 PR-PLATFORM-RUNTIME:启动期装媒体三件套
-        // 必须放在 _recordingState / _recordingFiles / _toasts 等 backing field 初始化之后,
-        // 否则 wireRecordingService 触发 state collector emit → 写 _recordingState 时 NPE
-        appEngine.ensureMediaBuilt()
-        appEngine.currentRecordingService()?.let { svc -> wireRecordingService(svc) }
+        // Wave 4 PR-PLATFORM-RUNTIME:启动期装媒体三件套 -- Camera / Audio / RecordingService。
+        //
+        // 优化(冷启动方案2):异步装配。原来同步跑在 VM init 会阻塞主线程 ~1s
+        // (Camera2 open + AudioRecord probe + Filament preload),把冷启动整体拉到 3s+。
+        // ensureMediaBuilt 幂等 + connect() / applyVideoConfig 会 fallback 再调一次,
+        // 所以延后到后台线程完全安全。首屏(HomeScreen)只显示注册/配置卡片,不依赖媒体已装。
+        //
+        // 顺序:仍必须放在 _recordingState / _recordingFiles / _toasts 等 backing field
+        // 之后,否则 wireRecordingService 触发 state collector emit → 写 _recordingState 时 NPE。
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            appEngine.ensureMediaBuilt()
+            val svc = appEngine.currentRecordingService()
+            if (svc != null) {
+                // wireRecordingService 里有 viewModelScope.launch 会自己切回 main,
+                // 这里在 Default 上调只是把它的调用点(注册 collector)挪出主线程首帧路径。
+                wireRecordingService(svc)
+            }
+        }
     }
 
     init {
@@ -507,15 +520,18 @@ class SipViewModel @JvmOverloads constructor(
     companion object {
         private const val MAX_EVENT_LOG = 200
 
-        // 首次启动默认值(全空,强制用户填)
+        // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
+        // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
+        // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
         private const val WVP_IP = ""
         private const val WVP_PORT = 0
         private const val WVP_SERVER_ID = ""
-        private const val WVP_DOMAIN = ""
+        private const val WVP_DOMAIN = "3402000000"
         private const val WVP_PASSWORD = ""
-        private const val DEVICE_ID = ""
-        private const val VIDEO_CHANNEL_ID = ""
-        private const val ALARM_CHANNEL_ID = ""
+        private const val DEVICE_ID = "34020000001320000001"
+        private const val VIDEO_CHANNEL_ID = "34020000001320000010"
+        private const val FRONT_CHANNEL_ID = "34020000001320000020"
+        private const val ALARM_CHANNEL_ID = "34020000001340000001"
 
         fun defaultConfig() = SimConfig(
             gbVersion = GbVersion.V2022,
@@ -529,7 +545,7 @@ class SipViewModel @JvmOverloads constructor(
                 alarmChannelId = ALARM_CHANNEL_ID,
                 username = DEVICE_ID,
                 password = WVP_PASSWORD,
-                frontChannelId = "",
+                frontChannelId = FRONT_CHANNEL_ID,
             ),
             transport = TransportType.UDP,
             keepaliveIntervalSeconds = 60,

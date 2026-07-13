@@ -66,7 +66,15 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 冷启动优化: shrink 未使用类 + resource shrinking + AGP 默认优化.
+            // proguard-rules.pro 配 kotlinx.serialization / Ktor / Compose /
+            // Filament / KMP expect-actual 的 keep 规则. 保留 -dontobfuscate 稳字优先.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             // M-8:配置完整 → 用 release signingConfig;否则 release 不挂签名,
             // 真跑 :assembleRelease / :bundleRelease 时 AGP 会因为「未挂签名」直接 fail,
             // 不会 silent 输出 debug-signed release APK。
@@ -113,9 +121,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
 
     // Robolectric 需要在 JVM 上跑 Android API,默认 includeAndroidResources=true
     testOptions {
@@ -126,11 +131,19 @@ android {
     }
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
 dependencies {
     implementation(project(":shared"))
     implementation(project(":composeApp"))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.core.splashscreen)
+    implementation(libs.androidx.profileinstaller)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel)
     implementation(libs.androidx.lifecycle.process)

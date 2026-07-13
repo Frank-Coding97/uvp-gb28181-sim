@@ -1,8 +1,8 @@
 package com.uvp.sim.gb28181
 
 import com.uvp.sim.config.SimConfig
-import kotlinx.datetime.Clock
-import kotlinx.datetime.Instant
+import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 

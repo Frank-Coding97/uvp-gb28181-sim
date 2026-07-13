@@ -82,7 +82,8 @@ y=0100000001
             transport = SdpTransport.TCP,
             tcpSetup = SdpTcpSetup.ACTIVE
         )
-        assertContains(sdp, "m=audio 0 TCP/RTP/AVP 8 0\r\n")
+        // RFC 4145 TCP active uses discard port 9; the device does not listen on port 0.
+        assertContains(sdp, "m=audio 9 TCP/RTP/AVP 8 0\r\n")
         assertContains(sdp, "a=rtpmap:8 PCMA/8000\r\n")
         assertContains(sdp, "a=recvonly\r\n")
         assertContains(sdp, "a=setup:active\r\n")

@@ -16,6 +16,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -28,15 +29,17 @@ import com.uvp.sim.ui.recording.DateHeader
 import com.uvp.sim.ui.recording.EmptyHint
 import com.uvp.sim.ui.recording.FilterBar
 import com.uvp.sim.ui.recording.FilterSheet
+import com.uvp.sim.ui.recording.RecordingListModel
 import com.uvp.sim.ui.recording.RecordingCard
 import com.uvp.sim.ui.recording.SummaryBar
-import com.uvp.sim.ui.recording.applyToDto
 import com.uvp.sim.ui.recording.describeFilter
+import com.uvp.sim.ui.recording.buildRecordingListModel
 import com.uvp.sim.ui.recording.formatSize
 import com.uvp.sim.ui.recording.formatTime
-import com.uvp.sim.ui.recording.groupByDate
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.TimeZone
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * M2 录像 tab。
@@ -62,11 +65,16 @@ fun RecordingScreen(state: AppUiState, actions: AppActions, modifier: Modifier =
     var filter by remember { mutableStateOf<RecordingFilter?>(null) }
 
     val files = state.recording.files
-    val filtered = remember(files, filter) {
-        val f = filter ?: return@remember files
-        f.applyToDto(files)
+    val model by produceState(
+        initialValue = RecordingListModel.Empty,
+        key1 = files,
+        key2 = filter,
+        key3 = tz,
+    ) {
+        value = withContext(Dispatchers.Default) {
+            buildRecordingListModel(files = files, filter = filter, tz = tz)
+        }
     }
-    val grouped = remember(filtered) { groupByDate(filtered, tz) }
     val filterLabel = filter?.let { describeFilter(it, tz) } ?: "全部"
 
     Column(
@@ -81,10 +89,14 @@ fun RecordingScreen(state: AppUiState, actions: AppActions, modifier: Modifier =
             },
             onClear = { filter = null }
         )
-        if (filtered.isNotEmpty()) {
-            SummaryBar(filtered)
+        if (!model.isEmpty) {
+            SummaryBar(
+                count = model.count,
+                totalBytes = model.totalBytes,
+                totalDurationMs = model.totalDurationMs,
+            )
         }
-        if (filtered.isEmpty()) {
+        if (model.isEmpty) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyHint(
                     title = if (files.isEmpty()) "尚无录像" else "当前筛选无录像",
@@ -98,7 +110,7 @@ fun RecordingScreen(state: AppUiState, actions: AppActions, modifier: Modifier =
                     start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp
                 )
             ) {
-                grouped.forEach { (date, list) ->
+                model.groupedFiles.forEach { (date, list) ->
                     item(key = "h-$date") { DateHeader(date) }
                     items(list, key = { it.id }) { file ->
                         RecordingCard(
