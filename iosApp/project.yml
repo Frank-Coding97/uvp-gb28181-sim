@@ -154,3 +154,39 @@ targets:
             ./gradlew :composeApp:linkDebugFramework${KMP_TARGET}
           fi
         basedOnDependencyAnalysis: false
+      - name: "Sync Compose Resources"
+        # Compose Multiplatform iOS 资源(commonMain/composeResources/drawable/*)必须
+        # 拷到 app bundle 根,runtime 在 `Bundle.main.bundlePath/compose-resources/` 找。
+        # `syncComposeResourcesForIos` 会:
+        #   1. 从 XCode 注入的 PLATFORM_NAME / CONFIGURATION / ARCHS 推断 target
+        #   2. 把资源同步到 composeApp/build/bin/${TARGET}/${CONFIG}Framework/compose-resources/
+        # 然后 rsync 到 ${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/compose-resources/,
+        # 让 App Bundle 里出现 `compose-resources/composeResources/<pkg>/drawable/*`。
+        # xcodegen 里不直接 folder-ref,因为 folder-ref 会把整个目录名作为顶层加进
+        # bundle,runtime 找不到(找的是 bundle root/compose-resources)。
+        script: |
+          export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+          export PATH="$JAVA_HOME/bin:$PATH"
+          cd "$SRCROOT/.."
+          ./gradlew :composeApp:syncComposeResourcesForIos
+
+          if [ "$PLATFORM_NAME" = "iphoneos" ]; then
+            KMP_TARGET="iosArm64"
+          else
+            KMP_TARGET="iosSimulatorArm64"
+          fi
+          if [ "$CONFIGURATION" = "Release" ]; then
+            KMP_CONFIG="releaseFramework"
+          else
+            KMP_CONFIG="debugFramework"
+          fi
+          SRC="composeApp/build/bin/${KMP_TARGET}/${KMP_CONFIG}/compose-resources"
+          DEST="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/compose-resources"
+          if [ -d "$SRC" ]; then
+            mkdir -p "$DEST"
+            rsync -a --delete "$SRC/" "$DEST/"
+            echo "Compose resources synced: $SRC -> $DEST"
+          else
+            echo "warning: compose-resources dir not found at $SRC" >&2
+          fi
+        basedOnDependencyAnalysis: false
