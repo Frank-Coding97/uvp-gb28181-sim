@@ -47,6 +47,10 @@ Thumbs.db
 CLAUDE.md
 AGENTS.md
 
+# 设计原型素材(Blender 源 / 背景候选 PNG / Three.js 预览页) — 仅本地设计阶段参考,
+# 已选中的运行时资源已 cp 到 composeApp/.../resources/
+preview/
+
 # Logs
 *.log
 npm-debug.log*
