@@ -61,6 +61,15 @@ internal class RecordingFileStore(
     /**
      * 读 index.json,解码为 RecordingFile 列表。文件不存在返回 emptyList。
      * IO 走 [Dispatchers.Default],读取 + parse 失败静默 emit warning + 返回 emptyList。
+     *
+     * 磁盘上的 filePath / thumbnailPath 存**相对 [baseDir] 的路径**(见 [persistIndex]),
+     * loadIndex 时统一 rebase 到当前 baseDir 拼绝对路径给上层。
+     *
+     * 老 index.json 里存的是绝对路径(v1.1 早期实现),loadIndex 时如果发现是"/"开头的
+     * 绝对路径,尝试 stripBaseDir 转相对(命中当前 baseDir);拿不到就原样保留(如老包
+     * 沙盒 UUID 已变的情况,原路径就是失效的,继续给绝对路径 UI 也拿不到 —— 数据是死的,
+     * 但至少不 crash,delete 时靠 id 匹配还能清除索引)。老绝对路径在下次 persistIndex
+     * 时被 [toRelative] 转成相对,完成一次隐式迁移,后续沙盒 rebase 就不再失效。
      */
     suspend fun loadIndex(): List<RecordingFile> {
         val fm = NSFileManager.defaultManager
@@ -73,7 +82,7 @@ internal class RecordingFileStore(
                     error = null,
                 ) as? String
             } ?: ""
-            RecordingIndex.decode(text).files
+            RecordingIndex.decode(text).files.map { it.rebaseToAbsolute() }
         }.onFailure {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Media,
@@ -84,10 +93,16 @@ internal class RecordingFileStore(
 
     /**
      * 写 index.json(atomic)。失败静默 emit warning,不抛。
+     *
+     * 落盘前把 filePath / thumbnailPath 从绝对路径 → 相对 [baseDir] 的路径(见 [toRelative]),
+     * 抵御 iOS 沙盒 container UUID 变化(卸载重装 / debug 重装 / bundle 迁移)导致的
+     * 绝对路径失效问题 —— 相对路径在下次 loadIndex 时用当前 baseDir 重新拼绝对,
+     * 天然跟着新沙盒走。
      */
     fun persistIndex(idx: RecordingIndexFile) {
         runCatching {
-            val json = RecordingIndex.encode(idx)
+            val relativized = idx.copy(files = idx.files.map { it.stripToRelative() })
+            val json = RecordingIndex.encode(relativized)
             val ok = (json as NSString).writeToFile(
                 path = indexFilePath,
                 atomically = true,
@@ -112,6 +127,55 @@ internal class RecordingFileStore(
             )
         }
     }
+
+    /**
+     * 把绝对路径转成相对 [baseDir] 的路径。
+     *
+     * 相对格式统一为 `<deviceId>/<ymd>/<hms>.mp4`(不含 "recordings/" 段,那是 baseDir 的一部分),
+     * 保证 [toAbsolute] 拼回时不会出现 "recordings/recordings/" 双前缀。
+     *
+     * 规则:
+     *   - 命中当前 baseDir 前缀 → 截去 `<baseDir>/`,返回相对
+     *   - 已经是相对路径(不以"/"开头)→ 原样返回(幂等)
+     *   - 绝对但不命中 baseDir(比如老沙盒 UUID 的绝对路径)→ 按 "/recordings/" 段截取,
+     *     取其**后面**的部分(即 "recordings/" 之后的相对段)。典型形式
+     *     `/var/mobile/Containers/Data/Application/<旧UUID>/Documents/recordings/xxx` → `xxx`,
+     *     跨沙盒复用当前 baseDir 时能正确拼绝对。
+     *   - 全都不命中 → 原样保留(该数据本就失效,不做假迁移)
+     */
+    internal fun toRelative(absolute: String): String {
+        if (!absolute.startsWith("/")) return absolute
+        val prefix = "$baseDir/"
+        if (absolute.startsWith(prefix)) return absolute.removePrefix(prefix)
+        val marker = "/recordings/"
+        val idx = absolute.indexOf(marker)
+        if (idx >= 0) return absolute.substring(idx + marker.length)
+        return absolute
+    }
+
+    /** 相对路径拼当前 baseDir 前缀,已是绝对路径原样返回(幂等)。 */
+    internal fun toAbsolute(relativeOrAbsolute: String): String {
+        if (relativeOrAbsolute.startsWith("/")) return relativeOrAbsolute
+        return (baseDir as NSString).stringByAppendingPathComponent(relativeOrAbsolute)
+    }
+
+    /**
+     * loadIndex 时把磁盘上的路径 rebase 到当前 baseDir 的绝对路径。
+     *
+     * **先 toRelative 归一化再 toAbsolute**:磁盘上可能是相对(新版本)或绝对(老版本,沙盒
+     * UUID 已换 → UUID 失效)。toRelative 会把老绝对路径的 UUID 段剥掉、只留 recordings 后的
+     * 相对段,再 toAbsolute 拼回当前 baseDir。跳过 toRelative 就会让老 UUID 原样透传
+     * (因为 toAbsolute 见 "/" 开头直接 return),用户升级 App / 卸载重装后路径依然失效。
+     */
+    private fun RecordingFile.rebaseToAbsolute(): RecordingFile = copy(
+        filePath = toAbsolute(toRelative(filePath)),
+        thumbnailPath = thumbnailPath?.let { toAbsolute(toRelative(it)) },
+    )
+
+    private fun RecordingFile.stripToRelative(): RecordingFile = copy(
+        filePath = toRelative(filePath),
+        thumbnailPath = thumbnailPath?.let { toRelative(it) },
+    )
 
     /**
      * 按 [instant] + 当前 deviceId 生成本次录像的 output 路径。
