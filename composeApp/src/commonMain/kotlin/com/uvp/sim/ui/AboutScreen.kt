@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.OpenInNew
@@ -49,9 +50,11 @@ import org.jetbrains.compose.resources.painterResource
  *
  * 版本号从 [PlatformBuildInfo] 拿(Android PackageManager,iOS NSBundle),
  * 仓库外链走 [openUrl] 交给系统浏览器,微信号复制到剪贴板 + toast 提示。
+ * "开源许可"行点击回调 [onOpenLicenses] 由外层 SettingsScreen 挂载,跳
+ * OpenSourceLicensesScreen 展示 20+ 第三方依赖归属。
  */
 @Composable
-fun AboutScreen() {
+fun AboutScreen(onOpenLicenses: () -> Unit = {}) {
     val toast = LocalToastHost.current
     val clipboard = LocalClipboardManager.current
 
@@ -79,8 +82,15 @@ fun AboutScreen() {
             AboutLineDivider()
             AboutLineRow(
                 icon = Icons.Outlined.Description,
-                title = "开源协议",
-                value = "MIT License · 完全开源",
+                title = "本项目协议",
+                value = "MIT License",
+            )
+            AboutLineDivider()
+            AboutNavRow(
+                icon = Icons.Outlined.Description,
+                title = "开源许可",
+                value = "查看第三方依赖归属",
+                onClick = onOpenLicenses,
             )
         }
 
@@ -201,6 +211,36 @@ private fun AboutLineRow(
         title = title,
     ) {
         Text(value, fontSize = 12.sp, color = UvpColor.TextSecondary)
+    }
+}
+
+@Composable
+private fun AboutNavRow(
+    icon: ImageVector,
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    AboutRowScaffold(
+        leading = {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = UvpColor.TextSecondary,
+            )
+        },
+        title = title,
+        onClick = onClick,
+    ) {
+        Text(value, fontSize = 12.sp, color = UvpColor.TextSecondary)
+        Spacer(Modifier.width(6.dp))
+        Icon(
+            Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            modifier = Modifier.size(14.dp),
+            tint = UvpColor.TextHint,
+        )
     }
 }
 

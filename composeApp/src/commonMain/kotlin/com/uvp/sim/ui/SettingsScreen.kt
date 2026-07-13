@@ -79,11 +79,15 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
         SettingsPage.About -> SettingsSubPage(
             title = "关于",
             onBack = { page = SettingsPage.Index }
-        ) { AboutScreen() }
+        ) { AboutScreen(onOpenLicenses = { page = SettingsPage.Licenses }) }
+        SettingsPage.Licenses -> SettingsSubPage(
+            title = "开源许可",
+            onBack = { page = SettingsPage.About }
+        ) { OpenSourceLicensesScreen() }
     }
 }
 
-private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, About }
+private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, About, Licenses }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
