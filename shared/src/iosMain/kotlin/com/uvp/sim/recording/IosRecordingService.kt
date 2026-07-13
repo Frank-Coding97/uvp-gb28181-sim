@@ -179,12 +179,16 @@ class IosRecordingService(
     override suspend fun load(): Unit = mutex.withLock {
         val loaded = fileStore.loadIndex()
         _files.value = loaded
-        // cross-review R3 #2:load 后异步扫描 orphan 缩略图并回收。
-        // delete() 缩略图删除失败(权限/瞬时 IO)是 best-effort,不阻塞主 delete,
-        // 但会留下 orphan JPG 占空间且残留画面。启动时扫一遍兜底。
-        // 用 scope.launch 是因为 orphan scan 走磁盘遍历,不该阻塞 load()。
+        // cross-review R3 verify-retry #2:orphan 扫描 mutex 保护 + 二次校验
+        // 最新 _files.value。R3 v1 用 load 时捕获的 loaded snapshot,若扫描期间
+        // finalize 落新缩略图,referenced set 不含新条目 → 误删。
+        // 改为 mutex.withLock 内二次读 _files.value 拿最新 referenced set 后再扫。
         scope.launch {
-            runCatching { fileStore.scanAndDeleteOrphanThumbnails(loaded) }
+            mutex.withLock {
+                runCatching {
+                    fileStore.scanAndDeleteOrphanThumbnails(_files.value)
+                }
+            }
         }
     }
 
