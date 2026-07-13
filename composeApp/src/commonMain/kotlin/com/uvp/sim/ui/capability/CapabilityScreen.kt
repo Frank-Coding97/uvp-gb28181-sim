@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.SubPageContainer
 import com.uvp.sim.ui.SubscriptionKind
 import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.floatingBottomBarReservedBottom
@@ -74,24 +75,33 @@ fun CapabilityScreen(
         }
     }
 
+    // 子页统一走 SubPageContainer —— 自动隐藏 tab bar + iOS 左边缘 swipe-back 手势。
     if (showCatalog) {
-        CatalogManagementScreen(
-            state = state,
-            actions = actions,
-            onBack = { showCatalog = false }
-        )
+        SubPageContainer(onBack = { showCatalog = false }) {
+            CatalogManagementScreen(
+                state = state,
+                actions = actions,
+                onBack = { showCatalog = false }
+            )
+        }
         return
     }
     if (showRecording) {
-        RecordingSubScreen(state = state, actions = actions, onBack = { showRecording = false })
+        SubPageContainer(onBack = { showRecording = false }) {
+            RecordingSubScreen(state = state, actions = actions, onBack = { showRecording = false })
+        }
         return
     }
     if (showAlarm) {
-        AlarmManagementScreen(state = state, actions = actions, onBack = { showAlarm = false })
+        SubPageContainer(onBack = { showAlarm = false }) {
+            AlarmManagementScreen(state = state, actions = actions, onBack = { showAlarm = false })
+        }
         return
     }
     if (showClockSync) {
-        ClockSyncScreen(state = state, onBack = { showClockSync = false })
+        SubPageContainer(onBack = { showClockSync = false }) {
+            ClockSyncScreen(state = state, onBack = { showClockSync = false })
+        }
         return
     }
 

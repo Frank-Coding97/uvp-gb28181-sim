@@ -1,6 +1,10 @@
 package com.uvp.sim.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -49,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -108,8 +113,12 @@ fun App(state: AppUiState, actions: AppActions) {
         )
         val keyboard = LocalSoftwareKeyboardController.current
         val focus = LocalFocusManager.current
+        val subPageStack = remember { SubPageStack() }
         UvpToastHost {
-            CompositionLocalProvider(LocalAppNavigator provides navigator) {
+            CompositionLocalProvider(
+                LocalAppNavigator provides navigator,
+                LocalSubPageStack provides subPageStack,
+            ) {
                 // 点击输入框以外的空白区域 → 收起键盘 + 清焦点。
                 // iOS 系统键盘本身没有隐藏键,靠 app 自己响应。
                 // detectTapGestures 只在 pointer event 未被子元素消费时触发 →
@@ -183,12 +192,27 @@ fun App(state: AppUiState, actions: AppActions) {
                             }
                         }
                         // iOS 26 Liquid Glass 风悬浮 tab bar,不占 Column 布局空间。
+                        // 进入子页(SubPageContainer 挂载)时 depth > 0,AnimatedVisibility
+                        // 让 tab bar 向下滑出;返回顶层再滑回 —— iOS HIG "push detail
+                        // 隐藏 tab bar"惯例的手工实现。
                         if (isFloatingBottomBar) {
-                            FloatingBottomBar(
-                                active = currentTab,
-                                onPick = { currentTab = it },
+                            AnimatedVisibility(
+                                visible = !subPageStack.isInSubPage,
+                                enter = slideInVertically(
+                                    initialOffsetY = { it },
+                                    animationSpec = tween(220)
+                                ),
+                                exit = slideOutVertically(
+                                    targetOffsetY = { it },
+                                    animationSpec = tween(180)
+                                ),
                                 modifier = Modifier.align(Alignment.BottomCenter)
-                            )
+                            ) {
+                                FloatingBottomBar(
+                                    active = currentTab,
+                                    onPick = { currentTab = it },
+                                )
+                            }
                         }
                     }
                 }

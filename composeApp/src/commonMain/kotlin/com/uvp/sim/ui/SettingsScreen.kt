@@ -189,6 +189,8 @@ private fun SettingsSubPage(
     content: @Composable () -> Unit
 ) {
     PlatformBackHandler(enabled = true, onBack = onBack)
+    // SubPageContainer 提供 tab bar 自动隐藏 + iOS 左边缘 swipe-back 手势。
+    SubPageContainer(onBack = onBack) {
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -212,6 +214,7 @@ private fun SettingsSubPage(
         }
         Box(Modifier.fillMaxWidth().height(1.dp).background(UvpColor.BorderLight))
         content()
+    }
     }
 }
 
