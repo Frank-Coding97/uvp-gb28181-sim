@@ -93,15 +93,19 @@ internal class RecordingFileStore(
     }
 
     /**
-     * 写 index.json(atomic)。失败静默 emit warning,不抛。
+     * 写 index.json(atomic)。返回是否成功。
      *
      * 落盘前把 filePath / thumbnailPath 从绝对路径 → 相对 [baseDir] 的路径(见 [toRelative]),
      * 抵御 iOS 沙盒 container UUID 变化(卸载重装 / debug 重装 / bundle 迁移)导致的
      * 绝对路径失效问题 —— 相对路径在下次 loadIndex 时用当前 baseDir 重新拼绝对,
      * 天然跟着新沙盒走。
+     *
+     * cross-review R1 #4:失败必须能被上层感知(而不是仅 log warning),否则
+     * `finalizeWriterLocked` 会在 index 未落盘的情况下把 recording 标"已保存"回给 UI,
+     * 重启后 index.json 里没这条 → 用户可见录像丢失。返回 false 时调用方应把 state 标 Failed。
      */
-    fun persistIndex(idx: RecordingIndexFile) {
-        runCatching {
+    fun persistIndex(idx: RecordingIndexFile): Boolean {
+        return runCatching {
             val relativized = idx.copy(files = idx.files.map { it.stripToRelative() })
             val json = RecordingIndex.encode(relativized)
             val ok = (json as NSString).writeToFile(
@@ -112,20 +116,22 @@ internal class RecordingFileStore(
             )
             if (!ok) {
                 SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Media,
+                    LogLevel.Error, LogTag.Media,
                     "IOS_RECORDING_INDEX_PERSIST_FAIL path=$indexFilePath reason=write_returned_false count=${idx.files.size}",
                 )
-            } else {
-                SystemLogger.emit(
-                    LogLevel.Debug, LogTag.Media,
-                    "IOS_RECORDING_INDEX_PERSIST_OK path=$indexFilePath count=${idx.files.size}",
-                )
+                return@runCatching false
             }
-        }.onFailure {
             SystemLogger.emit(
-                LogLevel.Warning, LogTag.Media,
+                LogLevel.Debug, LogTag.Media,
+                "IOS_RECORDING_INDEX_PERSIST_OK path=$indexFilePath count=${idx.files.size}",
+            )
+            true
+        }.getOrElse {
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
                 "IOS_RECORDING_INDEX_PERSIST_FAIL msg=${it.message}",
             )
+            false
         }
     }
 

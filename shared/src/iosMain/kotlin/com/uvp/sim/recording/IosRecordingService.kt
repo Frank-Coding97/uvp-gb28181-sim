@@ -645,7 +645,23 @@ class IosRecordingService(
         val currentList = _files.value
         val updated = RecordingIndexFile(files = currentList + recordingFile)
         _files.value = updated.files
-        fileStore.persistIndex(updated)
+        val indexOk = fileStore.persistIndex(updated)
+        // cross-review R1 #4:index 落盘失败必须向上报告,否则用户看到"已保存"
+        // 但重启后 index.json 没这条 → 录像永久丢失。这里不 rollback 内存列表(下次
+        // start 时会重试 persist,若磁盘恢复则最终一致),但状态标 Failed 让 UI 知晓。
+        if (!indexOk) {
+            _state.value = RecordingState.Failed(
+                "index persist failed — recording written to $outputPath but may be lost after restart"
+            )
+            SystemLogger.emit(
+                LogLevel.Error, LogTag.Media,
+                "IOS_RECORDING_INDEX_LOST id=$recordingId path=$outputPath size=${fileSize}B " +
+                    "reason=persist_returned_false",
+            )
+            return Result.failure(
+                IllegalStateException("index persist failed for $recordingId")
+            )
+        }
         // 2026-07-13 现场诊断:老板报告"iOS 多次录像列表始终只显示一条"。
         // finalize 用的 currentList 若是 emptyList(冷启动漏调 load 的老包 / load 失败),
         // 之前的历史记录会被 persist 覆盖。这里 emit 每次 append 前后的 size + 前 3 条 id,
