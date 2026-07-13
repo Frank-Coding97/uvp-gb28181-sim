@@ -2,21 +2,23 @@
 
 把字体光栅化成 OSD 渲染层用的 SDF atlas(PNG + JSON)。host JVM 跑,**不进 APK**。
 
+## 当前 atlas 使用的字体
+
+**Adobe/Google Source Han Sans SC (思源黑体) Normal** — [SIL Open Font License 1.1](fonts/OFL.txt)
+
+字体源文件 `fonts/SourceHanSansSC-Normal.otf` 已跟仓库同存,方便贡献者本地复现 bake。OFL 明确允许光栅化产物随软件分发,且**允许商业用途**。
+
 ## 快速跑
 
 ```bash
-# 当前 commit:SansSerif logical font + GB2312 高频 1000 字 + ASCII 95 字符
+# 默认(思源黑体 + GB2312 高频 1000 字 + ASCII 95 字符)
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 ./gradlew :shared:bakeOsdFontAtlas \
-  -PosdFont=SansSerif \
+  -PosdFont="$PWD/tools/font-baker/fonts/SourceHanSansSC-Normal.otf" \
   -PosdCharset="$PWD/tools/font-baker/charset/charset-gb2312-l1.txt"
 
-# 默认参数(ASCII only,SansSerif → 系统字体)
+# 仅 ASCII(fallback 到 JVM SansSerif logical font — 用于开发期 probe,勿提交产物)
 ./gradlew :shared:bakeOsdFontAtlas
-
-# 用本地 .otf 文件
-./gradlew :shared:bakeOsdFontAtlas \
-  -PosdFont="$PWD/tools/font-baker/fonts/source-han-sans-sc.otf" \
-  -PosdCharset="$PWD/tools/font-baker/charset/charset-gb2312-l1.txt"
 ```
 
 > **注意**:`-PosdCharset` 必须用绝对路径(`$PWD/...`)。Gradle JavaExec 默认 cwd 是
@@ -32,8 +34,7 @@
 407 字符:
 - ASCII 0x20..0x7E(95 字符)
 - GB2312 高频常用字 311 字(覆盖 OSD 实际场景:时间戳数字 + 通道名 + 水印文本)
-- 通过 java.awt SansSerif logical font fallback 渲染,macOS 上自动用 PingFang/Hiragino,
-  Linux/Windows 上自动用系统中文字体
+- 用 Adobe Source Han Sans SC Normal 渲染,所有平台构建一致(不再依赖 macOS 系统字体 fallback)
 
 ## 字符集
 
@@ -49,13 +50,11 @@
   双向扫描 O(W*H),atlas 2048+spread=8 跑 1-2s。比 brute-force(O(W*H*spread²),~30-60s)
   快约 30 倍,GB2312 全集 baking 体验跟得上
 
-## 自定义中文字体
+## 替换字体
 
-如要替换为合规 OFL 字体(如思源黑体 / Noto Sans SC):
+如需换成其他 OFL 兼容字体(Noto Sans SC / 未来 SC-Medium 等):
 
-1. 下载 `SourceHanSansSC-Normal.otf` 或 `NotoSansSC-Regular.otf` 到 `tools/font-baker/fonts/`
-2. 跑 `./gradlew :shared:bakeOsdFontAtlas -PosdFont=tools/font-baker/fonts/<file>.otf -PosdCharset=...`
-3. 提交新 atlas 资产覆盖
-
-当前 commit 的 atlas 用 SansSerif logical font(macOS 渲染端),个人项目内部使用零版权风险;
-公开发行前换 OFL 字体重 bake。
+1. 下载 .otf/.ttf 到 `tools/font-baker/fonts/`,附带上游 LICENSE 到 `fonts/`
+2. 跑 `bakeOsdFontAtlas` 覆盖 atlas
+3. 更新本文档 "当前 atlas 使用的字体" 段
+4. 更新 About 页开源许可清单里的 OSD 字体条目
