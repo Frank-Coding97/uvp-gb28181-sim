@@ -31,3 +31,16 @@ expect val isFloatingBottomBar: Boolean
  *   Android 有更多垂直空间,底部按钮更符合 Material 习惯。
  */
 expect val isTopStatusCtaInlined: Boolean
+
+/**
+ * 应用构建信息 —— About 页展示 versionName / versionCode。
+ *
+ * - Android:PackageManager 读 versionName / longVersionCode(定义在
+ *   androidApp/build.gradle.kts 的 defaultConfig)
+ * - iOS:NSBundle.mainBundle.infoDictionary 读 CFBundleShortVersionString /
+ *   CFBundleVersion(定义在 iosApp/project.yml → Info.plist)
+ */
+expect object PlatformBuildInfo {
+    val versionName: String
+    val versionCode: String
+}

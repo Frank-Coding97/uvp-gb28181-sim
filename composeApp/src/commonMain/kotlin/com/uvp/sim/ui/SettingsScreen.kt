@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.DevicesOther
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.MovieFilter
 import androidx.compose.material.icons.outlined.NetworkCheck
@@ -75,10 +76,14 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
             title = "网络",
             onBack = { page = SettingsPage.Index }
         ) { NetworkSettingsPage(state, actions) }
+        SettingsPage.About -> SettingsSubPage(
+            title = "关于",
+            onBack = { page = SettingsPage.Index }
+        ) { AboutScreen() }
     }
 }
 
-private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network }
+private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, About }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
@@ -118,6 +123,12 @@ private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
                 onClick = { onPick(SettingsPage.Network) }
             )
         }
+        SettingsEntry(
+            icon = Icons.Outlined.Info,
+            title = "关于",
+            description = "版本 · 开源仓库 · 联系作者",
+            onClick = { onPick(SettingsPage.About) }
+        )
     }
 }
 
