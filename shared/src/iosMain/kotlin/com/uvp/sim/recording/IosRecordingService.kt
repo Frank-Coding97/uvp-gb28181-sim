@@ -123,6 +123,12 @@ class IosRecordingService(
      */
     private val diag = RecordingDiagnostics()
 
+    /**
+     * cross-review R1 #5 拆分 step 2:文件路径 / index 持久化 / newOutputPath 抽到
+     * [RecordingFileStore]。
+     */
+    private val fileStore = RecordingFileStore(deviceIdSupplier, timeZone)
+
     private val _state = MutableStateFlow<RecordingState>(RecordingState.Idle)
     override val state: StateFlow<RecordingState> = _state.asStateFlow()
 
@@ -165,52 +171,12 @@ class IosRecordingService(
     @kotlin.concurrent.Volatile
     private var finalizeDone: Boolean = false
 
-    // ---- Filesystem paths ----
-    private val documentsDir: String by lazy {
-        val paths = NSSearchPathForDirectoriesInDomains(
-            directory = NSDocumentDirectory,
-            domainMask = NSUserDomainMask,
-            expandTilde = true,
-        )
-        (paths.firstOrNull() as? String) ?: "/tmp"
-    }
-
-    private val baseDir: String by lazy {
-        val p = (documentsDir as NSString).stringByAppendingPathComponent("recordings")
-        NSFileManager.defaultManager.ensureDir(p)
-        p
-    }
-
-    private val indexFilePath: String by lazy {
-        (baseDir as NSString).stringByAppendingPathComponent("index.json")
-    }
-
     // =========================================================
     // RecordingService overrides
     // =========================================================
 
     override suspend fun load(): Unit = mutex.withLock {
-        runCatching {
-            val fm = NSFileManager.defaultManager
-            if (fm.fileExistsAtPath(indexFilePath)) {
-                val text = withContext(Dispatchers.Default) {
-                    NSString.stringWithContentsOfFile(
-                        path = indexFilePath,
-                        encoding = NSUTF8StringEncoding,
-                        error = null,
-                    ) as? String
-                } ?: ""
-                _files.value = RecordingIndex.decode(text).files
-            } else {
-                _files.value = emptyList()
-            }
-        }.onFailure {
-            SystemLogger.emit(
-                LogLevel.Warning, LogTag.Media,
-                "IOS_RECORDING_LOAD_FAIL msg=${it.message}",
-            )
-        }
-        Unit
+        _files.value = fileStore.loadIndex()
     }
 
     override suspend fun start(source: RecordSource, channelId: String): Result<Unit> =
@@ -226,8 +192,8 @@ class IosRecordingService(
             inputsClosed = false
             runCatching {
                 val now = clock.now()
-                val outputPath = newOutputPath(now)
-                ensureParentDir(outputPath)
+                val outputPath = fileStore.newOutputPath(now)
+                fileStore.ensureParentDir(outputPath)
 
                 val encCfg = encoderConfigSupplier()
                 openWriter(outputPath, encCfg)
@@ -310,19 +276,11 @@ class IosRecordingService(
     override suspend fun delete(id: String): Result<Unit> = mutex.withLock {
         runCatching {
             val target = _files.value.firstOrNull { it.id == id } ?: return@runCatching
-            withContext(Dispatchers.Default) {
-                runCatching {
-                    NSFileManager.defaultManager.removeItemAtPath(target.filePath, error = null)
-                }
-                target.thumbnailPath?.let {
-                    runCatching {
-                        NSFileManager.defaultManager.removeItemAtPath(it, error = null)
-                    }
-                }
-            }
+            fileStore.deleteFile(target.filePath)
+            target.thumbnailPath?.let { fileStore.deleteFile(it) }
             val updated = RecordingIndex.remove(RecordingIndexFile(files = _files.value), id)
             _files.value = updated.files
-            persistIndex(updated)
+            fileStore.persistIndex(updated)
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_RECORDING_DELETE id=$id")
         }
     }
@@ -846,7 +804,7 @@ class IosRecordingService(
 
         val endMs = clock.now().toEpochMilliseconds()
         val durationMs = endMs - started
-        val fileSize = fileSizeBytes(outputPath)
+        val fileSize = fileStore.fileSizeBytes(outputPath)
 
         val recordingId = NSUUID().UUIDString
         val thumbnailPath = thumbnail.captureForRecording(outputPath, recordingId)
@@ -868,7 +826,7 @@ class IosRecordingService(
         val currentList = _files.value
         val updated = RecordingIndexFile(files = currentList + recordingFile)
         _files.value = updated.files
-        persistIndex(updated)
+        fileStore.persistIndex(updated)
         SystemLogger.emit(
             LogLevel.Info,
             LogTag.Media,
@@ -939,59 +897,6 @@ class IosRecordingService(
         }
     }
 
-    // =========================================================
-    // Internals: paths + fs helpers
-    // =========================================================
-
-    private fun newOutputPath(instant: Instant): String {
-        val ldt = instant.toLocalDateTime(timeZone)
-        val ymd = pad4(ldt.year) + pad2(ldt.monthNumber) + pad2(ldt.dayOfMonth)
-        val hms = pad2(ldt.hour) + pad2(ldt.minute) + pad2(ldt.second)
-        val deviceDir = (baseDir as NSString).stringByAppendingPathComponent(deviceIdSupplier())
-        val dayDir = (deviceDir as NSString).stringByAppendingPathComponent(ymd)
-        return (dayDir as NSString).stringByAppendingPathComponent("$hms.mp4")
-    }
-
-    private fun ensureParentDir(filePath: String) {
-        val parent = deletingLastPathComponent(filePath)
-        NSFileManager.defaultManager.ensureDir(parent)
-    }
-
-    private fun fileSizeBytes(path: String): Long {
-        val fm = NSFileManager.defaultManager
-        val attrs = fm.attributesOfItemAtPath(path, error = null) ?: return 0L
-        val v = attrs["NSFileSize"] as? NSNumber
-        return v?.longLongValue ?: 0L
-    }
-
-    private fun persistIndex(idx: RecordingIndexFile) {
-        runCatching {
-            val json = RecordingIndex.encode(idx)
-            val ok = (json as NSString).writeToFile(
-                path = indexFilePath,
-                atomically = true,
-                encoding = NSUTF8StringEncoding,
-                error = null,
-            )
-            if (!ok) {
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Media,
-                    "IOS_RECORDING_INDEX_PERSIST_FAIL path=$indexFilePath reason=write_returned_false count=${idx.files.size}",
-                )
-            } else {
-                SystemLogger.emit(
-                    LogLevel.Debug, LogTag.Media,
-                    "IOS_RECORDING_INDEX_PERSIST_OK path=$indexFilePath count=${idx.files.size}",
-                )
-            }
-        }.onFailure {
-            SystemLogger.emit(
-                LogLevel.Warning, LogTag.Media,
-                "IOS_RECORDING_INDEX_PERSIST_FAIL msg=${it.message}",
-            )
-        }
-    }
-
     // ---- T-B3-1:测试用诊断快照,暴露 audio 计数 + baseline 状态 ----
 
     internal data class AudioDiagnosticsSnapshot(
@@ -1025,32 +930,3 @@ class IosRecordingService(
     }
 }
 
-/**
- * Manual "chop off last path component" - NSString's built-in property is a
- * Kotlin-restricted keyword collision, so we do it by hand: find last "/" and
- * return everything before it.
- */
-private fun deletingLastPathComponent(path: String): String {
-    val idx = path.lastIndexOf('/')
-    return if (idx <= 0) path else path.substring(0, idx)
-}
-
-private fun pad2(v: Int): String = v.toString().padStart(2, '0')
-
-private fun pad4(v: Int): String = v.toString().padStart(4, '0')
-
-/**
- * Create directory recursively if absent. Swallows errors — caller fails
- * downstream at the writer-open step if the dir truly can't be created.
- */
-@OptIn(ExperimentalForeignApi::class)
-private fun NSFileManager.ensureDir(path: String) {
-    if (!fileExistsAtPath(path)) {
-        createDirectoryAtPath(
-            path = path,
-            withIntermediateDirectories = true,
-            attributes = null,
-            error = null,
-        )
-    }
-}
