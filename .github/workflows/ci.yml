@@ -115,8 +115,7 @@ jobs:
       - name: Compile shared iosSimulatorArm64
         run: ./gradlew :shared:compileKotlinIosSimulatorArm64 --stacktrace
 
-      - name: Run shared iosSimulatorArm64 tests (KT-79384 遗留风险)
-        continue-on-error: true
+      - name: Run shared iosSimulatorArm64 tests
         run: ./gradlew :shared:iosSimulatorArm64Test --stacktrace
 
       - name: Upload iOS test reports (on failure)
