@@ -339,7 +339,11 @@ fun IosApp() {
     // VT encoding session + AVCaptureSession 一并杀掉,推流只吃到 4 帧就断了。修法:InCall 也
     // 保持 keepalive,让 preview session 陪着推流跑完;点播结束 sipState 回到 Registered 时
     // 依然是 start(幂等);Disconnected/Error 才 stop。
-    LaunchedEffect(sipState) {
+    // cross-review R2 #1:effect key 加上 config.video —— 只跟 sipState 会让已注册
+    // 期间用户改分辨率/帧率/码率/关键帧间隔/编码格式时,keepalive 继续用旧 CaptureConfig,
+    // 预览/录像/推流永远拿不到新配置直到 SIP 状态再变。加 config.video 之后 data class
+    // equals 变化即触发 effect 重跑,内部 start() 幂等能安全承接。
+    LaunchedEffect(sipState, config.video) {
         val v = config.video
         val cc = com.uvp.sim.camera.CaptureConfig(
             widthPx = v.resolution.widthPx,
