@@ -28,7 +28,10 @@ import kotlinx.coroutines.sync.withLock
  * cover UDP and TCP on iOS arm64 / x64 / simulator-arm64.
  *
  * P1-5 (audit §2) TCP_PASSIVE accept guard:
- *   - [expectedClientHost] 签名同步,iOS v1.1 实现时镜像 JVM/Android 逻辑。
+ *   - [expectedClientHost] 已镜像 JVM/Android 逻辑:accept 后校验对端 hostname,
+ *     不匹配则计入 mismatchCount,累计 [MAX_ACCEPT_MISMATCH] 次后放弃 accept。
+ *   - iOS 无 java.net.InetAddress,hostname 归一化只做字面量 + localhost/::1 别名匹配
+ *     (Ktor Native `InetSocketAddress.hostname` 通常已是 IP 字面量)。
  */
 actual class RtpSender actual constructor(
     actual val remoteHost: String,

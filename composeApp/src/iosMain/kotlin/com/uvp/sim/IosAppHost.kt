@@ -378,12 +378,16 @@ fun IosApp() {
         }
     }
 
-    // 录像状态跟文件列表。engine.currentRecordingService() iOS 上是 NoopRecordingService,
-    // 但也是真 StateFlow(Idle / empty),v1.2 接 AVAssetWriter 时零改动 host。
-    // ensureMediaBound 触发一次装配,让 currentRecordingService 非 null。
+    // 录像状态跟文件列表。IosRecordingService 已在 PlatformRuntimeIos 装配,
+    // ensureMediaBound 触发一次装配后拿到实例。
+    //
+    // 冷启动必须显式调 svc.load() 从 <Documents>/recordings/index.json 恢复内存态,
+    // 否则 _files StateFlow 停留在构造时的 emptyList,退出 App 再进来录像列表就空了
+    // (跟 androidApp/SipViewModel.wireRecordingService 对齐,那边 line 264 也是这么做)。
     LaunchedEffect(Unit) {
         engine.ensureMediaBuilt()
         val svc = engine.currentRecordingService() ?: return@LaunchedEffect
+        runCatching { svc.load() }
         launch { svc.state.collect { recordingState = it } }
         launch { svc.files.collect { recordingFiles = it } }
     }
