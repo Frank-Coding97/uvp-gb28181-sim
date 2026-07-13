@@ -81,9 +81,11 @@ object IosCameraController {
     /** 当前 preview session,供 [PlatformCameraPreview] 挂 AVCaptureVideoPreviewLayer。 */
     val session: StateFlow<AVCaptureSession?> = _session.asStateFlow()
 
-    private val _encodingActive = MutableStateFlow(false)
-    /** encoding 是否在跑;P2-1 之前恒 false,便于 UI / 日志观测。 */
-    val encodingActive: StateFlow<Boolean> = _encodingActive.asStateFlow()
+    /**
+     * encoding 是否在跑;facade 委托到 [IosCameraEncodingCoordinator]。
+     * cross-review R1 #4 拆分 step 2:refCount + generation + handle 抽出。
+     */
+    val encodingActive: StateFlow<Boolean> = IosCameraEncodingCoordinator.encodingActive
 
     // ---- Internal state (guarded by mutex where suspend, @Volatile otherwise) ----
 
@@ -118,6 +120,9 @@ object IosCameraController {
     /**
      * cross-review R1 #4 拆分 step 1:latestFrame + snapshotSubscribers + sampleCount / lastSampleAtMs
      * 抽到 [IosCameraFrameBuffer]。本 object 保持 facade,委托到 buffer 对象。
+     *
+     * cross-review R1 #4 拆分 step 2:encodingRefCount + generation + pendingForceKey +
+     * encodingSession + frames SharedFlow 抽到 [IosCameraEncodingCoordinator]。
      */
 
     /**
@@ -128,25 +133,11 @@ object IosCameraController {
     @Volatile
     private var currentConfig: CaptureConfig? = null
 
-    /**
-     * T-P2-2:VTCompressionSession 生命周期封装。首次 requestEncoding 时 create,末次 close
-     * (或 forceEncodingReset)时 invalidate。SPS/PPS + AVCC→Annex-B split 都在里面。
-     */
-    @Volatile
-    private var encodingSession: EncodingSession? = null
-
     private val defaultOsdConfigFlow: StateFlow<OsdConfig> =
         MutableStateFlow(OsdConfig()).asStateFlow()
 
     @Volatile
     private var osdConfigFlow: StateFlow<OsdConfig> = defaultOsdConfigFlow
-
-    /**
-     * T-P2-2:force-key 请求 pending 标志。requestKeyFrame 置 true,delegate.onSample 下一帧
-     * consume 并清零。VideoToolbox force-key 属性只在 encodeSample 传入 frameProperties 才生效。
-     */
-    @Volatile
-    private var pendingForceKey: Boolean = false
 
     /**
      * T-B1-6:HEVC 硬编能力启动时探测缓存。App 冷启一次,后续 SDP capability advertise
@@ -239,21 +230,6 @@ object IosCameraController {
     internal fun resetOsdConfigFlowForTest() {
         osdConfigFlow = defaultOsdConfigFlow
     }
-
-    /**
-     * T-P2-2:frames 广播 SharedFlow。EncodingSession 产 H264Frame 后回调本 controller,
-     * 一路 tryEmit 到 _frames(所有 EncodingHandle.frames 订阅者共享),一路 forward 到
-     * [IosRecordingFrameBridge](保 v1.2 recording sink 语义)。
-     *
-     * replay=0 避免旧帧回放;extraBufferCapacity=64 匹配 v1.2 IosCameraStreamer 的 Channel 容量;
-     * DROP_OLDEST 消费不上时丢老帧不阻塞 encode 线程。
-     */
-    private val _frames = MutableSharedFlow<H264Frame>(
-        replay = 0,
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    private val framesFlow: SharedFlow<H264Frame> = _frames.asSharedFlow()
 
     // =========================================================
     // External session mirror (bridge for v1.2 IosCameraStreamer coexistence)
@@ -406,7 +382,7 @@ object IosCameraController {
         if (session == null) {
             // Encoding handles may be reserved before preview is wired. They still
             // need the same generation invalidation semantics as a live session.
-            forceEncodingReset()
+            IosCameraEncodingCoordinator.forceReset()
             return@withLock
         }
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_CAMERA_CONTROLLER_PREVIEW_STOP")
@@ -440,165 +416,21 @@ object IosCameraController {
     fun endSnapshotCapture() = IosCameraFrameBuffer.endSubscription()
 
     // =========================================================
-    // Encoding API — T-P2-1 refCount + generation counter (fake encoding lifecycle)
+    // Encoding API — facade over IosCameraEncodingCoordinator
     // =========================================================
 
     /**
-     * 并发保护:iOS 侧 requestEncoding / handle.close 通常在 main thread 或 coroutine
-     * dispatch 内调用,当前 @Volatile Int 假设"实际调用点不真并发"。T-P2-2 加真 VT session
-     * 时如果发现调用点跨线程,升级到 AtomicInt / Mutex。
+     * 引用计数首次触发真 encoding start,末次 close encoding stop。
+     * 每次调用返回一个新 handle,不同 handle 共享同一份 VT session lifecycle。
+     * 详细语义见 [IosCameraEncodingCoordinator.requestEncoding]。
      */
-    @Volatile
-    private var encodingRefCount: Int = 0
+    fun requestEncoding(): EncodingHandle =
+        IosCameraEncodingCoordinator.requestEncoding(config = currentConfig, osdFlow = osdConfigFlow)
 
     /**
-     * generation counter — 每次 stopPreview 强制归零时递增,让已发出但未 close 的 handle
-     * 通过 generation mismatch 变 no-op(stale handle 语义,plan 2.5 节)。
+     * 置 pendingForceKey 让下一个 encode 走 force-key 路径。encoding 未启时 no-op。
      */
-    @Volatile
-    private var encodingGeneration: Int = 0
-
-    /**
-     * P2-1:引用计数首次触发 fake encoding start,末次 close fake encoding stop。
-     * 真 VTCompressionSession lifecycle 由 T-P2-2 补(在本方法内部加 EncodingSession create
-     * + invalidate 分支)。当前 fake:仅更新 [encodingActive] StateFlow 便于测试观测。
-     *
-     * 每次调用返回一个新 handle,不同 handle 共享同一份 encoding lifecycle。
-     */
-    fun requestEncoding(): EncodingHandle {
-        val gen = encodingGeneration
-        encodingRefCount += 1
-        val newCount = encodingRefCount
-        if (newCount == 1) {
-            // T-P2-2:首次触发真 VTCompressionSession create。config 从 preview 阶段保存。
-            val cfg = currentConfig
-            if (cfg == null) {
-                SystemLogger.emit(
-                    LogLevel.Warning, LogTag.Media,
-                    "IOS_CAMERA_CONTROLLER_ENCODING_START_NO_CONFIG preview 未启,using lifecycle-only fallback"
-                )
-                // Keep the pre-VT lifecycle contract for callers/tests that reserve an
-                // encoding handle before preview is wired. No frames are encoded without
-                // a config, but ref-count/generation semantics remain observable.
-                _encodingActive.value = true
-                return EncodingHandleImpl(generation = gen)
-            }
-            // 2026-07-09 sample buffer 走 sensor 原生 LandscapeRight(1280×720),VT 保持
-            // 1280×720 直接对齐 buffer 尺寸,推流跟 Android 一致 landscape 1280×720。
-            val session = EncodingSession(
-                config = cfg,
-                osdConfigFlow = osdConfigFlow,
-                onFrame = ::emitEncodedFrame,
-            )
-            if (!session.start()) {
-                SystemLogger.emit(
-                    LogLevel.Error, LogTag.Media,
-                    "IOS_CAMERA_CONTROLLER_ENCODING_START_FAIL VT create failed"
-                )
-                encodingRefCount = 0  // Fix #1:同上 rollback + NoOp handle
-                return NoOpEncodingHandle
-            }
-            encodingSession = session
-            _encodingActive.value = true
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_START gen=$gen refCount=1 VT session live"
-            )
-        } else {
-            SystemLogger.emit(
-                LogLevel.Debug, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_REUSE gen=$gen refCount=$newCount"
-            )
-        }
-        return EncodingHandleImpl(generation = gen)
-    }
-
-    /**
-     * P2-2 会补:置 pendingForceKey 让下一个 encode 走 force-key 路径。
-     * 当前 encoding 未真启,no-op + 日志。
-     */
-    fun requestKeyFrame() {
-        if (!_encodingActive.value) return
-        pendingForceKey = true
-        SystemLogger.emit(
-            LogLevel.Debug, LogTag.Media,
-            "IOS_CAMERA_CONTROLLER_REQUEST_KEYFRAME pendingForceKey=true"
-        )
-    }
-
-    /**
-     * handle.close 内部调用点。校验 generation 一致才 decrement refCount。
-     * generation mismatch 走 no-op(stopPreview 强制归零后的 stale handle)。
-     */
-    private fun closeHandleInternal(handleGeneration: Int) {
-        if (handleGeneration != encodingGeneration) {
-            SystemLogger.emit(
-                LogLevel.Debug, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_HANDLE_STALE_CLOSE handle_gen=$handleGeneration current_gen=$encodingGeneration"
-            )
-            return
-        }
-        // Fix #1 defense-in-depth:refCount clamp 到 0 底,防任何路径漂移到负数
-        encodingRefCount = maxOf(0, encodingRefCount - 1)
-        val newCount = encodingRefCount
-        if (newCount == 0) {
-            // T-P2-2:末次 close,真 invalidate VT session。plan Q6 完全释放,不 pause。
-            encodingSession?.invalidate()
-            encodingSession = null
-            pendingForceKey = false
-            _encodingActive.value = false
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_STOP gen=$handleGeneration VT invalidated"
-            )
-        } else {
-            SystemLogger.emit(
-                LogLevel.Debug, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_RELEASE_ONE gen=$handleGeneration refCount=$newCount"
-            )
-        }
-    }
-
-    /**
-     * stopPreview 强制归零:递增 generation 让所有旧 handle 变 stale,清 refCount。
-     * 由 [releaseInternal] 调用。
-     */
-    private fun forceEncodingReset() {
-        if (encodingRefCount > 0 || _encodingActive.value || encodingSession != null) {
-            // T-P2-2:真 invalidate VT session
-            encodingSession?.invalidate()
-            encodingSession = null
-            pendingForceKey = false
-
-            encodingGeneration += 1
-            encodingRefCount = 0
-            _encodingActive.value = false
-            SystemLogger.emit(
-                LogLevel.Info, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_ENCODING_FORCE_RESET new_gen=$encodingGeneration"
-            )
-        }
-    }
-
-    /**
-     * [EncodingHandle] 具体实现。持 generation 快照,close 时通过 controller 校验。
-     */
-    private class EncodingHandleImpl(private val generation: Int) : EncodingHandle {
-        // T-P2-2:frames = controller 的 SharedFlow<H264Frame> 广播,所有 handle 共享同一份。
-        // encoding 结束(refCount 归 0 或 stopPreview 强制归零)后 SharedFlow 不再 emit;
-        // 订阅者调用点通过 handle.close 触发 controller 释放语义,自身 collect 应配合 handle
-        // 生命周期(见 CameraCapture.ios / IosRecordingService 消费点)。
-        override val frames: kotlinx.coroutines.flow.Flow<H264Frame> = framesFlow
-
-        @Volatile
-        private var closed: Boolean = false
-
-        override fun close() {
-            if (closed) return
-            closed = true
-            closeHandleInternal(generation)
-        }
-    }
+    fun requestKeyFrame() = IosCameraEncodingCoordinator.requestKeyFrame()
 
     // =========================================================
     // Delegate → per-frame processing
@@ -613,18 +445,16 @@ object IosCameraController {
 
         // Fix #6:PreviewOnly + 无 snapshot 请求时 quick exit,不做 CFRetain/CFRelease 常驻税
         val needLatest = IosCameraFrameBuffer.hasSnapshotSubscribers()
-        val needEncode = _encodingActive.value
+        val needEncode = IosCameraEncodingCoordinator.isActive()
         if (!needLatest && !needEncode) return
 
         if (needLatest) {
             val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
             IosCameraFrameBuffer.publish(imageBuffer)
         }
-        // T-P2-2:encoding active 时 encode 单帧,forceKey 从 pendingForceKey 消费一次
+        // encoding active 时 encode 单帧(coordinator 内部消费 pendingForceKey)
         if (needEncode) {
-            val force = pendingForceKey
-            if (force) pendingForceKey = false
-            encodingSession?.encodeSample(sample, forceKey = force)
+            IosCameraEncodingCoordinator.encodeSample(sample)
         }
     }
 
@@ -861,50 +691,9 @@ object IosCameraController {
         }
 
         // encoding 侧:只在已 active 时重建,否则下一次 requestEncoding 会自然读 currentConfig
-        val runningEncoding = encodingSession
-        if (encodingParamsChanged && runningEncoding != null) {
-            rebuildEncodingSessionOnQueue(new)
+        if (encodingParamsChanged) {
+            IosCameraEncodingCoordinator.rebuildFor(new, osdConfigFlow)
         }
-    }
-
-    /**
-     * 用新 [config] 重建 VT 编码 session。旧 session invalidate,新 session start;失败时清空并把
-     * [_encodingActive] 置 false(refCount / generation 保留,handle.close 走 stale 路径)。
-     */
-    private fun rebuildEncodingSessionOnQueue(config: CaptureConfig) {
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Media,
-            "IOS_CAMERA_CONTROLLER_REBUILD_ENCODING codec=${config.videoCodec.label} " +
-                "${config.widthPx}x${config.heightPx}@${config.frameRate} " +
-                "bitrate=${config.bitrateBps} gopSec=${config.keyframeIntervalSeconds}"
-        )
-        encodingSession?.invalidate()
-        pendingForceKey = false
-        val fresh = EncodingSession(
-            config = config,
-            osdConfigFlow = osdConfigFlow,
-            onFrame = ::emitEncodedFrame,
-        )
-        if (!fresh.start()) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "IOS_CAMERA_CONTROLLER_REBUILD_ENCODING_FAIL VT create failed; encoding halted"
-            )
-            encodingSession = null
-            _encodingActive.value = false
-            return
-        }
-        encodingSession = fresh
-        _encodingActive.value = true
-    }
-
-    /**
-     * 把编码后的 [H264Frame] 广播到 [_frames] 并转发到录像 sink。旧写法在 requestEncoding /
-     * rebuildEncodingSessionOnQueue 都要 inline 一份 lambda,提出来避免漂移。
-     */
-    private fun emitEncodedFrame(frame: H264Frame) {
-        _frames.tryEmit(frame)
-        IosRecordingFrameBridge.onVideoFrame(frame)
     }
 
     private fun pickSessionPreset(width: Int, height: Int): String {
@@ -953,8 +742,8 @@ object IosCameraController {
     }
 
     private fun releaseInternal() {
-        // T-P2-1/2 stale handle 语义 + 真 VT invalidate 已在 forceEncodingReset 内联
-        forceEncodingReset()
+        // encoding coordinator 内部 forceReset:递增 generation 让 handle stale + 真 VT invalidate
+        IosCameraEncodingCoordinator.forceReset()
 
         captureSession?.let { s ->
             s.beginConfiguration()
