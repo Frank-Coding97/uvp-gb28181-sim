@@ -706,6 +706,11 @@ class IosRecordingService(
         }
     }
 
+    // ---- 诊断 accessor(IosAppHost 心跳读)----
+
+    fun lastVideoFeedAtMs(): Long = diag.lastVideoFeedAtMs
+    fun lastVideoAppendAtMs(): Long = diag.lastVideoAppendAtMs
+
     // ---- T-B3-1:测试用诊断快照,暴露 audio 计数 + baseline 状态 ----
 
     internal data class AudioDiagnosticsSnapshot(
