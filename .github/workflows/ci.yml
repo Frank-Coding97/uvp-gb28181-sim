@@ -115,6 +115,21 @@ jobs:
       - name: Compile shared iosSimulatorArm64
         run: ./gradlew :shared:compileKotlinIosSimulatorArm64 --stacktrace
 
+      # cross-review R2 #2:composeApp/iosMain 有大量 UI + Filament + 桥接代码,
+      # 只编 shared 会漏掉 composeApp iosMain 的 Kotlin 编译错误。加两个 target 的
+      # compile 门禁,把 iosMain 层守住。iosApp/Swift 完整 xcodebuild 太重,留在
+      # 发版前手动跑 xcodegen + Xcode ⌘R 验证。
+      - name: Compile composeApp iosArm64
+        run: ./gradlew :composeApp:compileKotlinIosArm64 --stacktrace
+
+      - name: Compile composeApp iosSimulatorArm64
+        run: ./gradlew :composeApp:compileKotlinIosSimulatorArm64 --stacktrace
+
+      # ComposeApp.framework linking:验 KMP → framework 的 export/hidden symbol
+      # 组装能过。若 iosApp 侧 link 失败通常在这一步暴露(export 缺项 / 符号丢失)。
+      - name: Assemble composeApp iOS framework (simulator)
+        run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace
+
       - name: Run shared iosSimulatorArm64 tests
         run: ./gradlew :shared:iosSimulatorArm64Test --stacktrace
 
