@@ -110,16 +110,14 @@ private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
             description = "时间戳 · 通道名 · 自定义水印",
             onClick = { onPick(SettingsPage.Osd) }
         )
-        SettingsEntry(
-            icon = Icons.Outlined.NetworkCheck,
-            title = "网络",
-            description = if (isNetworkSelectionSupported)
-                "Wi-Fi / 蜂窝 选择"
-            else
-                "仅 Android 支持",
-            enabled = isNetworkSelectionSupported,
-            onClick = { onPick(SettingsPage.Network) }
-        )
+        if (isNetworkSelectionSupported) {
+            SettingsEntry(
+                icon = Icons.Outlined.NetworkCheck,
+                title = "网络",
+                description = "Wi-Fi / 蜂窝 选择",
+                onClick = { onPick(SettingsPage.Network) }
+            )
+        }
     }
 }
 
