@@ -545,11 +545,13 @@ private fun PtzThumbnail(
         color = Color.White.copy(alpha = 0.88f),
         border = androidx.compose.foundation.BorderStroke(1.dp, UvpColor.BorderLight)
     ) {
+        // 外框 136×78,内 padding 2dp → 内容区 132×74 ≈ 16:9,严格匹配图 1600×900,
+        // ContentScale.Crop 无额外裁切,平移到 clamp 边界视觉刚好对齐 view 边缘(消边缘 gap)。
         Box(
             modifier = Modifier
                 .width(136.dp)
                 .height(78.dp)
-                .padding(6.dp)
+                .padding(2.dp)
                 .clip(RoundedCornerShape(4.dp))
         ) {
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
