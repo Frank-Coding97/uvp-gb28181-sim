@@ -37,6 +37,11 @@ fun MainViewController(): UIViewController {
     }) {
         IosApp()
     }
+    // 冷启动首帧防蓝色透出 - Compose 首帧渲染完成前, controller.view 默认背景可能
+    // 是 UIColor.clearColor / systemBackground, 会透出下层 SwiftUI window 或系统
+    // launch screen 残影。显式铺白让 iOS 系统 splash 撤下到 Compose 品牌屏首帧
+    // 之间任何一帧都是白色, 消除观感"蓝色一闪"。
+    controller.view.setBackgroundColor(platform.UIKit.UIColor.whiteColor)
     val target = TapLoggerTarget(viewProvider = { controller.view }).also {
         RootTouchLoggerRegistry.retain(it)
     }

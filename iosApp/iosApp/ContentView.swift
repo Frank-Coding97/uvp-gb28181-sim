@@ -20,9 +20,16 @@ import ComposeApp
 ///     Modifier.imePadding() — see App.kt / MainViewController.kt.
 struct ContentView: View {
     var body: some View {
-        ComposeView()
-            .ignoresSafeArea(.container, edges: .bottom)
-            .ignoresSafeArea(.keyboard)
+        // Color.white 铺全屏防蓝色透出 - iOS 冷启动系统 splash 撤下到 Compose
+        // 品牌屏首帧之间, SwiftUI WindowGroup 默认容器可能显示 systemBackground
+        // 或透明, 视觉上会闪一下"AppIcon fallback 蓝底"。显式铺白让整条链路
+        // 白底一致, 消除观感"蓝色一闪"。
+        ZStack {
+            Color.white.ignoresSafeArea()
+            ComposeView()
+                .ignoresSafeArea(.container, edges: .bottom)
+                .ignoresSafeArea(.keyboard)
+        }
     }
 }
 
