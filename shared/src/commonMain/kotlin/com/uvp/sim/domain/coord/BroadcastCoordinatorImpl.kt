@@ -324,8 +324,14 @@ internal class BroadcastCoordinatorImpl(
                     return
                 }
                 if (broadcastMode == RtpMode.TCP_ACTIVE) {
+                    // cross-review R3 #4:TCP_ACTIVE connect 无 timeout → 平台返回不可达
+                    // 或黑洞地址时,底层 socket 会等到系统连接超时(> 60s),期间广播状态
+                    // 停在 Inviting、busy gate 占住、响应处理路径被阻塞。5s 是常见 SIP 交互
+                    // 上限,失败走既有 BYE + tearDown 路径。
                     val connected = runCatching {
-                        rtpReceiver?.connect(answer.remoteIp, answer.remotePort)
+                        kotlinx.coroutines.withTimeout(5_000L) {
+                            rtpReceiver?.connect(answer.remoteIp, answer.remotePort)
+                        }
                     }.isSuccess
                     if (!connected) {
                         sendBroadcastBye(bc.copy(remoteTag = remoteTag), remoteTag)
