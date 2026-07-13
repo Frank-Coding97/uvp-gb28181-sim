@@ -4,6 +4,20 @@
         Compose 自己渲染整个 UI,我们只需要一个不带 ActionBar 的素 theme。
         Android 系统的 Material 主题就够了,不必依赖 com.google.android.material:material。
     -->
-    <style name="Theme.UvpSim" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.UvpSim" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+        冷启动屏 - Android 12+ 官方 SplashScreen API(androidx.core:core-splashscreen 向下
+        兼容到 API 23)。规范只允许"背景色 + 中心 icon"两样,不能放文字。
+        策略:让系统 splash 视觉隐形(白底 + 白色 vector icon = 什么都看不到),
+        然后 Compose SplashScreen 立即接管展示完整品牌屏。
+        为啥不让 splash 显示 launcher icon?
+          MIUI/HyperOS 上普通 PNG launcher icon 会被 fallback 成 bugdroid(绿机器人),
+          视觉突兀;不同厂商 fallback 行为不一致,统一隐形最保险,和 MoNI 同款做法。
+    -->
+    <style name="Theme.UvpSim.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@android:color/white</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_icon_blank</item>
+        <item name="postSplashScreenTheme">@style/Theme.UvpSim</item>
     </style>
 </resources>

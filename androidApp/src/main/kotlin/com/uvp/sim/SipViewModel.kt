@@ -196,11 +196,24 @@ class SipViewModel @JvmOverloads constructor(
     val networkState: StateFlow<com.uvp.sim.network.NetworkState> = networkController.state
 
     init {
-        // Wave 4 PR-PLATFORM-RUNTIME:启动期装媒体三件套
-        // 必须放在 _recordingState / _recordingFiles / _toasts 等 backing field 初始化之后,
-        // 否则 wireRecordingService 触发 state collector emit → 写 _recordingState 时 NPE
-        appEngine.ensureMediaBuilt()
-        appEngine.currentRecordingService()?.let { svc -> wireRecordingService(svc) }
+        // Wave 4 PR-PLATFORM-RUNTIME:启动期装媒体三件套 -- Camera / Audio / RecordingService。
+        //
+        // 优化(冷启动方案2):异步装配。原来同步跑在 VM init 会阻塞主线程 ~1s
+        // (Camera2 open + AudioRecord probe + Filament preload),把冷启动整体拉到 3s+。
+        // ensureMediaBuilt 幂等 + connect() / applyVideoConfig 会 fallback 再调一次,
+        // 所以延后到后台线程完全安全。首屏(HomeScreen)只显示注册/配置卡片,不依赖媒体已装。
+        //
+        // 顺序:仍必须放在 _recordingState / _recordingFiles / _toasts 等 backing field
+        // 之后,否则 wireRecordingService 触发 state collector emit → 写 _recordingState 时 NPE。
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            appEngine.ensureMediaBuilt()
+            val svc = appEngine.currentRecordingService()
+            if (svc != null) {
+                // wireRecordingService 里有 viewModelScope.launch 会自己切回 main,
+                // 这里在 Default 上调只是把它的调用点(注册 collector)挪出主线程首帧路径。
+                wireRecordingService(svc)
+            }
+        }
     }
 
     init {

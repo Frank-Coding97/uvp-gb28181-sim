@@ -1,0 +1,71 @@
+# Baseline Profile — 手写关键冷启动路径
+#
+# 语法: HSP L<class>;-><method>(<args>)<return>
+#   H = hot (启动路径必经)
+#   S = startup (仅冷启动)
+#   P = post-startup
+#
+# 这份 profile 覆盖:
+#   1. MainActivity 冷启动路径 (onCreate → setContent → 第一帧)
+#   2. Compose runtime 首帧渲染 (Composer / Recomposer / Snapshot)
+#   3. Compose Material3 主要控件 (Surface / Text / Icon / Column / Row / Box)
+#   4. SipViewModel / AppEngine 冷启动路径
+#   5. Splash 相关 (installSplashScreen + Compose SplashScreen)
+#
+# 局限性说明: 这是"启发式"手写版, 收益 ~20% 左右。真正的 -30~40% 需要用
+# Macrobenchmark 在真机跑一遍冷启动 + 首屏交互, ART 自动记录热方法生成
+# baseline-prof.txt。手写版覆盖不到 R8 minified 后被重命名的类。
+# 后续要卷极致性能可以: `./gradlew :benchmark:pixel6Api31BenchmarkAndroidTest`
+# 生成完整 profile 覆盖。
+
+# ==== MainActivity ====
+HSPLcom/uvp/sim/MainActivity;-><init>()V
+HSPLcom/uvp/sim/MainActivity;->onCreate(Landroid/os/Bundle;)V
+HSPLcom/uvp/sim/MainActivity;->onStart()V
+HSPLcom/uvp/sim/MainActivity;->onResume()V
+
+# ==== SipViewModel (VM cold init 是关键路径) ====
+HSPLcom/uvp/sim/SipViewModel;-><init>(Landroid/app/Application;)V
+
+# ==== Compose runtime 冷启动核心 ====
+HSPLandroidx/compose/runtime/Composer;-><init>(Landroidx/compose/runtime/SlotTable;Landroidx/compose/runtime/Applier;Landroidx/compose/runtime/CompositionContext;Landroidx/compose/runtime/CompositionImpl;)V
+HSPLandroidx/compose/runtime/Recomposer;-><init>(Lkotlin/coroutines/CoroutineContext;)V
+HSPLandroidx/compose/runtime/snapshots/Snapshot;->takeMutableSnapshot()Landroidx/compose/runtime/snapshots/MutableSnapshot;
+HSPLandroidx/compose/runtime/snapshots/SnapshotStateObserver;-><init>(Lkotlin/jvm/functions/Function1;)V
+HSPLandroidx/compose/runtime/SlotWriter;-><init>(Landroidx/compose/runtime/SlotTable;)V
+
+# ==== Compose UI 首帧渲染 ====
+HSPLandroidx/compose/ui/platform/AndroidComposeView;-><init>(Landroid/content/Context;Lkotlin/coroutines/CoroutineContext;)V
+HSPLandroidx/compose/ui/platform/ComposeView;-><init>(Landroid/content/Context;Landroid/util/AttributeSet;I)V
+HSPLandroidx/compose/ui/platform/WindowRecomposer_androidKt;->createLifecycleAwareWindowRecomposer(Landroid/view/View;Lkotlin/coroutines/CoroutineContext;Landroidx/lifecycle/Lifecycle;)Landroidx/compose/runtime/Recomposer;
+HSPLandroidx/compose/ui/node/LayoutNode;-><init>(ZI)V
+HSPLandroidx/compose/ui/Modifier$Node;-><init>()V
+
+# ==== Compose Foundation ====
+HSPLandroidx/compose/foundation/BackgroundElement;-><init>(JLandroidx/compose/ui/graphics/Brush;FLandroidx/compose/ui/graphics/Shape;Lkotlin/jvm/functions/Function1;I)V
+HSPLandroidx/compose/foundation/layout/BoxKt;->Box(Landroidx/compose/ui/Modifier;Landroidx/compose/runtime/Composer;II)V
+HSPLandroidx/compose/foundation/layout/ColumnKt;->Column(Landroidx/compose/ui/Modifier;Landroidx/compose/foundation/layout/Arrangement$Vertical;Landroidx/compose/ui/Alignment$Horizontal;Lkotlin/jvm/functions/Function3;Landroidx/compose/runtime/Composer;II)V
+HSPLandroidx/compose/foundation/layout/RowKt;->Row(Landroidx/compose/ui/Modifier;Landroidx/compose/foundation/layout/Arrangement$Horizontal;Landroidx/compose/ui/Alignment$Vertical;Lkotlin/jvm/functions/Function3;Landroidx/compose/runtime/Composer;II)V
+
+# ==== Compose Material3 (Splash 用 Text + Column + Box) ====
+HSPLandroidx/compose/material3/TextKt;->Text-fLXpl1I(Ljava/lang/String;Landroidx/compose/ui/Modifier;JJLandroidx/compose/ui/text/font/FontStyle;Landroidx/compose/ui/text/font/FontWeight;Landroidx/compose/ui/text/font/FontFamily;JLandroidx/compose/ui/text/style/TextDecoration;Landroidx/compose/ui/text/style/TextAlign;JIZILkotlin/jvm/functions/Function1;Landroidx/compose/ui/text/TextStyle;Landroidx/compose/runtime/Composer;III)V
+HSPLandroidx/compose/material3/SurfaceKt;->Surface(Landroidx/compose/ui/Modifier;Landroidx/compose/ui/graphics/Shape;JJFFLandroidx/compose/foundation/BorderStroke;Lkotlin/jvm/functions/Function2;Landroidx/compose/runtime/Composer;II)V
+HSPLandroidx/compose/material3/MaterialThemeKt;->MaterialTheme(Landroidx/compose/material3/ColorScheme;Landroidx/compose/material3/Shapes;Landroidx/compose/material3/Typography;Lkotlin/jvm/functions/Function2;Landroidx/compose/runtime/Composer;II)V
+
+# ==== Kotlin coroutines runtime (KMP viewModelScope / LaunchedEffect) ====
+HSPLkotlinx/coroutines/BuildersKt__Builders_commonKt;->launch$default(Lkotlinx/coroutines/CoroutineScope;Lkotlin/coroutines/CoroutineContext;Lkotlinx/coroutines/CoroutineStart;Lkotlin/jvm/functions/Function2;ILjava/lang/Object;)Lkotlinx/coroutines/Job;
+HSPLkotlinx/coroutines/DelayKt;->delay(JLkotlin/coroutines/Continuation;)Ljava/lang/Object;
+HSPLkotlinx/coroutines/flow/StateFlowKt;->MutableStateFlow(Ljava/lang/Object;)Lkotlinx/coroutines/flow/MutableStateFlow;
+
+# ==== Compose Resources (Res.drawable.app_icon 加载) ====
+HSPLorg/jetbrains/compose/resources/DrawableResource;-><init>(Ljava/lang/String;Ljava/lang/String;Ljava/util/Set;)V
+HSPLorg/jetbrains/compose/resources/ImageResourcesKt;->painterResource(Lorg/jetbrains/compose/resources/DrawableResource;Landroidx/compose/runtime/Composer;I)Landroidx/compose/ui/graphics/painter/Painter;
+
+# ==== SplashScreen (androidx.core:core-splashscreen) ====
+HSPLandroidx/core/splashscreen/SplashScreen;->installSplashScreen(Landroid/app/Activity;)Landroidx/core/splashscreen/SplashScreen;
+HSPLandroidx/core/splashscreen/SplashScreen$Companion;->installSplashScreen(Landroid/app/Activity;)Landroidx/core/splashscreen/SplashScreen;
+
+# ==== 我们自己的 Compose 层 App / SplashScreen ====
+HSPLcom/uvp/sim/ui/AppKt;->App(Lcom/uvp/sim/ui/AppUiState;Lcom/uvp/sim/ui/AppActions;Landroidx/compose/runtime/Composer;I)V
+HSPLcom/uvp/sim/ui/SplashScreenKt;->SplashScreen(Lkotlin/jvm/functions/Function0;Landroidx/compose/runtime/Composer;II)V
+HSPLcom/uvp/sim/ui/ThemeKt;->UvpTheme(Lkotlin/jvm/functions/Function2;Landroidx/compose/runtime/Composer;I)V

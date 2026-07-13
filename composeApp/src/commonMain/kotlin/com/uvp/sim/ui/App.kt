@@ -51,6 +51,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -97,6 +98,28 @@ val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun App(state: AppUiState, actions: AppActions) {
+    // 冷启动方案 2.5 —— 首帧短路:仅渲染极轻 SplashScreen 覆盖层,主 UI 树延后 3 frame
+    // 挂载。effect 让系统 splash 尽早撤下(SplashScreen 极轻 = ~30ms 到屏),主 UI 树
+    // 的 954ms 阻塞挪到品牌屏之后跑,视觉上从"点开就是 splash"到"主界面就绪"。
+    var mainTreeMounted by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        // 让 SplashScreen 稳稳上屏 + 系统 splash 撤下(~2 帧 = 32ms),再展开主树。
+        // 主树 build 阻塞主线程 ~1s,但用户视觉停留在 SplashScreen 品牌屏,不再有白屏。
+        kotlinx.coroutines.delay(32)
+        mainTreeMounted = true
+    }
+    if (!mainTreeMounted) {
+        UvpTheme {
+            SplashScreen(onFinished = { /* 由主树接手 fade */ })
+        }
+        return
+    }
+
+    // Compose 假启动屏 - MoNI 同款做法。系统 splash (白底 + launcher icon) 起来后,
+    // 这层 SplashScreen 无缝接管,继续展示"白底 + logo + slogan"到主界面 fade in。
+    // remember(非 saveable):温启动/rotation 保留 false 不重播;进程重启 true 重播。
+    var splashVisible by remember { mutableStateOf(true) }
+    Box(Modifier.fillMaxSize()) {
     UvpTheme {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
         var alarmTarget by rememberSaveable { mutableStateOf(false) }
@@ -217,6 +240,10 @@ fun App(state: AppUiState, actions: AppActions) {
                     }
                 }
             }
+        }
+    }
+        if (splashVisible) {
+            SplashScreen(onFinished = { splashVisible = false })
         }
     }
 }
@@ -398,10 +425,18 @@ private fun SimulateAccentButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // 冷启动性能:conic sweep 无限动画延迟启动。原来 rememberInfiniteTransition 首帧就
+    // 起两个 60fps animateFloat,占主线程 ~300-400ms。冷启动 800ms 内先冻结,静态显示,
+    // 之后再加入流光循环。用户视觉:先看到静止的实心蓝圆按钮 → App 就绪后动画自然接入。
+    var animationsStarted by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(800)
+        animationsStarted = true
+    }
     val infiniteTransition = rememberInfiniteTransition(label = "simulate-accent")
     val sweepAngle by infiniteTransition.animateFloat(
         initialValue = 0f,
-        targetValue = 360f,
+        targetValue = if (animationsStarted) 360f else 0f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 2400, easing = LinearEasing),
             repeatMode = RepeatMode.Restart,
@@ -411,7 +446,8 @@ private fun SimulateAccentButton(
     // 选中态外层光环更亮 + 微脉动
     val haloAlpha by infiniteTransition.animateFloat(
         initialValue = if (selected) 0.55f else 0.28f,
-        targetValue = if (selected) 0.85f else 0.45f,
+        targetValue = if (!animationsStarted) (if (selected) 0.55f else 0.28f)
+                      else (if (selected) 0.85f else 0.45f),
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 1400, easing = LinearEasing),
             repeatMode = RepeatMode.Reverse,

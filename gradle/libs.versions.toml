@@ -14,6 +14,8 @@ androidx-lifecycle = "2.8.7"
 androidx-camera = "1.4.1"
 androidx-datastore = "1.1.1"
 androidx-core-ktx = "1.15.0"
+androidx-splashscreen = "1.0.1"
+androidx-profileinstaller = "1.4.1"
 androidx-media3 = "1.5.0"
 androidx-security-crypto = "1.1.0-alpha06"
 
@@ -61,6 +63,8 @@ androidx-camera-video = { module = "androidx.camera:camera-video", version.ref =
 androidx-camera-view = { module = "androidx.camera:camera-view", version.ref = "androidx-camera" }
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "androidx-datastore" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core-ktx" }
+androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "androidx-splashscreen" }
+androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version.ref = "androidx-profileinstaller" }
 androidx-security-crypto = { module = "androidx.security:security-crypto-ktx", version.ref = "androidx-security-crypto" }
 
 # Media3 ExoPlayer — 内嵌录像播放器(M2 录像列表点击预览)
