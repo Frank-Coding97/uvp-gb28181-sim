@@ -4,7 +4,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.ChannelResult
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -87,9 +86,21 @@ object SystemLogger {
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
 
+    /**
+     * cross-review R4 verify (CodeX findings): DROP_OLDEST 下 `trySend()` 返回 success
+     * (因为它成功淘汰了旧元素),此前 `if (result.isFailure) ++drop` 永远不会计数
+     * → mirrorDropped 一直是 0,违反"探测 mirror 阻塞压力"的原意。
+     *
+     * 修法:用 `onUndeliveredElement` — 元素被 DROP_OLDEST 淘汰时会走该回调,
+     * 关闭/取消场景也一并计入(那也是"没送到 sink"的失败)。
+     */
     private fun newMirrorChannel() = Channel<SystemLog>(
         capacity = MIRROR_CHANNEL_CAPACITY,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        onUndeliveredElement = {
+            @OptIn(ExperimentalAtomicApi::class)
+            mirrorDroppedCount.incrementAndFetch()
+        },
     )
 
     /** 绑定到平台 scope。重复绑定会取消旧 actor 启新的。 */
@@ -142,17 +153,16 @@ object SystemLogger {
     }
 
     /**
-     * 把 log 递交给独立的 mirror 通道。非阻塞,失败(通道满 / 已关闭)累加诊断计数。
+     * 把 log 递交给独立的 mirror 通道。非阻塞。
      *
      * cross-review R2 #5:mirrorSink 若阻塞不会再饿死 log actor —— 独立 consumer + DROP_OLDEST
      * 让镜像通道自己承担背压,主排障通道(buffer / _flow)保持畅通。
+     *
+     * cross-review R4:DROP_OLDEST 淘汰不通过 [ChannelResult.isFailure] 感知(trySend 仍成功),
+     * 由 [newMirrorChannel] 的 `onUndeliveredElement` 回调统一计数,本函数只 trySend。
      */
-    @OptIn(ExperimentalAtomicApi::class)
     private fun forwardToMirror(log: SystemLog) {
-        val result: ChannelResult<Unit> = mirrorChannel.trySend(log)
-        if (result.isFailure) {
-            mirrorDroppedCount.incrementAndFetch()
-        }
+        mirrorChannel.trySend(log)
     }
 
     /**
