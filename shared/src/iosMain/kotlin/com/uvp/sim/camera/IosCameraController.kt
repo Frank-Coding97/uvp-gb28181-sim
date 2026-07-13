@@ -242,8 +242,12 @@ object IosCameraController {
         }
         SystemLogger.emit(LogLevel.Info, LogTag.Media, "IOS_CAMERA_CONTROLLER_PREVIEW_STOP")
         IosCameraSessionOwner.onSessionQueue {
-            IosCameraEncodingCoordinator.forceReset()
+            // 顺序严格:tearDown 内部先 stopRunning,delegate queue 才不再触发 onSample。
+            // 之后再 forceReset 释放 VTCompressionSession —— 否则在 stopRunning 之前
+            // 已把 encodingSession invalidate,onSample 仍在 flight 会读到野指针
+            // (EXC_BAD_ACCESS 0x50,cross-review R1 #4 拆分 step 3 拆反过一次)。
             IosCameraSessionOwner.tearDownOnQueue()
+            IosCameraEncodingCoordinator.forceReset()
             IosCameraFrameBuffer.release()
         }
     }
