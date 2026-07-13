@@ -16,6 +16,7 @@ import platform.Foundation.NSSearchPathForDirectoriesInDomains
 import platform.Foundation.NSString
 import platform.Foundation.NSUserDomainMask
 import platform.Foundation.NSUTF8StringEncoding
+import platform.Foundation.NSUUID
 import platform.Foundation.stringByAppendingPathComponent
 import platform.Foundation.stringWithContentsOfFile
 import platform.Foundation.writeToFile
@@ -179,15 +180,26 @@ internal class RecordingFileStore(
 
     /**
      * 按 [instant] + 当前 deviceId 生成本次录像的 output 路径。
-     * `<baseDir>/<deviceId>/<YYYYMMDD>/<HHmmss>.mp4`
+     * `<baseDir>/<deviceId>/<YYYYMMDD>/<HHmmss>-<uuid8>.mp4`
+     *
+     * 追加 8 位 UUID 前缀防同秒碰撞:快速 stop/start、segment rollover 与用户操作竞态
+     * 都可能在同一秒生成两次输出,单纯 HHmmss 会撞名 → AVAssetWriter 复写失败,索引里
+     * 两条录像指向同路径。UUID 使命名字典序仍按秒排序,但同秒内互不冲突。
      */
     fun newOutputPath(instant: Instant): String {
         val ldt = instant.toLocalDateTime(timeZone)
         val ymd = pad4(ldt.year) + pad2(ldt.monthNumber) + pad2(ldt.dayOfMonth)
         val hms = pad2(ldt.hour) + pad2(ldt.minute) + pad2(ldt.second)
+        val suffix = shortUuid()
         val deviceDir = (baseDir as NSString).stringByAppendingPathComponent(deviceIdSupplier())
         val dayDir = (deviceDir as NSString).stringByAppendingPathComponent(ymd)
-        return (dayDir as NSString).stringByAppendingPathComponent("$hms.mp4")
+        return (dayDir as NSString).stringByAppendingPathComponent("$hms-$suffix.mp4")
+    }
+
+    /** 8 位 lowercase hex 短 UUID(取 NSUUID.UUIDString 前 8 位),用于文件后缀防碰撞。 */
+    private fun shortUuid(): String {
+        val u = NSUUID().UUIDString().replace("-", "").lowercase()
+        return if (u.length >= 8) u.substring(0, 8) else u
     }
 
     /** 递归建父目录(NSFileManager 内部幂等)。 */
