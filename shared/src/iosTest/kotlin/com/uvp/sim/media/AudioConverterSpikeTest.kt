@@ -28,8 +28,6 @@ import kotlin.test.assertTrue
  *   3. `staticCFunction { }` 定义 input callback 编译通过
  *
  * 结论用于 T-B2-1 起 IosAacEncoder 实装。若 K/N 桥接不可行,回 plan §5.1 Q1 方案 B。
- *
- * spike 归档:`~/Documents/Atlas/wiki/projects/uvp-gb28181-sim/research/2026-07-07-spike-audioconverter-kn.md`
  */
 @OptIn(ExperimentalForeignApi::class)
 class AudioConverterSpikeTest {

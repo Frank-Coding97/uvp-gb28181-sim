@@ -50,9 +50,6 @@ import platform.UIKit.UIViewContentMode
  *    额外裁切,transform 平移到 clamp 边界时视觉刚好对齐 view 边缘,消除"边缘间隙"。
  *  - **pose** 每 16ms 从 native 采 pan/tilt(平台 PTZCmd 走 native 累积)+ Kotlin 层
  *    zoomLevel,合成 PtzPoseDto 驱动 `UIImageView.transform` (CGAffineTransform)。
- *
- * 上游 spec: `~/Documents/Atlas/wiki/projects/uvp-gb28181-sim/specs/ios-v1.3-c-scenekit.md`
- * 上游 plan: `~/Documents/Atlas/wiki/projects/uvp-gb28181-sim/plans/ios-v1.3-c-scenekit.md`
  */
 @OptIn(ExperimentalForeignApi::class)
 @Composable

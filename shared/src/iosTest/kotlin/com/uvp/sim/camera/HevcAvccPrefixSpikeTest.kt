@@ -23,8 +23,6 @@ import kotlin.test.assertTrue
  * 说明:iOS Simulator arm64 上 VT create HEVC 可能失败或降级为软编,因此本 spike
  * 不做 `assertEquals`,只保证 CMFormatDescriptionCreate 路径能编译 + 不 crash,同时
  * 为后续 `AnnexB.splitAvcc(bytes, 4)` 复用的假设留一份 in-repo trace。
- *
- * spike 归档:`~/Documents/Atlas/wiki/projects/uvp-gb28181-sim/research/2026-07-07-spike-hevc-avcc-prefix.md`
  */
 @OptIn(ExperimentalForeignApi::class)
 class HevcAvccPrefixSpikeTest {
