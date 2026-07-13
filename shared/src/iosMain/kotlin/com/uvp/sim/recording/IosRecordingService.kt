@@ -116,6 +116,13 @@ class IosRecordingService(
     private val mutex = Mutex()
     private val sampleBufferBuilder = CMSampleBufferBuilder()
 
+    /**
+     * cross-review R1 #5 拆分 step 1:所有 video/audio 诊断计数 + baseline PTS 抽到
+     * [RecordingDiagnostics]。字段直接暴露(internal 可见性),外面通过 [diag] 访问,
+     * 不引入 getter/setter 转发的复杂度。
+     */
+    private val diag = RecordingDiagnostics()
+
     private val _state = MutableStateFlow<RecordingState>(RecordingState.Idle)
     override val state: StateFlow<RecordingState> = _state.asStateFlow()
 
@@ -144,87 +151,8 @@ class IosRecordingService(
     private var activeSource: RecordSource = RecordSource.Manual
     private var guardJob: Job? = null
 
-    /**
-     * 视频 PTS 归零基准。VT 输出的 CMSampleBuffer PTS 来自 CoreMedia host time,
-     * 有时是负数或极大值(实测 iOS 15+ 可能出 -1.6e9 微秒),AVAssetWriter 拒绝并
-     * 报 kCMSampleBufferError_InvalidMediaTimeStamp(-16364)。策略:第一帧记录
-     * baseline,每帧上报的 PTS 减去 baseline,session 从 0 起,严格 ≥0 单调递增。
-     * -1 表示尚未记录(下一帧就是第一帧)。releaseResources 里重置。
-     */
-    @kotlin.concurrent.Volatile
-    private var videoBaselinePtsUs: Long = -1L
-
     @kotlin.concurrent.Volatile
     private var pendingSegmentSplit: Boolean = false
-
-    // ---- Per-session diagnostics (best-effort, single-writer-ish counters) ----
-    @kotlin.concurrent.Volatile
-    private var videoFramesSeen: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var videoFramesAppended: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropMissingFormat: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropAwaitingIdr: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropPtsRegression: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropNonMonotonicPts: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropInputBusy: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropSampleBuildFailed: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var appendFailures: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var firstVideoPtsUs: Long = -1L
-
-    @kotlin.concurrent.Volatile
-    private var lastAppendedRelPtsUs: Long = -1L
-
-    @kotlin.concurrent.Volatile
-    private var lastVideoFeedAtMs: Long = -1L
-
-    @kotlin.concurrent.Volatile
-    private var lastVideoAppendAtMs: Long = -1L
-
-    // ---- T-B3-1:audio track state 独立字段 + 诊断计数 ----
-
-    /**
-     * 录像 session 内活跃的音频 codec。start 时 snapshot,stop 时清零。
-     * null 表示 audio 分支未启用(纯 video-only 录像)。
-     */
-    @kotlin.concurrent.Volatile
-    private var activeAudioCodec: com.uvp.sim.media.AudioCodec? = null
-
-    /** 音频 PTS 归零基准,与 video 独立(plan §3.3.2)。 */
-    @kotlin.concurrent.Volatile
-    private var audioBaselinePtsUs: Long = -1L
-
-    /** 最近一次 append 的 audio rel PTS(用于 monotonic 检查)。 */
-    @kotlin.concurrent.Volatile
-    private var lastAppendedAudioRelPtsUs: Long = -1L
-
-    @kotlin.concurrent.Volatile
-    private var audioFramesSeen: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var audioFramesAppended: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var dropAudioPtsRegression: Int = 0
-
-    @kotlin.concurrent.Volatile
-    private var audioAppendFailures: Int = 0
 
     /**
      * T-P5-1:录像触发 encoding 的引用计数句柄。start 时 requestEncoding,stop 时 close。
@@ -304,8 +232,8 @@ class IosRecordingService(
                 val encCfg = encoderConfigSupplier()
                 openWriter(outputPath, encCfg)
                 // T-B3-4:起录时 snapshot 当前音频 codec,整个录像 session 内不变(spec Q4)。
-                activeAudioCodec = encCfg.audioCodec
-                resetSessionDiagnostics()
+                diag.activeAudioCodec = encCfg.audioCodec
+                diag.reset()
 
                 // T-P5-1:向 controller 请 encoding。rollover 场景 handle 已有,跳过避免 refCount 漂移。
                 if (encodingHandle == null) {
@@ -412,10 +340,10 @@ class IosRecordingService(
         if (inputsClosed) return
         val writer = assetWriter ?: return
         if (_state.value !is RecordingState.Recording) return
-        lastVideoFeedAtMs = clock.now().toEpochMilliseconds()
-        videoFramesSeen += 1
-        if (firstVideoPtsUs == -1L) {
-            firstVideoPtsUs = ptsUs
+        diag.lastVideoFeedAtMs = clock.now().toEpochMilliseconds()
+        diag.videoFramesSeen += 1
+        if (diag.firstVideoPtsUs == -1L) {
+            diag.firstVideoPtsUs = ptsUs
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -432,7 +360,7 @@ class IosRecordingService(
         // 每帧都 observe,函数内部会自行过滤只收 SPS/PPS。
         sampleBufferBuilder.observeParameterSets(nalUnits)
         if (!sampleBufferBuilder.hasFormatDescriptionInputs()) {
-            dropMissingFormat += 1
+            diag.dropMissingFormat += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -444,8 +372,8 @@ class IosRecordingService(
         // AVAssetWriter 要求首帧必须是可独立解码的 IDR。VT encoding session 若被
         // 复用(录像 start 时 encoding 已在跑,如同时推流),接到的首帧可能是 P frame,
         // 触发 kCMSampleBufferError_DataFailed(-16364)。一律丢弃直到真 IDR 到来。
-        if (videoBaselinePtsUs == -1L && !hasIdrSlice) {
-            dropAwaitingIdr += 1
+        if (diag.videoBaselinePtsUs == -1L && !hasIdrSlice) {
+            diag.dropAwaitingIdr += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -454,12 +382,12 @@ class IosRecordingService(
             return
         }
         val relPtsUs = when (val decision = RecordingPtsPolicy.classify(
-            baselinePtsUs = videoBaselinePtsUs,
-            lastAppendedRelPtsUs = lastAppendedRelPtsUs,
+            baselinePtsUs = diag.videoBaselinePtsUs,
+            lastAppendedRelPtsUs = diag.lastAppendedRelPtsUs,
             rawPtsUs = ptsUs,
         )) {
             is RecordingPtsPolicy.Decision.FirstSample -> {
-                videoBaselinePtsUs = decision.baselinePtsUs
+                diag.videoBaselinePtsUs = decision.baselinePtsUs
                 SystemLogger.emit(
                     LogLevel.Info,
                     LogTag.Media,
@@ -469,7 +397,7 @@ class IosRecordingService(
             }
             is RecordingPtsPolicy.Decision.Accept -> decision.relPtsUs
             is RecordingPtsPolicy.Decision.Negative -> {
-                dropPtsRegression += 1
+                diag.dropPtsRegression += 1
                 SystemLogger.emit(
                     LogLevel.Debug,
                     LogTag.Media,
@@ -479,7 +407,7 @@ class IosRecordingService(
                 return
             }
             is RecordingPtsPolicy.Decision.NonMonotonic -> {
-                dropNonMonotonicPts += 1
+                diag.dropNonMonotonicPts += 1
                 SystemLogger.emit(
                     LogLevel.Debug,
                     LogTag.Media,
@@ -496,13 +424,13 @@ class IosRecordingService(
             SystemLogger.emit(
                 LogLevel.Info,
                 LogTag.Media,
-                "IOS_RECORDING_WRITER_BECAME_ACTIVE relPtsUs=$relPtsUs baseline=$videoBaselinePtsUs",
+                "IOS_RECORDING_WRITER_BECAME_ACTIVE relPtsUs=$relPtsUs baseline=$diag.videoBaselinePtsUs",
             )
             videoInput ?: return
         }
 
         if (!input.isReadyForMoreMediaData()) {
-            dropInputBusy += 1
+            diag.dropInputBusy += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -516,7 +444,7 @@ class IosRecordingService(
             ptsUs = relPtsUs,
             durationUs = 1_000_000L / encoderConfigSupplier().frameRate.coerceAtLeast(1),
         ) ?: run {
-            dropSampleBuildFailed += 1
+            diag.dropSampleBuildFailed += 1
             SystemLogger.emit(
                 LogLevel.Debug,
                 LogTag.Media,
@@ -528,7 +456,7 @@ class IosRecordingService(
         try {
             val appended = input.appendSampleBuffer(sample)
             if (!appended) {
-                appendFailures += 1
+                diag.appendFailures += 1
                 val err = writer.error
                 val underlying = err?.userInfo?.get("NSUnderlyingError") as? platform.Foundation.NSError
                 // 诊断 -16364(DataFailed):打出过滤前每个 NAL 的 (type, size),验证
@@ -556,14 +484,14 @@ class IosRecordingService(
                         "errCode=${err?.code?.toLong() ?: 0L} " +
                         "underlyingDomain=${underlying?.domain ?: "nil"} " +
                         "underlyingCode=${underlying?.code?.toLong() ?: 0L} " +
-                        "rawPtsUs=$ptsUs relPtsUs=$relPtsUs baseline=$videoBaselinePtsUs " +
+                        "rawPtsUs=$ptsUs relPtsUs=$relPtsUs baseline=$diag.videoBaselinePtsUs " +
                         "isKey=$isKeyFrame nals=[$nalTypes] sliceHead=$sliceHex " +
                         "msg=${err?.localizedDescription ?: "unknown"}",
                 )
             } else {
-                videoFramesAppended += 1
-                lastAppendedRelPtsUs = relPtsUs
-                lastVideoAppendAtMs = clock.now().toEpochMilliseconds()
+                diag.videoFramesAppended += 1
+                diag.lastAppendedRelPtsUs = relPtsUs
+                diag.lastVideoAppendAtMs = clock.now().toEpochMilliseconds()
             }
         } finally {
             CFRelease(sample)
@@ -588,33 +516,33 @@ class IosRecordingService(
         codec: com.uvp.sim.media.AudioCodec,
     ) {
         if (inputsClosed) {
-            dropInputBusy++
+            diag.dropInputBusy++
             return
         }
         val input = audioInput ?: return
-        audioFramesSeen++
+        diag.audioFramesSeen++
 
         // audio 等 video baseline 建立后再 append(保 IDR 起点)
-        val videoBase = videoBaselinePtsUs
+        val videoBase = diag.videoBaselinePtsUs
         if (videoBase < 0) {
             // 尚未收到首个 IDR,先丢弃(不算 regression)
             return
         }
 
         val classify = com.uvp.sim.recording.RecordingPtsPolicy.classify(
-            baselinePtsUs = audioBaselinePtsUs,
-            lastAppendedRelPtsUs = lastAppendedAudioRelPtsUs,
+            baselinePtsUs = diag.audioBaselinePtsUs,
+            lastAppendedRelPtsUs = diag.lastAppendedAudioRelPtsUs,
             rawPtsUs = ptsUs,
         )
         val relPts: Long = when (classify) {
             is com.uvp.sim.recording.RecordingPtsPolicy.Decision.FirstSample -> {
-                audioBaselinePtsUs = ptsUs
+                diag.audioBaselinePtsUs = ptsUs
                 0L
             }
             is com.uvp.sim.recording.RecordingPtsPolicy.Decision.Accept -> classify.relPtsUs
             is com.uvp.sim.recording.RecordingPtsPolicy.Decision.Negative,
             is com.uvp.sim.recording.RecordingPtsPolicy.Decision.NonMonotonic -> {
-                dropAudioPtsRegression++
+                diag.dropAudioPtsRegression++
                 return
             }
         }
@@ -623,7 +551,7 @@ class IosRecordingService(
         val rawPayload = when (codec) {
             com.uvp.sim.media.AudioCodec.AAC -> {
                 if (payload.size <= 7) {
-                    dropAudioPtsRegression++
+                    diag.dropAudioPtsRegression++
                     return
                 }
                 payload.copyOfRange(7, payload.size)
@@ -637,27 +565,27 @@ class IosRecordingService(
             codec = codec,
         )
         if (sampleBuf == null) {
-            audioAppendFailures++
+            diag.audioAppendFailures++
             return
         }
         if (!input.readyForMoreMediaData) {
-            dropInputBusy++
+            diag.dropInputBusy++
             releaseCMSampleBufferIfPossible(sampleBuf)
             return
         }
         val ok = input.appendSampleBuffer(sampleBuf)
         if (!ok) {
-            audioAppendFailures++
+            diag.audioAppendFailures++
         } else {
-            audioFramesAppended++
-            lastAppendedAudioRelPtsUs = relPts
+            diag.audioFramesAppended++
+            diag.lastAppendedAudioRelPtsUs = relPts
         }
         releaseCMSampleBufferIfPossible(sampleBuf)
     }
 
     /** 老签名保留兜底 —— G.711A 路径,codec 默认。iOS AppHost 不应直接调这个 overload。 */
     fun feedAudioFrame(payload: ByteArray, ptsUs: Long) {
-        val codec = activeAudioCodec ?: com.uvp.sim.media.AudioCodec.G711A
+        val codec = diag.activeAudioCodec ?: com.uvp.sim.media.AudioCodec.G711A
         feedAudioFrame(payload = payload, ptsUs = ptsUs, codec = codec)
     }
 
@@ -809,11 +737,11 @@ class IosRecordingService(
         CFRelease(formatDescription)
         videoInput = vIn
 
-        // T-B3-4:视频 input 就绪后同步开 audio input(若 activeAudioCodec 非空)。
+        // T-B3-4:视频 input 就绪后同步开 audio input(若 diag.activeAudioCodec 非空)。
         // 语义:writer.startWriting 之前必须把所有 input addInput 完;这里在
         // startWriting 之前 addInput,addInput 失败(canAddInput false)不阻塞
         // 起录 —— 只是这次录像没有音轨,和 v1.2 保持一致(不返回 false)。
-        activeAudioCodec?.let { codec ->
+        diag.activeAudioCodec?.let { codec ->
             val aIn = openAudioInput(codec) ?: return@let
             if (writer.canAddInput(aIn)) {
                 writer.addInput(aIn)
@@ -850,11 +778,11 @@ class IosRecordingService(
             LogLevel.Info, LogTag.Media,
             "IOS_RECORDING_FINALIZE_ENTRY status=$writerStatusRaw didWriteAny=$didWriteAny " +
                 "writerErr=${writer.error?.localizedDescription ?: "none"} " +
-                "seen=$videoFramesSeen appended=$videoFramesAppended " +
-                "dropFmt=$dropMissingFormat dropIdr=$dropAwaitingIdr dropPts=$dropPtsRegression " +
-                "dropMono=$dropNonMonotonicPts " +
-                "dropBusy=$dropInputBusy dropSample=$dropSampleBuildFailed appendFail=$appendFailures " +
-                "firstPtsUs=$firstVideoPtsUs baseline=$videoBaselinePtsUs lastAppended=$lastAppendedRelPtsUs"
+                "seen=$diag.videoFramesSeen appended=$diag.videoFramesAppended " +
+                "dropFmt=$diag.dropMissingFormat dropIdr=$diag.dropAwaitingIdr dropPts=$diag.dropPtsRegression " +
+                "dropMono=$diag.dropNonMonotonicPts " +
+                "dropBusy=$diag.dropInputBusy dropSample=$diag.dropSampleBuildFailed appendFail=$diag.appendFailures " +
+                "firstPtsUs=$diag.firstVideoPtsUs baseline=$diag.videoBaselinePtsUs lastAppended=$diag.lastAppendedRelPtsUs"
         )
 
         if (didWriteAny) {
@@ -900,8 +828,8 @@ class IosRecordingService(
         videoInput = null
         audioInput = null
         activeOutputPath = null
-        videoBaselinePtsUs = -1L
-        lastAppendedRelPtsUs = -1L
+        diag.videoBaselinePtsUs = -1L
+        diag.lastAppendedRelPtsUs = -1L
 
         if (outputPath == null || channel == null || started == 0L) {
             _state.value = RecordingState.Failed("finalize: missing session state")
@@ -1064,33 +992,6 @@ class IosRecordingService(
         }
     }
 
-    private fun resetSessionDiagnostics() {
-        videoFramesSeen = 0
-        videoFramesAppended = 0
-        dropMissingFormat = 0
-        dropAwaitingIdr = 0
-        dropPtsRegression = 0
-        dropNonMonotonicPts = 0
-        dropInputBusy = 0
-        dropSampleBuildFailed = 0
-        appendFailures = 0
-        firstVideoPtsUs = -1L
-        lastAppendedRelPtsUs = -1L
-        lastVideoFeedAtMs = -1L
-        lastVideoAppendAtMs = -1L
-        // T-B3-1: audio 侧诊断计数 + baseline 也归零
-        audioFramesSeen = 0
-        audioFramesAppended = 0
-        dropAudioPtsRegression = 0
-        audioAppendFailures = 0
-        audioBaselinePtsUs = -1L
-        lastAppendedAudioRelPtsUs = -1L
-    }
-
-    fun lastVideoFeedAtMs(): Long = lastVideoFeedAtMs
-
-    fun lastVideoAppendAtMs(): Long = lastVideoAppendAtMs
-
     // ---- T-B3-1:测试用诊断快照,暴露 audio 计数 + baseline 状态 ----
 
     internal data class AudioDiagnosticsSnapshot(
@@ -1105,17 +1006,19 @@ class IosRecordingService(
     )
 
     /** iosTest 用来观察 audio 侧内部 state 的窗口,不动生产语义。 */
-    internal fun snapshotAudioDiagnostics(): AudioDiagnosticsSnapshot =
-        AudioDiagnosticsSnapshot(
-            activeAudioCodec = activeAudioCodec,
-            audioBaselinePtsUs = audioBaselinePtsUs,
-            lastAppendedAudioRelPtsUs = lastAppendedAudioRelPtsUs,
-            audioFramesSeen = audioFramesSeen,
-            audioFramesAppended = audioFramesAppended,
-            dropAudioPtsRegression = dropAudioPtsRegression,
-            audioAppendFailures = audioAppendFailures,
+    internal fun snapshotAudioDiagnostics(): AudioDiagnosticsSnapshot {
+        val s = diag.audioSnapshot()
+        return AudioDiagnosticsSnapshot(
+            activeAudioCodec = s.activeAudioCodec,
+            audioBaselinePtsUs = s.audioBaselinePtsUs,
+            lastAppendedAudioRelPtsUs = s.lastAppendedAudioRelPtsUs,
+            audioFramesSeen = s.audioFramesSeen,
+            audioFramesAppended = s.audioFramesAppended,
+            dropAudioPtsRegression = s.dropAudioPtsRegression,
+            audioAppendFailures = s.audioAppendFailures,
             audioInputPresent = audioInput != null,
         )
+    }
 
     private companion object {
         const val GUARD_TICK_MS: Long = 30L * 1000
