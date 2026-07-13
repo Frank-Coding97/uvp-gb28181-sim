@@ -21,7 +21,6 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlin.time.Clock
 import kotlin.coroutines.suspendCoroutine
 import platform.AVFoundation.AVCaptureDevice
 import platform.AVFoundation.AVCaptureDeviceInput
@@ -38,8 +37,6 @@ import platform.AVFoundation.AVCaptureVideoOrientationPortrait
 import platform.AVFoundation.AVFrameRateRange
 import platform.AVFoundation.AVMediaTypeVideo
 import platform.AVFoundation.defaultDeviceWithDeviceType
-import platform.CoreFoundation.CFRelease
-import platform.CoreFoundation.CFRetain
 import platform.CoreMedia.CMSampleBufferGetImageBuffer
 import platform.CoreMedia.CMSampleBufferRef
 import platform.CoreMedia.CMTimeMake
@@ -119,19 +116,9 @@ object IosCameraController {
     private var currentFacing: CameraFacing = CameraFacing.BACK
 
     /**
-     * 最近一帧 CVImageBufferRef(delegate 每帧原子替换,旧值 CFRelease)。
-     * 生命周期同 v1.2 [IosCameraStreamer.latestFrame],语义完全对齐。
+     * cross-review R1 #4 拆分 step 1:latestFrame + snapshotSubscribers + sampleCount / lastSampleAtMs
+     * 抽到 [IosCameraFrameBuffer]。本 object 保持 facade,委托到 buffer 对象。
      */
-    @Volatile
-    private var latestFrame: CVImageBufferRef? = null
-
-    /**
-     * Fix #6:latestFrame publish 是"常驻税"(每帧 CFRetain/CFRelease),但只有 SnapshotCapture
-     * 需要。用 subscribers 引用计数,只有 > 0 时 onSample 才 publishLatestFrame。
-     * PreviewOnly + 无抓拍请求时,onSample 走轻路径(仅可能的 encode 分支),不动 latest。
-     */
-    @Volatile
-    private var snapshotSubscribers: Int = 0
 
     /**
      * T-P2-2:当前 preview config 快照,requestEncoding 首次触发 EncodingSession 时
@@ -160,12 +147,6 @@ object IosCameraController {
      */
     @Volatile
     private var pendingForceKey: Boolean = false
-
-    @Volatile
-    private var lastSampleAtMs: Long = -1L
-
-    @Volatile
-    private var sampleCount: Long = 0L
 
     /**
      * T-B1-6:HEVC 硬编能力启动时探测缓存。App 冷启一次,后续 SDP capability advertise
@@ -444,31 +425,19 @@ object IosCameraController {
      * Fix #6:必须先 [beginSnapshotCapture] 让 onSample 开始 publish latestFrame,
      * 否则总是 null。SnapshotCapture 用 begin/end 包裹调用。
      */
-    fun latestFramePixelBuffer(): CVImageBufferRef? {
-        val current = latestFrame ?: return null
-        CFRetain(current)
-        return current
-    }
+    fun latestFramePixelBuffer(): CVImageBufferRef? = IosCameraFrameBuffer.latestFramePixelBuffer()
 
     /**
      * Fix #6:开始订阅 latestFrame publish。SnapshotCapture 在 takeJpeg 起手调,完成后 end。
      * 引用计数支持并发多个 SnapshotCapture 请求。
      */
-    fun beginSnapshotCapture() {
-        snapshotSubscribers += 1
-    }
+    fun beginSnapshotCapture() = IosCameraFrameBuffer.beginSubscription()
 
     /**
      * Fix #6:结束订阅。归零时 onSample 不再 publish latestFrame。
      * 清理 latestFrame 以释放最后引用(下次 begin 再从 delegate 首帧填)。
      */
-    fun endSnapshotCapture() {
-        snapshotSubscribers = maxOf(0, snapshotSubscribers - 1)
-        if (snapshotSubscribers == 0) {
-            latestFrame?.let { CFRelease(it) }
-            latestFrame = null
-        }
-    }
+    fun endSnapshotCapture() = IosCameraFrameBuffer.endSubscription()
 
     // =========================================================
     // Encoding API — T-P2-1 refCount + generation counter (fake encoding lifecycle)
@@ -640,19 +609,16 @@ object IosCameraController {
      * P2-2 补:若 encodingActive 则同时 encodeSample(sample, forceKey)。
      */
     private fun onSample(sample: CMSampleBufferRef) {
-        sampleCount += 1
-        if (sampleCount % 25L == 0L) {
-            lastSampleAtMs = Clock.System.now().toEpochMilliseconds()
-        }
+        IosCameraFrameBuffer.recordSample()
 
         // Fix #6:PreviewOnly + 无 snapshot 请求时 quick exit,不做 CFRetain/CFRelease 常驻税
-        val needLatest = snapshotSubscribers > 0
+        val needLatest = IosCameraFrameBuffer.hasSnapshotSubscribers()
         val needEncode = _encodingActive.value
         if (!needLatest && !needEncode) return
 
         if (needLatest) {
             val imageBuffer = CMSampleBufferGetImageBuffer(sample) ?: return
-            publishLatestFrame(imageBuffer)
+            IosCameraFrameBuffer.publish(imageBuffer)
         }
         // T-P2-2:encoding active 时 encode 单帧,forceKey 从 pendingForceKey 消费一次
         if (needEncode) {
@@ -660,13 +626,6 @@ object IosCameraController {
             if (force) pendingForceKey = false
             encodingSession?.encodeSample(sample, forceKey = force)
         }
-    }
-
-    private fun publishLatestFrame(newFrame: CVImageBufferRef) {
-        val old = latestFrame
-        CFRetain(newFrame)
-        latestFrame = newFrame
-        if (old != null) CFRelease(old)
     }
 
     // =========================================================
@@ -1014,15 +973,12 @@ object IosCameraController {
         _session.value = null
         currentConfig = null
 
-        latestFrame?.let { CFRelease(it) }
-        latestFrame = null
-        lastSampleAtMs = -1L
-        sampleCount = 0L
+        IosCameraFrameBuffer.release()
     }
 
-    fun lastSampleAtMs(): Long = lastSampleAtMs
+    fun lastSampleAtMs(): Long = IosCameraFrameBuffer.lastSampleAtMs()
 
-    fun sampleCount(): Long = sampleCount
+    fun sampleCount(): Long = IosCameraFrameBuffer.sampleCount()
 }
 
 /**
