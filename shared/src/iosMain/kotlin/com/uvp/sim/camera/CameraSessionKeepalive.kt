@@ -30,8 +30,14 @@ object CameraSessionKeepalive {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
-     * 幂等启动 preview。scope.launch 因为 controller.startPreview 是 suspend。
+     * 幂等启动 preview + 应用最新 config。scope.launch 因为 controller.startPreview 是 suspend。
      * IosAppHost 挂点 v1.2/v1.3 都不动,继续调用 [start] 传 config。
+     *
+     * cross-review R2 verify-retry #1:先 applyRuntimeConfig(fire-and-forget,幂等),
+     * 让 config 变化通过 IosAppHost.LaunchedEffect 触发 keepalive.start 时,若 session
+     * 已运行会把新分辨率 / 帧率 / 码率 / GOP / codec / 朝向应用到活跃 session;若尚未
+     * 启动,controller 内部把 config 缓存好等下一次 startPreview。这样 startPreview
+     * 的 no-op 分支不再吞掉 config 更新。
      */
     fun start(config: CaptureConfig) {
         SystemLogger.emit(
@@ -39,6 +45,7 @@ object CameraSessionKeepalive {
             "IOS_CAMERA_KEEPALIVE_START ${config.widthPx}x${config.heightPx}@${config.frameRate} " +
                 "(delegating to IosCameraController)"
         )
+        IosCameraController.applyRuntimeConfig(config)
         scope.launch {
             IosCameraController.startPreview(config)
         }
