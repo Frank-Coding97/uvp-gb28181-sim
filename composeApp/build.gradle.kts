@@ -49,6 +49,9 @@ kotlin {
             implementation(libs.compose.material3)
             implementation(libs.compose.material.icons.extended)
             implementation(libs.compose.ui)
+            // Compose Multiplatform 资源系统 — commonMain/composeResources/drawable/
+            // 下的 PNG / XML vector 会被生成 Res.drawable.* accessor,两端共用同一份美术。
+            implementation(compose.components.resources)
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.datetime)
         }
@@ -72,6 +75,15 @@ kotlin {
         // v1.3-C: iOS SceneKit 层单测. 默认层级模板生成的 iosSimulatorArm64Test 已挂 kotlin-test,
         // 只需目录存在(在 src/iosSimulatorArm64Test/kotlin/... 下). 不显式建 iosTest sourceSet.
     }
+}
+
+// Compose Resources 生成的 Res 类包名 —— 显式绑到 android namespace 下 .generated.resources,
+// 匹配 AboutScreen 里的 `com.uvp.sim.compose.generated.resources.Res` import。
+// 不配的话默认走 gradle group/name 派生,项目未设 group → 会 fallback 到不稳定的路径。
+compose.resources {
+    publicResClass = false
+    packageOfResClass = "com.uvp.sim.compose.generated.resources"
+    generateResClass = auto
 }
 
 android {

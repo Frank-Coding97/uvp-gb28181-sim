@@ -17,8 +17,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Image
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.OpenInNew
@@ -30,12 +30,19 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.uvp.sim.compose.generated.resources.Res
+import com.uvp.sim.compose.generated.resources.app_icon
+import com.uvp.sim.compose.generated.resources.logo_gitee
+import com.uvp.sim.compose.generated.resources.logo_github
+import com.uvp.sim.compose.generated.resources.logo_wechat
+import org.jetbrains.compose.resources.painterResource
 
 /**
  * 关于 — 展示版本 / 协议 / 开源许可 / 仓库地址 / 联系方式。
@@ -80,14 +87,14 @@ fun AboutScreen() {
         AboutSectionTitle("源码仓库")
         AboutSectionCard {
             AboutLinkRow(
-                icon = Icons.Outlined.Code,
+                iconPainter = painterResource(Res.drawable.logo_github),
                 title = "GitHub",
                 value = "github.com/Frank-Coding97/uvp-gb28181-sim",
                 onClick = { openUrl("https://github.com/Frank-Coding97/uvp-gb28181-sim") },
             )
             AboutLineDivider()
             AboutLinkRow(
-                icon = Icons.Outlined.Code,
+                iconPainter = painterResource(Res.drawable.logo_gitee),
                 title = "Gitee",
                 value = "gitee.com/Frank-Coding/uvp-gb28181-sim",
                 onClick = { openUrl("https://gitee.com/Frank-Coding/uvp-gb28181-sim") },
@@ -97,7 +104,7 @@ fun AboutScreen() {
         AboutSectionTitle("联系作者")
         AboutSectionCard {
             AboutCopyRow(
-                icon = Icons.Outlined.ContentCopy,
+                iconPainter = painterResource(Res.drawable.logo_wechat),
                 title = "微信",
                 value = "Mtudou123",
                 onClick = {
@@ -128,20 +135,15 @@ private fun AboutHero() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(
+        // App icon 复用 iOS AppIcon 的 180×180 PNG(commonMain/composeResources/drawable/app_icon.png)
+        // — 两端 App 图标一致,Android launcher icon 和 iOS AppIcon 是同一美术源。
+        Image(
+            painter = painterResource(Res.drawable.app_icon),
+            contentDescription = "应用图标",
             modifier = Modifier
                 .size(56.dp)
-                .clip(RoundedCornerShape(14.dp))
-                .background(UvpColor.Primary),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Outlined.Videocam,
-                contentDescription = null,
-                modifier = Modifier.size(28.dp),
-                tint = androidx.compose.ui.graphics.Color.White,
-            )
-        }
+                .clip(RoundedCornerShape(14.dp)),
+        )
         Spacer(Modifier.height(2.dp))
         Text(
             "UVP GB28181 模拟器",
@@ -187,19 +189,40 @@ private fun AboutLineRow(
     title: String,
     value: String,
 ) {
-    AboutRowScaffold(icon = icon, title = title) {
+    AboutRowScaffold(
+        leading = {
+            Icon(
+                icon,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = UvpColor.TextSecondary,
+            )
+        },
+        title = title,
+    ) {
         Text(value, fontSize = 12.sp, color = UvpColor.TextSecondary)
     }
 }
 
 @Composable
 private fun AboutLinkRow(
-    icon: ImageVector,
+    iconPainter: Painter,
     title: String,
     value: String,
     onClick: () -> Unit,
 ) {
-    AboutRowScaffold(icon = icon, title = title, onClick = onClick) {
+    AboutRowScaffold(
+        leading = {
+            // 品牌 logo 用原色渲染(不 tint) — GitHub 黑 / Gitee 红。
+            Image(
+                painter = iconPainter,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        },
+        title = title,
+        onClick = onClick,
+    ) {
         Text(value, fontSize = 12.sp, color = UvpColor.Primary)
         Spacer(Modifier.width(6.dp))
         Icon(
@@ -213,12 +236,22 @@ private fun AboutLinkRow(
 
 @Composable
 private fun AboutCopyRow(
-    icon: ImageVector,
+    iconPainter: Painter,
     title: String,
     value: String,
     onClick: () -> Unit,
 ) {
-    AboutRowScaffold(icon = icon, title = title, onClick = onClick) {
+    AboutRowScaffold(
+        leading = {
+            Image(
+                painter = iconPainter,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+            )
+        },
+        title = title,
+        onClick = onClick,
+    ) {
         Text(value, fontSize = 12.sp, color = UvpColor.Primary, fontWeight = FontWeight.Medium)
         Spacer(Modifier.width(6.dp))
         Icon(
@@ -232,7 +265,7 @@ private fun AboutCopyRow(
 
 @Composable
 private fun AboutRowScaffold(
-    icon: ImageVector,
+    leading: @Composable () -> Unit,
     title: String,
     onClick: (() -> Unit)? = null,
     trailing: @Composable () -> Unit,
@@ -244,12 +277,12 @@ private fun AboutRowScaffold(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = UvpColor.TextSecondary,
-        )
+        Box(
+            modifier = Modifier.size(20.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            leading()
+        }
         Spacer(Modifier.width(10.dp))
         Text(
             title,
