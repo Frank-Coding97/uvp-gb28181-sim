@@ -181,11 +181,39 @@ internal class ManscdpRouterImpl(
         //  · activate 后主动 syncLocationLifecycle()(见下方 handleSubscribe 处)
         //  · start()/stop() 幂等,重复调无副作用
         // onDialogRemoved 是非 suspend 回调,scope.launch 让 mutex.withLock 生效
+        // cross-review R3 #3 修复 — 追踪 pending sync job,让 shutdown() 可等待 stop 完成,
+        // 避免 disconnect → rehydrate 时旧 provider 状态跨越会话
         subscriptionRegistry.setOnDialogRemoved { removed ->
             if (removed.kind == "MobilePosition") {
-                scope.launch { syncLocationLifecycleLocked() }
+                val job = scope.launch { syncLocationLifecycleLocked() }
+                trackPendingSyncJob(job)
             }
         }
+    }
+
+    private val pendingSyncJobs = mutableListOf<kotlinx.coroutines.Job>()
+    private val pendingSyncJobsMutex = Mutex()
+
+    private fun trackPendingSyncJob(job: kotlinx.coroutines.Job) {
+        // 用 invokeOnCompletion 自动清理已完成 job,避免 list 无限增长
+        job.invokeOnCompletion {
+            scope.launch {
+                pendingSyncJobsMutex.withLock { pendingSyncJobs.remove(job) }
+            }
+        }
+        scope.launch {
+            pendingSyncJobsMutex.withLock { pendingSyncJobs += job }
+        }
+    }
+
+    /**
+     * cross-review R3 #3 修复 — 等待所有 pending sync job 完成,给 shutdown()
+     * / rehydrate 路径提供完成性契约。避免 cancelAll 返回后 provider stop 还没跑,
+     * 旧监听状态泄漏到下一 session。
+     */
+    private suspend fun awaitPendingSyncJobs() {
+        val snapshot = pendingSyncJobsMutex.withLock { pendingSyncJobs.toList() }
+        snapshot.forEach { runCatching { it.join() } }
     }
 
     /**
@@ -287,6 +315,9 @@ internal class ManscdpRouterImpl(
         snapshotCachePipeline = null
         upgradeJob?.cancel()
         upgradeJob = null
+        // cross-review R3 #3 修复 — 等 pending onDialogRemoved 触发的 sync job 完成,
+        // 保证 provider stop 在 shutdown 返回前跑完
+        awaitPendingSyncJobs()
     }
 
     override suspend fun resyncLocationLifecycle() {
