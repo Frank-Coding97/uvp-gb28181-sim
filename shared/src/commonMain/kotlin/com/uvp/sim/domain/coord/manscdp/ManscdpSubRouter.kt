@@ -60,6 +60,12 @@ internal class ManscdpContext(
     val clockOffsetProvider: () -> ClockOffset,
     val stateRegisteredOrInCall: () -> Boolean,
     val simEventEmit: suspend (SimEvent) -> Unit,
+    // cross-review R1 #1 修复钩子 — 由 ManscdpRouterImpl 注入,复用它的 mutex 串行化跟
+    // syncLocationLifecycleLocked 的启停冲突。默认 lambda 是直调 start/stop,方便单测替换。
+    val ensureLocationProviderStarted: suspend () -> Unit = { mockGps.start() },
+    val releaseLocationProviderIfIdle: suspend () -> Unit = {
+        if (subscriptionRegistry.dialogsByKind("MobilePosition").isEmpty()) mockGps.stop()
+    },
 ) {
     val localIp: String get() = localIpProvider()
     val localPort: Int get() = localPortProvider()

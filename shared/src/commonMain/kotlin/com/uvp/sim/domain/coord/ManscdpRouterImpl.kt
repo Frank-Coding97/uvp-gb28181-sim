@@ -167,6 +167,9 @@ internal class ManscdpRouterImpl(
         clockOffsetProvider = clockOffsetProvider,
         stateRegisteredOrInCall = stateRegisteredOrInCall,
         simEventEmit = simEventEmit,
+        // cross-review R1 #1 修复 — 单次查询 cold-start 走 mutex 保证跟 sync 不打架
+        ensureLocationProviderStarted = { ensureLocationProviderStartedLocked() },
+        releaseLocationProviderIfIdle = { releaseLocationProviderIfIdleLocked() },
     )
 
     /** NOTIFY 扇出收口到独立 handler(cross-review R1 #3),共享同一份 [subRouterContext]。 */

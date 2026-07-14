@@ -1,5 +1,6 @@
 package com.uvp.sim.domain.coord.manscdp
 
+import com.uvp.sim.domain.location.PositionFix
 import com.uvp.sim.gb28181.CatalogResponse
 import com.uvp.sim.gb28181.ConfigDownloadResponse
 import com.uvp.sim.gb28181.DeviceInfoResponse
@@ -13,6 +14,7 @@ import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.recording.RecordingService
+import kotlinx.coroutines.delay
 
 /**
  * Catalog / 设备查询类 MANSCDP 子路由(Wave 4 PR-D / P2-1)。
@@ -117,7 +119,24 @@ internal class CatalogSubRouter(
     }
 
     private suspend fun sendMobilePositionResponse(sn: String) {
-        val fix = ctx.mockGps.next()
+        // cross-review R1 #1 修复 — 单次查询是独立于订阅的 GB28181 路径,不能只靠订阅路径启 provider。
+        // 冷启动:如果 next() 无 fix 且没订阅,主动 start provider + poll 一段时间;完成后按订阅状态释放。
+        val fix = ctx.mockGps.next() ?: run {
+            val hadSubscription = ctx.subscriptionRegistry.dialogsByKind("MobilePosition").isNotEmpty()
+            if (hadSubscription) {
+                // 已订阅但还没首帧 fix:走原语义(不响应,让平台超时)
+                null
+            } else {
+                // cold-start:主动 start + poll 拿首帧 fix,拿到就直接释放
+                ctx.ensureLocationProviderStarted()
+                val polled = pollFirstFix()
+                if (polled == null) {
+                    // 冷启动仍然拿不到,顺手 release
+                    ctx.releaseLocationProviderIfIdle()
+                }
+                polled
+            }
+        }
         if (fix == null) {
             // plan §3.3 Q4 单次查询与 NOTIFY 同路径:无 fix 时不响应,让平台超时
             // F4 P1-5 fix:单次查询是独立事件,不去重,每次 log 一次让联调 grep 得到
@@ -196,10 +215,29 @@ internal class CatalogSubRouter(
         }
     }
 
+    /**
+     * cross-review R1 #1 修复 — 单次查询 cold-start poll:
+     * 主动 start provider 后短暂等首帧 fix。每 [POLL_INTERVAL_MS] 检查一次,总共 [POLL_TOTAL_MS]。
+     * 拿到即返回,超时返回 null 交给外层走"不响应"分支。
+     */
+    private suspend fun pollFirstFix(): PositionFix? {
+        var elapsed = 0L
+        while (elapsed < POLL_TOTAL_MS) {
+            val fix = ctx.mockGps.next()
+            if (fix != null) return fix
+            delay(POLL_INTERVAL_MS)
+            elapsed += POLL_INTERVAL_MS
+        }
+        return ctx.mockGps.next()
+    }
+
     companion object {
         private val ACCEPTED = setOf(
             "Catalog", "DeviceInfo", "DeviceStatus", "ConfigDownload",
             "MobilePosition", "RecordInfo",
         )
+        // cross-review R1 #1 常量:单次查询 cold-start poll 参数。3s 内拿不到就放弃,平台会重试。
+        private const val POLL_INTERVAL_MS = 300L
+        private const val POLL_TOTAL_MS = 3_000L
     }
 }
