@@ -107,3 +107,18 @@ enum class VideoCodec(val label: String, val psStreamType: Int) {
     }
 }
 
+/**
+ * cross-review v1.1 refactor C 抽出:判定 nalUnits 里是否**至少含一个** IDR/IRAP slice,
+ * 供 iOS AVAssetWriter 首帧 gate 使用(首帧必须可独立解码)。
+ *
+ * 拆前 IosRecordingService.feedVideoFrame 内联判据在 iosMain,依赖 AVAssetWriter 全链
+ * 才能测。抽为 commonMain 纯函数后,可用 [VideoCodecKeyNalTest] 覆盖 H.264 / H.265 各类
+ * NAL 混合场景,不需 simulator。
+ *
+ * 忽略空 ByteArray(空 NAL 视为非 key,不 crash)。
+ */
+fun hasAnyKeyNal(nalUnits: List<ByteArray>, codec: VideoCodec): Boolean =
+    nalUnits.any { nal ->
+        if (nal.isEmpty()) false else codec.isKeyNal(codec.nalType(nal[0]))
+    }
+

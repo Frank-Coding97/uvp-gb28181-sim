@@ -345,17 +345,11 @@ class IosRecordingService(
             )
         }
 
-        // 用真实 NAL type 判 IDR。`isKeyFrame` 参数在 EncodingSession 里永远为 true
-        // (每帧都提取 SPS/PPS,不细分 IDR/non-IDR),不能作为"首帧可独立解码"的判据。
-        //
-        // 2026-07-13 HEVC:判据必须过 activeVideoCodec —— H.264 用 low 5-bit == 5,H.265 用
-        // (byte>>1)&0x3F ∈ {19,20,21}。硬编 `& 0x1F == IDR` 在 H.265 下永远命中不到,导致
-        // 一直卡在 dropAwaitingIdr,writer 死等 IDR 直到 stop。
-        val activeVideoCodec = diag.activeVideoCodec
-        val hasIdrSlice = nalUnits.any { nal ->
-            if (nal.isEmpty()) return@any false
-            activeVideoCodec.isKeyNal(activeVideoCodec.nalType(nal[0]))
-        }
+        // cross-review v1.1 refactor C:IDR 判定改用 commonMain 的 hasAnyKeyNal 纯函数,
+        // 支持 H.264(low 5-bit == 5)/ H.265((byte>>1)&0x3F ∈ {19,20,21}),空 NAL 安全跳过。
+        // 拆前内联判据在 iosMain,无法在 simulator 上不启 AVAssetWriter 就测试。抽出后
+        // 由 VideoCodecKeyNalTest 覆盖各类混合场景。
+        val hasIdrSlice = com.uvp.sim.media.hasAnyKeyNal(nalUnits, diag.activeVideoCodec)
 
         // 每帧都 observe,函数内部会自行过滤只收参数集(H.264 SPS/PPS / H.265 VPS/SPS/PPS)。
         sampleBufferBuilder.observeParameterSets(nalUnits)
@@ -439,6 +433,24 @@ class IosRecordingService(
             return
         }
 
+        appendVideoSampleAndDiag(input, av, nalUnits, ptsUs, relPtsUs, isKeyFrame)
+    }
+
+    /**
+     * cross-review v1.1 refactor C 抽出:sample buffer 构建 + append + 诊断计数 + 失败 log。
+     *
+     * feedVideoFrame 拆前把这 55 行内联在 hot path 里,可读性差且诊断 log 段(-16364
+     * DataFailed 深度调试)遮住主流程。抽出后主函数只留 gate + writer lazy start。
+     * 行为等价:相同错误分类 / 相同 log 格式 / CFRelease 语义不变。
+     */
+    private fun appendVideoSampleAndDiag(
+        input: AVAssetWriterInput,
+        av: AVAssetWriter,
+        nalUnits: List<ByteArray>,
+        ptsUs: Long,
+        relPtsUs: Long,
+        isKeyFrame: Boolean,
+    ) {
         val sample = sampleBufferBuilder.buildVideoSampleBuffer(
             nalUnits = nalUnits,
             ptsUs = relPtsUs,
