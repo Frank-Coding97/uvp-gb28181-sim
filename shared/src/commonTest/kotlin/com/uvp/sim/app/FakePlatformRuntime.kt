@@ -56,6 +56,14 @@ internal class FakePlatformRuntime : PlatformRuntime {
         appliedVideoConfigs += captureConfig to audioConfig
     }
 
+    val builtLocationStartPoints = mutableListOf<com.uvp.sim.config.GeoPoint>()
+
+    override fun buildLocationProvider(startPoint: com.uvp.sim.config.GeoPoint):
+        com.uvp.sim.domain.location.LocationProvider {
+        builtLocationStartPoints += startPoint
+        return com.uvp.sim.domain.MockGpsSource(startPoint)
+    }
+
     override suspend fun release() {
         releaseCalls += 1
     }

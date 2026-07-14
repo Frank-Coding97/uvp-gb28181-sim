@@ -2,6 +2,7 @@ package com.uvp.sim.domain
 
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
+import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
 import com.uvp.sim.domain.coord.PlaybackCoordinatorImpl
@@ -28,7 +29,7 @@ internal class EngineHolders(
     val clockOffset: MutableStateFlow<ClockOffset>,
     val alarmHistoryStore: AlarmHistoryStore,
     val subscriptionRegistry: SubscriptionRegistry,
-    val mockGps: MockGpsSource,
+    val mockGps: LocationProvider,
     /** Wave 2 PR-SN-IDENTITY:3 类 dialog identity 显式分离。 */
     val identityService: SipDialogIdentityService,
 )

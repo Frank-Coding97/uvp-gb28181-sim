@@ -4,8 +4,10 @@ import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
+import com.uvp.sim.config.GeoPoint
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
+import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +72,16 @@ interface PlatformRuntime {
         osdConfigSupplier: () -> StateFlow<OsdConfig>,
         profileSupplier: () -> RecordingProfile,
     ): RecordingService
+
+    /**
+     * 装配平台 [LocationProvider] 实现(real-gps plan §4.3)。
+     *
+     * · Android:返回 [com.uvp.sim.domain.location.AndroidSystemLocationProvider] 用系统 LocationManager
+     * · iOS:v1 复用 [com.uvp.sim.domain.MockGpsSource] stub(v1.1 换 CLLocationManager)
+     *
+     * [startPoint] 只在 stub 场景作为漫游起点,真实定位 impl 会忽略该参数。
+     */
+    fun buildLocationProvider(startPoint: GeoPoint): LocationProvider
 
     /**
      * 视频配置变更入口(PR-USER-BUG-1 真重建逻辑下沉)。

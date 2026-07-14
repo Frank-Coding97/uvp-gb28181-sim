@@ -106,7 +106,7 @@ class AppEngine(
         clockOffset = MutableStateFlow(ClockOffset.Empty),
         alarmHistoryStore = AlarmHistoryStore(),
         subscriptionRegistry = SubscriptionRegistry(engineScope),
-        mockGps = MockGpsSource(initialConfig.mockPosition),
+        mockGps = runtime.buildLocationProvider(initialConfig.mockPosition),
         identityService = newDefaultIdentityService(localIpProvider = resources.localIpProvider),
     )
 
@@ -556,7 +556,9 @@ class AppEngine(
      */
     private fun rehydrateHolders(new: SimConfig) {
         holders.catalogTree.value = CatalogTreeStore.effectiveTree(new)
-        holders.mockGps.reset(new.mockPosition)
+        // MockGpsSource 是 LocationProvider 的测试实现,生产 impl(Android LocationManager)
+        // 无 reset 语义 — cast 保证只在测试 / iOS stub 场景生效,生产端 no-op
+        (holders.mockGps as? MockGpsSource)?.reset(new.mockPosition)
         _currentChannelName.value = new.device.videoChannelName
         holders.clockOffset.value = ClockOffset.Empty
         holders.subscriptionRegistry.cancelAll()
@@ -569,7 +571,7 @@ class AppEngine(
     internal fun engineForTest(): SimulatorEngine? = engine
 
     /** 测试可见 — mockGps 实例(单测验证 rehydrate 后起点)。 */
-    internal fun mockGpsForTest(): MockGpsSource = holders.mockGps
+    internal fun mockGpsForTest(): MockGpsSource = holders.mockGps as MockGpsSource
 
     /** 测试可见 — subscriptionRegistry 实例(单测验证 rehydrate 触发 cancelAll)。 */
     internal fun subscriptionRegistryForTest(): SubscriptionRegistry = holders.subscriptionRegistry

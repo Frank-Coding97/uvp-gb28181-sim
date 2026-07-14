@@ -105,6 +105,14 @@ class PlatformRuntimeAndroid(
         return svc
     }
 
+    /**
+     * plan §4.3 T4 stub — 先返回 MockGpsSource 让编译 / 现有测试继续过。
+     * T5 会把返回值替换为真实的 [com.uvp.sim.domain.location.AndroidSystemLocationProvider]。
+     */
+    override fun buildLocationProvider(startPoint: com.uvp.sim.config.GeoPoint):
+        com.uvp.sim.domain.location.LocationProvider =
+        com.uvp.sim.domain.MockGpsSource(startPoint)
+
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
         val cam = cameraCaptureRef ?: return
         // P2-2(2026-06-28):不再粗暴 release + new 整个 streamer ——

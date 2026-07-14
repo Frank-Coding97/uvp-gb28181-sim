@@ -83,6 +83,14 @@ class PlatformRuntimeIos : PlatformRuntime {
         audioCaptureRef?.applyConfig(audioConfig)
     }
 
+    /**
+     * TODO(v1.1):替换为 IosCoreLocationProvider(CLLocationManager + CLLocationManagerDelegate)。
+     * 当前 v1 iOS 不发版,仍复用 MockGpsSource 让编译 / 单测继续过。真实用户流量走 Android。
+     */
+    override fun buildLocationProvider(startPoint: com.uvp.sim.config.GeoPoint):
+        com.uvp.sim.domain.location.LocationProvider =
+        com.uvp.sim.domain.MockGpsSource(startPoint)
+
     override suspend fun release() {
         // cross-review R1 #6:释放顺序严格
         //   (1) 先停活跃录像:如果 runtime 释放时还在录像,stop() 会 finalize writer /
