@@ -148,6 +148,7 @@ class SipMessageRouterTest {
             return RoutingResult.Handled
         }
         override suspend fun shutdown() {}
+        override suspend fun resyncLocationLifecycle() {}
     }
 
     private fun request(method: SipMethod, callId: String = "abc@host"): SipRequest = SipRequest(

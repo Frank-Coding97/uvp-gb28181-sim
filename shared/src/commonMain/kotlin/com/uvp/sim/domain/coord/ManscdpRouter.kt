@@ -49,6 +49,14 @@ internal interface ManscdpRouter : Coordinator {
         cache: com.uvp.sim.snapshot.JpegLocalCache,
         httpClient: HttpClient,
     )
+
+    /**
+     * cross-review R1 #3 修复 — Android 权限授予 / iOS 授权变化后触发一次 location lifecycle 重同步。
+     *
+     * 场景:MobilePosition 订阅在权限弹窗期间已激活,provider.start() 因缺权限 no-op 返回;
+     * 用户随后授予 FINE/COARSE 时,如果没这个 hook,订阅会持续无 fix。
+     */
+    suspend fun resyncLocationLifecycle()
 }
 
 internal sealed class ManscdpEvent {

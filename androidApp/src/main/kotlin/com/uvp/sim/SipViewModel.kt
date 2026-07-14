@@ -517,6 +517,16 @@ class SipViewModel @JvmOverloads constructor(
         runtime.applyVideoConfig(newCaptureConfig(), newAudioCaptureConfig())
     }
 
+    /**
+     * cross-review R1 #3 修复 — Activity 在 onRequestPermissionsResult 拿到 FINE/COARSE
+     * 授权后调用,恢复已存在的 MobilePosition 订阅定位流。
+     */
+    fun onLocationPermissionGranted() {
+        viewModelScope.launch {
+            appEngine.onLocationPermissionGranted()
+        }
+    }
+
     companion object {
         private const val MAX_EVENT_LOG = 200
 

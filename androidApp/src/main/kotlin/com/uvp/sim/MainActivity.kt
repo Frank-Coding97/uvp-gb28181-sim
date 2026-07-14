@@ -71,6 +71,12 @@ class MainActivity : ComponentActivity() {
                 result[Manifest.permission.RECORD_AUDIO] == true) {
                 viewModel.applyCurrentVideoConfig()
             }
+            // cross-review R1 #3 修复 — FINE 或 COARSE 授权后,已存在的 MobilePosition 订阅需
+            // 重同步定位生命周期(否则订阅期间授权 → provider 一直 no-op,直到取消订阅重来才恢复)
+            if (result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                result[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
+                viewModel.onLocationPermissionGranted()
+            }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {

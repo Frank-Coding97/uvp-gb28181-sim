@@ -289,6 +289,10 @@ internal class ManscdpRouterImpl(
         upgradeJob = null
     }
 
+    override suspend fun resyncLocationLifecycle() {
+        syncLocationLifecycleLocked()
+    }
+
     // ----------------------------------------------------------------------
     // public 主动业务发起
     // ----------------------------------------------------------------------

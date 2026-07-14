@@ -187,6 +187,9 @@ class SimulatorEngine internal constructor(
     suspend fun localResetAlarm() = manscdp.localResetAlarm()
     suspend fun triggerMediaStatusAbnormal(notifyType: Int) = manscdp.triggerMediaStatusAbnormal(notifyType)
 
+    /** cross-review R1 #3 修复 — Android/iOS 授权后触发 location lifecycle 重同步(见 [ManscdpRouter.resyncLocationLifecycle])。 */
+    suspend fun resyncLocationLifecycle() = manscdp.resyncLocationLifecycle()
+
     suspend fun updateCatalogTree(tree: List<com.uvp.sim.config.CatalogNode>) = manscdp.updateCatalogTree(tree)
     suspend fun pushCatalogNotify() = manscdp.pushCatalogNotify()
     suspend fun pushCatalogIncremental(events: List<com.uvp.sim.config.CatalogChangeEvent>) =

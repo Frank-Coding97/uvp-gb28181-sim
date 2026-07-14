@@ -484,6 +484,13 @@ class AppEngine(
     suspend fun reportAlarm(payload: AlarmPayload) { engine?.reportAlarm(payload) }
     suspend fun localResetAlarm() { engine?.localResetAlarm() }
     suspend fun triggerMediaStatusAbnormal(notifyType: Int) { engine?.triggerMediaStatusAbnormal(notifyType) }
+
+    /**
+     * cross-review R1 #3 修复 — 由平台壳(Android MainActivity onRequestPermissionsResult /
+     * iOS AppDelegate)在用户授予 LOCATION 权限后调用,让已存在的 MobilePosition 订阅立即恢复
+     * 定位流。engine 未起时 no-op(权限授予早于 connect,下次 connect 走正常路径)。
+     */
+    suspend fun onLocationPermissionGranted() { engine?.resyncLocationLifecycle() }
     suspend fun stopStream(reason: String = "user stop") { engine?.stopStream(reason) }
     suspend fun stopBroadcast(reason: BroadcastEndReason = BroadcastEndReason.Local) { engine?.stopBroadcast(reason) }
     fun setBroadcastSpeaker(on: Boolean) {
