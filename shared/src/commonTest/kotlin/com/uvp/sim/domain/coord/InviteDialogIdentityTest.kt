@@ -92,6 +92,10 @@ class InviteDialogIdentityTest {
             catalogTree = tree,
             mutableSipState = sipState,
             simEventEmit = {},
+            // baseline red · task 12:iOS simulator 上 CameraCapture.start() 抛异常会
+            // 触发 onMediaFailure 清 activeStream,把 dialog identity 断言撕烂;本套测试
+            // 只关心 SIP 层校验,LAZY 媒体 job 不启动即可。
+            autoStartMediaJobs = false,
         )
     }
 

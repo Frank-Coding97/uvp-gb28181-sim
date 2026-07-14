@@ -73,6 +73,18 @@ internal class InviteCoordinatorImpl(
     callIdSetter: ((String) -> Unit)? = null,
     fromTagProvider: (() -> String?)? = null,
     fromTagSetter: ((String) -> Unit)? = null,
+    /**
+     * baseline red · task 12(2026-07-14):iOS 单测环境下 CameraCapture.start()
+     * 抛 IllegalStateException(AVCaptureSession 在 simulator 不可用),触发
+     * launchVideoSendLoop 的 catch → onMediaFailure → cleanupActiveStream 会把
+     * activeStream 清成 null,把 dialog identity 测试的断言撕烂。
+     *
+     * 生产路径(AppEngine.buildCoordinators)始终传 true;仅
+     * InviteDialogIdentityTest 这类只关心 dialog identity 校验、不关心媒体线的
+     * 单测传 false — activeStream 正常发布,但 LAZY 的 streamJob / audioJob 保
+     * 持未启动,camera 的失败 exception 不会打断测试。
+     */
+    private val autoStartMediaJobs: Boolean = true,
 ) : InviteCoordinator {
 
     // ---- 公开 state / events ----
@@ -493,8 +505,11 @@ internal class InviteCoordinatorImpl(
             "开始推流 → ${accepted.offer.remoteIp}:${accepted.offer.remotePort} ssrc=${accepted.ssrc}"
         )
 
-        // R3 #2:activeStream 已发布,启动所有 LAZY job
-        media.startAll()
+        // R3 #2:activeStream 已发布,启动所有 LAZY job(测试路径通过 autoStartMediaJobs=false 跳过,
+        // 避免 iOS simulator 的 CameraCapture.start 抛 IllegalStateException 打断 dialog identity 测试)
+        if (autoStartMediaJobs) {
+            media.startAll()
+        }
     }
 
     /**
