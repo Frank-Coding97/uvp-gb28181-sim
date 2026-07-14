@@ -117,7 +117,7 @@ internal class CatalogSubRouter(
     }
 
     private suspend fun sendMobilePositionResponse(sn: String) {
-        val fix = ctx.mockGps.next()
+        val fix = ctx.mockGps.next() ?: return // 无 fix 时静默 skip(plan §3.3 Q4 单次查询与 NOTIFY 同路径)
         val xmlBody = MobilePositionResponse.build(
             deviceId = ctx.config.device.deviceId,
             sn = sn,

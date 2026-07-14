@@ -126,8 +126,8 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
     }
 
     suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
+        val fix = ctx.mockGps.next() ?: return // 无 fix 时静默 skip(plan §3.3 权限拒 / 尚无首帧)
         notifySn++
-        val fix = ctx.mockGps.next()
         val xml = MobilePositionNotify.build(
             deviceId = ctx.config.device.deviceId,
             sn = notifySn,

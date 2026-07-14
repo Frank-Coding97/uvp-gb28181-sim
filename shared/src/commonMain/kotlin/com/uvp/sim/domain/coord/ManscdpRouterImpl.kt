@@ -10,7 +10,7 @@ import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlActions
 import com.uvp.sim.domain.DeviceControlDispatcher
 import com.uvp.sim.domain.DeviceControlModel
-import com.uvp.sim.domain.MockGpsSource
+import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionDialog
 import com.uvp.sim.domain.SubscriptionRegistry
@@ -89,7 +89,7 @@ internal class ManscdpRouterImpl(
     private val requestKeyFrameCallback: () -> Unit,
     private val broadcastInvoker: BroadcastInvoker,
     private val recordingService: RecordingService,
-    private val mockGps: MockGpsSource,
+    private val mockGps: LocationProvider,
     private val clockOffsetProvider: () -> ClockOffset = { ClockOffset.Empty },
     private val stateRegisteredOrInCall: () -> Boolean = { true },
     private val broadcastBusy: () -> Boolean = { false },

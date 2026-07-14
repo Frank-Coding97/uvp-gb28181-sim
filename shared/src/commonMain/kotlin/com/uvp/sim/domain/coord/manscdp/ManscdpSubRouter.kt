@@ -4,9 +4,9 @@ import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlModel
-import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionRegistry
+import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.sip.SipDialogIdentityService
 import com.uvp.sim.sip.SipOutbox
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +54,7 @@ internal class ManscdpContext(
     val subscriptionRegistry: SubscriptionRegistry,
     val deviceControlState: MutableStateFlow<DeviceControlModel>,
     val catalogTree: MutableStateFlow<List<CatalogNode>>,
-    val mockGps: MockGpsSource,
+    val mockGps: LocationProvider,
     val localIpProvider: () -> String,
     val localPortProvider: () -> Int,
     val clockOffsetProvider: () -> ClockOffset,
