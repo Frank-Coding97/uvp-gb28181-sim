@@ -135,6 +135,7 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
             speed = fix.speed,
             direction = fix.direction,
             altitude = fix.altitude,
+            fixTimeMs = fix.fixTimeMs,
         )
         val notify = buildNotifyForDialog(dialog, xml)
         try {

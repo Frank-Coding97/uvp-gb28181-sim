@@ -23,7 +23,8 @@ class MobilePositionResponseTest {
         assertTrue(xml.contains("<Time>2026-06-13T18:00:00</Time>"))
         assertTrue(xml.contains("<Longitude>116.404123</Longitude>"))
         assertTrue(xml.contains("<Latitude>39.915456</Latitude>"))
-        assertTrue(xml.contains("<Speed>12.5</Speed>"))
+        // speed 12.5 m/s × 3.6 = 45.0 km/h(plan §6.2 builder 层换算)
+        assertTrue(xml.contains("<Speed>45.0</Speed>"))
         assertTrue(xml.contains("<Direction>90.0</Direction>"))
         assertTrue(xml.contains("<Altitude>50.0</Altitude>"))
     }
@@ -54,8 +55,8 @@ class MobilePositionResponseTest {
         // 经纬度 6 位小数四舍五入
         assertTrue(xml.contains("<Longitude>116.404124</Longitude>"))
         assertTrue(xml.contains("<Latitude>39.915457</Latitude>"))
-        // 速度/方向/高度 1 位小数
-        assertTrue(xml.contains("<Speed>0.1</Speed>"))
+        // speed 0.05 m/s × 3.6 = 0.18 km/h → half-up 到 0.2
+        assertTrue(xml.contains("<Speed>0.2</Speed>"))
         assertTrue(xml.contains("<Direction>360.0</Direction>"))
         assertTrue(xml.contains("<Altitude>100.0</Altitude>"))
     }
