@@ -84,12 +84,12 @@ class PlatformRuntimeIos : PlatformRuntime {
     }
 
     /**
-     * TODO(v1.1):替换为 IosCoreLocationProvider(CLLocationManager + CLLocationManagerDelegate)。
-     * 当前 v1 iOS 不发版,仍复用 MockGpsSource 让编译 / 单测继续过。真实用户流量走 Android。
+     * plan §5.1 iOS 版本 — 生产 impl 走 CoreLocation(kCLLocationAccuracyBest,GPS+WiFi 融合)。
+     * startPoint 参数忽略 — 真实定位不需要 seed,首帧到达前 next() 返回 null。
      */
     override fun buildLocationProvider(startPoint: com.uvp.sim.config.GeoPoint):
         com.uvp.sim.domain.location.LocationProvider =
-        com.uvp.sim.domain.MockGpsSource(startPoint)
+        com.uvp.sim.domain.location.IosCoreLocationProvider()
 
     override suspend fun release() {
         // cross-review R1 #6:释放顺序严格

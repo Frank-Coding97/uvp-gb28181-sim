@@ -69,6 +69,8 @@ targets:
         # Permissions per plan §3.4
         NSCameraUsageDescription: "UVP Sim needs camera access to simulate a GB28181 device video stream."
         NSMicrophoneUsageDescription: "UVP Sim needs microphone access to simulate a GB28181 device audio stream."
+        # real-gps-source plan §5.1 iOS — MobilePosition NOTIFY 通过 CoreLocation 上报真实 GPS
+        NSLocationWhenInUseUsageDescription: "UVP Sim reports device GPS coordinates to the GB28181 upstream platform you configure. Location data is sent only while the app is in use, and only to your chosen platform — never to third parties."
         # Compose Multiplatform iOS runtime sanity check (F4 fix). Enables
         # high-refresh-rate rendering on ProMotion iPhones. Docs:
         # https://developer.apple.com/documentation/quartzcore/optimizing_promotion_refresh_rates_for_iphone_13_pro_and_ipad_pro

@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.network.Heartbeat
+import kotlin.concurrent.Volatile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
