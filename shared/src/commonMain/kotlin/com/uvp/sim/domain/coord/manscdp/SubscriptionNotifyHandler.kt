@@ -7,8 +7,12 @@ import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipRequest
+import kotlin.concurrent.Volatile
 
 /**
  * MANSCDP NOTIFY 扇出 —— 从 [com.uvp.sim.domain.coord.ManscdpRouterImpl] 抽出(cross-review R1 #3)。
@@ -24,6 +28,10 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
     private var notifySn = 0
     private var catalogNotifySn = 0
     private var alarmNotifySn = 0
+
+    /** F4 P1-5 fix — 无 fix 时静默的边缘状态去重,状态变化时 emit 一次日志(避免每次心跳刷屏)。 */
+    @Volatile
+    private var lastPositionFixSkipLogged: Boolean = false
 
     /**
      * 递增并返回 position/MediaStatus 共用的 NOTIFY SN。
@@ -126,7 +134,26 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
     }
 
     suspend fun sendPositionNotify(dialog: SubscriptionDialog) {
-        val fix = ctx.mockGps.next() ?: return // 无 fix 时静默 skip(plan §3.3 权限拒 / 尚无首帧)
+        val fix = ctx.mockGps.next()
+        if (fix == null) {
+            // 无 fix 时静默不发 NOTIFY(spec AC-6/AC-8 合规默认),但按状态变化 emit 日志方便联调定位
+            if (!lastPositionFixSkipLogged) {
+                lastPositionFixSkipLogged = true
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Subscription,
+                    "MobilePosition NOTIFY 静默中: subscriber=${dialog.subscriberUri}",
+                    detail = "LocationProvider.next() 返回 null。可能原因:未 start / 定位权限拒 / 定位服务关 / 尚无首帧 fix。授权/首帧到达后恢复。",
+                )
+            }
+            return
+        }
+        if (lastPositionFixSkipLogged) {
+            lastPositionFixSkipLogged = false
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Subscription,
+                "MobilePosition NOTIFY 恢复: subscriber=${dialog.subscriberUri}",
+            )
+        }
         notifySn++
         val xml = MobilePositionNotify.build(
             deviceId = ctx.config.device.deviceId,

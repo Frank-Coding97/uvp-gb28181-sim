@@ -117,7 +117,17 @@ internal class CatalogSubRouter(
     }
 
     private suspend fun sendMobilePositionResponse(sn: String) {
-        val fix = ctx.mockGps.next() ?: return // 无 fix 时静默 skip(plan §3.3 Q4 单次查询与 NOTIFY 同路径)
+        val fix = ctx.mockGps.next()
+        if (fix == null) {
+            // plan §3.3 Q4 单次查询与 NOTIFY 同路径:无 fix 时不响应,让平台超时
+            // F4 P1-5 fix:单次查询是独立事件,不去重,每次 log 一次让联调 grep 得到
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "MobilePosition 单次查询无 fix 数据 → 不响应 sn=$sn",
+                detail = "LocationProvider.next() 返回 null。可能原因:未 start / 定位权限拒 / 定位服务关 / 尚无首帧 fix。",
+            )
+            return
+        }
         val xmlBody = MobilePositionResponse.build(
             deviceId = ctx.config.device.deviceId,
             sn = sn,
