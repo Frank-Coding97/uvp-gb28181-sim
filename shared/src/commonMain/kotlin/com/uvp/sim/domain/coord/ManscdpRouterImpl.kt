@@ -573,143 +573,154 @@ internal class ManscdpRouterImpl(
         }
     }
 
+    /**
+     * cross-review R2 #4 拆分 — 原 handleSubscribe 145 行 5 职责集中处理,拆成:
+     * - [onNewSubscription] 注册 + 生命周期同步 + 初始 NOTIFY + event emit
+     * - [onRefreshSubscription] fromTag 校验 + 续期
+     * - [onCancelSubscription] fromTag 校验 + 取消 + event emit
+     * 主编排函数保留 intent dispatch,单一职责。
+     */
     private suspend fun handleSubscribe(req: SipRequest) {
         val intent = SubscribeHandler.parse(req, subscriptionRegistry.knownCallIds())
         when (intent) {
-            is SubscribeIntent.NewSubscription -> {
-                val toTag = SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds, userAgent = config.userAgent)
-                outbox.send(ok).getOrThrow()
-
-                val dialog = SubscriptionDialog(
-                    kind = intent.kind,
-                    subscriberUri = intent.subscriberUri,
-                    callId = intent.callId,
-                    fromTag = intent.fromTag,
-                    toTag = toTag,
-                    intervalSeconds = intent.intervalSeconds,
-                    expiresSeconds = intent.expiresSeconds,
-                    remainingSeconds = intent.expiresSeconds,
-                )
-                subscriptionRegistry.activate(
-                    dialog,
-                    onExpire = { d ->
-                        if (d.kind == "Alarm") {
-                            simEventEmit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
-                            SystemLogger.emit(
-                                LogLevel.Info, LogTag.Subscription,
-                                "报警订阅自然过期: ${d.subscriberUri}",
-                            )
-                        }
-                    },
-                ) { d ->
-                    when (d.kind) {
-                        "Catalog" -> notifyHandler.sendCatalogNotify(d)
-                        "Alarm" -> Unit
-                        else -> notifyHandler.sendPositionNotify(d)
-                    }
-                }
-
-                // plan §3.2 — MobilePosition dialog 新加入,同步启动位置监听。
-                //   注:onDialogRemoved 只处理移除路径,加入路径要显式调 sync。
-                //   MobilePosition 走这条路径最典型,其他 kind 命中 sync 内部判 isEmpty 保持无位置监听。
-                if (intent.kind == "MobilePosition") syncLocationLifecycleLocked()
-
-                when (intent.kind) {
-                    "Catalog" -> notifyHandler.sendCatalogNotify(dialog)
-                    "Alarm" -> Unit
-                    else -> notifyHandler.sendPositionNotify(dialog)
-                }
-
-                if (intent.kind == "Alarm") {
-                    simEventEmit(
-                        SimEvent.AlarmSubscribed(
-                            subscriber = intent.subscriberUri,
-                            expires = intent.expiresSeconds,
-                        )
-                    )
-                } else {
-                    simEventEmit(
-                        SimEvent.SubscribeReceived(
-                            subscriber = intent.subscriberUri,
-                            kind = intent.kind,
-                            expiresSeconds = intent.expiresSeconds,
-                            intervalSeconds = intent.intervalSeconds,
-                        )
-                    )
-                }
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Subscription,
-                    "收到${subscriptionLabel(intent.kind)}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s",
-                )
-            }
-
-            is SubscribeIntent.Refresh -> {
-                // R2 #6:仅靠 Call-ID 不够,fromTag 必须跟原 dialog 一致;否则按 RFC 3261 § 12 视为不同 dialog。
-                val existing = subscriptionRegistry.currentDialog(intent.callId)
-                if (existing != null && existing.fromTag != intent.fromTag) {
-                    SystemLogger.emit(
-                        LogLevel.Warning, LogTag.Subscription,
-                        "拒绝 SUBSCRIBE refresh: From tag 不匹配 (期望=${existing.fromTag}, 实际=${intent.fromTag})",
-                    )
-                    sendSubscribeError(req, 481, "Call/Transaction Does Not Exist")
-                    return
-                }
-                val toTag = existing?.toTag ?: SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
-                outbox.send(ok).getOrThrow()
-                subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
-
-                val d = subscriptionRegistry.currentDialog(intent.callId)
-                simEventEmit(
-                    SimEvent.SubscribeRefreshed(
-                        subscriber = d?.subscriberUri ?: "",
-                        newExpiresSeconds = intent.newExpiresSeconds,
-                    )
-                )
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Subscription,
-                    "${subscriptionLabel(d?.kind)}订阅已刷新: expires=${intent.newExpiresSeconds}s",
-                )
-            }
-
-            is SubscribeIntent.Cancel -> {
-                // R2 #6:同 Refresh,fromTag 不匹配拒绝。
-                val d = subscriptionRegistry.currentDialog(intent.callId)
-                if (d != null && d.fromTag != intent.fromTag) {
-                    SystemLogger.emit(
-                        LogLevel.Warning, LogTag.Subscription,
-                        "拒绝 SUBSCRIBE cancel: From tag 不匹配 (期望=${d.fromTag}, 实际=${intent.fromTag})",
-                    )
-                    sendSubscribeError(req, 481, "Call/Transaction Does Not Exist")
-                    return
-                }
-                val toTag = d?.toTag ?: SipBuilders.randomTag()
-                val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
-                outbox.send(ok).getOrThrow()
-                subscriptionRegistry.cancel(intent.callId)
-
-                if (d?.kind == "Alarm") {
-                    simEventEmit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
-                } else {
-                    simEventEmit(
-                        SimEvent.SubscribeExpired(
-                            subscriber = d?.subscriberUri ?: "",
-                            kind = d?.kind ?: "MobilePosition",
-                        )
-                    )
-                }
-                SystemLogger.emit(
-                    LogLevel.Info, LogTag.Subscription,
-                    "${subscriptionLabel(d?.kind)}订阅已取消: ${d?.subscriberUri}",
-                )
-            }
-
-            is SubscribeIntent.Reject -> {
-                sendSubscribeError(req, intent.statusCode, intent.reason)
-            }
-
+            is SubscribeIntent.NewSubscription -> onNewSubscription(req, intent)
+            is SubscribeIntent.Refresh -> onRefreshSubscription(req, intent)
+            is SubscribeIntent.Cancel -> onCancelSubscription(req, intent)
+            is SubscribeIntent.Reject -> sendSubscribeError(req, intent.statusCode, intent.reason)
             is SubscribeIntent.Ignored -> Unit
+        }
+    }
+
+    private suspend fun onNewSubscription(req: SipRequest, intent: SubscribeIntent.NewSubscription) {
+        val toTag = SipBuilders.randomTag()
+        val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds, userAgent = config.userAgent)
+        outbox.send(ok).getOrThrow()
+
+        val dialog = SubscriptionDialog(
+            kind = intent.kind,
+            subscriberUri = intent.subscriberUri,
+            callId = intent.callId,
+            fromTag = intent.fromTag,
+            toTag = toTag,
+            intervalSeconds = intent.intervalSeconds,
+            expiresSeconds = intent.expiresSeconds,
+            remainingSeconds = intent.expiresSeconds,
+        )
+        subscriptionRegistry.activate(
+            dialog,
+            onExpire = { d ->
+                if (d.kind == "Alarm") {
+                    simEventEmit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Subscription,
+                        "报警订阅自然过期: ${d.subscriberUri}",
+                    )
+                }
+            },
+        ) { d ->
+            when (d.kind) {
+                "Catalog" -> notifyHandler.sendCatalogNotify(d)
+                "Alarm" -> Unit
+                else -> notifyHandler.sendPositionNotify(d)
+            }
+        }
+
+        // plan §3.2 — MobilePosition dialog 新加入,同步启动位置监听。
+        //   注:onDialogRemoved 只处理移除路径,加入路径要显式调 sync。
+        if (intent.kind == "MobilePosition") syncLocationLifecycleLocked()
+
+        // 初始 NOTIFY(除 Alarm 外 kind 立即推一次)
+        when (intent.kind) {
+            "Catalog" -> notifyHandler.sendCatalogNotify(dialog)
+            "Alarm" -> Unit
+            else -> notifyHandler.sendPositionNotify(dialog)
+        }
+
+        emitSubscribeEvent(intent)
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Subscription,
+            "收到${subscriptionLabel(intent.kind)}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s",
+        )
+    }
+
+    private suspend fun onRefreshSubscription(req: SipRequest, intent: SubscribeIntent.Refresh) {
+        // R2 #6:仅靠 Call-ID 不够,fromTag 必须跟原 dialog 一致;否则按 RFC 3261 § 12 视为不同 dialog。
+        val existing = subscriptionRegistry.currentDialog(intent.callId)
+        if (existing != null && existing.fromTag != intent.fromTag) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "拒绝 SUBSCRIBE refresh: From tag 不匹配 (期望=${existing.fromTag}, 实际=${intent.fromTag})",
+            )
+            sendSubscribeError(req, 481, "Call/Transaction Does Not Exist")
+            return
+        }
+        val toTag = existing?.toTag ?: SipBuilders.randomTag()
+        val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
+        outbox.send(ok).getOrThrow()
+        subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
+
+        val d = subscriptionRegistry.currentDialog(intent.callId)
+        simEventEmit(
+            SimEvent.SubscribeRefreshed(
+                subscriber = d?.subscriberUri ?: "",
+                newExpiresSeconds = intent.newExpiresSeconds,
+            )
+        )
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Subscription,
+            "${subscriptionLabel(d?.kind)}订阅已刷新: expires=${intent.newExpiresSeconds}s",
+        )
+    }
+
+    private suspend fun onCancelSubscription(req: SipRequest, intent: SubscribeIntent.Cancel) {
+        // R2 #6:同 Refresh,fromTag 不匹配拒绝。
+        val d = subscriptionRegistry.currentDialog(intent.callId)
+        if (d != null && d.fromTag != intent.fromTag) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "拒绝 SUBSCRIBE cancel: From tag 不匹配 (期望=${d.fromTag}, 实际=${intent.fromTag})",
+            )
+            sendSubscribeError(req, 481, "Call/Transaction Does Not Exist")
+            return
+        }
+        val toTag = d?.toTag ?: SipBuilders.randomTag()
+        val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
+        outbox.send(ok).getOrThrow()
+        subscriptionRegistry.cancel(intent.callId)
+
+        if (d?.kind == "Alarm") {
+            simEventEmit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
+        } else {
+            simEventEmit(
+                SimEvent.SubscribeExpired(
+                    subscriber = d?.subscriberUri ?: "",
+                    kind = d?.kind ?: "MobilePosition",
+                )
+            )
+        }
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Subscription,
+            "${subscriptionLabel(d?.kind)}订阅已取消: ${d?.subscriberUri}",
+        )
+    }
+
+    private suspend fun emitSubscribeEvent(intent: SubscribeIntent.NewSubscription) {
+        if (intent.kind == "Alarm") {
+            simEventEmit(
+                SimEvent.AlarmSubscribed(
+                    subscriber = intent.subscriberUri,
+                    expires = intent.expiresSeconds,
+                )
+            )
+        } else {
+            simEventEmit(
+                SimEvent.SubscribeReceived(
+                    subscriber = intent.subscriberUri,
+                    kind = intent.kind,
+                    expiresSeconds = intent.expiresSeconds,
+                    intervalSeconds = intent.intervalSeconds,
+                )
+            )
         }
     }
 
