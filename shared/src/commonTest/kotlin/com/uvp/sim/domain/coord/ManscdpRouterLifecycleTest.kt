@@ -216,4 +216,65 @@ class ManscdpRouterLifecycleTest {
         // 第一次可能还有 c2 存活不 stop,第二次 isEmpty=true 才 stop → stop 至少 1 次
         assertEquals(true, location.stopCalls >= 1, "cancelAll 必须最终触发 stop,实际=${location.stopCalls}")
     }
+
+    // ------ cross-review R1 #7 补测试(covers fix #1 / #3 / #4)------
+
+    @Test
+    fun resyncLocationLifecycle_recoversActiveSubscription_afterAuthGrant() = runTest {
+        // cross-review R1 #3 场景:MobilePosition 订阅激活时权限未授(fake 里没模拟真实权限,
+        // 用 counting 观察 start 触发次数即可)。授权后调 resyncLocationLifecycle → 再次 start。
+        val registry = SubscriptionRegistry(this)
+        val location = CountingLocationProvider()
+        val router = newRouter(this, registry, location)
+
+        registry.activate(mobilePositionDialog("c1")) {}
+        runCurrent()
+        val startsBeforeResync = location.startCalls
+
+        router.resyncLocationLifecycle()
+        runCurrent()
+
+        assertEquals(
+            startsBeforeResync + 1, location.startCalls,
+            "resync 必须再次调 start,让授权前 no-op 的 provider 拿到真启动机会",
+        )
+    }
+
+    @Test
+    fun resyncLocationLifecycle_noopWhenNoSubscription() = runTest {
+        // 权限授予时如果没订阅,resync 不该无端启动 provider
+        val registry = SubscriptionRegistry(this)
+        val location = CountingLocationProvider()
+        val router = newRouter(this, registry, location)
+
+        router.resyncLocationLifecycle()
+        runCurrent()
+
+        assertEquals(0, location.startCalls, "无订阅时 resync 必须走 stop 路径,不该 start")
+    }
+
+    @Test
+    fun mutex_serializesSync_underRapidResync() = runTest {
+        // cross-review R1 #4 回归:多次并发 resync 走 mutex.withLock 串行化,不会因为交叉快照
+        // 导致稳态漂移。每次 resync 都读最新 dialogs 快照,同一状态下重复 sync 幂等。
+        val registry = SubscriptionRegistry(this)
+        val location = CountingLocationProvider()
+        val router = newRouter(this, registry, location)
+
+        registry.activate(mobilePositionDialog("c1")) {}
+        runCurrent()
+        val baselineStarts = location.startCalls
+
+        // 连续 3 次 resync — mutex 保证每次都读到最新稳态,provider 应该继续 start 3 次(幂等)
+        router.resyncLocationLifecycle()
+        router.resyncLocationLifecycle()
+        router.resyncLocationLifecycle()
+        runCurrent()
+
+        assertEquals(
+            baselineStarts + 3, location.startCalls,
+            "3 次 resync 应触发 3 次 start(每次都读到 hasSub=true → start,Mutex 保证串行)"
+        )
+        assertEquals(0, location.stopCalls, "订阅在时不该 stop")
+    }
 }
