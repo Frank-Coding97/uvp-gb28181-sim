@@ -88,61 +88,32 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             return@callbackFlow
         }
 
-        val eng = AVAudioEngine()
-        val input = eng.inputNode
-        val hwFormat = input.inputFormatForBus(0u)
-
-        if (hwFormat.sampleRate <= 0.0) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "IOS_AUDIO_START_FAILED codec=${config.codec} bus0 hw sampleRate=${hwFormat.sampleRate}"
-            )
-            releaseAudioSession()
-            close(IllegalStateException("bus0 hw sampleRate<=0"))
-            return@callbackFlow
-        }
-
-        val targetFormat = AVAudioFormat(
-            commonFormat = AVAudioPCMFormatInt16,
-            sampleRate = SAMPLE_RATE_HZ,
+        val setup = buildAudioEngineSetup(
+            codec = config.codec,
+            targetSampleRate = SAMPLE_RATE_HZ,
             channels = CHANNELS,
-            interleaved = true,
-        )
-        val converter = AVAudioConverter(fromFormat = hwFormat, toFormat = targetFormat)
-        if (converter == null) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "IOS_AUDIO_START_FAILED codec=${config.codec} converter create failed " +
-                    "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch → target=${SAMPLE_RATE_HZ.toInt()}Hz/${CHANNELS.toInt()}ch"
-            )
-            releaseAudioSession()
-            close(IllegalStateException("AVAudioConverter create failed"))
+            onSetupError = { releaseAudioSession() },
+        ) ?: run {
+            close(IllegalStateException("audio engine setup failed for ${config.codec}"))
             return@callbackFlow
         }
-
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Media,
-            "IOS_AUDIO_HW_FORMAT codec=${config.codec} " +
-                "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch " +
-                "→ target=${SAMPLE_RATE_HZ.toInt()}Hz/${CHANNELS.toInt()}ch"
-        )
 
         var tapCallbacks = 0L
         var emittedFrames = 0L
 
-        input.installTapOnBus(
+        setup.input.installTapOnBus(
             bus = 0u,
             bufferSize = HW_TAP_BUFFER_FRAMES,
-            format = hwFormat,
+            format = setup.hwFormat,
         ) { buffer: AVAudioPCMBuffer?, _: AVAudioTime? ->
             if (buffer == null) return@installTapOnBus
             tapCallbacks += 1
             val pcm = convertToInt16Pcm(
                 inputBuffer = buffer,
-                converter = converter,
-                targetFormat = targetFormat,
+                converter = setup.converter,
+                targetFormat = setup.targetFormat,
                 targetSampleRate = SAMPLE_RATE_HZ,
-                hwSampleRate = hwFormat.sampleRate,
+                hwSampleRate = setup.hwFormat.sampleRate,
             ) ?: run {
                 if (tapCallbacks <= 3L) {
                     SystemLogger.emit(
@@ -167,21 +138,8 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             }
         }
 
-        eng.prepare()
-        val started = memScoped {
-            val errPtr = alloc<ObjCObjectVar<NSError?>>()
-            val ok = eng.startAndReturnError(errPtr.ptr)
-            if (!ok) {
-                val desc = errPtr.value?.localizedDescription ?: "unknown"
-                SystemLogger.emit(
-                    LogLevel.Error, LogTag.Media,
-                    "IOS_AUDIO_START_FAILED codec=${config.codec} error=$desc",
-                )
-            }
-            ok
-        }
-        if (!started) {
-            input.removeTapOnBus(0u)
+        if (!startAudioEngine(setup.engine, config.codec)) {
+            setup.input.removeTapOnBus(0u)
             releaseAudioSession()
             close(IllegalStateException("AVAudioEngine.start failed"))
             return@callbackFlow
@@ -194,11 +152,11 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             LogLevel.Info, LogTag.Media,
             "IOS_AUDIO_START codec=${config.codec} sr=${SAMPLE_RATE_HZ.toInt()} ch=${CHANNELS.toInt()}",
         )
-        engine = eng
+        engine = setup.engine
 
         awaitClose {
-            input.removeTapOnBus(0u)
-            eng.stop()
+            setup.input.removeTapOnBus(0u)
+            setup.engine.stop()
             engine = null
             activeChannel = null
             releaseAudioSession()
@@ -219,36 +177,14 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             return@callbackFlow
         }
 
-        val eng = AVAudioEngine()
-        val input = eng.inputNode
-        val hwFormat = input.inputFormatForBus(0u)
         val targetSampleRate = targetAudioSampleRate(config)
-
-        if (hwFormat.sampleRate <= 0.0) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "IOS_AUDIO_START_FAILED codec=AAC bus0 hw sampleRate=${hwFormat.sampleRate}"
-            )
-            releaseAudioSession()
-            close(IllegalStateException("bus0 hw sampleRate<=0"))
-            return@callbackFlow
-        }
-
-        val targetFormat = AVAudioFormat(
-            commonFormat = AVAudioPCMFormatInt16,
-            sampleRate = targetSampleRate,
+        val setup = buildAudioEngineSetup(
+            codec = AudioCodec.AAC,
+            targetSampleRate = targetSampleRate,
             channels = CHANNELS,
-            interleaved = true,
-        )
-        val converter = AVAudioConverter(fromFormat = hwFormat, toFormat = targetFormat)
-        if (converter == null) {
-            SystemLogger.emit(
-                LogLevel.Error, LogTag.Media,
-                "IOS_AUDIO_START_FAILED codec=AAC converter create failed " +
-                    "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch → target=${targetSampleRate.toInt()}Hz/${CHANNELS.toInt()}ch"
-            )
-            releaseAudioSession()
-            close(IllegalStateException("AVAudioConverter create failed for AAC"))
+            onSetupError = { releaseAudioSession() },
+        ) ?: run {
+            close(IllegalStateException("audio engine setup failed for AAC"))
             return@callbackFlow
         }
 
@@ -259,29 +195,22 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
         )
         aacEncoder = encoder
 
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Media,
-            "IOS_AUDIO_HW_FORMAT codec=AAC " +
-                "hw=${hwFormat.sampleRate}Hz/${hwFormat.channelCount}ch " +
-                "→ target=${targetSampleRate.toInt()}Hz/${CHANNELS.toInt()}ch"
-        )
-
         var tapCallbacks = 0L
         var emittedFrames = 0L
 
-        input.installTapOnBus(
+        setup.input.installTapOnBus(
             bus = 0u,
             bufferSize = HW_TAP_BUFFER_FRAMES,
-            format = hwFormat,
+            format = setup.hwFormat,
         ) { buffer: AVAudioPCMBuffer?, _: AVAudioTime? ->
             if (buffer == null) return@installTapOnBus
             tapCallbacks += 1
             val pcm = convertToInt16Pcm(
                 inputBuffer = buffer,
-                converter = converter,
-                targetFormat = targetFormat,
+                converter = setup.converter,
+                targetFormat = setup.targetFormat,
                 targetSampleRate = targetSampleRate,
-                hwSampleRate = hwFormat.sampleRate,
+                hwSampleRate = setup.hwFormat.sampleRate,
             ) ?: run {
                 if (tapCallbacks <= 3L) {
                     SystemLogger.emit(
@@ -307,21 +236,8 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             }
         }
 
-        eng.prepare()
-        val started = memScoped {
-            val errPtr = alloc<ObjCObjectVar<NSError?>>()
-            val ok = eng.startAndReturnError(errPtr.ptr)
-            if (!ok) {
-                val desc = errPtr.value?.localizedDescription ?: "unknown"
-                SystemLogger.emit(
-                    LogLevel.Error, LogTag.Media,
-                    "IOS_AUDIO_START_FAILED codec=${config.codec} error=$desc",
-                )
-            }
-            ok
-        }
-        if (!started) {
-            input.removeTapOnBus(0u)
+        if (!startAudioEngine(setup.engine, config.codec)) {
+            setup.input.removeTapOnBus(0u)
             encoder.close()
             aacEncoder = null
             releaseAudioSession()
@@ -335,11 +251,11 @@ class IosAudioStreamer(private val config: AudioCaptureConfig) {
             LogLevel.Info, LogTag.Media,
             "IOS_AUDIO_START codec=AAC sr=${targetSampleRate.toInt()} ch=${CHANNELS.toInt()}",
         )
-        engine = eng
+        engine = setup.engine
 
         awaitClose {
-            input.removeTapOnBus(0u)
-            eng.stop()
+            setup.input.removeTapOnBus(0u)
+            setup.engine.stop()
             engine = null
             encoder.close()
             aacEncoder = null
