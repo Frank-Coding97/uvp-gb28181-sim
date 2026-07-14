@@ -124,10 +124,12 @@ internal class CatalogSubRouter(
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Subscription,
                 "MobilePosition 单次查询无 fix 数据 → 不响应 sn=$sn",
-                detail = "LocationProvider.next() 返回 null。可能原因:未 start / 定位权限拒 / 定位服务关 / 尚无首帧 fix。",
+                detail = "LocationProvider.next() 返回 null。可能原因:未 start / 定位权限拒 / 定位服务关 / 尚无首帧 fix / fix 超过最大年龄。",
             )
             return
         }
+        // cross-review R1 #5 修复 — timestamp 用 fix.fixTimeMs(采样时间)而非 currentLocalIso(响应时间),
+        // 否则平台会把陈旧坐标看成"刚采集"而无法识别。 fixTimeMs = 0 时 fall back 到当前时间(测试 fixture 兼容)。
         val xmlBody = MobilePositionResponse.build(
             deviceId = ctx.config.device.deviceId,
             sn = sn,
@@ -135,7 +137,8 @@ internal class CatalogSubRouter(
             speed = fix.speed,
             direction = fix.direction,
             altitude = fix.altitude,
-            timestamp = ManscdpInternals.currentLocalIso(ctx.clockOffsetProvider),
+            timestamp = if (fix.fixTimeMs > 0L) null else ManscdpInternals.currentLocalIso(ctx.clockOffsetProvider),
+            fixTimeMs = fix.fixTimeMs,
         )
         val ok = ManscdpInternals.sendMansMessage(
             config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
