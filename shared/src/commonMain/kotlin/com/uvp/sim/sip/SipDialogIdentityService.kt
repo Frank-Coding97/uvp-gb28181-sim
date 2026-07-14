@@ -94,6 +94,20 @@ internal class DefaultSipDialogIdentityService(
     private val notifyMutex = Mutex()
     private val inviteMutex = Mutex()
 
+    /**
+     * baseline red · task 12:跨 pool 共享 random 访问的独立锁。
+     *
+     * Kotlin/Native 上 `Random.Default` 是共享单例但**非线程安全**,3 个 pool 各自的
+     * mutex 只序列化 cseq 递增,generateCallId 里 `random.nextBytes(8)` 在跨 pool
+     * 并发下(150 协程 · Dispatchers.Default)偶发返回重复字节序列 → 150 个 callId
+     * 出现 2-3 个重复,违反 concurrent_three_pools_mixed_no_crosstalk 契约。
+     *
+     * 修法:generateCallId 内套 randomMutex.withLock 序列化 random 访问。cseq 各自
+     * 递增仍走各 pool 独立 mutex,不影响并发结构。生产 SecureRandom 派生的
+     * Random 走同一路径也无副作用(多加一层短锁,可忽略)。
+     */
+    private val randomMutex = Mutex()
+
     private var registerCseq: Long = initialRegisterCseq
     private var registerSn: Long = 0L
 
@@ -143,16 +157,17 @@ internal class DefaultSipDialogIdentityService(
      * [localIpProvider] 是 lazy 派生(transport 没 bind 时返回 `0.0.0.0`),
      * 任何 throw / null-ish 回退 fallback,不让 callId 生成因 IP 不可用而崩。
      */
-    private fun generateCallId(): String {
-        val bytes = random.nextBytes(8)
+    private suspend fun generateCallId(): String {
+        // baseline red task 12:序列化 random 访问,防跨 pool 并发命中 Random.Default 非线程安全。
+        val bytes = randomMutex.withLock { random.nextBytes(8) }
         val hex = bytes.toHex()
         val ip = runCatching { localIpProvider().ifEmpty { "0.0.0.0" } }.getOrElse { "0.0.0.0" }
         return "$hex@$ip"
     }
 
     /** 10 字节 hex random — 跟 [SipHeaders.randomTag] 一致。 */
-    private fun generateTag(): String {
-        val bytes = random.nextBytes(5)
+    private suspend fun generateTag(): String {
+        val bytes = randomMutex.withLock { random.nextBytes(5) }
         return bytes.toHex()
     }
 
