@@ -53,6 +53,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
 
 /**
@@ -175,8 +177,11 @@ internal class ManscdpRouterImpl(
         //  · dialog 移除(cancel / cancelAll / 自然过期)→ 若无 MobilePosition dialog 则 stop
         //  · activate 后主动 syncLocationLifecycle()(见下方 handleSubscribe 处)
         //  · start()/stop() 幂等,重复调无副作用
+        // onDialogRemoved 是非 suspend 回调,scope.launch 让 mutex.withLock 生效
         subscriptionRegistry.setOnDialogRemoved { removed ->
-            if (removed.kind == "MobilePosition") syncLocationLifecycle()
+            if (removed.kind == "MobilePosition") {
+                scope.launch { syncLocationLifecycleLocked() }
+            }
         }
     }
 
@@ -184,23 +189,40 @@ internal class ManscdpRouterImpl(
      * plan §3.2.3 幂等启停策略 —
      * 有 MobilePosition dialog 就 start location provider,否则 stop。start()/stop() 幂等。
      *
-     * F7 P1-4 论证 · 为什么不加显式锁:
-     *   - `_dialogs` 是 [kotlinx.coroutines.flow.MutableStateFlow],`dialogsByKind` 读快照是原子的
-     *   - [LocationProvider.start] / [LocationProvider.stop] 内部本就是幂等 no-op(重复调无副作用)
-     *   - 竞态最坏后果:交叉的两次 sync 各读到不同的 dialogs 快照 → 一次 start + 一次 stop,
-     *     但最终稳态取决于**最后一次** sync 的期望状态 —— 只要 activate/onDialogRemoved 都
-     *     触发一次 sync(现在都触发了),subscribe 变更完成后至少有一次 sync 读到最终状态,稳态正确
-     *   - 中间态可能有一次多余的 start()→stop() 或 stop()→start(),Android 侧 LocationManager 是
-     *     容错的(重复 requestLocationUpdates 同 listener no-op),iOS 侧 CLLocationManager 也允许
-     *     重复 stopUpdatingLocation —— 无实际生产 bug
-     *
-     * KMP `synchronized` 在 K/N 上不可用,`kotlinx.atomicfu.locks` 需要额外依赖,当前不引入。
-     * 若未来发现真机联调有稳态漂移,则改用 kotlinx.atomicfu 加锁。
+     * cross-review R1 #4 修复 · 从"不加锁 + 幂等论证"改为"Mutex 串行化":
+     *   - 原论证漏洞:两个协程 T1、T2 分别在时刻 t1、t2 读到不同 dialogs 快照,若 T1 慢一点后
+     *     调 stop、T2 先调 start,可能形成"最终 stop 生效但订阅还在"的错误稳态。幂等只能防
+     *     重复调用,防不了乱序调用。
+     *   - 新策略:所有 sync 走 [locationSyncMutex] 串行化。读快照 + 决策 + start/stop 一起在
+     *     锁里做,天然消除交叉。
+     *   - 保持 start()/stop() 内部本身的幂等(Android LocationManager 重复注册 no-op,iOS
+     *     CLLocationManager 允许重复 stopUpdatingLocation),让 provider 层容错更宽松。
      */
-    private fun syncLocationLifecycle() {
-        val hasMobilePositionSub = subscriptionRegistry
-            .dialogsByKind("MobilePosition").isNotEmpty()
-        if (hasMobilePositionSub) mockGps.start() else mockGps.stop()
+    private suspend fun syncLocationLifecycleLocked() {
+        locationSyncMutex.withLock {
+            val hasMobilePositionSub = subscriptionRegistry
+                .dialogsByKind("MobilePosition").isNotEmpty()
+            if (hasMobilePositionSub) mockGps.start() else mockGps.stop()
+        }
+    }
+
+    private val locationSyncMutex = Mutex()
+
+    /**
+     * 单次查询用:确保 provider 已启动并等首个 fix 到达。cross-review R1 #1 修复入口 —
+     * 生产上 MobilePosition 单次查询是独立于订阅的 GB28181 路径,不能只靠订阅路径才启 provider。
+     */
+    internal suspend fun ensureLocationProviderStartedLocked() {
+        locationSyncMutex.withLock { mockGps.start() }
+    }
+
+    /**
+     * 单次查询完成后调用:如果当前没订阅,顺手停 provider。放到同一 mutex 里保证跟 sync 不打架。
+     */
+    internal suspend fun releaseLocationProviderIfIdleLocked() {
+        locationSyncMutex.withLock {
+            if (subscriptionRegistry.dialogsByKind("MobilePosition").isEmpty()) mockGps.stop()
+        }
     }
 
     /** 4 个 SubRouter + dispatcher 装配(lazy 让 deviceControlDispatcher 提前 by lazy 不撞冲突)。 */
@@ -584,7 +606,7 @@ internal class ManscdpRouterImpl(
                 // plan §3.2 — MobilePosition dialog 新加入,同步启动位置监听。
                 //   注:onDialogRemoved 只处理移除路径,加入路径要显式调 sync。
                 //   MobilePosition 走这条路径最典型,其他 kind 命中 sync 内部判 isEmpty 保持无位置监听。
-                if (intent.kind == "MobilePosition") syncLocationLifecycle()
+                if (intent.kind == "MobilePosition") syncLocationLifecycleLocked()
 
                 when (intent.kind) {
                     "Catalog" -> notifyHandler.sendCatalogNotify(dialog)
