@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
         }
 
         // 权限检查 — 没拿到就请求,拿到后媒体已就绪
+        // v1 real-gps-source(plan §5.2):MobilePosition 上报需要 FINE_LOCATION,COARSE 兜底
         val needs = mutableListOf<String>()
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) !=
             PackageManager.PERMISSION_GRANTED
@@ -103,6 +104,12 @@ class MainActivity : ComponentActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) needs += Manifest.permission.RECORD_AUDIO
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) needs += Manifest.permission.ACCESS_FINE_LOCATION
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) !=
+            PackageManager.PERMISSION_GRANTED
+        ) needs += Manifest.permission.ACCESS_COARSE_LOCATION
         if (needs.isNotEmpty()) requestPermissions.launch(needs.toTypedArray())
 
         setContent {

@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- MobilePosition NOTIFY 需要真实 GPS 定位(GB/T 28181 §9.3.5.2)。COARSE 兜底 NETWORK provider。
+         plan real-gps-source §5.2:合规审查 2026-07-13 建议 C 已回退,依据 v1 位置上报能力。 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- 前台 Service:录像中保活进程,避免锁屏 / 切后台被系统回收相机 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
