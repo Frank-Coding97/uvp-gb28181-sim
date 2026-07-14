@@ -183,6 +183,19 @@ internal class ManscdpRouterImpl(
     /**
      * plan §3.2.3 幂等启停策略 —
      * 有 MobilePosition dialog 就 start location provider,否则 stop。start()/stop() 幂等。
+     *
+     * F7 P1-4 论证 · 为什么不加显式锁:
+     *   - `_dialogs` 是 [kotlinx.coroutines.flow.MutableStateFlow],`dialogsByKind` 读快照是原子的
+     *   - [LocationProvider.start] / [LocationProvider.stop] 内部本就是幂等 no-op(重复调无副作用)
+     *   - 竞态最坏后果:交叉的两次 sync 各读到不同的 dialogs 快照 → 一次 start + 一次 stop,
+     *     但最终稳态取决于**最后一次** sync 的期望状态 —— 只要 activate/onDialogRemoved 都
+     *     触发一次 sync(现在都触发了),subscribe 变更完成后至少有一次 sync 读到最终状态,稳态正确
+     *   - 中间态可能有一次多余的 start()→stop() 或 stop()→start(),Android 侧 LocationManager 是
+     *     容错的(重复 requestLocationUpdates 同 listener no-op),iOS 侧 CLLocationManager 也允许
+     *     重复 stopUpdatingLocation —— 无实际生产 bug
+     *
+     * KMP `synchronized` 在 K/N 上不可用,`kotlinx.atomicfu.locks` 需要额外依赖,当前不引入。
+     * 若未来发现真机联调有稳态漂移,则改用 kotlinx.atomicfu 加锁。
      */
     private fun syncLocationLifecycle() {
         val hasMobilePositionSub = subscriptionRegistry
