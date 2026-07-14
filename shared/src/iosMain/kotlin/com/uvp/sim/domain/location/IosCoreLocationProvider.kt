@@ -15,8 +15,11 @@ import platform.CoreLocation.kCLAuthorizationStatusRestricted
 import platform.CoreLocation.kCLLocationAccuracyBest
 import platform.Foundation.NSError
 import platform.Foundation.NSDate
+import platform.Foundation.NSThread
 import platform.Foundation.timeIntervalSince1970
 import platform.darwin.NSObject
+import platform.darwin.dispatch_async
+import platform.darwin.dispatch_get_main_queue
 
 /**
  * iOS 系统 CoreLocation 实现的真实定位 [LocationProvider](plan §5.1 iOS 版本)。
@@ -34,65 +37,97 @@ import platform.darwin.NSObject
 class IosCoreLocationProvider : LocationProvider {
 
     @Volatile private var latestFix: PositionFix? = null
-    private var started = false
+    @Volatile private var started = false
 
     // CLLocationManager / delegate 必须持强引用直到 stop
     private var manager: CLLocationManager? = null
     private var delegate: LocationDelegate? = null
 
+    /**
+     * plan §5.1 iOS — start 必须在主线程执行:CLLocationManager 要求 delegate 回调
+     * 派发到"创建 manager 的线程且该线程带 run loop"(Apple 文档硬性要求),否则
+     * didUpdateLocations 静默丢失。生产调用点(ManscdpRouterImpl → engineScope)
+     * 不保证主线程,这里显式 dispatch_async 到主队列。
+     *
+     * 同步 no-op 短路 [started] 先在调用线程判 —— 幂等契约不能被 async 破坏。
+     */
     override fun start() {
         if (started) return
-        val mgr = CLLocationManager()
-        mgr.desiredAccuracy = kCLLocationAccuracyBest
-        mgr.distanceFilter = MIN_DISTANCE_M
-        val dg = LocationDelegate(
-            onUpdate = { fix ->
-                val current = latestFix
-                if (current == null || fix.accuracy < current.accuracy) {
-                    latestFix = fix
-                }
-            },
-            onAuthDenied = { latestFix = null },
-        )
-        mgr.delegate = dg
+        started = true // 抢先标记,避免连续 start 重复入队
+        runOnMainThread {
+            if (!started) return@runOnMainThread // stop() 已被调,直接放弃
+            if (manager != null) return@runOnMainThread // 已经建过 manager,幂等短路
+            val mgr = CLLocationManager()
+            mgr.desiredAccuracy = kCLLocationAccuracyBest
+            mgr.distanceFilter = MIN_DISTANCE_M
+            val dg = LocationDelegate(
+                isStartedRef = { started && manager != null },
+                onUpdate = { fix ->
+                    val current = latestFix
+                    if (current == null || fix.accuracy < current.accuracy) {
+                        latestFix = fix
+                    }
+                },
+                onAuthDenied = { latestFix = null },
+            )
+            mgr.delegate = dg
 
-        when (CLLocationManager.authorizationStatus()) {
-            kCLAuthorizationStatusNotDetermined -> mgr.requestWhenInUseAuthorization()
-            kCLAuthorizationStatusAuthorizedAlways,
-            kCLAuthorizationStatusAuthorizedWhenInUse -> mgr.startUpdatingLocation()
-            kCLAuthorizationStatusDenied,
-            kCLAuthorizationStatusRestricted -> Unit // 拒 / 受限,latestFix 保持 null(spec AC-6)
-            else -> Unit
+            when (CLLocationManager.authorizationStatus()) {
+                kCLAuthorizationStatusNotDetermined -> mgr.requestWhenInUseAuthorization()
+                kCLAuthorizationStatusAuthorizedAlways,
+                kCLAuthorizationStatusAuthorizedWhenInUse -> mgr.startUpdatingLocation()
+                kCLAuthorizationStatusDenied,
+                kCLAuthorizationStatusRestricted -> Unit // 拒 / 受限,latestFix 保持 null(spec AC-6)
+                else -> Unit
+            }
+
+            manager = mgr
+            delegate = dg
         }
-
-        manager = mgr
-        delegate = dg
-        started = true
     }
 
     override fun stop() {
         if (!started) return
-        manager?.stopUpdatingLocation()
-        manager?.delegate = null
-        manager = null
-        delegate = null
-        started = false
-        latestFix = null
+        started = false // 抢先标记,让 delegate 回调看到 dead 状态放弃 startUpdating
+        latestFix = null // 立刻清 latestFix,不用等主队列执行
+        runOnMainThread {
+            manager?.stopUpdatingLocation()
+            manager?.delegate = null
+            manager = null
+            delegate = null
+        }
     }
 
     override fun next(): PositionFix? = latestFix
+
+    /** 主线程执行 — 已在主线程就直接同步跑,否则 dispatch_async 到主队列。 */
+    private inline fun runOnMainThread(crossinline block: () -> Unit) {
+        if (NSThread.isMainThread) {
+            block()
+        } else {
+            dispatch_async(dispatch_get_main_queue()) { block() }
+        }
+    }
 
     /**
      * CLLocationManagerDelegate — 只处理 didUpdateLocations / didChangeAuthorization。
      * 权限运行时被 revoke:didChangeAuthorization → 拒了就 stopUpdatingLocation +
      * 清 latestFix,行为跟 Android SecurityException 分支一致(spec AC-6)。
      */
+    /**
+     * CLLocationManagerDelegate — 处理 didUpdateLocations / didChangeAuthorization。
+     *
+     * [isStartedRef] 是回外层 provider 的存活探针 —— [stop] 后 provider.started = false,
+     * 授权回调(可能在弹窗流程中被 iOS 触发多次)不会误重启 stopUpdatingLocation(P0-2 fix)。
+     */
     private class LocationDelegate(
+        private val isStartedRef: () -> Boolean,
         private val onUpdate: (PositionFix) -> Unit,
         private val onAuthDenied: () -> Unit,
     ) : NSObject(), CLLocationManagerDelegateProtocol {
 
         override fun locationManager(manager: CLLocationManager, didUpdateLocations: List<*>) {
+            if (!isStartedRef()) return
             val loc = didUpdateLocations.lastOrNull() as? CLLocation ?: return
             onUpdate(loc.toPositionFix())
         }
@@ -103,6 +138,7 @@ class IosCoreLocationProvider : LocationProvider {
         }
 
         override fun locationManagerDidChangeAuthorization(manager: CLLocationManager) {
+            if (!isStartedRef()) return // stop() 后不再响应授权变化(P0-2 fix)
             when (manager.authorizationStatus) {
                 kCLAuthorizationStatusAuthorizedAlways,
                 kCLAuthorizationStatusAuthorizedWhenInUse -> manager.startUpdatingLocation()
