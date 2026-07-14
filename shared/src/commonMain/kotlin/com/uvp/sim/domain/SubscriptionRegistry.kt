@@ -32,7 +32,19 @@ data class SubscriptionSnapshot(
     val notifyCount: Int = 0
 )
 
-class SubscriptionRegistry(private val scope: CoroutineScope) {
+class SubscriptionRegistry(
+    private val scope: CoroutineScope,
+    /**
+     * dialog 从 _dialogs 移除后统一触发的钩子(fix real-gps plan §3.2 P0)。
+     *
+     * 3 条移除路径都会 invoke 本钩子:cancel / cancelAll / startExpiryCountdown 内部
+     * 归零后的 cancel(callId)。router 侧靠这个钩子知道 MobilePosition 订阅是否清空,
+     * 从而决定是否 stop 定位监听。
+     *
+     * 传入的 dialog 是移除前的快照 —— 保证 kind / subscriberUri 等字段可读。
+     */
+    private val onDialogRemoved: ((SubscriptionDialog) -> Unit)? = null,
+) {
 
     private val _dialogs = MutableStateFlow<Map<String, SubscriptionDialog>>(emptyMap())
 
@@ -113,6 +125,7 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
     }
 
     fun cancel(callId: String) {
+        val removed = _dialogs.value[callId]
         notifyJobs[callId]?.stop()
         notifyJobs.remove(callId)
         expiryJobs[callId]?.cancel()
@@ -120,9 +133,11 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         expiryCallbacks.remove(callId)
         _dialogs.update { it - callId }
         rebuildSnapshot()
+        if (removed != null) onDialogRemoved?.invoke(removed)
     }
 
     fun cancelAll() {
+        val removedList = _dialogs.value.values.toList()
         notifyJobs.values.forEach { it.stop() }
         notifyJobs.clear()
         expiryJobs.values.forEach { it.cancel() }
@@ -130,6 +145,7 @@ class SubscriptionRegistry(private val scope: CoroutineScope) {
         expiryCallbacks.clear()
         _dialogs.value = emptyMap()
         rebuildSnapshot()
+        removedList.forEach { onDialogRemoved?.invoke(it) }
     }
 
     fun currentDialog(callId: String): SubscriptionDialog? = _dialogs.value[callId]
