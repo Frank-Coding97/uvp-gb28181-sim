@@ -106,12 +106,12 @@ class PlatformRuntimeAndroid(
     }
 
     /**
-     * plan §4.3 T4 stub — 先返回 MockGpsSource 让编译 / 现有测试继续过。
-     * T5 会把返回值替换为真实的 [com.uvp.sim.domain.location.AndroidSystemLocationProvider]。
+     * plan §5.1 T5 — 生产 impl 走 LocationManager(GPS+NETWORK 精度择优)。
+     * startPoint 参数忽略 — 真实定位不需要 seed,首帧到达前 next() 返回 null。
      */
     override fun buildLocationProvider(startPoint: com.uvp.sim.config.GeoPoint):
         com.uvp.sim.domain.location.LocationProvider =
-        com.uvp.sim.domain.MockGpsSource(startPoint)
+        com.uvp.sim.domain.location.AndroidSystemLocationProvider(appContext)
 
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
         val cam = cameraCaptureRef ?: return
