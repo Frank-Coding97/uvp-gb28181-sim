@@ -183,6 +183,24 @@ class ManscdpRouterLifecycleTest {
     }
 
     @Test
+    fun refresh_doesNotChangeLocationLifecycle() = runTest {
+        // Codex R1 P1-6 补测试:refresh(SUBSCRIBE 续期)不触发 start/stop 变更
+        val registry = SubscriptionRegistry(this)
+        val location = CountingLocationProvider()
+        newRouter(this, registry, location)
+
+        registry.activate(mobilePositionDialog("c1", expires = 30)) {}
+        val startsAfterActivate = location.startCalls
+        val stopsAfterActivate = location.stopCalls
+
+        registry.refresh("c1", newExpires = 60)
+        runCurrent()
+
+        assertEquals(startsAfterActivate, location.startCalls, "refresh 不该重复 start")
+        assertEquals(stopsAfterActivate, location.stopCalls, "refresh 不该 stop")
+    }
+
+    @Test
     fun cancelAll_stopsLocation_evenWithMultipleDialogs() = runTest {
         val registry = SubscriptionRegistry(this)
         val location = CountingLocationProvider()

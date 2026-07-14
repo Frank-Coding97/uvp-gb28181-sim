@@ -36,6 +36,12 @@ class AndroidSystemLocationProviderTest {
         )
     }
 
+    private fun grantCoarseLocationOnly() {
+        shadowOf(context as Application).grantPermissions(
+            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+    }
+
     /** Robolectric 下 LocationListener 是通过 main looper 派发的,注入 fix 后要 idle 才生效。 */
     private fun pumpMainLooper() {
         shadowOf(Looper.getMainLooper()).idle()
@@ -156,5 +162,53 @@ class AndroidSystemLocationProviderTest {
         val provider = AndroidSystemLocationProvider(context)
         provider.stop() // 不应抛
         assertTrue(true)
+    }
+
+    // Codex R1 P1-3 · Android 12+ 用户可以只授 COARSE 不授 FINE,provider 应仍能通过 NETWORK 取位置
+    @Test
+    fun start_withCoarseOnly_stillAcceptsNetworkFix() {
+        grantCoarseLocationOnly()
+        val provider = AndroidSystemLocationProvider(context)
+        provider.start()
+
+        // 只有 COARSE 时,GPS_PROVIDER 不注册,但 NETWORK_PROVIDER 应该注册
+        simulateFix(
+            makeLocation(LocationManager.NETWORK_PROVIDER, 40.0, 116.5, accuracy = 100f)
+        )
+        val fix = provider.next()
+        assertNotNull("COARSE 授权应仍能拿到 NETWORK 位置 fix", fix)
+        assertEquals(100f, fix!!.accuracy, 0.0001f)
+    }
+
+    // Codex R1 P1-1 · onProviderDisabled 清 latestFix,避免陈旧 GPS 阻挡 NETWORK 新点
+    @Test
+    fun providerDisabled_clearsLatestFixWhenItsSource() {
+        grantFineLocation()
+        val provider = AndroidSystemLocationProvider(context)
+        provider.start()
+
+        // 先接收高精度 GPS fix
+        simulateFix(
+            makeLocation(LocationManager.GPS_PROVIDER, 39.9, 116.4, accuracy = 8f)
+        )
+        assertNotNull(provider.next())
+
+        // GPS provider 关闭(用户在系统里禁 GPS,保留 NETWORK)
+        shadowOf(lm).setProviderEnabled(LocationManager.GPS_PROVIDER, false)
+        pumpMainLooper()
+
+        // latestFix 应该被清 —— 之前 GPS 8m 陈旧值不该继续挡住 NETWORK
+        assertNull(
+            "陈旧 GPS fix 应该被 onProviderDisabled 清理 (F6 P1-1 fix)",
+            provider.next(),
+        )
+
+        // NETWORK 新 fix 现在能进来了
+        simulateFix(
+            makeLocation(LocationManager.NETWORK_PROVIDER, 40.0, 116.5, accuracy = 100f)
+        )
+        val networkFix = provider.next()
+        assertNotNull("GPS 关掉后 NETWORK fix 应能写入", networkFix)
+        assertEquals(100f, networkFix!!.accuracy, 0.0001f)
     }
 }
