@@ -170,6 +170,26 @@ internal class ManscdpRouterImpl(
     /** NOTIFY 扇出收口到独立 handler(cross-review R1 #3),共享同一份 [subRouterContext]。 */
     private val notifyHandler = SubscriptionNotifyHandler(subRouterContext)
 
+    init {
+        // real-gps plan §3.2 — MobilePosition 订阅生命周期与 LocationProvider 启停对齐:
+        //  · dialog 移除(cancel / cancelAll / 自然过期)→ 若无 MobilePosition dialog 则 stop
+        //  · activate 后主动 syncLocationLifecycle()(见下方 handleSubscribe 处)
+        //  · start()/stop() 幂等,重复调无副作用
+        subscriptionRegistry.setOnDialogRemoved { removed ->
+            if (removed.kind == "MobilePosition") syncLocationLifecycle()
+        }
+    }
+
+    /**
+     * plan §3.2.3 幂等启停策略 —
+     * 有 MobilePosition dialog 就 start location provider,否则 stop。start()/stop() 幂等。
+     */
+    private fun syncLocationLifecycle() {
+        val hasMobilePositionSub = subscriptionRegistry
+            .dialogsByKind("MobilePosition").isNotEmpty()
+        if (hasMobilePositionSub) mockGps.start() else mockGps.stop()
+    }
+
     /** 4 个 SubRouter + dispatcher 装配(lazy 让 deviceControlDispatcher 提前 by lazy 不撞冲突)。 */
     private val dispatcher: ManscdpDispatcher by lazy {
         ManscdpDispatcher(
@@ -547,6 +567,11 @@ internal class ManscdpRouterImpl(
                         else -> notifyHandler.sendPositionNotify(d)
                     }
                 }
+
+                // plan §3.2 — MobilePosition dialog 新加入,同步启动位置监听。
+                //   注:onDialogRemoved 只处理移除路径,加入路径要显式调 sync。
+                //   MobilePosition 走这条路径最典型,其他 kind 命中 sync 内部判 isEmpty 保持无位置监听。
+                if (intent.kind == "MobilePosition") syncLocationLifecycle()
 
                 when (intent.kind) {
                     "Catalog" -> notifyHandler.sendCatalogNotify(dialog)

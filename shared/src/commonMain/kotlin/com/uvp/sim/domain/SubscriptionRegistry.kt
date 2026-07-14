@@ -34,6 +34,9 @@ data class SubscriptionSnapshot(
 
 class SubscriptionRegistry(
     private val scope: CoroutineScope,
+    onDialogRemoved: ((SubscriptionDialog) -> Unit)? = null,
+) {
+
     /**
      * dialog 从 _dialogs 移除后统一触发的钩子(fix real-gps plan §3.2 P0)。
      *
@@ -42,9 +45,17 @@ class SubscriptionRegistry(
      * 从而决定是否 stop 定位监听。
      *
      * 传入的 dialog 是移除前的快照 —— 保证 kind / subscriberUri 等字段可读。
+     *
+     * 可后置注册:AppEngine 在装配 SubscriptionRegistry 时 ManscdpRouterImpl 尚未构造,
+     * 走 [setOnDialogRemoved] 在 Router 构造完成后回填。
      */
-    private val onDialogRemoved: ((SubscriptionDialog) -> Unit)? = null,
-) {
+    @Volatile
+    private var onDialogRemoved: ((SubscriptionDialog) -> Unit)? = onDialogRemoved
+
+    /** 后置注册钩子;传 null 清除。多次调用最后一次胜出(单一使用者假设)。 */
+    fun setOnDialogRemoved(cb: ((SubscriptionDialog) -> Unit)?) {
+        onDialogRemoved = cb
+    }
 
     private val _dialogs = MutableStateFlow<Map<String, SubscriptionDialog>>(emptyMap())
 
