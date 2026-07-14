@@ -99,7 +99,14 @@ a=sendonly
     }
 
     private fun engineTo(transport: MockSipTransport, scope: kotlinx.coroutines.CoroutineScope) =
-        TestEngine.create(cfg(), transport, scope, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        TestEngine.create(
+            cfg(), transport, scope,
+            localIpProvider = { "192.168.10.112" },
+            rtpReceiverFactory = { FakeBroadcastRxSource() },
+            // baseline red · task 12:iOS 真实 AudioSink 在 simulator 启动失败,
+            // 走 R1 #7 "sink.start fail → BYE + teardown" 路径,把 _current 清 null。
+            audioSinkFactory = { _, _ -> FakeAudioSink() },
+        )
 
     private suspend fun lastInvite(transport: MockSipTransport): SipRequest =
         transport.sent.filterIsInstance<SipRequest>().last { it.method == SipMethod.INVITE }

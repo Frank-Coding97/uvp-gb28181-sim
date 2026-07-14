@@ -101,13 +101,20 @@ a=setup:passive
     private fun lastInvite(transport: MockSipTransport): SipRequest =
         transport.sent.filterIsInstance<SipRequest>().last { it.method == SipMethod.INVITE }
 
+    /**
+     * baseline red · task 12:iOS 真实 AudioSink (AVAudioEngine) 在 simulator 启动失败,
+     * 走 R1 #7 "sink.start fail → BYE + teardown" 路径,把 _current 清 null。
+     */
+    private val fakeSink: (Int, Int) -> com.uvp.sim.media.AudioSink = { _, _ -> FakeAudioSink() }
+
     @Test
     fun tcpActiveOffersTcpAndConnectsToPlatform() = runTest {
         val transport = MockSipTransport()
         val fakeRx = FakeBroadcastRxSource()
         val engine = TestEngine.create(
             cfg(AudioTransportType.TCP_ACTIVE), transport, this, localIpProvider = { "192.168.10.112" },
-            rtpReceiverFactory = { fakeRx }
+            rtpReceiverFactory = { fakeRx },
+            audioSinkFactory = fakeSink,
         )
         bootRegistered(transport, engine)
         runCurrent()
@@ -138,7 +145,8 @@ a=setup:passive
         val fakeRx = FakeBroadcastRxSource()
         val engine = TestEngine.create(
             cfg(AudioTransportType.UDP), transport, this, localIpProvider = { "192.168.10.112" },
-            rtpReceiverFactory = { fakeRx }
+            rtpReceiverFactory = { fakeRx },
+            audioSinkFactory = fakeSink,
         )
         bootRegistered(transport, engine)
         runCurrent()
@@ -164,7 +172,8 @@ a=setup:passive
         val fakeRx = FakeBroadcastRxSource()
         val engine = TestEngine.create(
             cfg(AudioTransportType.TCP_PASSIVE), transport, this, localIpProvider = { "192.168.10.112" },
-            rtpReceiverFactory = { fakeRx }
+            rtpReceiverFactory = { fakeRx },
+            audioSinkFactory = fakeSink,
         )
         bootRegistered(transport, engine)
         runCurrent()

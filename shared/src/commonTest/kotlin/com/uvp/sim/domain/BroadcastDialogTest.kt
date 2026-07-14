@@ -133,10 +133,17 @@ a=sendonly
         transport.deliver(ok)
     }
 
+    /**
+     * baseline red · task 12:iOS 真实 AudioSink (AVAudioEngine) 在 simulator 无音频硬件时启动失败,
+     * 走 R1 #7 引入的"sink.start 失败 → BYE + teardown"路径,把 _current.value 清成 null,
+     * 断言 Talking 全跪。所有 broadcast 相关测试统一注入 FakeAudioSink 让 sink.start 返回 true。
+     */
+    private fun sinkFactory(): (Int, Int) -> com.uvp.sim.media.AudioSink = { _, _ -> FakeAudioSink() }
+
     @Test
     fun broadcastMessageTriggersInviteAndInvitingState() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         bootRegistered(transport, engine)
         runCurrent()
         transport.sent.clear()
@@ -155,7 +162,7 @@ a=sendonly
     @Test
     fun ok200WithG711LeadsToTalkingAndAck() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage())
@@ -175,7 +182,7 @@ a=sendonly
     @Test
     fun invite488ClearsDialogWithInviteFailed() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         val ended = mutableListOf<SimEvent.BroadcastEnded>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastEnded) ended += it } }
         bootRegistered(transport, engine)
@@ -195,7 +202,7 @@ a=sendonly
     @Test
     fun codec96RejectedWithByeAndCodecRejected() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         val ended = mutableListOf<SimEvent.BroadcastEnded>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastEnded) ended += it } }
         bootRegistered(transport, engine)
@@ -217,7 +224,7 @@ a=sendonly
     @Test
     fun userStopBroadcastSendsByeAndClears() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage())
@@ -237,7 +244,7 @@ a=sendonly
     @Test
     fun platformByeRepliesOkAndClears() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         val ended = mutableListOf<SimEvent.BroadcastEnded>()
         val job = launch { engine.events.collect { if (it is SimEvent.BroadcastEnded) ended += it } }
         bootRegistered(transport, engine)
@@ -263,7 +270,7 @@ a=sendonly
     @Test
     fun secondBroadcastWhileTalkingRepliesBusyWithoutInvite() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage(callId = "bc-1@plat", sn = "1"))
@@ -289,7 +296,7 @@ a=sendonly
     @Test
     fun spoofedBye_wrongFromTag_returns481_andKeepsDialog() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage())
@@ -326,7 +333,7 @@ a=sendonly
     @Test
     fun spoofedBye_wrongSourceIp_returns481_andKeepsDialog() = runTest {
         val transport = MockSipTransport()
-        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() })
+        val engine = TestEngine.create(cfg(), transport, this, localIpProvider = { "192.168.10.112" }, rtpReceiverFactory = { FakeBroadcastRxSource() }, audioSinkFactory = sinkFactory())
         bootRegistered(transport, engine)
         runCurrent()
         transport.deliver(broadcastMessage())
