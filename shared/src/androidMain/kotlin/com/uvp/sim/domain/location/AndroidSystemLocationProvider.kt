@@ -26,6 +26,8 @@ class AndroidSystemLocationProvider(
 
     @Volatile private var latestFix: PositionFix? = null
     @Volatile private var started = false
+    /** 追踪最新 fix 来自哪个 provider — provider 被 disable 时清对应的 latestFix,避免陈旧 fix 阻挡其他 provider(F6 P1-1 fix)。 */
+    @Volatile private var latestFixProvider: String? = null
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
@@ -33,14 +35,18 @@ class AndroidSystemLocationProvider(
             val current = latestFix
             if (current == null || loc.accuracy < current.accuracy) {
                 latestFix = loc.toPositionFix()
+                latestFixProvider = loc.provider
             }
         }
 
-        // Android 10+ 起 onProviderDisabled / onProviderEnabled / onStatusChanged 默认接口方法
-        // 不需重写;老代码兼容用 override 但空实现即可
         override fun onProviderDisabled(provider: String) {
-            // provider 关闭时不清 latestFix — 另一个 provider 可能还在跑;完全无 fix 由 latestFix null 语义承接
             Log.i(TAG, "provider disabled: $provider")
+            // F6 P1-1 fix — 若最新 fix 来自这个被关掉的 provider,清 latestFix 让其他 provider
+            // 的新 fix 有机会写入(否则陈旧的高精度 GPS fix 会永久阻挡低精度 NETWORK fix)
+            if (latestFixProvider == provider) {
+                latestFix = null
+                latestFixProvider = null
+            }
         }
 
         override fun onProviderEnabled(provider: String) {
@@ -54,8 +60,11 @@ class AndroidSystemLocationProvider(
 
     override fun start() {
         if (started) return
-        if (!hasFineLocationPermission()) {
-            Log.w(TAG, "start() skipped: ACCESS_FINE_LOCATION not granted")
+        // F3 P1-3 fix — Android 12+ 允许用户只授 COARSE,此时不该拒绝定位工作,仅退化到 NETWORK_PROVIDER
+        val hasFine = hasPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+        val hasCoarse = hasPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (!hasFine && !hasCoarse) {
+            Log.w(TAG, "start() skipped: no location permission granted (FINE or COARSE)")
             return
         }
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
@@ -63,22 +72,31 @@ class AndroidSystemLocationProvider(
             Log.w(TAG, "start() skipped: LocationManager unavailable")
             return
         }
-        try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, MIN_TIME_MS, MIN_DISTANCE_M, listener)
-        } catch (e: SecurityException) {
-            Log.w(TAG, "GPS_PROVIDER requestLocationUpdates SecurityException", e)
-        } catch (e: IllegalArgumentException) {
-            // Some devices don't have GPS_PROVIDER registered — fall through to NETWORK_PROVIDER
-            Log.i(TAG, "GPS_PROVIDER unavailable: ${e.message}")
+        // F2 P1-2 fix — 至少一个 provider 注册成功 才 started=true;两个都失败时保持 started=false 允许后续重试
+        var anyRegistered = false
+        if (hasFine) {
+            try {
+                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, MIN_TIME_MS, MIN_DISTANCE_M, listener)
+                anyRegistered = true
+            } catch (e: SecurityException) {
+                Log.w(TAG, "GPS_PROVIDER requestLocationUpdates SecurityException", e)
+            } catch (e: IllegalArgumentException) {
+                // Some devices don't have GPS_PROVIDER registered — fall through to NETWORK_PROVIDER
+                Log.i(TAG, "GPS_PROVIDER unavailable: ${e.message}")
+            }
         }
         try {
             lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, MIN_TIME_MS, MIN_DISTANCE_M, listener)
+            anyRegistered = true
         } catch (e: SecurityException) {
             Log.w(TAG, "NETWORK_PROVIDER requestLocationUpdates SecurityException", e)
         } catch (e: IllegalArgumentException) {
             Log.i(TAG, "NETWORK_PROVIDER unavailable: ${e.message}")
         }
-        started = true
+        started = anyRegistered
+        if (!anyRegistered) {
+            Log.w(TAG, "start() no provider registered — will retry on next start()")
+        }
     }
 
     override fun stop() {
@@ -91,14 +109,13 @@ class AndroidSystemLocationProvider(
         }
         started = false
         latestFix = null
+        latestFixProvider = null
     }
 
     override fun next(): PositionFix? = latestFix
 
-    private fun hasFineLocationPermission(): Boolean =
-        ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_FINE_LOCATION,
-        ) == PackageManager.PERMISSION_GRANTED
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     private fun Location.toPositionFix(): PositionFix = PositionFix(
         point = GeoPoint(longitude = longitude, latitude = latitude),
