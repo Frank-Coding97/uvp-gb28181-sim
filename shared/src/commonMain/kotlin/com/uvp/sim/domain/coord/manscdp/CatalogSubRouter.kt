@@ -120,21 +120,23 @@ internal class CatalogSubRouter(
 
     private suspend fun sendMobilePositionResponse(sn: String) {
         // cross-review R1 #1 修复 — 单次查询是独立于订阅的 GB28181 路径,不能只靠订阅路径启 provider。
-        // 冷启动:如果 next() 无 fix 且没订阅,主动 start provider + poll 一段时间;完成后按订阅状态释放。
+        // 冷启动:如果 next() 无 fix 且没订阅,主动 start provider + poll 一段时间;完成后无论成功失败都
+        // release(R1 verify-followup #1:成功路径也必须 release,否则一次单次查询会让 provider 常驻,
+        // 造成电量/隐私回归)。
         val fix = ctx.mockGps.next() ?: run {
             val hadSubscription = ctx.subscriptionRegistry.dialogsByKind("MobilePosition").isNotEmpty()
             if (hadSubscription) {
                 // 已订阅但还没首帧 fix:走原语义(不响应,让平台超时)
                 null
             } else {
-                // cold-start:主动 start + poll 拿首帧 fix,拿到就直接释放
+                // cold-start:主动 start + poll 拿首帧 fix
                 ctx.ensureLocationProviderStarted()
-                val polled = pollFirstFix()
-                if (polled == null) {
-                    // 冷启动仍然拿不到,顺手 release
+                try {
+                    pollFirstFix()
+                } finally {
+                    // R1 verify-followup #1 — 无论 poll 成功/失败都必须 release,避免单次查询 leak provider
                     ctx.releaseLocationProviderIfIdle()
                 }
-                polled
             }
         }
         if (fix == null) {
