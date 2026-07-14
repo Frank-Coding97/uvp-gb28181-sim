@@ -31,9 +31,18 @@ class AndroidSystemLocationProvider(
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
-            // 精度择优:新 fix accuracy 更好 才覆写,避免 GPS 高精度被 NETWORK 低精度盖掉
+            // cross-review R1 #2 修复 — 从"严格 accuracy 择优"改为"新鲜度优先 + 同窗口 accuracy 择优":
+            //   · 原策略:严格 loc.accuracy < current.accuracy 才覆写。设备移动时高精度 fix 一旦拿到,
+            //     后续常返回相同或略差精度的 fix,坐标会永久冻结在第一次高精度点,持续上报陈旧位置。
+            //   · 新策略:
+            //     1. current 为 null / 陈旧(> ACCURACY_WINDOW_MS)→ 直接覆写(新鲜度优先)
+            //     2. 落在同一窗口内 → 保持 accuracy 择优,避免 GPS/NETWORK 交替时低精度覆盖高精度
+            //     3. loc 精度 <= current 精度 * 2 时也接受,允许移动中精度略降的连续更新
             val current = latestFix
-            if (current == null || loc.accuracy < current.accuracy) {
+            val stale = current == null || (loc.time - current.fixTimeMs) > ACCURACY_WINDOW_MS
+            val accuracyOk = current == null ||
+                loc.accuracy <= current.accuracy * ACCURACY_TOLERANCE_FACTOR
+            if (stale || accuracyOk) {
                 latestFix = loc.toPositionFix()
                 latestFixProvider = loc.provider
             }
@@ -112,7 +121,17 @@ class AndroidSystemLocationProvider(
         latestFixProvider = null
     }
 
-    override fun next(): PositionFix? = latestFix
+    override fun next(): PositionFix? {
+        val fix = latestFix ?: return null
+        // cross-review R1 #2 修复 — 最大 fix 年龄校验,过期坐标当作 null,防止把几分钟前
+        // 缓存的位置当"当前位置"上报给平台。System.currentTimeMillis() 与 Location.time 同源。
+        // fixTimeMs <= 0 视作"未知采样时间"(测试 fixture / 缺失场景),不做年龄校验回退到原策略。
+        if (fix.fixTimeMs > 0L) {
+            val ageMs = System.currentTimeMillis() - fix.fixTimeMs
+            if (ageMs > MAX_FIX_AGE_MS) return null
+        }
+        return fix
+    }
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
@@ -130,5 +149,12 @@ class AndroidSystemLocationProvider(
         const val TAG = "LocationProvider"
         const val MIN_TIME_MS = 1000L
         const val MIN_DISTANCE_M = 2f
+        // cross-review R1 #2 修复常量:
+        //   · ACCURACY_WINDOW_MS 5s = 同窗口内保留 accuracy 择优,防止 GPS/NETWORK 交替时被低精度覆盖
+        //   · ACCURACY_TOLERANCE_FACTOR 1.5x = 允许移动中精度略降(如从 5m 变 7m)持续更新
+        //   · MAX_FIX_AGE_MS 30s = 超过这个年龄的 fix 视同 null,不上报陈旧坐标(GB28181 平台按新鲜数据处理)
+        const val ACCURACY_WINDOW_MS = 5_000L
+        const val ACCURACY_TOLERANCE_FACTOR = 1.5f
+        const val MAX_FIX_AGE_MS = 30_000L
     }
 }

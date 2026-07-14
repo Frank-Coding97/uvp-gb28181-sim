@@ -58,7 +58,9 @@ class AndroidSystemLocationProviderTest {
         lng: Double,
         accuracy: Float,
         speedMps: Float = 0f,
-        time: Long = 1_700_000_000_000L,
+        // cross-review R1 #2 修复兼容 — 默认取运行时 now,避免硬编码时间戳几年后超过 MAX_FIX_AGE_MS
+        // 命中 provider.next() 的年龄校验返回 null 让所有测试挂掉。
+        time: Long = System.currentTimeMillis(),
     ): Location = Location(provider).apply {
         latitude = lat
         longitude = lng

@@ -63,8 +63,15 @@ class IosCoreLocationProvider : LocationProvider {
             val dg = LocationDelegate(
                 isStartedRef = { started && manager != null },
                 onUpdate = { fix ->
+                    // cross-review R1 #2 修复 — 参照 AndroidSystemLocationProvider 同款策略:
+                    //   · 严格 accuracy 择优会永久冻结坐标(移动场景第一次高精度点覆盖后续)
+                    //   · 改成"新鲜度优先 + 同窗口 accuracy 择优 + 精度容忍"
                     val current = latestFix
-                    if (current == null || fix.accuracy < current.accuracy) {
+                    val stale = current == null ||
+                        (fix.fixTimeMs - current.fixTimeMs) > ACCURACY_WINDOW_MS
+                    val accuracyOk = current == null ||
+                        fix.accuracy <= current.accuracy * ACCURACY_TOLERANCE_FACTOR
+                    if (stale || accuracyOk) {
                         latestFix = fix
                     }
                 },
@@ -98,7 +105,17 @@ class IosCoreLocationProvider : LocationProvider {
         }
     }
 
-    override fun next(): PositionFix? = latestFix
+    override fun next(): PositionFix? {
+        val fix = latestFix ?: return null
+        // cross-review R1 #2 修复 — 最大 fix 年龄校验(iOS CLLocation 可能返回缓存位置,不能当"当前"上报)
+        // fixTimeMs <= 0 视作未知,不校验(测试 fixture 兼容)
+        if (fix.fixTimeMs > 0L) {
+            val nowMs = (NSDate().timeIntervalSince1970 * 1000.0).toLong()
+            val ageMs = nowMs - fix.fixTimeMs
+            if (ageMs > MAX_FIX_AGE_MS) return null
+        }
+        return fix
+    }
 
     /** 主线程执行 — 已在主线程就直接同步跑,否则 dispatch_async 到主队列。 */
     private inline fun runOnMainThread(crossinline block: () -> Unit) {
@@ -154,6 +171,10 @@ class IosCoreLocationProvider : LocationProvider {
 
     private companion object {
         const val MIN_DISTANCE_M = 2.0
+        // cross-review R1 #2 修复常量(与 AndroidSystemLocationProvider 对齐):
+        const val ACCURACY_WINDOW_MS = 5_000L
+        const val ACCURACY_TOLERANCE_FACTOR = 1.5f
+        const val MAX_FIX_AGE_MS = 30_000L
     }
 }
 
