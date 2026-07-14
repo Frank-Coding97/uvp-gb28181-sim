@@ -170,6 +170,10 @@ class SimulatorEngine internal constructor(
             holders.state.value = SipState.Disconnected
         }
         registration.shutdown()
+        // cross-review R3 #3 verify-followup — 先等 manscdp 内 pending sync job(cancelAll 触发的
+        // location provider stop)完成,再 cancel scope。否则 scope.cancel() 会砍掉 fire-and-forget
+        // 的 stop 协程,provider 状态泄漏到下一 session。
+        manscdp.shutdown()
         registrationStateBridge.cancel(); registrationEventBridge.cancel(); registrationClockBridge.cancel()
         scope.cancel()
     }
