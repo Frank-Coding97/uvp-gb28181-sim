@@ -602,11 +602,33 @@ internal class BroadcastCoordinatorImpl(
                     "BROADCAST_RX_UNEXPECTED_EXIT cause=${cause?.message ?: "eof/half-packet"} " +
                         "remoteTag=${remoteTag ?: "none"} → tearDown${if (remoteTag != null) " + BYE" else ""}"
                 )
-                // 只有 dialog 已完成(remoteTag 存在)才发 BYE,否则底层对话未建立时发 BYE 无意义
-                if (remoteTag != null) sendBroadcastBye(bc, remoteTag)
+                // cross-review R3 深层 gap 1 hotfix:tearDown 必须无条件先执行,
+                // 不能被 BYE 阻塞。原实现 `sendBroadcastBye` 内部走 `outbox.send` 无 timeout,
+                // 若 SIP transport 卡住(网络分区 / 底层 mutex 死锁 / write 挂),BYE 永远
+                // 等不到 → tearDown / BroadcastEnded 永远执行不到,又变回 R3 #3 想消灭的假会话。
+                //
+                // 正确顺序:
+                //   1. 先 tearDownIfActive() + BroadcastEnded → UI/上层立刻知晓 error,busy gate 释放
+                //   2. BYE 另起协程 best-effort 发,带 5s timeout,失败仅 log(dialog 那边有
+                //      Timer 机制平台侧自己会最终清)
                 val dur = nowMs() - bc.createdAtMs
                 if (tearDownIfActive()) {
                     simEventEmit(SimEvent.BroadcastEnded(BroadcastEndReason.Error, dur))
+                }
+                if (remoteTag != null) {
+                    scope.launch {
+                        runCatching {
+                            kotlinx.coroutines.withTimeout(5_000L) {
+                                sendBroadcastBye(bc, remoteTag)
+                            }
+                        }.onFailure {
+                            SystemLogger.emit(
+                                LogLevel.Warning, LogTag.Media,
+                                "BROADCAST_RX_BYE_BEST_EFFORT_FAIL cause=${it.message ?: "timeout"} " +
+                                    "— tearDown 已完成,平台侧 dialog 由 Timer 自行清理",
+                            )
+                        }
+                    }
                 }
             }
         }
