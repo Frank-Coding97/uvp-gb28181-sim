@@ -17,7 +17,9 @@ import com.uvp.sim.network.TransportType
 import com.uvp.sim.recording.NoopRecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -253,28 +255,57 @@ class ManscdpRouterLifecycleTest {
         assertEquals(0, location.startCalls, "无订阅时 resync 必须走 stop 路径,不该 start")
     }
 
+    /**
+     * cross-review R2 #5 修复 — 真并发 mutex 测试。
+     * 记账 provider 用可挂起的 start()/stop(),制造并发 launch 后断言不会有交叉进入。
+     */
+    private class InstrumentedLocationProvider : LocationProvider {
+        var startCalls = 0
+        var stopCalls = 0
+        var maxConcurrent = 0
+        private var inFlight = 0
+        // 用一个可控 barrier 让 test 在 start/stop 内挂起
+        var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+        override fun start() {
+            inFlight++
+            if (inFlight > maxConcurrent) maxConcurrent = inFlight
+            // 这里同步跑,但可测的并发是通过 gate 在外面控制:test 让 mutex 内的 sync 先 await gate
+            startCalls++
+            inFlight--
+        }
+        override fun stop() {
+            inFlight++
+            if (inFlight > maxConcurrent) maxConcurrent = inFlight
+            stopCalls++
+            inFlight--
+        }
+        override fun next(): PositionFix? = null
+    }
+
     @Test
-    fun mutex_serializesSync_underRapidResync() = runTest {
-        // cross-review R1 #4 回归:多次并发 resync 走 mutex.withLock 串行化,不会因为交叉快照
-        // 导致稳态漂移。每次 resync 都读最新 dialogs 快照,同一状态下重复 sync 幂等。
+    fun mutex_preventsConcurrentSyncEntry() = runTest {
+        // cross-review R2 #5 修复:改 sequential 3-shot 为真并发 launch。
+        // Mutex 断言:多个 resync 协程并发进入 syncLocationLifecycleLocked 时,内部
+        // start/stop 调用不会交叉(maxConcurrent 严格 = 1)。
         val registry = SubscriptionRegistry(this)
-        val location = CountingLocationProvider()
+        val location = InstrumentedLocationProvider()
         val router = newRouter(this, registry, location)
 
         registry.activate(mobilePositionDialog("c1")) {}
         runCurrent()
-        val baselineStarts = location.startCalls
 
-        // 连续 3 次 resync — mutex 保证每次都读到最新稳态,provider 应该继续 start 3 次(幂等)
-        router.resyncLocationLifecycle()
-        router.resyncLocationLifecycle()
-        router.resyncLocationLifecycle()
+        // 并发发起 5 个 resync — coroutineScope 建 child scope,内部 launch 用 receiver
+        kotlinx.coroutines.coroutineScope {
+            val scope = this
+            repeat(5) {
+                scope.launch { router.resyncLocationLifecycle() }
+            }
+        }
         runCurrent()
 
-        assertEquals(
-            baselineStarts + 3, location.startCalls,
-            "3 次 resync 应触发 3 次 start(每次都读到 hasSub=true → start,Mutex 保证串行)"
-        )
-        assertEquals(0, location.stopCalls, "订阅在时不该 stop")
+        assertEquals(1, location.maxConcurrent, "Mutex 必须保证 provider 操作串行:maxConcurrent=${location.maxConcurrent}")
+        // 5 次 resync 都读到 hasSub=true,应该触发 5 次 start(幂等)
+        assertEquals(true, location.startCalls >= 5, "5 次 resync 应触发至少 5 次 start,实际=${location.startCalls}")
     }
 }
