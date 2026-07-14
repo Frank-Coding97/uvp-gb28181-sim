@@ -394,6 +394,20 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 
 ---
 
+## 位置数据流向
+
+Android v1 起 MobilePosition NOTIFY 上报的经纬度/速度/方向/高度来自**手机真实 GPS**（`LocationManager`，GPS + NETWORK provider 精度择优）：
+
+- **数据流**：手机 GPS 硬件 / 基站定位 → 系统 `LocationManager` → `AndroidSystemLocationProvider` → GB28181 NOTIFY XML → **仅传输到用户在应用内配置的国标上级平台**
+- **不 phone home**：项目自身没有远程服务器；采集到的位置数据不会发到任何第三方或项目维护者的服务器
+- **不第三方分享**：用户配置的国标平台不是 Google Play / Apple App Store 定义的 "third party"，那是用户信任的目标
+- **权限**：应用首次冷启动请求 `ACCESS_FINE_LOCATION` + `ACCESS_COARSE_LOCATION`。用户拒绝或系统关闭定位服务时，设备端**完全不发送**任何 MobilePosition NOTIFY（无位置数据传出）
+- **无后台定位**：应用仅在前台跑时监听位置；未申请 `FOREGROUND_SERVICE_LOCATION`，锁屏 / 切后台后系统会自动断开定位
+
+iOS v1 仍走模拟位置（v1.1 会切换到 `CLLocationManager` 走同款流程）。
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE)
