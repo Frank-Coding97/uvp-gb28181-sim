@@ -618,6 +618,23 @@ class IosRecordingService(
      * 主服务负责 state / index / thumbnail 更新。
      */
     private suspend fun finalizeWriterLocked(): Result<RecordingFile?> {
+        return when (val phaseA = phaseFinalizeWriterAndSnapshot()) {
+            is FinalizePhaseA.EmptyOrMissing -> phaseA.result
+            is FinalizePhaseA.Continue -> {
+                val recordingFile = phaseBuildRecordingFile(phaseA.context)
+                phasePublishAndPersist(phaseA.context, recordingFile)
+            }
+        }
+    }
+
+    /**
+     * refactor B phase A:writer finalize + activeXxx 快照 + FINALIZE_ENTRY log。
+     * 三种返回情形:
+     *   Continue(ctx) → phase B/C 继续
+     *   EmptyOrMissing(Result.success(null)) → 空 recording,skip B/C
+     *   EmptyOrMissing(Result.failure(...)) → missing state
+     */
+    private suspend fun phaseFinalizeWriterAndSnapshot(): FinalizePhaseA {
         val outputPath = activeOutputPath
         val channel = activeChannelId
         val started = activeStartMs
@@ -635,45 +652,69 @@ class IosRecordingService(
                 "dropBusy=${diag.dropInputBusy} dropSample=${diag.dropSampleBuildFailed} appendFail=${diag.appendFailures} " +
                 "firstPtsUs=${diag.firstVideoPtsUs} baseline=${diag.videoBaselinePtsUs} lastAppended=${diag.lastAppendedRelPtsUs}"
         )
-        val didWriteAny = outcome.didWriteAny
 
         activeOutputPath = null
         diag.resetVideoBaseline()
 
         if (outputPath == null || channel == null || started == 0L) {
             _state.value = RecordingState.Failed("finalize: missing session state")
-            return Result.failure(IllegalStateException("finalize missing state"))
+            return FinalizePhaseA.EmptyOrMissing(
+                Result.failure(IllegalStateException("finalize missing state"))
+            )
         }
 
-        if (!didWriteAny) {
+        if (!outcome.didWriteAny) {
             // 空 recording — 不入索引不生成缩略图,直接把 state 回 Idle 返回 null。
             // 未落盘的 mp4 空壳文件由 iOS 沙箱自然回收;若已生成也删掉。
             fileStore.deleteFile(outputPath)
             _state.value = RecordingState.Failed("no samples captured — camera stream not active")
-            return Result.success(null)
+            return FinalizePhaseA.EmptyOrMissing(Result.success(null))
         }
 
+        return FinalizePhaseA.Continue(
+            FinalizeContext(
+                outputPath = outputPath,
+                channel = channel,
+                started = started,
+                source = source,
+                isSplit = isSplit,
+            )
+        )
+    }
+
+    /**
+     * refactor B phase B:构造 RecordingFile。**慢 I/O 集中在本 phase**(fileSizeBytes /
+     * thumbnail.captureForRecording),phase C 只做 in-memory 发布 + persistIndex。
+     */
+    private suspend fun phaseBuildRecordingFile(ctx: FinalizeContext): RecordingFile {
         val endMs = clock.now().toEpochMilliseconds()
-        val durationMs = endMs - started
-        val fileSize = fileStore.fileSizeBytes(outputPath)
-
+        val durationMs = endMs - ctx.started
+        val fileSize = fileStore.fileSizeBytes(ctx.outputPath)
         val recordingId = NSUUID().UUIDString
-        val thumbnailPath = thumbnail.captureForRecording(outputPath, recordingId)
-
-        val recordingFile = RecordingFile(
+        val thumbnailPath = thumbnail.captureForRecording(ctx.outputPath, recordingId)
+        return RecordingFile(
             id = recordingId,
-            startTimeMs = started,
+            startTimeMs = ctx.started,
             endTimeMs = endMs,
             durationMs = durationMs,
-            channelId = channel,
-            filePath = outputPath,
+            channelId = ctx.channel,
+            filePath = ctx.outputPath,
             sizeBytes = fileSize,
             thumbnailPath = thumbnailPath,
-            source = source,
+            source = ctx.source,
             type = RecordType.Time,
             secrecy = 0,
         )
+    }
 
+    /**
+     * refactor B phase C:发布 _files + persistIndex + STATE/APPEND log + Idle 状态转换 +
+     * rollover 调度。cross-review R1 #4 保证 persist 失败向上报告 Result.failure。
+     */
+    private fun phasePublishAndPersist(
+        ctx: FinalizeContext,
+        recordingFile: RecordingFile,
+    ): Result<RecordingFile?> {
         val currentList = _files.value
         val updated = RecordingIndexFile(files = currentList + recordingFile)
         _files.value = updated.files
@@ -683,16 +724,14 @@ class IosRecordingService(
         // start 时会重试 persist,若磁盘恢复则最终一致),但状态标 Failed 让 UI 知晓。
         if (!indexOk) {
             _state.value = RecordingState.Failed(
-                "index persist failed — recording written to $outputPath but may be lost after restart"
+                "index persist failed — recording written to ${ctx.outputPath} but may be lost after restart"
             )
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
-                "IOS_RECORDING_INDEX_LOST id=$recordingId path=$outputPath size=${fileSize}B " +
-                    "reason=persist_returned_false",
+                "IOS_RECORDING_INDEX_LOST id=${recordingFile.id} path=${ctx.outputPath} " +
+                    "size=${recordingFile.sizeBytes}B reason=persist_returned_false",
             )
-            return Result.failure(
-                IllegalStateException("index persist failed for $recordingId")
-            )
+            return Result.failure(IllegalStateException("index persist failed for ${recordingFile.id}"))
         }
         // 2026-07-13 现场诊断:老板报告"iOS 多次录像列表始终只显示一条"。
         // finalize 用的 currentList 若是 emptyList(冷启动漏调 load 的老包 / load 失败),
@@ -711,26 +750,26 @@ class IosRecordingService(
         SystemLogger.emit(
             LogLevel.Info,
             LogTag.Media,
-            "IOS_RECORDING_INDEX_APPEND id=$recordingId path=$outputPath count=${updated.files.size} " +
-                "thumb=${thumbnailPath != null}",
+            "IOS_RECORDING_INDEX_APPEND id=${recordingFile.id} path=${ctx.outputPath} " +
+                "count=${updated.files.size} thumb=${recordingFile.thumbnailPath != null}",
         )
 
-        if (!isSplit) {
+        if (!ctx.isSplit) {
             _state.value = RecordingState.Idle
         }
 
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            if (isSplit) "IOS_RECORDING_SEGMENT_ROLLOVER path=$outputPath dur=${durationMs}ms"
-            else "IOS_RECORDING_STOP path=$outputPath dur=${durationMs}ms size=${fileSize}B " +
-                "indexedCount=${updated.files.size}",
+            if (ctx.isSplit) "IOS_RECORDING_SEGMENT_ROLLOVER path=${ctx.outputPath} dur=${recordingFile.durationMs}ms"
+            else "IOS_RECORDING_STOP path=${ctx.outputPath} dur=${recordingFile.durationMs}ms " +
+                "size=${recordingFile.sizeBytes}B indexedCount=${updated.files.size}",
         )
 
-        if (isSplit) {
+        if (ctx.isSplit) {
             activeSegmentIndex += 1
             // Can't restart inside mutex - schedule a new coroutine.
             scope.launch {
-                runCatching { start(source, channel) }
+                runCatching { start(ctx.source, ctx.channel) }
                     .onFailure {
                         SystemLogger.emit(
                             LogLevel.Error, LogTag.Media,
@@ -741,6 +780,21 @@ class IosRecordingService(
         }
 
         return Result.success(recordingFile)
+    }
+
+    /** refactor B:phase A → phase B/C 传递的会话快照,避免每 phase 重复 read/write activeXxx。 */
+    private data class FinalizeContext(
+        val outputPath: String,
+        val channel: String,
+        val started: Long,
+        val source: RecordSource,
+        val isSplit: Boolean,
+    )
+
+    /** refactor B:phase A 结果 —— 要么带 context 继续,要么已经决定了最终 Result 直接返。 */
+    private sealed class FinalizePhaseA {
+        data class Continue(val context: FinalizeContext) : FinalizePhaseA()
+        data class EmptyOrMissing(val result: Result<RecordingFile?>) : FinalizePhaseA()
     }
 
     // =========================================================
