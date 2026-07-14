@@ -31,14 +31,22 @@ class AndroidSystemLocationProvider(
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
-            // cross-review R1 #2 修复 — 从"严格 accuracy 择优"改为"新鲜度优先 + 同窗口 accuracy 择优":
+            // cross-review R2 #1 修复 — 时间戳单调守卫先行:
+            //   R1 只用 (loc.time - current.fixTimeMs) > ACCURACY_WINDOW_MS 判陈旧,
+            //   但 GPS/NETWORK 回调可能乱序到达。老 fix 晚到时:loc.time < current.fixTimeMs,
+            //   diff 为负 → 不算 stale;若 loc.accuracy 满足容忍倍数 → accuracyOk = true,
+            //   老 fix 会覆盖新 fix,坐标回退。加显式单调检查在最前面。
+            val current = latestFix
+            if (current != null && loc.time < current.fixTimeMs) {
+                return // 老回调乱序到达,直接丢弃
+            }
+            // cross-review R1 #2 修复 — 新鲜度优先 + 同窗口 accuracy 择优:
             //   · 原策略:严格 loc.accuracy < current.accuracy 才覆写。设备移动时高精度 fix 一旦拿到,
             //     后续常返回相同或略差精度的 fix,坐标会永久冻结在第一次高精度点,持续上报陈旧位置。
             //   · 新策略:
             //     1. current 为 null / 陈旧(> ACCURACY_WINDOW_MS)→ 直接覆写(新鲜度优先)
             //     2. 落在同一窗口内 → 保持 accuracy 择优,避免 GPS/NETWORK 交替时低精度覆盖高精度
-            //     3. loc 精度 <= current 精度 * 2 时也接受,允许移动中精度略降的连续更新
-            val current = latestFix
+            //     3. loc 精度 <= current 精度 * 1.5x 时也接受,允许移动中精度略降的连续更新
             val stale = current == null || (loc.time - current.fixTimeMs) > ACCURACY_WINDOW_MS
             val accuracyOk = current == null ||
                 loc.accuracy <= current.accuracy * ACCURACY_TOLERANCE_FACTOR

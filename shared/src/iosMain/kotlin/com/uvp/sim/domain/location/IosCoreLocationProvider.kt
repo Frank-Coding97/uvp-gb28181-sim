@@ -63,10 +63,15 @@ class IosCoreLocationProvider : LocationProvider {
             val dg = LocationDelegate(
                 isStartedRef = { started && manager != null },
                 onUpdate = { fix ->
+                    val current = latestFix
+                    // cross-review R2 #1 修复 — 时间戳单调守卫先行(CoreLocation batch 可能包含旧回调),
+                    // 老 fix 一律丢弃再进入择优逻辑。避免 accuracy tolerance 允许陈旧回调覆盖新 fix。
+                    if (current != null && fix.fixTimeMs < current.fixTimeMs) {
+                        return@LocationDelegate
+                    }
                     // cross-review R1 #2 修复 — 参照 AndroidSystemLocationProvider 同款策略:
                     //   · 严格 accuracy 择优会永久冻结坐标(移动场景第一次高精度点覆盖后续)
                     //   · 改成"新鲜度优先 + 同窗口 accuracy 择优 + 精度容忍"
-                    val current = latestFix
                     val stale = current == null ||
                         (fix.fixTimeMs - current.fixTimeMs) > ACCURACY_WINDOW_MS
                     val accuracyOk = current == null ||

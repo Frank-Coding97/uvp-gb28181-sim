@@ -182,6 +182,34 @@ class AndroidSystemLocationProviderTest {
         assertEquals(100f, fix!!.accuracy, 0.0001f)
     }
 
+    // cross-review R2 #1 · GPS/NETWORK 回调乱序到达时,旧 fix 不该覆盖新 fix
+    @Test
+    fun outOfOrder_callback_rejects_older_fix_even_when_accuracy_ok() {
+        grantFineLocation()
+        val provider = AndroidSystemLocationProvider(context)
+        provider.start()
+
+        val baseTime = System.currentTimeMillis()
+        // 先注入一个较新的 NETWORK fix (accuracy 20m, t = baseTime)
+        simulateFix(
+            makeLocation(LocationManager.NETWORK_PROVIDER, 40.0, 116.5, accuracy = 20f, time = baseTime)
+        )
+        val newer = provider.next()
+        assertNotNull(newer)
+        assertEquals(40.0, newer!!.point.latitude, 1e-9)
+        assertEquals(20f, newer.accuracy, 0.0001f)
+
+        // 再注入一个老 GPS callback(accuracy 15m 满足 tolerance,但 time 早 3s)
+        simulateFix(
+            makeLocation(LocationManager.GPS_PROVIDER, 39.9, 116.4, accuracy = 15f, time = baseTime - 3_000L)
+        )
+        val stillNewer = provider.next()
+        assertNotNull(stillNewer)
+        // 单调守卫必须阻止老 callback 覆盖新 fix,坐标不该回退
+        assertEquals("旧 callback 乱序到达,不该覆盖新 fix (R2 #1 fix)", 40.0, stillNewer!!.point.latitude, 1e-9)
+        assertEquals(20f, stillNewer.accuracy, 0.0001f)
+    }
+
     // Codex R1 P1-1 · onProviderDisabled 清 latestFix,避免陈旧 GPS 阻挡 NETWORK 新点
     @Test
     fun providerDisabled_clearsLatestFixWhenItsSource() {
