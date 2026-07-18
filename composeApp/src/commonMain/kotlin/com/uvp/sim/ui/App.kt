@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.exclude
@@ -28,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -95,7 +97,7 @@ val LocalAppNavigator = staticCompositionLocalOf { AppNavigator() }
  * 自定义顶栏(36dp)和底栏(56dp)代替 Material3 默认的 64/80dp,
  * 给主屏内容腾出关键的 30+ dp 高度,让"注册"按钮回到一眼可见的范围。
  */
-@OptIn(ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun App(state: AppUiState, actions: AppActions) {
     // 冷启动方案 2.5 —— 首帧短路:仅渲染极轻 SplashScreen 覆盖层,主 UI 树延后 3 frame
@@ -210,8 +212,27 @@ fun App(state: AppUiState, actions: AppActions) {
                             }
                             // Docked bottom bar 只在 Android 时占布局空间;
                             // iOS 悬浮 tab bar 由下面的 Box.align(BottomCenter) 渲染。
+                            //
+                            // 键盘弹起时隐藏 —— 主 Column 的 imePadding() 会把整个 Column
+                            // (包括本 bottom bar)向上顶到键盘顶部,导致 bottom bar 悬浮
+                            // 在键盘正上方遮住 SIP 输入区。Material Design 3 官方指引:
+                            // 键盘弹起时 bottom navigation 应隐藏(否则视觉冲突 + 用户
+                            // 注意力应聚焦输入框)。AnimatedVisibility 的滑出跟 iOS 侧
+                            // FloatingBottomBar 进子页时的滑出动画保持视觉一致。
                             if (!isFloatingBottomBar) {
-                                CompactBottomBar(currentTab) { currentTab = it }
+                                AnimatedVisibility(
+                                    visible = !WindowInsets.isImeVisible,
+                                    enter = slideInVertically(
+                                        initialOffsetY = { it },
+                                        animationSpec = tween(220)
+                                    ),
+                                    exit = slideOutVertically(
+                                        targetOffsetY = { it },
+                                        animationSpec = tween(180)
+                                    ),
+                                ) {
+                                    CompactBottomBar(currentTab) { currentTab = it }
+                                }
                             }
                         }
                         // iOS 26 Liquid Glass 风悬浮 tab bar,不占 Column 布局空间。
