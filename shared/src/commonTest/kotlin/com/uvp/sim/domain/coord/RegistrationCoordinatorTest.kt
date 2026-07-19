@@ -16,6 +16,7 @@ import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -209,6 +210,38 @@ class RegistrationCoordinatorTest {
             unreg.firstHeader(SipHeader.EXPIRES),
             "unregister REGISTER 必须含 Expires: 0",
         )
+    }
+
+    @Test
+    fun unregister_401_retries_same_request_with_digest_and_expires_0_then_completes_on_200() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val coord = newCoord(this, transport)
+
+        coord.register()
+        runCurrent()
+        val firstReq = transport.sent.filterIsInstance<SipRequest>().first()
+        val callId = firstReq.firstHeader(SipHeader.CALL_ID)!!
+        val fromTag = firstReq.firstHeader(SipHeader.FROM)!!.substringAfter("tag=")
+        coord.onIncoming(fake200OkRegister(callId, fromTag).asEnvelope())
+        runCurrent()
+        transport.sent.clear()
+
+        val unregisterJob = launch { coord.unregister() }
+        runCurrent()
+        val unregister = transport.sent.filterIsInstance<SipRequest>().first()
+        assertEquals("0", unregister.firstHeader(SipHeader.EXPIRES))
+
+        coord.onIncoming(fake401(callId, fromTag).asEnvelope())
+        runCurrent()
+        val authenticated = transport.sent.filterIsInstance<SipRequest>().last()
+        assertNotNull(authenticated.firstHeader(SipHeader.AUTHORIZATION))
+        assertEquals("0", authenticated.firstHeader(SipHeader.EXPIRES))
+
+        coord.onIncoming(fake200OkRegister(callId, fromTag).asEnvelope())
+        runCurrent()
+        unregisterJob.join()
+        assertEquals(RegistrationState.Disconnected, coord.state.value)
     }
 
     @Test

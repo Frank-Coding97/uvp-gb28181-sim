@@ -18,6 +18,7 @@ import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipOutbox
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * [RegistrationCoordinator] 真实现(PR2 T2.2 GREEN)。
@@ -133,6 +135,9 @@ internal class RegistrationCoordinatorImpl(
     private var renewalJob: Job? = null
     private var isRenewal: Boolean = false
 
+    // 注销是一个需要等待平台响应的 REGISTER 事务,不能跟上一次注册共用 pending。
+    private var unregisterCompletion: CompletableDeferred<Boolean>? = null
+
     // 重试退避
     private var registerRetryCount: Int = 0
     private var retryJob: Job? = null
@@ -190,14 +195,15 @@ internal class RegistrationCoordinatorImpl(
     }
 
     override suspend fun unregister() {
-        mutex.withLock {
-            if (_state.value == RegistrationState.Disconnected) return
+        val completion = mutex.withLock {
+            if (_state.value == RegistrationState.Disconnected) return@withLock null
             cancelRegisterTimeoutLocked()
             retryJob?.cancel()
             retryJob = null
             registerRetryCount = 0
             renewalJob?.cancel()
             renewalJob = null
+            isRenewal = false
             heartbeat?.stop()
             heartbeat = null
 
@@ -208,12 +214,30 @@ internal class RegistrationCoordinatorImpl(
             val req = SipBuilders.buildUnregister(
                 config, cseq, callIdNow, branch, fromTagNow, localIp, localPortProvider(),
             )
+            val waitForResponse = CompletableDeferred<Boolean>()
+            unregisterCompletion?.cancel()
+            unregisterCompletion = waitForResponse
+            // 401/407 必须基于这条 Expires=0 请求做 Digest 重发,不能沿用普通 REGISTER。
+            pendingRegister = req
             try {
                 outbox.send(req).getOrThrow()
-            } catch (_: Throwable) {
-                // 网络不可达时发不出去是正常的(旧网卡已断 / NetworkUnavailable)
+            } catch (e: Throwable) {
+                finishUnregisterLocked(false)
+                waitForResponse.complete(false)
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "注销请求发送失败: ${e::class.simpleName}: ${e.message}",
+                )
             }
-            _state.value = RegistrationState.Disconnected
+            waitForResponse
+        } ?: return
+
+        // 不能在 mutex 内等待,否则 onIncoming 无法拿锁处理 401/200。
+        val acknowledged = withTimeoutOrNull(UNREGISTER_TIMEOUT_MS) { completion.await() } ?: false
+        if (!acknowledged) {
+            mutex.withLock {
+                if (unregisterCompletion === completion) finishUnregisterLocked(false)
+            }
         }
     }
 
@@ -226,7 +250,7 @@ internal class RegistrationCoordinatorImpl(
         return when (msg) {
             is SipResponse -> {
                 val msgCallId = msg.firstHeader(SipHeader.CALL_ID)
-                if (msgCallId == null || msgCallId != callId) return RoutingResult.Skip
+                if (msgCallId == null || msgCallId != callId || pendingRegister == null) return RoutingResult.Skip
                 val cseqRaw = msg.cseqRaw()
                 val cseqMethod = cseqRaw?.split(" ")?.getOrNull(1)?.let { SipMethod.fromString(it) }
                 when (cseqMethod) {
@@ -386,6 +410,11 @@ internal class RegistrationCoordinatorImpl(
                 cancelRegisterTimeoutLocked()
                 registerRetryCount = 0
                 applySipDateSync(resp)
+                unregisterCompletion?.let { completion ->
+                    finishUnregisterLocked(true)
+                    completion.complete(true)
+                    return
+                }
                 if (!isRenewal) {
                     _state.value = RegistrationState.Registered
                     _events.emit(RegistrationEvent.Registered)
@@ -411,6 +440,11 @@ internal class RegistrationCoordinatorImpl(
                 val pending = pendingRegister
                 if (challenge == null || pending == null) {
                     cancelRegisterTimeoutLocked()
+                    unregisterCompletion?.let { completion ->
+                        finishUnregisterLocked(false)
+                        completion.complete(false)
+                        return
+                    }
                     _state.value = RegistrationState.Failed
                     _events.emit(RegistrationEvent.Unauthorized(resp.statusCode, "missing challenge"))
                     SystemLogger.emit(
@@ -441,17 +475,47 @@ internal class RegistrationCoordinatorImpl(
                 val newBranch = SipBuilders.randomBranch()
                 val authedReq = SipBuilders.addAuthorization(pending, authHeader, cseq, newBranch)
                 pendingRegister = authedReq
-                outbox.send(authedReq).getOrThrow()
-                armRegisterTimeout()
+                try {
+                    outbox.send(authedReq).getOrThrow()
+                    // 注销事务由 unregister() 自己等待响应;普通 REGISTER 仍需重置 8s 超时。
+                    if (unregisterCompletion == null) armRegisterTimeout()
+                } catch (e: Throwable) {
+                    unregisterCompletion?.let { completion ->
+                        finishUnregisterLocked(false)
+                        completion.complete(false)
+                        SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Lifecycle,
+                            "注销鉴权请求发送失败: ${e::class.simpleName}: ${e.message}",
+                        )
+                        return
+                    }
+                    throw e
+                }
             }
 
             in 400..699 -> {
                 cancelRegisterTimeoutLocked()
+                unregisterCompletion?.let { completion ->
+                    finishUnregisterLocked(false)
+                    completion.complete(false)
+                    return
+                }
                 val reason = "${resp.statusCode} ${resp.reasonPhrase}"
                 val permanent = resp.statusCode in 400..499 && resp.statusCode != 401 && resp.statusCode != 407
                 scheduleRetryOrFail(reason, permanent)
             }
         }
+    }
+
+    /** 完成或放弃注销事务,并清掉旧 REGISTER 上下文,避免迟到响应把状态改回 Registered。 */
+    private fun finishUnregisterLocked(success: Boolean) {
+        if (success) {
+            SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "平台确认注销")
+        }
+        pendingRegister = null
+        unregisterCompletion = null
+        isRenewal = false
+        _state.value = RegistrationState.Disconnected
     }
 
     private suspend fun handleOptions(req: SipRequest) {
@@ -595,6 +659,7 @@ internal class RegistrationCoordinatorImpl(
 
     companion object {
         const val REGISTER_TIMEOUT_MS: Long = 8_000L
+        const val UNREGISTER_TIMEOUT_MS: Long = 3_000L
         const val MAX_REGISTER_RETRIES: Int = 3
         const val INITIAL_RETRY_DELAY_MS: Long = 2_000L
 
