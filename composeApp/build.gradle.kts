@@ -60,7 +60,15 @@ kotlin {
             implementation(libs.androidx.lifecycle.viewmodel)
             implementation(libs.androidx.lifecycle.runtime.compose)
             implementation(libs.kotlinx.coroutines.android)
+            // CameraX:camera-view 之外的三件套是 ScanQrCode.android.kt 的 ImageAnalysis
+            // 所需(shared/androidMain 虽然已引,但那是另一个模块的 implementation
+            // 依赖,不会传递到 composeApp)。
+            implementation(libs.androidx.camera.core)
+            implementation(libs.androidx.camera.lifecycle)
+            implementation(libs.androidx.camera.camera2)
             implementation(libs.androidx.camera.view)
+            // 扫码解码(T8):纯 Java ZXing,不依赖 Google Play Services
+            implementation(libs.zxing.core)
             implementation(libs.androidx.media3.exoplayer)
             implementation(libs.androidx.media3.ui)
             // 3D rendering — load .glb model

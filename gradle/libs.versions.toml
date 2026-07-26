@@ -43,6 +43,10 @@ androidx-test-espresso = "3.6.1"
 # 3D rendering — load .glb via filament + gltfio (C 方案 2026-06-13)
 filament = "1.71.6"
 
+# QR 解码(扫码回填 SIP 接入信息 T8)。选 ZXing core 而非 MLKit:纯 Java 无
+# Google Play Services 依赖,国内 ROM / 无 GMS 设备一样能用。
+zxing = "3.5.3"
+
 [libraries]
 # Compose Multiplatform
 compose-runtime = { module = "org.jetbrains.compose.runtime:runtime", version.ref = "compose-multiplatform" }
@@ -105,6 +109,9 @@ androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core",
 filament-android = { module = "com.google.android.filament:filament-android", version.ref = "filament" }
 filament-utils = { module = "com.google.android.filament:filament-utils-android", version.ref = "filament" }
 gltfio-android = { module = "com.google.android.filament:gltfio-android", version.ref = "filament" }
+
+# QR 解码 — ZXing core(纯 Java,不绑 GMS)
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

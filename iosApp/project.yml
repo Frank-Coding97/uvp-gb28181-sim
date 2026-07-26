@@ -66,6 +66,13 @@ targets:
           - arm64
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # qr-sip-provisioning plan §5.6 — App Transport Security 例外。
+        # iOS 默认禁止 HTTP 明文,Ktor Darwin 走系统网络栈 → 不配这条,扫码兑换
+        # (POST http://<平台>:8280/api/...) 会被系统直接拒绝,功能在 iOS 上不可用。
+        # 选 NSAllowsLocalNetworking 而非 NSAllowsArbitraryLoads:只放开局域网 /
+        # .local 明文,公网明文仍然禁止。本特性场景就是局域网联调。
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         # Permissions per plan §3.4
         NSCameraUsageDescription: "UVP Sim needs camera access to simulate a GB28181 device video stream."
         NSMicrophoneUsageDescription: "UVP Sim needs microphone access to simulate a GB28181 device audio stream."
