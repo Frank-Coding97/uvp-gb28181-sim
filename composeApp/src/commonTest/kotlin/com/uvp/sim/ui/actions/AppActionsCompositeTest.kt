@@ -2,6 +2,7 @@ package com.uvp.sim.ui.actions
 
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.NetworkPreference
+import com.uvp.sim.config.QrFetchResult
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.recording.RecordingFilter
@@ -10,6 +11,7 @@ import com.uvp.sim.ui.AppActions
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlinx.coroutines.test.runTest
 
 /**
  * PR-B T3 — AppActions composite marker + 4 slice 委派路由单测。
@@ -40,6 +42,18 @@ class AppActionsCompositeTest {
                    "home.onClearSipLogs", "home.onClearSystemLogs", "home.onConsumeDeviceEffect"),
             sink.calls
         )
+    }
+
+    /** 扫码兑换是 suspend action,单独一条验证委派 + 返回值透传。 */
+    @Test
+    fun composite_routes_suspend_qr_exchange_to_home_slice() = runTest {
+        val sink = RoutingSink()
+        val composite = makeComposite(home = HomeSliceFake(sink))
+
+        val result = composite.onQrExchange("http://a:8280", "0123456789abcdefghijkl")
+
+        assertEquals(listOf("home.onQrExchange:http://a:8280"), sink.calls)
+        assertTrue(result is QrFetchResult.NetworkError)
     }
 
     @Test
@@ -149,6 +163,10 @@ private class HomeSliceFake(private val sink: RoutingSink) : HomeActions {
     override fun onClearSipLogs() = sink.record("home.onClearSipLogs")
     override fun onClearSystemLogs() = sink.record("home.onClearSystemLogs")
     override fun onConsumeDeviceEffect() = sink.record("home.onConsumeDeviceEffect")
+    override suspend fun onQrExchange(baseUrl: String, token: String): QrFetchResult {
+        sink.record("home.onQrExchange:$baseUrl")
+        return QrFetchResult.NetworkError("fake")
+    }
 }
 
 private class CapabilitySliceFake(private val sink: RoutingSink) : CapabilityActions {

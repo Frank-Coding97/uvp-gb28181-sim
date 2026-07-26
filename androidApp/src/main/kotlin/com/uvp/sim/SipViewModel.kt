@@ -319,6 +319,27 @@ class SipViewModel @JvmOverloads constructor(
     fun disconnect() = viewModelScope.launch { appEngine.disconnect() }
     fun cancelConnect() = viewModelScope.launch { appEngine.cancelConnect() }
 
+    /**
+     * 扫码兑换 SIP 六元组(qr-sip-provisioning plan §5.8)。
+     *
+     * client 由 ViewModel 持有、随 [onCleared] 关闭 —— **不在 Composable 内建**。
+     * lazy 让没用过扫码的会话完全不付 client 构造成本。
+     */
+    private val qrHttpClient: io.ktor.client.HttpClient? by lazy {
+        resources.httpEngineFactory?.invoke()?.let {
+            com.uvp.sim.config.QrProvisionClient.newHttpClient(it)
+        }
+    }
+
+    suspend fun exchangeQrToken(
+        baseUrl: String,
+        token: String,
+    ): com.uvp.sim.config.QrFetchResult {
+        val client = qrHttpClient
+            ?: return com.uvp.sim.config.QrFetchResult.NetworkError("HTTP client 不可用")
+        return com.uvp.sim.config.QrProvisionClient(client).exchange(baseUrl, token)
+    }
+
     fun updateConfig(newCfg: SimConfig) {
         val prev = appEngine.config.value
         val migrated = migrateDualChannel(newCfg)
@@ -456,6 +477,8 @@ class SipViewModel @JvmOverloads constructor(
 
     override fun onCleared() {
         super.onCleared()
+        // 扫码兑换 client 随 ViewModel 走。runCatching:close 失败不该拖垮后面的清理。
+        runCatching { qrHttpClient?.close() }
         // R4 #7:onCleared 用应用级 SupervisorJob scope,不再吞错。GlobalScope 是 fire-and-forget,
         // 异常被 runCatching 静默吞掉,新 ViewModel 启动可能撞旧清理。改用 SupervisorJob + Dispatchers.Default
         // 让清理结构化,失败显式 logger 上报。

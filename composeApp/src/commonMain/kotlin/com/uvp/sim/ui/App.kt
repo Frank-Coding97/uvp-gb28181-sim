@@ -126,6 +126,9 @@ fun App(state: AppUiState, actions: AppActions) {
         var currentTab by rememberSaveable { mutableStateOf(AppTab.Home) }
         var alarmTarget by rememberSaveable { mutableStateOf(false) }
         var notificationOpen by rememberSaveable { mutableStateOf(false) }
+        // 扫码页覆盖层。跟 notificationOpen 同构:true 时整个主内容树让位,
+        // 底部 tab bar 自然随之消失(用例 9.17)。
+        var scanOpen by rememberSaveable { mutableStateOf(false) }
         val (notificationState, markAllRead) = rememberNotificationState(state.events)
         val navigator = AppNavigator(
             navigateToAlarm = {
@@ -159,10 +162,17 @@ fun App(state: AppUiState, actions: AppActions) {
                             })
                         }
                 ) {
+                    val toast = LocalToastHost.current
                     if (notificationOpen) {
                         NotificationScreen(
                             state = notificationState,
                             onBack = { notificationOpen = false },
+                        )
+                    } else if (scanOpen) {
+                        QrScanScreen(
+                            state = state,
+                            actions = actions,
+                            onClose = { scanOpen = false },
                         )
                     } else {
                         // imePadding: 键盘弹起时收缩内容区(TopBar / weight(1f) Surface /
@@ -177,7 +187,13 @@ fun App(state: AppUiState, actions: AppActions) {
                                 onBellClick = {
                                     notificationOpen = true
                                     markAllRead()
-                                }
+                                },
+                                // 入口只在 Disconnected 态开放 —— 其余 4 态(含 Failed)
+                                // 一律 toast 拦住,理由见 qrEntryBlockReason 注释。
+                                onScanClick = {
+                                    val blocked = qrEntryBlockReason(state.sip)
+                                    if (blocked != null) toast.warning(blocked) else scanOpen = true
+                                },
                             )
                             NetworkUnavailableBanner(
                                 runtime = state.networkRuntimeState,
@@ -270,8 +286,11 @@ fun App(state: AppUiState, actions: AppActions) {
 }
 
 @Composable
-private fun CompactTopBar(unreadCount: Int = 0, onBellClick: () -> Unit = {}) {
-    val toast = LocalToastHost.current
+private fun CompactTopBar(
+    unreadCount: Int = 0,
+    onBellClick: () -> Unit = {},
+    onScanClick: () -> Unit = {},
+) {
     Column(modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
         Row(
             modifier = Modifier
@@ -284,7 +303,7 @@ private fun CompactTopBar(unreadCount: Int = 0, onBellClick: () -> Unit = {}) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
-                    .clickable { toast.info("扫一扫功能将在 UVP 平台上线后启用") }
+                    .clickable { onScanClick() }
                     .padding(4.dp)
             ) {
                 Icon(

@@ -2,11 +2,13 @@ package com.uvp.sim.ui.actions
 
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.NetworkPreference
+import com.uvp.sim.config.QrFetchResult
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.ui.AlarmFireMode
 import com.uvp.sim.ui.AppActions
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -52,6 +54,18 @@ class MainActivityActionsBindingTest {
             ),
             sink.calls
         )
+    }
+
+    /** 扫码兑换 suspend action 在 Android 类路径下的委派验证。 */
+    @Test
+    fun composite_routes_suspend_qr_exchange() = runTest {
+        val sink = RoutingSink()
+        val composite = makeComposite(home = HomeSliceFake(sink))
+
+        val result = composite.onQrExchange("http://192.168.1.10:8280", "0123456789abcdefghijkl")
+
+        assertEquals(listOf("home.onQrExchange:http://192.168.1.10:8280"), sink.calls)
+        assertTrue(result is QrFetchResult.NetworkError)
     }
 
     @Test
@@ -157,6 +171,10 @@ private class HomeSliceFake(private val sink: RoutingSink) : HomeActions {
     override fun onClearSipLogs() = sink.record("home.onClearSipLogs")
     override fun onClearSystemLogs() = sink.record("home.onClearSystemLogs")
     override fun onConsumeDeviceEffect() = sink.record("home.onConsumeDeviceEffect")
+    override suspend fun onQrExchange(baseUrl: String, token: String): QrFetchResult {
+        sink.record("home.onQrExchange:$baseUrl")
+        return QrFetchResult.NetworkError("fake")
+    }
 }
 
 private class CapabilitySliceFake(private val sink: RoutingSink) : CapabilityActions {

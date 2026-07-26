@@ -194,6 +194,13 @@ class MainActivity : ComponentActivity() {
                     SystemLogger.clear()
                 }
                 override fun onConsumeDeviceEffect() { viewModel.consumeDeviceEffect() }
+                override suspend fun onQrExchange(
+                    baseUrl: String,
+                    token: String,
+                ): com.uvp.sim.config.QrFetchResult {
+                    SystemLogger.emit(LogLevel.Info, LogTag.User, "扫码兑换 SIP 配置 host=$baseUrl")
+                    return viewModel.exchangeQrToken(baseUrl, token)
+                }
             }
             val capabilityActions = object : CapabilityActions {
                 override fun onSnapshot() = logged("用户点击抓拍") { viewModel.reportSnapshot() }

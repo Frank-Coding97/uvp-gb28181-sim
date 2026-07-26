@@ -108,6 +108,34 @@ object IosAppHost {
     /** NetworkController (Wave 1 A4, NWPathMonitor)。IosAppHost 起时装,close 由进程退出兜底。 */
     val networkController: NetworkController = NetworkController()
 
+    /**
+     * 扫码兑换 client(qr-sip-provisioning plan §5.8)。
+     *
+     * 宿主持有 —— 跟 networkController 一样,生命周期同进程,close 由进程退出兜底。
+     * **不在 Composable 内建 client**:那样没人管关闭。
+     * ATS 例外见 iosApp/project.yml 的 NSAllowsLocalNetworking(plan §5.6),
+     * 不配那条这里发出的 HTTP 请求会被系统直接拒绝。
+     */
+    private val qrHttpClient: io.ktor.client.HttpClient? by lazy {
+        PlatformResourcesIos().httpEngineFactory?.invoke()?.let {
+            com.uvp.sim.config.QrProvisionClient.newHttpClient(it)
+        }
+    }
+
+    internal suspend fun exchangeQrToken(
+        baseUrl: String,
+        token: String,
+    ): com.uvp.sim.config.QrFetchResult {
+        val client = qrHttpClient
+            ?: return com.uvp.sim.config.QrFetchResult.NetworkError("HTTP client 不可用")
+        SystemLogger.emit(
+            com.uvp.sim.observability.LogLevel.Info,
+            com.uvp.sim.api.LogTag.User,
+            "扫码兑换 SIP 配置 host=$baseUrl",
+        )
+        return com.uvp.sim.config.QrProvisionClient(client).exchange(baseUrl, token)
+    }
+
     private val engine: AppEngine by lazy {
         AppEngine(
             resources = PlatformResourcesIos(),
@@ -511,6 +539,10 @@ private fun buildActions(
         override fun onClearSipLogs() { onClearSipLogs() }
         override fun onClearSystemLogs() { SystemLogger.clear() }
         override fun onConsumeDeviceEffect() { engine.consumeEffect() }
+        override suspend fun onQrExchange(
+            baseUrl: String,
+            token: String,
+        ): com.uvp.sim.config.QrFetchResult = IosAppHost.exchangeQrToken(baseUrl, token)
     }
     val fallback = AlarmPayload(deviceId = engine.config.value.device.deviceId, priority = AlarmPriority.General)
     val capability = object : CapabilityActions {
