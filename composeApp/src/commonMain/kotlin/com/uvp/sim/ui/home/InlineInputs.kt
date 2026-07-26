@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
@@ -181,6 +182,12 @@ internal fun InlineSegmented(
  * 不画外框,聚焦时下面亮 1.5dp 蓝线,失焦回归边线灰。
  *
  * trailing 可选:用于"服务器 + 端口同行"场景,主输入占大头,trailing 占小头。
+ *
+ * clearable:仿 iOS `UITextField.clearButtonMode = .whileEditing` —— 聚焦且有内容时
+ * 右侧露出叉号,一键清空。密码行叉号排在眼睛图标左边。
+ *
+ * maxLength:`> 0` 时硬截断输入(超长字符直接不接受),并在聚焦时于叉号左侧显示
+ * `当前位数/总位数` 计数器。用于 GB28181 定长 ID(20 位编码 / 10 位域前缀)。
  */
 @Composable
 internal fun InlineEditableRow(
@@ -190,6 +197,8 @@ internal fun InlineEditableRow(
     keyboard: KeyboardType = KeyboardType.Text,
     masked: Boolean = false,
     placeholder: String = "",
+    clearable: Boolean = true,
+    maxLength: Int = 0,
     trailing: (@Composable () -> Unit)? = null,
     onChange: (String) -> Unit
 ) {
@@ -213,7 +222,8 @@ internal fun InlineEditableRow(
             )
             BasicTextField(
                 value = value,
-                onValueChange = onChange,
+                // maxLength 硬截断:超长输入直接丢弃尾部,不交给调用方。
+                onValueChange = { if (maxLength > 0) onChange(it.take(maxLength)) else onChange(it) },
                 enabled = enabled,
                 singleLine = true,
                 interactionSource = interactionSource,
@@ -244,6 +254,28 @@ internal fun InlineEditableRow(
                 },
                 modifier = Modifier.weight(1f)
             )
+            if (maxLength > 0 && enabled && focused) {
+                val filled = value.length == maxLength
+                Text(
+                    "${value.length}/$maxLength",
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (filled) UvpColor.Primary else UvpColor.TextHint,
+                    fontWeight = if (filled) FontWeight.Medium else FontWeight.Normal,
+                    modifier = Modifier.padding(start = 4.dp)
+                )
+            }
+            if (clearable && enabled && focused && value.isNotEmpty()) {
+                Icon(
+                    imageVector = Icons.Outlined.Cancel,
+                    contentDescription = "清空",
+                    tint = UvpColor.TextHint,
+                    modifier = Modifier
+                        .padding(start = 4.dp)
+                        .size(15.dp)
+                        .clickable { onChange("") }
+                )
+            }
             if (masked) {
                 Icon(
                     imageVector = if (revealed) Icons.Outlined.VisibilityOff

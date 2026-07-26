@@ -32,6 +32,12 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.AudioTransportType
 import com.uvp.sim.ui.model.SipStateDto
 
+/** GB §A.2 设备/平台编码定长:20 位数字。与 IdEncoder.isValidGbId 一致。 */
+private const val GB_ID_LENGTH = 20
+
+/** GB §A.3 SIP domain 前缀定长:10 位数字。与 IdEncoder.isValidGbDomain 一致。 */
+private const val GB_DOMAIN_LENGTH = 10
+
 /**
  * SIP 配置卡 — 7 字段内联编辑(IP+端口同行 / 服务器ID / 服务器域 / 设备ID / 注册密码 /
  * 信令传输 / 对讲传输)。注册后锁定。从 HomeScreen.kt 拆出。
@@ -67,6 +73,19 @@ internal fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (
         audioTransport = state.config.audioTransport
         serverId = state.config.server.serverId
         domain = state.config.server.domain
+        domainManuallyEdited = false
+    }
+
+    // 清空所有输入框草稿(端口 / 传输方式等非文本项保持不动)。只改草稿不落盘,
+    // 用户可点"取消"反悔,点"完成"才生效。
+    fun clearAll() {
+        ip = ""
+        port = ""
+        deviceId = ""
+        password = ""
+        serverId = ""
+        domain = ""
+        // 复位联动标记:清空后用户重填服务器 ID 时,服务器域重新自动跟随前 10 位。
         domainManuallyEdited = false
     }
 
@@ -110,8 +129,25 @@ internal fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (
             Spacer(Modifier.weight(1f))
             val tint = if (locked) UvpColor.TextHint else UvpColor.Primary
             if (editing && !locked) {
-                // 编辑态:取消(还原) + 完成(校验后保存) 两按钮并排,
+                // 编辑态:重置(清空草稿) + 取消(还原) + 完成(校验后保存) 三按钮并排,
                 // 表单不合法时"完成"toast 报错,用户可点"取消"无校验退出。
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable {
+                            clearAll()
+                            onFeedback("已清空,重新填写后点完成")
+                        }
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "重置",
+                        fontSize = 12.sp,
+                        color = UvpColor.TextSecondary
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
                 Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(4.dp))
@@ -187,21 +223,24 @@ internal fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (
             )
             InlineEditableRow(
                 "服务器 ID", serverId, canEdit, KeyboardType.Number,
-                placeholder = "例如 34020000002000000001"
+                placeholder = "例如 34020000002000000001",
+                maxLength = GB_ID_LENGTH
             ) { newId ->
                 serverId = newId.filter { c -> c.isDigit() }
-                if (!domainManuallyEdited) domain = serverId.take(10)
+                if (!domainManuallyEdited) domain = serverId.take(GB_DOMAIN_LENGTH)
             }
             InlineEditableRow(
                 "服务器域", domain, canEdit, KeyboardType.Number,
-                placeholder = "例如 3402000000"
+                placeholder = "例如 3402000000",
+                maxLength = GB_DOMAIN_LENGTH
             ) { newDomain ->
                 domain = newDomain.filter { c -> c.isDigit() }
                 domainManuallyEdited = true
             }
             InlineEditableRow(
                 "设备 ID", deviceId, canEdit, KeyboardType.Number,
-                placeholder = "例如 34020000001310000001"
+                placeholder = "例如 34020000001310000001",
+                maxLength = GB_ID_LENGTH
             ) {
                 deviceId = it.filter { c -> c.isDigit() }
             }
