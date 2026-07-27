@@ -175,25 +175,39 @@ object IosAppHost {
     // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
     // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
     // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
-    fun defaultConfig() = SimConfig(
-        gbVersion = GbVersion.V2022,
-        server = ServerConfig(
-            ip = "",
-            port = 0,
-            serverId = "",
-            domain = "3402000000"
-        ),
-        device = DeviceConfig(
-            deviceId = "34020000001320000001",
-            videoChannelId = "34020000001320000010",
-            alarmChannelId = "34020000001340000001",
-            username = "34020000001320000001",
-            password = "",
-            frontChannelId = "34020000001320000020",
-        ),
-        transport = TransportType.UDP,
-        keepaliveIntervalSeconds = 60,
-    )
+    /** identifierForVendor 拿不到时的兜底设备编码(与 Android 侧 fallback 一致)。 */
+    private val deviceIdFallback = "34020000001320000001"
+
+    fun defaultConfig(): SimConfig {
+        // deviceId 从 identifierForVendor 派生,三个通道 ID 跟着它走 —— 通道编码前 13 位
+        // 必须与设备编码一致,否则平台侧 Catalog 里通道挂不到设备下。
+        // 每台设备唯一,避免多台 sim 同时注册时互相顶号。
+        val hw = com.uvp.sim.device.getHardwareId(null)
+        val deviceId = if (hw != null) {
+            com.uvp.sim.device.DeviceIdGenerator.deriveDeviceId(hw)
+        } else {
+            deviceIdFallback
+        }
+        return SimConfig(
+            gbVersion = GbVersion.V2022,
+            server = ServerConfig(
+                ip = "",
+                port = 0,
+                serverId = "",
+                domain = "3402000000"
+            ),
+            device = DeviceConfig(
+                deviceId = deviceId,
+                videoChannelId = com.uvp.sim.device.ChannelIdGenerator.deriveVideoChannelId(deviceId),
+                alarmChannelId = com.uvp.sim.device.ChannelIdGenerator.deriveAlarmChannelId(deviceId),
+                username = deviceId,
+                password = "",
+                frontChannelId = com.uvp.sim.device.ChannelIdGenerator.deriveFrontChannelId(deviceId),
+            ),
+            transport = TransportType.UDP,
+            keepaliveIntervalSeconds = 60,
+        )
+    }
 
     fun bindLogger() {
         SystemLogger.bindScope(hostScope)

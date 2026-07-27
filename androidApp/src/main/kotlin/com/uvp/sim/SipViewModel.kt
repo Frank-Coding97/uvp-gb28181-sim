@@ -74,7 +74,7 @@ class SipViewModel @JvmOverloads constructor(
     private val appEngine: AppEngine = AppEngine(
         resources = resources,
         runtime = runtime,
-        initialConfig = defaultConfig(),
+        initialConfig = defaultConfig(application),
         parentScope = viewModelScope,
     )
 
@@ -107,7 +107,7 @@ class SipViewModel @JvmOverloads constructor(
             cfg.osd.copy(channelName = cfg.osd.channelName.copy(text = chName))
         }.stateIn(
             viewModelScope, SharingStarted.Eagerly,
-            defaultConfig().osd.let { it.copy(channelName = it.channelName.copy(text = defaultConfig().device.videoChannelName)) }
+            defaultConfig(application).osd.let { it.copy(channelName = it.channelName.copy(text = defaultConfig(application).device.videoChannelName)) }
         )
 
     init {
@@ -218,7 +218,7 @@ class SipViewModel @JvmOverloads constructor(
 
     init {
         // 冷启动顺序(PR-USER-BUG-1 修复):
-        // 1. AppEngine 构造时已用 defaultConfig() 装配 holders(loadOnce 等价)
+        // 1. AppEngine 构造时已用 defaultConfig(application) 装配 holders(loadOnce 等价)
         // 2. 灌入持久化 config → AppEngine.setConfig 触发 rehydrateHolders,
         //    catalogTree / mockGps / currentChannelName / clockOffset / subscriptionRegistry 跟随
         //    新 config 重派生 — 旧实现是直接 _config.value =,holder 不刷,
@@ -226,7 +226,9 @@ class SipViewModel @JvmOverloads constructor(
         // 3. networkController.apply(stored.network.preference) — 应用持久化网络偏好
         // 4. 之后才启动 networkController.state.collect 推给 AppEngine
         viewModelScope.launch {
-            val stored = migrateDualChannel(resources.configStore.loadOnce(defaultConfig()))
+            val stored = deriveChannelIds(
+                migrateDualChannel(resources.configStore.loadOnce(defaultConfig(application)))
+            )
             if (stored != appEngine.config.value) {
                 appEngine.setConfig(stored)
                 _videoConfigVersion.value += 1
@@ -260,6 +262,30 @@ class SipViewModel @JvmOverloads constructor(
             cfg.server.domain, com.uvp.sim.config.CatalogNodeType.VideoChannel, 2
         )
         return cfg.copy(device = cfg.device.copy(frontChannelId = frontId))
+    }
+
+    /**
+     * 补全空白的通道 ID —— 基于 deviceId 派生。
+     *
+     * defaultConfig 把三个通道 ID 留空,因为它们要跟随派生出来的 deviceId(每台设备不同),
+     * 不能再用硬编码常量。已有非空值的字段不覆盖:用户手改过的、或扫码回填的都要保留。
+     */
+    private fun deriveChannelIds(cfg: SimConfig): SimConfig {
+        val dev = cfg.device
+        if (dev.deviceId.length != 20) return cfg // deviceId 非法时不派生,交给校验层报错
+        return cfg.copy(
+            device = dev.copy(
+                videoChannelId = dev.videoChannelId.ifBlank {
+                    com.uvp.sim.device.ChannelIdGenerator.deriveVideoChannelId(dev.deviceId)
+                },
+                alarmChannelId = dev.alarmChannelId.ifBlank {
+                    com.uvp.sim.device.ChannelIdGenerator.deriveAlarmChannelId(dev.deviceId)
+                },
+                frontChannelId = dev.frontChannelId.ifBlank {
+                    com.uvp.sim.device.ChannelIdGenerator.deriveFrontChannelId(dev.deviceId)
+                },
+            )
+        )
     }
 
     /**
@@ -561,27 +587,41 @@ class SipViewModel @JvmOverloads constructor(
         private const val WVP_SERVER_ID = ""
         private const val WVP_DOMAIN = "3402000000"
         private const val WVP_PASSWORD = ""
-        private const val DEVICE_ID = "34020000001320000001"
-        private const val VIDEO_CHANNEL_ID = "34020000001320000010"
-        private const val FRONT_CHANNEL_ID = "34020000001320000020"
-        private const val ALARM_CHANNEL_ID = "34020000001340000001"
+        private const val DEVICE_ID_FALLBACK = "34020000001320000001"
 
-        fun defaultConfig() = SimConfig(
-            gbVersion = GbVersion.V2022,
-            server = ServerConfig(
-                ip = WVP_IP, port = WVP_PORT,
-                serverId = WVP_SERVER_ID, domain = WVP_DOMAIN
-            ),
-            device = DeviceConfig(
-                deviceId = DEVICE_ID,
-                videoChannelId = VIDEO_CHANNEL_ID,
-                alarmChannelId = ALARM_CHANNEL_ID,
-                username = DEVICE_ID,
-                password = WVP_PASSWORD,
-                frontChannelId = FRONT_CHANNEL_ID,
-            ),
-            transport = TransportType.UDP,
-            keepaliveIntervalSeconds = 60,
-        )
+        /**
+         * 派生或使用 fallback deviceId。
+         *
+         * 优先从硬件标识（ANDROID_ID）派生唯一 deviceId，失败则用 fallback。
+         * 派生后的 deviceId 在重装 app 后保持不变（ANDROID_ID 稳定），
+         * 消除多台设备"顶号"问题。
+         */
+        private fun deriveDeviceId(application: Application): String {
+            val hw = com.uvp.sim.device.getHardwareId(application) ?: return DEVICE_ID_FALLBACK
+            return com.uvp.sim.device.DeviceIdGenerator.deriveDeviceId(hw)
+        }
+
+        fun defaultConfig(application: Application): SimConfig {
+            // deviceId 只派生一次,三个通道 ID 跟着它走 —— 通道编码前 13 位必须与设备编码
+            // 一致,否则平台侧 Catalog 里通道挂不到设备下。
+            val deviceId = deriveDeviceId(application)
+            return SimConfig(
+                gbVersion = GbVersion.V2022,
+                server = ServerConfig(
+                    ip = WVP_IP, port = WVP_PORT,
+                    serverId = WVP_SERVER_ID, domain = WVP_DOMAIN
+                ),
+                device = DeviceConfig(
+                    deviceId = deviceId,
+                    videoChannelId = com.uvp.sim.device.ChannelIdGenerator.deriveVideoChannelId(deviceId),
+                    alarmChannelId = com.uvp.sim.device.ChannelIdGenerator.deriveAlarmChannelId(deviceId),
+                    username = deviceId,
+                    password = WVP_PASSWORD,
+                    frontChannelId = com.uvp.sim.device.ChannelIdGenerator.deriveFrontChannelId(deviceId),
+                ),
+                transport = TransportType.UDP,
+                keepaliveIntervalSeconds = 60,
+            )
+        }
     }
 }
