@@ -28,6 +28,17 @@ val missingKeystoreFields = requiredKeystoreFields.filter {
 }
 val hasReleaseSigning = keystoreFile.exists() && missingKeystoreFields.isEmpty()
 
+// Release CI passes the version from the Git tag. Local builds keep the
+// checked-in values so contributors can continue to build without extra flags.
+val configuredVersionName = providers.gradleProperty("uvpVersionName").orNull ?: "1.0.3"
+val configuredVersionCode = providers.gradleProperty("uvpVersionCode").orNull?.toIntOrNull() ?: 10003
+require(Regex("\\d+\\.\\d+\\.\\d+").matches(configuredVersionName)) {
+    "uvpVersionName must be MAJOR.MINOR.PATCH, got: $configuredVersionName"
+}
+require(configuredVersionCode > 0) {
+    "uvpVersionCode must be a positive integer, got: $configuredVersionCode"
+}
+
 // 配置存在但字段不全 → 立即抛(不要等到 release task 才发现)。
 if (keystoreFile.exists() && missingKeystoreFields.isNotEmpty()) {
     throw GradleException(
@@ -44,8 +55,8 @@ android {
         applicationId = "cn.uvp.gb28181sim"
         minSdk = 26
         targetSdk = 36
-        versionCode = 10003
-        versionName = "1.0.3"
+        versionCode = configuredVersionCode
+        versionName = configuredVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

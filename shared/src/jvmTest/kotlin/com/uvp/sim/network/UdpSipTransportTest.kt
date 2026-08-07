@@ -9,8 +9,10 @@ import com.uvp.sim.sip.SipParser
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -116,10 +118,13 @@ class UdpSipTransportTest {
             )
         )
         val respBytes = resp.toBytes()
+        val incomingEnvelope = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5000) { transport.incoming.first() }
+        }
         mockServer.send(DatagramPacket(respBytes, respBytes.size, clientAddr, clientPort))
 
         // Transport should emit it on the incoming flow (SipEnvelope carries source)
-        val envelope = withTimeout(5000) { transport.incoming.first() }
+        val envelope = incomingEnvelope.await()
         val incoming = envelope.message
         assertTrue(incoming is SipResponse)
         assertEquals(200, incoming.statusCode)

@@ -5,8 +5,10 @@ import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipRequest
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
@@ -81,9 +83,12 @@ class SipTransportEnvelopeTest {
 
         // 2) server 主动回 200 OK,transport.incoming 应捕到 envelope
         val respBytes = buildOptionsResponse("e1").toBytes()
+        val incomingEnvelope = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5000) { transport.incoming.first() }
+        }
         server.send(DatagramPacket(respBytes, respBytes.size, clientAddr, clientPort))
 
-        val env = withTimeout(5000) { transport.incoming.first() }
+        val env = incomingEnvelope.await()
         assertTrue(env.message is SipResponse)
         assertTrue(
             env.sourceIp == "127.0.0.1" || env.sourceIp == "localhost",
@@ -115,6 +120,12 @@ class SipTransportEnvelopeTest {
             val clientAddr = pkt1.address
             val clientPort = pkt1.port
 
+            val incomingEnvelopes = async(start = CoroutineStart.UNDISPATCHED) {
+                withTimeout(5000) {
+                    transport.incoming.take(2).toList()
+                }
+            }
+
             // server1 回 200
             val resp1 = buildOptionsResponse("e2-a").toBytes()
             server.send(DatagramPacket(resp1, resp1.size, clientAddr, clientPort))
@@ -124,9 +135,7 @@ class SipTransportEnvelopeTest {
             server2.send(DatagramPacket(resp2, resp2.size, clientAddr, clientPort))
 
             // 收两条 envelope,各自的 sourcePort 应该对得上
-            val collected = withTimeout(5000) {
-                transport.incoming.take(2).toList()
-            }
+            val collected = incomingEnvelopes.await()
             // 两条 envelope,sourcePort 应为 server.localPort 和 server2.localPort(顺序不保证)
             val ports = collected.map { it.sourcePort }.toSet()
             assertTrue(server.localPort in ports, "应捕到 server1 的 sourcePort")
@@ -151,9 +160,12 @@ class SipTransportEnvelopeTest {
         server.soTimeout = 5000
         server.receive(pkt)
         val respBytes = buildOptionsResponse("e3").toBytes()
+        val incomingEnvelope = async(start = CoroutineStart.UNDISPATCHED) {
+            withTimeout(5000) { transport.incoming.first() }
+        }
         server.send(DatagramPacket(respBytes, respBytes.size, pkt.address, pkt.port))
 
-        val env = withTimeout(5000) { transport.incoming.first() }
+        val env = incomingEnvelope.await()
         val msg = env.message
         assertTrue(msg is SipResponse)
         assertEquals(200, msg.statusCode)

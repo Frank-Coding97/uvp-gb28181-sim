@@ -6,7 +6,8 @@ import com.uvp.sim.SipViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -36,7 +37,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class RecordingFlowTest {
 
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private val testDispatcher = StandardTestDispatcher()
 
     @Before
     fun setupMainDispatcher() {
@@ -54,6 +55,7 @@ class RecordingFlowTest {
         val fake = FakeRecordingService()
 
         vm.bindRecordingService(fake)
+        advanceUntilIdle()
 
         // 初始 Idle
         assertEquals(RecordingState.Idle, vm.recordingState.value)
@@ -62,6 +64,7 @@ class RecordingFlowTest {
         fake.state.value = RecordingState.Recording(
             startMs = 1000L, segmentIndex = 0, source = RecordSource.Manual
         )
+        advanceUntilIdle()
         assertTrue(
             "vm should be in Recording after fake emit",
             vm.recordingState.value is RecordingState.Recording
@@ -69,6 +72,7 @@ class RecordingFlowTest {
 
         // service emit Idle 回 → vm 同步
         fake.state.value = RecordingState.Idle
+        advanceUntilIdle()
         assertEquals(RecordingState.Idle, vm.recordingState.value)
     }
 
@@ -77,8 +81,10 @@ class RecordingFlowTest {
         val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
         val fake = FakeRecordingService()
         vm.bindRecordingService(fake)
+        advanceUntilIdle()
 
         vm.startRecording()
+        advanceUntilIdle()
         assertEquals(1, fake.startCalls)
         // channelId 由 vm.config 注入(默认空字符串 — 不验证 channelId 具体内容,只验证转发触发)
     }
@@ -88,8 +94,10 @@ class RecordingFlowTest {
         val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
         val fake = FakeRecordingService()
         vm.bindRecordingService(fake)
+        advanceUntilIdle()
 
         vm.stopRecording()
+        advanceUntilIdle()
         assertEquals(1, fake.stopCalls)
     }
 
@@ -98,8 +106,10 @@ class RecordingFlowTest {
         val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
         val fake = FakeRecordingService()
         vm.bindRecordingService(fake)
+        advanceUntilIdle()
 
         vm.deleteRecording("rec-id-1")
+        advanceUntilIdle()
         assertEquals(listOf("rec-id-1"), fake.deleteIds)
     }
 
@@ -108,8 +118,10 @@ class RecordingFlowTest {
         val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
         val fake = FakeRecordingService()
         vm.bindRecordingService(fake)
+        advanceUntilIdle()
 
         fake.state.value = RecordingState.Failed("camera unavailable")
+        advanceUntilIdle()
 
         val state = vm.recordingState.value
         assertTrue(
@@ -124,6 +136,7 @@ class RecordingFlowTest {
         val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
         val fake = FakeRecordingService()
         vm.bindRecordingService(fake)
+        advanceUntilIdle()
 
         val sample = RecordingFile(
             id = "f1",
@@ -136,6 +149,7 @@ class RecordingFlowTest {
             source = RecordSource.Manual,
         )
         fake.files.value = listOf(sample)
+        advanceUntilIdle()
 
         assertEquals(listOf(sample), vm.recordingFiles.value)
     }

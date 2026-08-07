@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f8fafc">
+    <meta name="description" content="UVP GB28181 Desktop v2 桌面端模拟器开发进度。">
+    <title>桌面端模拟器 / UVP GB28181 Sim</title>
+    <link rel="stylesheet" href="../assets/site.css?v=20260807-2">
+  </head>
+  <body data-page="desktop">
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <div class="site-shell">
+      <header class="site-header">
+        <a class="brand" href="../" aria-label="返回 UVP GB28181 Sim 下载入口首页"><span class="brand-mark" aria-hidden="true">UVP</span><span class="brand-copy"><strong>GB28181 Sim</strong><small>DOWNLOAD PORTAL</small></span></a>
+        <a class="header-back" href="../">返回入口</a>
+      </header>
+      <main id="main">
+        <section class="detail-hero desktop-hero" aria-labelledby="desktop-title">
+          <div class="detail-hero-copy">
+            <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span>DESKTOP V2 / IN REBUILD</p>
+            <h1 id="desktop-title">桌面端<br><span>模拟器</span></h1>
+            <p class="hero-copy">面向长时间运行、大规模设备场景和压测工作的桌面工作台。当前 v2 正在从协议引擎到交互界面重建。</p>
+            <div class="availability-panel"><strong>安装包暂未公开</strong><p>当前仓库只保留开发中的前端壳与路线图，没有可核验的桌面安装产物。正式包准备好后，会在这里新增下载入口。</p></div>
+          </div>
+          <div class="desktop-visual"><div class="desktop-logo-frame"><img src="../assets/desktop/icon.png" alt="桌面端模拟器应用图标" width="512" height="512"></div><span class="device-label">TAURI 2 / VUE 3</span></div>
+        </section>
+
+        <section class="desktop-status" aria-labelledby="status-title">
+          <div class="section-heading"><p class="eyebrow">CURRENT BUILD STATUS</p><h2 id="status-title">我们正在重建桌面工作台</h2></div>
+          <div class="status-grid">
+            <article><span class="status-index">01</span><h3>媒体 IPC</h3><p>从逐帧 JSON 切换为 localhost WebSocket 二进制 H.264 Annex-B。</p><span class="status-tag">PLANNED</span></article>
+            <article><span class="status-index">02</span><h3>SIP 事务层</h3><p>验证兼容性并重建完整的 RFC 3261 事务状态机。</p><span class="status-tag">PLANNED</span></article>
+            <article><span class="status-index">03</span><h3>压测 daemon</h3><p>独立进程调度大规模场景，通过 gRPC / UDS 与 UI 通信。</p><span class="status-tag">PLANNED</span></article>
+          </div>
+        </section>
+
+        <section class="desktop-note" aria-label="桌面端下载状态"><span class="note-mark" aria-hidden="true">i</span><p>当前桌面端正在开发中，暂不开放下载安装包。请从移动端入口下载 Android 版本。</p></section>
+      </main>
+      <footer class="site-footer"><span>UVP GB28181 Sim / Desktop</span><a href="../">返回模拟器入口</a></footer>
+    </div>
+    <script src="../assets/site.js?v=20260807-2" defer></script>
+  </body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "product": "UVP GB28181 Sim",
+  "platform": "Android",
+  "version": "1.0.3",
+  "versionCode": 10003,
+  "filename": "uvp-gb28181-sim-1.0.3.apk",
+  "bytes": 35826819,
+  "sha256": "e27746e09cab9f62f1ace74308a60eac6c70170b19d2466f07917adaefda54ab",
+  "minAndroid": "8.0 (API 26)",
+  "releaseDate": "2026-08-07",
+  "downloadPath": "../releases/uvp-gb28181-sim-1.0.3.apk"
+}

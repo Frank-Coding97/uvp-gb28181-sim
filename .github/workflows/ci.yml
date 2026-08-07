@@ -5,6 +5,8 @@ on:
     branches: [main]
   push:
     branches: [main]
+    tags:
+      - 'v*.*.*'
 
 permissions:
   contents: read
@@ -43,7 +45,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-35 build-tools;35.0.0'
+          packages: 'platforms;android-36 build-tools;36.0.0'
 
       - name: Cache Konan (KMP iOS prebuilt)
         uses: actions/cache@v4
@@ -78,8 +80,185 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  release-android:
+    name: Release Android APK & Deploy Download Site
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: android-release-download-site
+      cancel-in-progress: false
+    env:
+      DOWNLOAD_DEPLOY_SITE_ROOT: /opt/uvp-download-site
+      DOWNLOAD_SITE_URL: https://download.uvplatform.cn
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse and validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          version_code="$(python3 scripts/release/version_code.py "$version")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'version_code=%s\n' "$version_code" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java 17 (temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle (with wrapper validation)
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          validate-wrappers: true
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - name: Restore release keystore
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ANDROID_RELEASE_KEYSTORE_BASE64:?missing ANDROID_RELEASE_KEYSTORE_BASE64}"
+          : "${ANDROID_RELEASE_STORE_PASSWORD:?missing ANDROID_RELEASE_STORE_PASSWORD}"
+          : "${ANDROID_RELEASE_KEY_ALIAS:?missing ANDROID_RELEASE_KEY_ALIAS}"
+          : "${ANDROID_RELEASE_KEY_PASSWORD:?missing ANDROID_RELEASE_KEY_PASSWORD}"
+          release_dir="$RUNNER_TEMP/uvp-release"
+          mkdir -m 700 -p "$release_dir"
+          printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$release_dir/release.jks"
+          chmod 600 "$release_dir/release.jks"
+          mkdir -p "$HOME/.gradle"
+          printf 'storeFile=%s\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$release_dir/release.jks" \
+            "$ANDROID_RELEASE_STORE_PASSWORD" \
+            "$ANDROID_RELEASE_KEY_ALIAS" \
+            "$ANDROID_RELEASE_KEY_PASSWORD" \
+            > "$HOME/.gradle/uvp-sim-keystore.properties"
+          chmod 600 "$HOME/.gradle/uvp-sim-keystore.properties"
+
+      - name: Run release test gates
+        run: |
+          ./gradlew :shared:compileKotlinMetadata --stacktrace
+          ./gradlew :shared:jvmTest --stacktrace
+          ./gradlew :androidApp:testDebugUnitTest --stacktrace
+
+      - name: Build signed Release APK
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          ./gradlew :androidApp:assembleRelease \
+            -PuvpVersionName="$VERSION" \
+            -PuvpVersionCode="$VERSION_CODE" \
+            --stacktrace
+
+      - name: Generate release metadata
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          VERSION_CODE: ${{ steps.version.outputs.version_code }}
+        run: |
+          set -euo pipefail
+          apk="androidApp/build/outputs/apk/release/uvp-gb28181-sim-${VERSION}.apk"
+          test -s "$apk"
+          mkdir -p build/release
+          cp "$apk" "build/release/"
+          python3 scripts/release/generate-mobile-metadata.py \
+            --apk "build/release/$(basename "$apk")" \
+            --version "$VERSION" \
+            --version-code "$VERSION_CODE" \
+            --release-date "$(date -u +%F)" \
+            --output build/release/mobile.json
+          python3 -m json.tool build/release/mobile.json >/dev/null
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uvp-gb28181-sim-${{ steps.version.outputs.version }}
+          path: build/release/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Configure deployment SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DOWNLOAD_DEPLOY_SSH_KEY }}
+
+      - name: Upload and atomically publish to 115
+        shell: bash
+        env:
+          DEPLOY_HOST: ${{ secrets.DOWNLOAD_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DOWNLOAD_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DOWNLOAD_DEPLOY_USER }}
+          KNOWN_HOSTS: ${{ secrets.DOWNLOAD_DEPLOY_KNOWN_HOSTS }}
+          VERSION: ${{ steps.version.outputs.version }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?missing DOWNLOAD_DEPLOY_HOST}"
+          : "${DEPLOY_PORT:?missing DOWNLOAD_DEPLOY_PORT}"
+          : "${DEPLOY_USER:?missing DOWNLOAD_DEPLOY_USER}"
+          : "${KNOWN_HOSTS:?missing DOWNLOAD_DEPLOY_KNOWN_HOSTS}"
+          known_hosts="$RUNNER_TEMP/uvp-known-hosts"
+          printf '%s\n' "$KNOWN_HOSTS" > "$known_hosts"
+          chmod 600 "$known_hosts"
+          ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts" -p "$DEPLOY_PORT")
+          scp_opts=(-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known_hosts" -P "$DEPLOY_PORT")
+          remote_staging="${DOWNLOAD_DEPLOY_SITE_ROOT}/.ci-staging/${VERSION}-${RUN_ID}-${RUN_ATTEMPT}"
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" "umask 077 && mkdir -p '$remote_staging'"
+          scp "${scp_opts[@]}" build/release/*.apk build/release/mobile.json scripts/release/deploy-download-site.sh \
+            "${DEPLOY_USER}@${DEPLOY_HOST}:$remote_staging/"
+          ssh "${ssh_opts[@]}" "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "chmod 700 '$remote_staging/deploy-download-site.sh' && '$remote_staging/deploy-download-site.sh' '$DOWNLOAD_DEPLOY_SITE_ROOT' '$remote_staging' '$VERSION'"
+
+      - name: Verify published HTTPS metadata and APK
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          json="$RUNNER_TEMP/published-mobile.json"
+          apk="$RUNNER_TEMP/published.apk"
+          curl --fail --silent --show-error --location \
+            "$DOWNLOAD_SITE_URL/releases/mobile.json" -o "$json"
+          python3 - "$json" "$VERSION" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          assert payload["version"] == sys.argv[2], payload
+          assert payload["filename"] == f"uvp-gb28181-sim-{sys.argv[2]}.apk", payload
+          assert len(payload["sha256"]) == 64, payload
+          print(f"published version={payload['version']} sha256={payload['sha256']}")
+          PY
+          filename="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["filename"])' "$json")"
+          expected_bytes="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bytes"])' "$json")"
+          expected_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["sha256"])' "$json")"
+          curl --fail --silent --show-error --location \
+            "$DOWNLOAD_SITE_URL/releases/$filename" -o "$apk"
+          test "$(stat -c '%s' "$apk")" = "$expected_bytes"
+          test "$(sha256sum "$apk" | awk '{print $1}')" = "$expected_sha"
+          printf 'HTTPS release verification passed: %s (%s bytes)\n' "$filename" "$expected_bytes"
+
   ios-check:
     name: iOS Compile Check (macos / jdk17)
+    if: ${{ ! startsWith(github.ref, 'refs/tags/v') }}
     runs-on: macos-latest
     timeout-minutes: 45
 

@@ -76,6 +76,10 @@ secrets.properties
 *.keystore
 keystore.properties
 tools/__pycache__/
+scripts/release/__pycache__/
+
+# Download site release artifacts are published by CI, not committed to Git.
+download-site/releases/*.apk
 
 # iOS / Xcode
 .DS_Store

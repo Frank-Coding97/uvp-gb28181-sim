@@ -7,7 +7,7 @@ import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -40,7 +40,7 @@ import org.robolectric.annotation.Config
 @Config(sdk = [33])
 class SipViewModelLifecycleTest {
 
-    private val testDispatcher = UnconfinedTestDispatcher()
+    private val testDispatcher = StandardTestDispatcher()
 
     @Before
     fun setupMainDispatcher() {
