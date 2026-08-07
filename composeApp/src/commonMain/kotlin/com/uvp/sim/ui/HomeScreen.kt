@@ -7,6 +7,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
@@ -27,6 +31,7 @@ import androidx.compose.ui.unit.dp
 fun HomeScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
     val toast = LocalToastHost.current
+    var sipConfigEditing by remember { mutableStateOf(false) }
     // iOS 悬浮 tab bar 需要额外底部 padding 让最后一行不被遮:见
     // PlatformCapabilities 的 floatingBottomBarReservedBottom(iOS 130dp)。
     // Android 用 docked tab bar 自己占布局空间,不需要额外 padding(值为 0)。
@@ -42,14 +47,15 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         if (isTopStatusCtaInlined) {
             StatusBanner(
                 state = state, actions = actions,
+                sipConfigEditing = sipConfigEditing,
                 onFeedback = { msg -> toast.info(msg) }
             )
         } else {
-            StatusBanner(state = state)
+            StatusBanner(state = state, sipConfigEditing = sipConfigEditing)
         }
         BroadcastIndicator(state, actions)
         CameraPreviewBox(state)
-        SipConfigCard(state, actions, onFeedback = { msg ->
+        SipConfigCard(state, actions, onEditingChanged = { sipConfigEditing = it }, onFeedback = { msg ->
             toast.success(msg)
         })
         ActionButtons(state, actions, onFeedback = { msg ->
@@ -57,7 +63,7 @@ fun HomeScreen(state: AppUiState, actions: AppActions) {
         })
         // Android / desktop: 保留底部独立 ConnectButton(Material 传统习惯)
         if (!isTopStatusCtaInlined) {
-            ConnectButton(state, actions, onFeedback = { msg ->
+            ConnectButton(state, actions, sipConfigEditing = sipConfigEditing, onFeedback = { msg ->
                 toast.info(msg)
             })
         }

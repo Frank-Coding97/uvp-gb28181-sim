@@ -18,6 +18,7 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -43,7 +44,12 @@ private const val GB_DOMAIN_LENGTH = 10
  * 信令传输 / 对讲传输)。注册后锁定。从 HomeScreen.kt 拆出。
  */
 @Composable
-internal fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+internal fun SipConfigCard(
+    state: AppUiState,
+    actions: AppActions,
+    onFeedback: (String) -> Unit,
+    onEditingChanged: (Boolean) -> Unit = {},
+) {
     val toast = LocalToastHost.current
     var editing by remember { mutableStateOf(false) }
     var ip by remember(state.config) { mutableStateOf(state.config.server.ip) }
@@ -63,6 +69,9 @@ internal fun SipConfigCard(state: AppUiState, actions: AppActions, onFeedback: (
 
     val locked = state.sip == SipStateDto.Registered || state.sip == SipStateDto.InCall
     if (locked && editing) editing = false
+    LaunchedEffect(editing, locked) {
+        onEditingChanged(editing && !locked)
+    }
 
     fun resetFromConfig() {
         ip = state.config.server.ip

@@ -21,10 +21,16 @@ import com.uvp.sim.ui.model.SipStateDto
  * (实际 toast host 在 HomeScreen 注入)。从 HomeScreen.kt 拆出。
  */
 @Composable
-internal fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+internal fun ConnectButton(
+    state: AppUiState,
+    actions: AppActions,
+    onFeedback: (String) -> Unit,
+    sipConfigEditing: Boolean = false,
+) {
     when (state.sip) {
         SipStateDto.Disconnected, SipStateDto.Failed -> {
-            val ready = state.config.isReadyToRegister
+            val configReady = state.config.isReadyToRegister
+            val ready = registrationButtonEnabled(configReady, sipConfigEditing)
             Button(
                 onClick = {
                     actions.onConnect()
@@ -40,7 +46,7 @@ internal fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (
                 )
             ) {
                 Text(
-                    if (ready) "注 册" else "请先填写 SIP 配置",
+                    if (configReady) "注 册" else "请先填写 SIP 配置",
                     fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
                     color = Color.White,
                     letterSpacing = if (ready) 4.sp else 1.sp
@@ -79,3 +85,7 @@ internal fun ConnectButton(state: AppUiState, actions: AppActions, onFeedback: (
         }
     }
 }
+
+/** 注册入口只有在配置完整且 SIP 配置卡不处于编辑草稿态时才可用。 */
+internal fun registrationButtonEnabled(configReady: Boolean, sipConfigEditing: Boolean): Boolean =
+    configReady && !sipConfigEditing

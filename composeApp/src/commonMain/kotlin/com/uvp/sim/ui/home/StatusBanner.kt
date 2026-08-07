@@ -38,7 +38,12 @@ import com.uvp.sim.ui.model.SipStateDto
  * 底部再没有独立的注册按钮块 —— 减少 44dp 高度让首屏能装更多内容。
  */
 @Composable
-internal fun StatusBanner(state: AppUiState, actions: AppActions? = null, onFeedback: (String) -> Unit = {}) {
+internal fun StatusBanner(
+    state: AppUiState,
+    actions: AppActions? = null,
+    onFeedback: (String) -> Unit = {},
+    sipConfigEditing: Boolean = false,
+) {
     val spec = when (state.sip) {
         SipStateDto.Registered, SipStateDto.InCall -> BannerSpec(
             UvpColor.SuccessBg, UvpColor.SuccessBorder, UvpColor.Success,
@@ -95,16 +100,27 @@ internal fun StatusBanner(state: AppUiState, actions: AppActions? = null, onFeed
         Spacer(Modifier.weight(1f))
         // 右侧 CTA:根据 SIP 状态显示 注册 / 取消 / 注销
         if (actions != null) {
-            StatusCta(state = state, actions = actions, onFeedback = onFeedback)
+            StatusCta(
+                state = state,
+                actions = actions,
+                onFeedback = onFeedback,
+                sipConfigEditing = sipConfigEditing,
+            )
         }
     }
 }
 
 @Composable
-private fun StatusCta(state: AppUiState, actions: AppActions, onFeedback: (String) -> Unit) {
+private fun StatusCta(
+    state: AppUiState,
+    actions: AppActions,
+    onFeedback: (String) -> Unit,
+    sipConfigEditing: Boolean,
+) {
     when (state.sip) {
         SipStateDto.Disconnected, SipStateDto.Failed -> {
-            val ready = state.config.isReadyToRegister
+            val configReady = state.config.isReadyToRegister
+            val ready = registrationButtonEnabled(configReady, sipConfigEditing)
             Button(
                 onClick = {
                     actions.onConnect()

@@ -1,9 +1,10 @@
 package com.uvp.sim.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -30,10 +32,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.platform.LocalDensity
 import com.uvp.sim.config.QrFetchResult
 import com.uvp.sim.config.QrPayloadValidator
 import com.uvp.sim.config.QrProvisionPayload
@@ -210,7 +222,50 @@ fun QrScanScreen(
 
 @Composable
 private fun ScanOverlay(onClose: () -> Unit, busy: Boolean) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    val density = LocalDensity.current
+    val transition = rememberInfiniteTransition(label = "qr-scan-line")
+    val scanProgress by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2_200, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "qr-scan-progress",
+    )
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val frameSize = minOf(
+            (maxWidth - 56.dp).coerceAtLeast(160.dp),
+            maxHeight * 0.52f,
+        )
+        val frameTop = (maxHeight - frameSize) / 2f + 16.dp
+        val frameSizePx = with(density) { frameSize.toPx() }
+        val frameTopPx = with(density) { frameTop.toPx() }
+        val accent = Color(0xFF00F52B)
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val frameLeft = (size.width - frameSizePx) / 2f
+            val frameBottom = frameTopPx + frameSizePx
+            // Keep the camera feed clear inside the frame while dimming the rest.
+            drawRect(Color.Black.copy(alpha = 0.56f), topLeft = Offset.Zero, size = Size(size.width, frameTopPx))
+            drawRect(
+                Color.Black.copy(alpha = 0.56f),
+                topLeft = Offset(0f, frameBottom),
+                size = Size(size.width, size.height - frameBottom),
+            )
+            drawRect(
+                Color.Black.copy(alpha = 0.56f),
+                topLeft = Offset(0f, frameTopPx),
+                size = Size(frameLeft, frameSizePx),
+            )
+            drawRect(
+                Color.Black.copy(alpha = 0.56f),
+                topLeft = Offset(frameLeft + frameSizePx, frameTopPx),
+                size = Size(size.width - frameLeft - frameSizePx, frameSizePx),
+            )
+        }
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -231,14 +286,65 @@ private fun ScanOverlay(onClose: () -> Unit, busy: Boolean) {
                     modifier = Modifier.size(22.dp),
                 )
             }
-            Spacer(Modifier.weight(1f))
-            Text("扫码接入", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-            Spacer(Modifier.weight(1f))
-            Spacer(Modifier.size(34.dp))
         }
-        Spacer(Modifier.weight(1f))
+
+        Text(
+            "将平台接入二维码放入框中",
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.statusBars)
+                .padding(top = 70.dp),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Medium,
+            color = Color.White,
+        )
+
         Box(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = frameTop)
+                .size(frameSize),
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val corner = with(density) { 28.dp.toPx() }
+                val stroke = with(density) { 4.dp.toPx() }
+                val inset = stroke / 2f
+                val lineY = (size.height - stroke) * scanProgress
+                val lineBrush = Brush.horizontalGradient(
+                    listOf(Color.Transparent, accent, Color.Transparent),
+                )
+
+                drawRect(
+                    Color.White.copy(alpha = 0.55f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = with(density) { 1.dp.toPx() },
+                    ),
+                )
+                drawLine(accent, Offset(inset, inset), Offset(corner, inset), strokeWidth = stroke)
+                drawLine(accent, Offset(inset, inset), Offset(inset, corner), strokeWidth = stroke)
+                drawLine(accent, Offset(size.width - inset, inset), Offset(size.width - corner, inset), strokeWidth = stroke)
+                drawLine(accent, Offset(size.width - inset, inset), Offset(size.width - inset, corner), strokeWidth = stroke)
+                drawLine(accent, Offset(inset, size.height - inset), Offset(corner, size.height - inset), strokeWidth = stroke)
+                drawLine(accent, Offset(inset, size.height - inset), Offset(inset, size.height - corner), strokeWidth = stroke)
+                drawLine(accent, Offset(size.width - inset, size.height - inset), Offset(size.width - corner, size.height - inset), strokeWidth = stroke)
+                drawLine(accent, Offset(size.width - inset, size.height - inset), Offset(size.width - inset, size.height - corner), strokeWidth = stroke)
+                if (!busy) {
+                    drawRect(
+                        brush = lineBrush,
+                        topLeft = Offset(with(density) { 16.dp.toPx() }, lineY),
+                        size = Size(size.width - with(density) { 32.dp.toPx() }, stroke),
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = frameTop + frameSize + 28.dp)
+                .fillMaxWidth()
+                .padding(horizontal = 28.dp),
             contentAlignment = Alignment.Center,
         ) {
             if (busy) {
@@ -253,12 +359,11 @@ private fun ScanOverlay(onClose: () -> Unit, busy: Boolean) {
                 }
             } else {
                 Text(
-                    "把平台生成的二维码放进取景框",
+                    "保持二维码完整并置于框内",
                     fontSize = 13.sp,
                     color = Color.White.copy(alpha = 0.9f),
                 )
             }
         }
-        Spacer(Modifier.height(48.dp))
     }
 }
