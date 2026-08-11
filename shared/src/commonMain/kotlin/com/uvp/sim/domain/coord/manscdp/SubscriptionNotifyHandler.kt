@@ -3,16 +3,24 @@ package com.uvp.sim.domain.coord.manscdp
 import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionDialog
+import com.uvp.sim.domain.PtzNotifyCompletion
+import com.uvp.sim.domain.PtzNotifyPreparation
 import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
+import com.uvp.sim.gb28181.PtzPositionMessage
+import com.uvp.sim.gb28181.PtzPositionSnapshot
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.sip.SipResponse
 import kotlin.concurrent.Volatile
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * MANSCDP NOTIFY 扇出 —— 从 [com.uvp.sim.domain.coord.ManscdpRouterImpl] 抽出(cross-review R1 #3)。
@@ -28,6 +36,8 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
     private var notifySn = 0
     private var catalogNotifySn = 0
     private var alarmNotifySn = 0
+    private var ptzPositionSn = 0
+    private val ptzTimeoutJobs = mutableMapOf<Pair<String, Int>, Job>()
 
     /** F4 P1-5 fix — 无 fix 时静默的边缘状态去重,状态变化时 emit 一次日志(避免每次心跳刷屏)。 */
     @Volatile
@@ -173,21 +183,103 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
         }
     }
 
+    suspend fun onPtzPositionChanged(position: PtzPositionSnapshot) {
+        val dialogs = ctx.subscriptionRegistry.dialogsByKind("PtzPrecisePosition")
+        for (dialog in dialogs) {
+            when (val preparation = ctx.subscriptionRegistry.preparePtzNotify(dialog.callId, position)) {
+                is PtzNotifyPreparation.Send -> sendPtzPositionNotify(preparation.dialog, position)
+                PtzNotifyPreparation.Queued, PtzNotifyPreparation.Unchanged -> Unit
+            }
+        }
+    }
+
+    suspend fun onNotifyResponse(response: SipResponse) {
+        val callId = response.callId() ?: return
+        val cseq = response.cseqRaw()?.trim()?.split(Regex("\\s+"))?.firstOrNull()?.toIntOrNull() ?: return
+        val completion = ctx.subscriptionRegistry.completePtzNotify(callId, cseq, response.statusCode) ?: return
+        ptzTimeoutJobs.remove(callId to cseq)?.cancel()
+        when (completion) {
+            is PtzNotifyCompletion.Confirmed -> {
+                SystemLogger.emit(
+                    LogLevel.Info,
+                    LogTag.Subscription,
+                    "PTZPosition NOTIFY 平台 2xx 确认: callId=$callId cseq=$cseq count=${
+                        ctx.subscriptionRegistry.currentDialog(callId)?.notifyCount ?: 0
+                    }",
+                )
+                completion.nextPosition?.let { onPtzPositionChanged(it) }
+            }
+            is PtzNotifyCompletion.Failed -> {
+                SystemLogger.emit(
+                    LogLevel.Error,
+                    LogTag.Subscription,
+                    "PTZPosition NOTIFY 失败: callId=$callId cseq=$cseq ${completion.reason}",
+                )
+            }
+        }
+    }
+
+    fun shutdown() {
+        ptzTimeoutJobs.values.forEach { it.cancel() }
+        ptzTimeoutJobs.clear()
+    }
+
+    private suspend fun sendPtzPositionNotify(dialog: SubscriptionDialog, position: PtzPositionSnapshot) {
+        ptzPositionSn += 1
+        val xml = PtzPositionMessage.build(
+            sn = ptzPositionSn,
+            deviceId = ctx.config.device.videoChannelId,
+            position = position,
+        )
+        val cseq = dialog.inFlightNotifyCseq ?: return
+        val notify = buildNotifyForDialog(dialog, xml, cseqOverride = cseq)
+        val sendResult = ctx.outbox.send(notify)
+        if (sendResult.isFailure) {
+            val reason = "transport send failed: ${sendResult.exceptionOrNull()?.message ?: "unknown"}"
+            ctx.subscriptionRegistry.failPtzNotifyTransport(dialog.callId, cseq, reason)
+            SystemLogger.emit(LogLevel.Error, LogTag.Subscription, "PTZPosition NOTIFY $reason")
+            return
+        }
+
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Subscription,
+            "PTZPosition NOTIFY 已出站,等待平台 2xx: callId=${dialog.callId} cseq=$cseq",
+        )
+        val timeoutScope = ctx.scope ?: return
+        val key = dialog.callId to cseq
+        ptzTimeoutJobs.remove(key)?.cancel()
+        ptzTimeoutJobs[key] = timeoutScope.launch {
+            delay(PTZ_NOTIFY_RESPONSE_TIMEOUT_MS)
+            val timeout = ctx.subscriptionRegistry.timeoutPtzNotify(dialog.callId, cseq)
+            ptzTimeoutJobs.remove(key)
+            if (timeout != null) {
+                SystemLogger.emit(
+                    LogLevel.Error,
+                    LogTag.Subscription,
+                    "PTZPosition NOTIFY 平台响应超时: callId=${dialog.callId} cseq=$cseq",
+                )
+            }
+        }
+    }
+
     /** SUBSCRIBE 路径上所有 NOTIFY 共用的报文构造,统一 subscription-state / Via / UA。 */
     private fun buildNotifyForDialog(
         dialog: SubscriptionDialog,
         xmlBody: String,
         includeUserAgent: Boolean = true,
+        cseqOverride: Int? = null,
     ): SipRequest {
-        val notifyCseq = dialog.cseqNotify + 1
+        val notifyCseq = cseqOverride ?: (dialog.cseqNotify + 1)
         val remaining = dialog.remainingSeconds
         val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
+        val event = if (dialog.kind == "PtzPrecisePosition") "PTZPosition" else "presence"
         return SipBuilders.buildNotify(
             subscriberUri = dialog.subscriberUri,
             callId = dialog.callId,
             fromTag = dialog.toTag,
             toTag = dialog.fromTag,
-            event = "presence",
+            event = event,
             subscriptionState = ssValue,
             cseq = notifyCseq,
             xmlBody = xmlBody,
@@ -214,3 +306,5 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
         }
     }
 }
+
+private const val PTZ_NOTIFY_RESPONSE_TIMEOUT_MS = 5_000L

@@ -38,6 +38,7 @@ object SubscribeHandler {
     private const val DEFAULT_EXPIRES_MOBILE_POSITION = 3600
     private const val DEFAULT_EXPIRES_CATALOG = 86400  // GB §9.3.1 目录订阅典型 24h
     private const val DEFAULT_EXPIRES_ALARM = 3600     // GB §9.5.2 报警订阅,比 Catalog 短(spec Q7)
+    private const val DEFAULT_EXPIRES_PTZ_POSITION = 3600
 
     fun parse(request: SipRequest, knownCallIds: Set<String>): SubscribeIntent {
         val event = request.firstHeader(SipHeader.EVENT)
@@ -45,14 +46,17 @@ object SubscribeHandler {
         //   §9.3.1.2 目录订阅:    Event: Catalog
         //   §9.3.5   移动位置订阅: Event: presence
         //   §9.5.2   报警订阅:    Event: Alarm
-        // 三种都接受,具体 kind:Alarm 直接由 Event 头判定(报警 SUBSCRIBE
+        // GB/T 28181-2022 PTZ 精准位置订阅:Event:PTZPosition。
+        // 四种都接受,具体 kind:Alarm 直接由 Event 头判定(报警 SUBSCRIBE
         // body 可能不带标准 CmdType),presence/Catalog 看 body CmdType 再确认。
-        // Event 头允许带参数,如 "presence;id=xxx"、"Alarm;id=yyy",取分号前主标识。
+        // Event 头允许带参数,如 "presence;id=xxx"、"PTZPosition;id=yyy",取分号前主标识。
         val eventName = event?.trim()?.substringBefore(';')?.trim()
         val isAlarmEvent = eventName != null && eventName.equals("Alarm", ignoreCase = true)
+        val isPtzPositionEvent = eventName != null && eventName.equals("PTZPosition", ignoreCase = true)
         val eventOk = eventName != null && (
             eventName.equals("presence", ignoreCase = true) ||
                 eventName.equals("Catalog", ignoreCase = true) ||
+                isPtzPositionEvent ||
                 isAlarmEvent
             )
         if (!eventOk) {
@@ -94,18 +98,23 @@ object SubscribeHandler {
         val xml = request.body.decodeToString()
         val cmdType = ManscdpParser.cmdType(xml)
             ?: return SubscribeIntent.Reject(400, "Missing CmdType in body")
+        if (isPtzPositionEvent && !cmdType.equals("PTZPosition", ignoreCase = true)) {
+            return SubscribeIntent.Reject(400, "Event PTZPosition requires CmdType PTZPosition")
+        }
 
         // WVP-Pro 报警订阅:Event: presence + body <CmdType>Alarm</CmdType>(不是裸 Event:Alarm)
         val kind = when {
             cmdType.equals("MobilePosition", ignoreCase = true) -> "MobilePosition"
             cmdType.equals("Catalog", ignoreCase = true) -> "Catalog"
             cmdType.equals("Alarm", ignoreCase = true) -> "Alarm"
+            cmdType.equals("PTZPosition", ignoreCase = true) -> "PtzPrecisePosition"
             else -> return SubscribeIntent.Ignored(cmdType)
         }
 
         val defaultExpires = when (kind) {
             "Catalog" -> DEFAULT_EXPIRES_CATALOG
             "Alarm" -> DEFAULT_EXPIRES_ALARM
+            "PtzPrecisePosition" -> DEFAULT_EXPIRES_PTZ_POSITION
             else -> DEFAULT_EXPIRES_MOBILE_POSITION
         }
         val expires = expiresHeader ?: defaultExpires
@@ -113,7 +122,7 @@ object SubscribeHandler {
         // Interval 对 Catalog / Alarm 不适用(不周期推送),仍解析便于日志
         val intervalStr = ManscdpParser.tagValue(xml, "Interval")
         val interval = intervalStr?.toIntOrNull() ?: when (kind) {
-            "Catalog", "Alarm" -> 0
+            "Catalog", "Alarm", "PtzPrecisePosition" -> 0
             else -> 30
         }
 

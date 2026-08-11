@@ -69,6 +69,12 @@ class SimulatorEngine internal constructor(
         holders.deviceControlState.update { it.copy(panAngle = pan, tiltAngle = tilt, zoomLevel = zoom) }
     }
 
+    fun adjustLocalPtzPosition(panDelta: Float, tiltDelta: Float, zoomDelta: Float) {
+        holders.deviceControlState.update {
+            it.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
+        }
+    }
+
     private val mutex = Mutex()
     private var inboundJob: Job? = null
 

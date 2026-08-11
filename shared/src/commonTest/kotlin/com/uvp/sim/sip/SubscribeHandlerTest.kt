@@ -213,4 +213,49 @@ class SubscribeHandlerTest {
         assertEquals(60, intent.expiresSeconds)
         assertEquals(0, intent.intervalSeconds)
     }
+
+    @Test
+    fun ptzPositionSubscribeReturnsIndependentEventDrivenKind() {
+        val body = """<?xml version="1.0" encoding="GB2312"?>
+<Query>
+<CmdType>PTZPosition</CmdType>
+<SN>18</SN>
+<DeviceID>34020000001320000001</DeviceID>
+</Query>"""
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(event = "PTZPosition", expires = null, body = body),
+            emptySet(),
+        )
+
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("PtzPrecisePosition", intent.kind)
+        assertEquals(0, intent.intervalSeconds)
+        assertEquals(3600, intent.expiresSeconds)
+    }
+
+    @Test
+    fun ptzPositionSubscribeAcceptsEventIdParameter() {
+        val body = """<?xml version="1.0" encoding="GB2312"?>
+<Query><CmdType>PTZPosition</CmdType><SN>19</SN><DeviceID>34020000001320000001</DeviceID></Query>"""
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(event = "PTZPosition;id=ptz-position", body = body),
+            emptySet(),
+        )
+
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("PtzPrecisePosition", intent.kind)
+    }
+
+    @Test
+    fun ptzPositionEventRejectsMismatchedCmdType() {
+        val body = """<?xml version="1.0"?>
+<Query><CmdType>MobilePosition</CmdType><SN>20</SN><DeviceID>34020000001320000001</DeviceID></Query>"""
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(event = "PTZPosition", body = body),
+            emptySet(),
+        )
+
+        assertIs<SubscribeIntent.Reject>(intent)
+        assertEquals(400, intent.statusCode)
+    }
 }

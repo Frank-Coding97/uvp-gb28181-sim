@@ -182,6 +182,62 @@ class SubscriptionRegistryTest {
     }
 
     @Test
+    fun ptzPositionIsEventDrivenAndCancelKeepsTerminalSnapshot() = runTest {
+        val registry = SubscriptionRegistry(this)
+        var notifyCount = 0
+        val ptz = dialog(callId = "ptz-call", expires = 60).copy(
+            kind = "PtzPrecisePosition",
+            intervalSeconds = 0,
+        )
+
+        registry.activate(ptz) { notifyCount++ }
+        advanceTimeBy(30_000)
+        assertEquals(0, notifyCount, "PTZ 精准位置只能由真实状态变化触发")
+
+        registry.cancel("ptz-call", SubscriptionLifecycle.Cancelled)
+        val snapshot = registry.subscriptions.value["PtzPrecisePosition"]
+        assertFalse(snapshot?.active ?: true)
+        assertEquals(SubscriptionLifecycle.Cancelled, snapshot?.lifecycle)
+    }
+
+    @Test
+    fun ptzPositionNaturalExpiryKeepsExpiredSnapshot() = runTest {
+        val registry = SubscriptionRegistry(this)
+        val ptz = dialog(callId = "ptz-expire", expires = 2).copy(
+            kind = "PtzPrecisePosition",
+            intervalSeconds = 0,
+        )
+
+        registry.activate(ptz) {}
+        advanceTimeBy(2_001)
+
+        val snapshot = registry.subscriptions.value["PtzPrecisePosition"]
+        assertFalse(snapshot?.active ?: true)
+        assertEquals(SubscriptionLifecycle.Expired, snapshot?.lifecycle)
+        assertEquals(0, snapshot?.remainingSeconds)
+    }
+
+    @Test
+    fun ptzPositionDialogsRemainIndependentAcrossCancelAndRefresh() = runTest {
+        val registry = SubscriptionRegistry(this)
+        val first = dialog(callId = "ptz-1", expires = 20).copy(
+            kind = "PtzPrecisePosition",
+            intervalSeconds = 0,
+        )
+        val second = first.copy(callId = "ptz-2", subscriberUri = "sip:second@host")
+
+        registry.activate(first) {}
+        registry.activate(second) {}
+        registry.refresh("ptz-2", 90)
+        registry.cancel("ptz-1", SubscriptionLifecycle.Cancelled)
+
+        assertNull(registry.currentDialog("ptz-1"))
+        assertEquals(90, registry.currentDialog("ptz-2")?.remainingSeconds)
+        assertEquals(1, registry.dialogsByKind("PtzPrecisePosition").size)
+        assertTrue(registry.subscriptions.value["PtzPrecisePosition"]?.active == true)
+    }
+
+    @Test
     fun dialogsByKindReturnsAllActiveAlarmDialogs() = runTest {
         val registry = SubscriptionRegistry(this)
         val a1 = dialog(callId = "alm1").copy(kind = "Alarm", intervalSeconds = 0)

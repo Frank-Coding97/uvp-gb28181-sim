@@ -254,6 +254,9 @@ class SipViewModel @JvmOverloads constructor(
     fun updatePoseFromRender(pan: Float, tilt: Float, zoom: Float) =
         appEngine.updatePoseFromRender(pan, tilt, zoom)
 
+    fun adjustLocalPtzPosition(panDelta: Float, tiltDelta: Float, zoomDelta: Float) =
+        appEngine.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
+
     /** 双真实通道迁移:老配置 frontChannelId 为空时按 domain 补全前置通道 ID。 */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {
         if (cfg.device.frontChannelId.isNotBlank()) return cfg

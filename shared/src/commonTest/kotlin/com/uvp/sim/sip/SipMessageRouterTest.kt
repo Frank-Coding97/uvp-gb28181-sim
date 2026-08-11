@@ -339,4 +339,36 @@ class SipMessageRouterTest {
 
         assertEquals(1, broadcast.calls.size, "INVITE 2xx 路由到 broadcast(主叫 Broadcast INVITE 200)")
     }
+
+    @Test
+    fun notify_response_routes_to_manscdp_for_transaction_correlation() = runTest {
+        val mans = RecordingManscdp()
+        val router = SipMessageRouterImpl(
+            RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans,
+        )
+
+        router.route(env(response(200, SipMethod.NOTIFY)))
+        runCurrent()
+
+        assertEquals(1, mans.calls.size, "NOTIFY 响应必须交给订阅域按 Call-ID + CSeq 关联")
+    }
+
+    @Test
+    fun notify_response_cseq_accepts_linear_whitespace() = runTest {
+        val mans = RecordingManscdp()
+        val router = SipMessageRouterImpl(
+            RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans,
+        )
+        val baseResponse = response(200, SipMethod.NOTIFY)
+        val response = baseResponse.copy(
+            headers = baseResponse.headers.map {
+                if (it.name.equals(SipHeader.CSEQ, ignoreCase = true)) it.copy(value = "1\t  NOTIFY") else it
+            },
+        )
+
+        router.route(env(response))
+        runCurrent()
+
+        assertEquals(1, mans.calls.size)
+    }
 }

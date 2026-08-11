@@ -100,7 +100,7 @@ internal class SipMessageRouterImpl(
     private suspend fun routeResponse(envelope: SipEnvelope): RoutingResult {
         val resp = envelope.message as SipResponse
         val cseqHeader = resp.cseqRaw() ?: return RoutingResult.Skip
-        val cseqMethod = cseqHeader.split(" ").getOrNull(1)?.let { SipMethod.fromString(it) }
+        val cseqMethod = cseqHeader.trim().split(Regex("\\s+")).getOrNull(1)?.let { SipMethod.fromString(it) }
             ?: return RoutingResult.Skip
         when (cseqMethod) {
             SipMethod.REGISTER -> {
@@ -112,6 +112,7 @@ internal class SipMessageRouterImpl(
                 registration.onIncoming(envelope)
                 onMessage2xxAck()
             }
+            SipMethod.NOTIFY -> manscdp.onIncoming(envelope)
             else -> Unit
         }
         return RoutingResult.Handled

@@ -31,7 +31,6 @@ import com.uvp.sim.ui.App
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.SubscriptionKind
-import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.CameraPreviewBinder
 import com.uvp.sim.ui.actions.CapabilityActions
 import com.uvp.sim.ui.actions.HomeActions
@@ -139,13 +138,7 @@ class MainActivity : ComponentActivity() {
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
-                key to SubscriptionStatus(
-                    active = snap.active,
-                    subscriber = snap.subscriber,
-                    expiresSeconds = snap.expiresSeconds,
-                    remainingSeconds = snap.remainingSeconds,
-                    notifyCount = snap.notifyCount
-                )
+                key to snap.toDto()
             }.toMap()
             val recordingState by viewModel.recordingState.collectAsStateWithLifecycle()
             val recordingFiles by viewModel.recordingFiles.collectAsStateWithLifecycle()
@@ -241,6 +234,9 @@ class MainActivity : ComponentActivity() {
                 ) { viewModel.toggleChannelStatus(channelId, online) }
                 override fun onPoseTick(pan: Float, tilt: Float, zoom: Float) {
                     viewModel.updatePoseFromRender(pan, tilt, zoom)
+                }
+                override fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float) {
+                    viewModel.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
                 }
             }
             val recordingActions = object : RecordingActions {

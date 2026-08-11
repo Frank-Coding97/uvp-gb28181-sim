@@ -49,6 +49,7 @@ class SceneKitEffectDispatcher(private val scene: SceneKitCameraScene) {
             is DeviceEffectDto.HomePositionReturn -> easeToPose(effect.targetPose, "ease_home")
             is DeviceEffectDto.PresetRecall -> easeToPose(effect.targetPose, "ease_preset_${effect.index}")
             is DeviceEffectDto.PrecisePoseGoto -> easeToPose(effect.targetPose, "ease_precise")
+            is DeviceEffectDto.LocalPoseGoto -> easeToPose(effect.targetPose, "ease_local", durationSec = 0.0)
             is DeviceEffectDto.ConfigChanged -> Unit           // commonMain HUD 消费
             is DeviceEffectDto.DeviceUpgradeRequested -> Unit  // commonMain HUD 消费
             is DeviceEffectDto.FormatSDCardRequested -> Unit   // commonMain HUD 消费
@@ -112,24 +113,28 @@ class SceneKitEffectDispatcher(private val scene: SceneKitCameraScene) {
      *
      * @param key SCNAction key 前缀(避免多个 preset 相互覆盖)
      */
-    private fun easeToPose(target: PtzPoseDto, key: String) {
+    private fun easeToPose(
+        target: PtzPoseDto,
+        key: String,
+        durationSec: Double = easeToPoseDurationSec,
+    ) {
         val panN = scene.panPivot ?: return
         val tiltN = scene.tiltPivot ?: return
         val zoomN = scene.zoomPivot ?: return
 
         panN.removeActionForKey(key)
-        val panAct = SCNAction.rotateToX(0.0, y = target.pan.degToRad(), z = 0.0, duration = easeToPoseDurationSec, shortestUnitArc = true)
+        val panAct = SCNAction.rotateToX(0.0, y = target.pan.degToRad(), z = 0.0, duration = durationSec, shortestUnitArc = true)
         panAct.timingMode = SCNActionTimingMode.SCNActionTimingModeEaseInEaseOut
         panN.runAction(panAct, forKey = key)
 
         tiltN.removeActionForKey(key)
-        val tiltAct = SCNAction.rotateToX(target.tilt.degToRad(), y = 0.0, z = 0.0, duration = easeToPoseDurationSec, shortestUnitArc = true)
+        val tiltAct = SCNAction.rotateToX(target.tilt.degToRad(), y = 0.0, z = 0.0, duration = durationSec, shortestUnitArc = true)
         tiltAct.timingMode = SCNActionTimingMode.SCNActionTimingModeEaseInEaseOut
         tiltN.runAction(tiltAct, forKey = key)
 
         zoomN.removeActionForKey(key)
         val zoomZ = -(target.zoom - 1f).toDouble() * zoomStepMeters
-        val zoomAct = SCNAction.moveTo(SCNVector3Make(0f, 0f, zoomZ.toFloat()), easeToPoseDurationSec)
+        val zoomAct = SCNAction.moveTo(SCNVector3Make(0f, 0f, zoomZ.toFloat()), durationSec)
         zoomAct.timingMode = SCNActionTimingMode.SCNActionTimingModeEaseInEaseOut
         zoomN.runAction(zoomAct, forKey = key)
     }

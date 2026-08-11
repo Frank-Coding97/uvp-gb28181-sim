@@ -73,7 +73,7 @@ actual fun CameraGlbView(
     val currentPoseTick by rememberUpdatedState(onPoseTick)
     val thumbnailBitmap = remember(context) { loadAssetImageBitmap(context, "ptz_scene_thumbnail.png") }
 
-    // 订阅 pendingEffect:Reboot 触发自检 / HomePosition+PresetRecall+PrecisePoseGoto 触发 easeTo.
+    // 订阅 pendingEffect:Reboot 触发自检，平台定位触发 easeTo，本地模拟直接落位。
     // 其他 effect(IFrameFlash / SnapshotFlash / ConfigChanged / DeviceUpgrade / FormatSDCard)
     // 由 SimulateScreen 层订阅(全屏闪/角标/snackbar),consumeEffect() 也由 SimulateScreen 兜底清零.
     LaunchedEffect(state.pendingEffect) {
@@ -82,6 +82,7 @@ actual fun CameraGlbView(
             is DeviceEffectDto.HomePositionReturn -> sceneState.easeToPose(e.targetPose)
             is DeviceEffectDto.PresetRecall -> sceneState.easeToPose(e.targetPose)
             is DeviceEffectDto.PrecisePoseGoto -> sceneState.easeToPose(e.targetPose)
+            is DeviceEffectDto.LocalPoseGoto -> sceneState.jumpToPose(e.targetPose)
             else -> {}
         }
     }
@@ -310,7 +311,7 @@ internal class GlbSceneState {
         } else {
             panAngle = (panAngle + s.panSpeed * dt).coerceIn(-180f, 180f)
             tiltAngle = (tiltAngle + s.tiltSpeed * dt).coerceIn(-90f, 90f)
-            zoomLevel = (zoomLevel + s.zoomSpeed * dt).coerceIn(1f, 16f)
+            zoomLevel = (zoomLevel + s.zoomSpeed * dt).coerceIn(1f, 20f)
         }
         pose = PtzPoseDto(panAngle, tiltAngle, zoomLevel)
 
@@ -410,6 +411,15 @@ internal class GlbSceneState {
         easeAnimDurationMs = durationMs
         easeAnimStartNanos = 0L
         easeAnimActive = true
+    }
+
+    fun jumpToPose(target: PtzPoseDto) {
+        selfTestActive = false
+        easeAnimActive = false
+        panAngle = target.pan.coerceIn(-180f, 180f)
+        tiltAngle = target.tilt.coerceIn(-90f, 90f)
+        zoomLevel = target.zoom.coerceIn(1f, 20f)
+        pose = PtzPoseDto(panAngle, tiltAngle, zoomLevel)
     }
 
     private fun readAsset(context: android.content.Context, name: String): ByteBuffer {

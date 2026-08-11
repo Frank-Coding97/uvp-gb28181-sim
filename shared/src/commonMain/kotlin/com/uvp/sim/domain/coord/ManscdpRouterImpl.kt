@@ -13,9 +13,11 @@ import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionDialog
+import com.uvp.sim.domain.SubscriptionLifecycle
 import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
+import com.uvp.sim.domain.toPtzPositionSnapshot
 import com.uvp.sim.domain.coord.manscdp.AlarmSubRouter
 import com.uvp.sim.domain.coord.manscdp.BroadcastSubRouter
 import com.uvp.sim.domain.coord.manscdp.CatalogSubRouter
@@ -45,12 +47,19 @@ import com.uvp.sim.sip.SubscribeHandler
 import com.uvp.sim.sip.SubscribeIntent
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -167,6 +176,7 @@ internal class ManscdpRouterImpl(
         clockOffsetProvider = clockOffsetProvider,
         stateRegisteredOrInCall = stateRegisteredOrInCall,
         simEventEmit = simEventEmit,
+        scope = scope,
         // cross-review R1 #1 修复 — 单次查询 cold-start 走 mutex 保证跟 sync 不打架
         ensureLocationProviderStarted = { ensureLocationProviderStartedLocked() },
         releaseLocationProviderIfIdle = { releaseLocationProviderIfIdleLocked() },
@@ -174,6 +184,14 @@ internal class ManscdpRouterImpl(
 
     /** NOTIFY 扇出收口到独立 handler(cross-review R1 #3),共享同一份 [subRouterContext]。 */
     private val notifyHandler = SubscriptionNotifyHandler(subRouterContext)
+
+    private val ptzPositionJob: Job = CoroutineScope(scope.coroutineContext + SupervisorJob()).launch {
+        mutableDeviceControlState
+            .map { it.toPtzPositionSnapshot() }
+            .distinctUntilChanged()
+            .drop(1)
+            .collect { notifyHandler.onPtzPositionChanged(it) }
+    }
 
     // cross-review R3 #3 修复 — pending sync job 用独立 SupervisorJob 追踪。
     // 所有 onDialogRemoved 触发的 sync job 都 launch 到 pendingSyncScope 里,
@@ -299,11 +317,21 @@ internal class ManscdpRouterImpl(
                 }
                 else -> RoutingResult.Skip
             }
-            is SipResponse -> RoutingResult.Skip
+            is SipResponse -> {
+                val cseqMethod = msg.cseqRaw()?.trim()?.split(Regex("\\s+"))?.getOrNull(1)
+                if (cseqMethod.equals(SipMethod.NOTIFY.name, ignoreCase = true)) {
+                    notifyHandler.onNotifyResponse(msg)
+                    RoutingResult.Handled
+                } else {
+                    RoutingResult.Skip
+                }
+            }
         }
     }
 
     override suspend fun shutdown() {
+        ptzPositionJob.cancelAndJoin()
+        notifyHandler.shutdown()
         snapshotPipeline = null
         snapshotCachePipeline = null
         upgradeJob?.cancel()
@@ -646,7 +674,7 @@ internal class ManscdpRouterImpl(
         ) { d ->
             when (d.kind) {
                 "Catalog" -> notifyHandler.sendCatalogNotify(d)
-                "Alarm" -> Unit
+                "Alarm", "PtzPrecisePosition" -> Unit
                 else -> notifyHandler.sendPositionNotify(d)
             }
         }
@@ -658,7 +686,7 @@ internal class ManscdpRouterImpl(
         // 初始 NOTIFY(除 Alarm 外 kind 立即推一次)
         when (intent.kind) {
             "Catalog" -> notifyHandler.sendCatalogNotify(dialog)
-            "Alarm" -> Unit
+            "Alarm", "PtzPrecisePosition" -> Unit
             else -> notifyHandler.sendPositionNotify(dialog)
         }
 
@@ -712,7 +740,10 @@ internal class ManscdpRouterImpl(
         val toTag = d?.toTag ?: SipBuilders.randomTag()
         val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
         outbox.send(ok).getOrThrow()
-        subscriptionRegistry.cancel(intent.callId)
+        subscriptionRegistry.cancel(
+            intent.callId,
+            terminalLifecycle = if (d?.kind == "PtzPrecisePosition") SubscriptionLifecycle.Cancelled else null,
+        )
 
         if (d?.kind == "Alarm") {
             simEventEmit(SimEvent.AlarmSubscriptionExpired(subscriber = d.subscriberUri))
@@ -845,10 +876,10 @@ internal class ManscdpRouterImpl(
     private fun subscriptionLabel(kind: String?): String = when (kind) {
         "Catalog" -> "目录"
         "Alarm" -> "报警"
+        "PtzPrecisePosition" -> "PTZ 精准位置"
         else -> "位置"
     }
 }
 
 /** P2-4:未知 cmdType 日志正文截断长度(避免日志爆炸)。 */
 private const val MANSCDP_UNKNOWN_LOG_SNIPPET_MAX = 200
-

@@ -76,6 +76,7 @@ enum class HudTab(val title: String) {
 @Composable
 fun PtzHudPanel(
     state: DeviceControlDto,
+    onLocalPtzAdjust: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by remember { mutableStateOf(HudTab.Ptz) }
@@ -108,7 +109,7 @@ fun PtzHudPanel(
         // 标题
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "平台控制",
+                "平台控制 HUD",
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = UvpColor.Text
@@ -130,12 +131,11 @@ fun PtzHudPanel(
             badges = tabBadges.value,
         )
         Spacer(Modifier.height(10.dp))
-        // Tab 内容 — 固定高度避免不同 tab 切换时整体面板高度抖动(老板 06-18 反馈)
-        // 184dp 实测云台 Tab(三大字 74 + 聚焦光圈 52 + 预置位 28 + 间距 16 = 170)+ 余量
+        // 固定高度避免 tab 切换时面板抖动，并容纳云台页的本地模拟控件。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(184.dp),
+                .height(246.dp),
             contentAlignment = Alignment.TopStart,
         ) {
             AnimatedContent(
@@ -147,7 +147,7 @@ fun PtzHudPanel(
                 label = "hud-tab-content"
             ) { tab ->
                 when (tab) {
-                    HudTab.Ptz -> PtzTabContent(state)
+                    HudTab.Ptz -> PtzTabContent(state, onLocalPtzAdjust)
                     HudTab.Status -> StatusTabContent(state)
                     HudTab.Image -> ImageTabContent(state)
                     HudTab.Aux -> AuxTabContent(state)

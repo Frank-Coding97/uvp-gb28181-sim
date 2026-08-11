@@ -52,7 +52,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
     // ConfigChanged / DeviceUpgrade / FormatSDCard 三类 snackbar
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // 5 个 effect 订阅(Reboot / HomePosition / PresetRecall / PrecisePoseGoto 由 CameraGlbView 内部消费)
+    // 渲染类 effect 由 CameraGlbView 内部消费，其余类型在本层反馈。
     LaunchedEffect(deviceControl.pendingEffect) {
         when (val e = deviceControl.pendingEffect) {
             is DeviceEffectDto.SnapshotFlash -> {
@@ -106,6 +106,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
             )
             PtzHudPanel(
                 state = deviceControl,
+                onLocalPtzAdjust = actions::onLocalPtzAdjust,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 10.dp)

@@ -45,13 +45,14 @@ class SceneKitEffectDispatcherTest {
     @Test
     fun dispatch_noop_when_scene_not_ready() {
         val dispatcher = SceneKitEffectDispatcher(SceneKitCameraScene())
-        // 不崩即通过. 9 variant 都测.
+        // 不崩即通过，所有 variant 都测。
         dispatcher.dispatch(DeviceEffectDto.IFrameFlash)
         dispatcher.dispatch(DeviceEffectDto.SnapshotFlash)
         dispatcher.dispatch(DeviceEffectDto.Reboot)
         dispatcher.dispatch(DeviceEffectDto.HomePositionReturn(PtzPoseDto(0f, 0f, 1f)))
         dispatcher.dispatch(DeviceEffectDto.PresetRecall(1, PtzPoseDto(0f, 0f, 1f)))
         dispatcher.dispatch(DeviceEffectDto.PrecisePoseGoto(PtzPoseDto(0f, 0f, 1f)))
+        dispatcher.dispatch(DeviceEffectDto.LocalPoseGoto(PtzPoseDto(0f, 0f, 1f)))
         dispatcher.dispatch(DeviceEffectDto.ConfigChanged(listOf("f")))
         dispatcher.dispatch(DeviceEffectDto.DeviceUpgradeRequested("v1"))
         dispatcher.dispatch(DeviceEffectDto.FormatSDCardRequested(0))
@@ -167,6 +168,16 @@ class SceneKitEffectDispatcherTest {
         assertNotNull(scene.zoomPivot!!.actionForKey("ease_precise"))
     }
 
+    @Test
+    fun dispatch_LocalPoseGoto_uses_local_key() {
+        val scene = readyScene()
+        val dispatcher = SceneKitEffectDispatcher(scene)
+        dispatcher.dispatch(DeviceEffectDto.LocalPoseGoto(PtzPoseDto(-20f, 10f, 1.5f)))
+        assertNotNull(scene.panPivot!!.actionForKey("ease_local"))
+        assertNotNull(scene.tiltPivot!!.actionForKey("ease_local"))
+        assertNotNull(scene.zoomPivot!!.actionForKey("ease_local"))
+    }
+
     // --- T-C3-4 Reboot ---
 
     @Test
@@ -204,7 +215,7 @@ class SceneKitEffectDispatcherTest {
     // --- T-C3-7 dispatcher 全覆盖 ---
 
     @Test
-    fun dispatch_all_9_variants_does_not_crash() {
+    fun dispatch_all_variants_does_not_crash() {
         val scene = readyScene()
         val dispatcher = SceneKitEffectDispatcher(scene)
         val effects = listOf(
@@ -214,6 +225,7 @@ class SceneKitEffectDispatcherTest {
             DeviceEffectDto.HomePositionReturn(PtzPoseDto(0f, 0f, 1f)),
             DeviceEffectDto.PresetRecall(1, PtzPoseDto(20f, 10f, 1.5f)),
             DeviceEffectDto.PrecisePoseGoto(PtzPoseDto(-30f, 5f, 2f)),
+            DeviceEffectDto.LocalPoseGoto(PtzPoseDto(15f, -5f, 1.2f)),
             DeviceEffectDto.ConfigChanged(listOf("panLimit")),
             DeviceEffectDto.DeviceUpgradeRequested("v1.4.0"),
             DeviceEffectDto.FormatSDCardRequested(0),

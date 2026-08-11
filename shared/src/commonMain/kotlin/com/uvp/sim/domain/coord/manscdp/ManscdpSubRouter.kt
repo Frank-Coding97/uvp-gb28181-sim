@@ -9,6 +9,7 @@ import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.sip.SipDialogIdentityService
 import com.uvp.sim.sip.SipOutbox
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
@@ -60,6 +61,7 @@ internal class ManscdpContext(
     val clockOffsetProvider: () -> ClockOffset,
     val stateRegisteredOrInCall: () -> Boolean,
     val simEventEmit: suspend (SimEvent) -> Unit,
+    val scope: CoroutineScope? = null,
     // cross-review R1 #1 修复钩子 — 由 ManscdpRouterImpl 注入,复用它的 mutex 串行化跟
     // syncLocationLifecycleLocked 的启停冲突。默认 lambda 是直调 start/stop,方便单测替换。
     val ensureLocationProviderStarted: suspend () -> Unit = { mockGps.start() },

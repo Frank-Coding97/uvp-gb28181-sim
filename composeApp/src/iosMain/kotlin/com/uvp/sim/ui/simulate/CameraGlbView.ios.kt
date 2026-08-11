@@ -45,7 +45,7 @@ import platform.UIKit.UIViewContentMode
  * 右下角 PtzThumbnail 语义完全对齐 Android `CameraGlbView.android.kt`:
  *  - **zoom 只影响缩略图**,不影响 3D 相机(通过 setPanSpeed 恒传 zoomSpeed=0 隔离 native
  *    `_camera->setProjection(kDefaultFov / _zoom, ...)` 的 FOV 缩放路径)。Kotlin 层自己
- *    积分 zoom,并在 pendingEffect (HomePosition/Preset/PrecisePoseGoto) 时 ease 到 target。
+ *    积分 zoom，并处理平台缓动定位与本地模拟直接落位。
  *  - **view 内容区严格 16:9** 匹配 ptz_scene_thumbnail.png (1600×900),AspectFill 无
  *    额外裁切,transform 平移到 clamp 边界时视觉刚好对齐 view 边缘,消除"边缘间隙"。
  *  - **pose** 每 16ms 从 native 采 pan/tilt(平台 PTZCmd 走 native 累积)+ Kotlin 层
@@ -126,7 +126,7 @@ actual fun CameraGlbView(
                             zoomEaseTo
                         } else v
                     }
-                    else -> (zoomLevel + currentState.zoomSpeed * dt).coerceIn(1f, 16f)
+                    else -> (zoomLevel + currentState.zoomSpeed * dt).coerceIn(1f, 20f)
                 }
                 zoomLevel = nextZoom
                 pose = PtzPoseDto(
@@ -199,6 +199,12 @@ actual fun CameraGlbView(
                     setActive = { zoomEaseActive = it },
                 )
             }
+            is com.uvp.sim.ui.model.DeviceEffectDto.LocalPoseGoto -> {
+                view.easeToPanAngle(effect.targetPose.pan, effect.targetPose.tilt, 1f, 0.0)
+                zoomEaseActive = false
+                zoomLevel = effect.targetPose.zoom.coerceIn(1f, 20f)
+                pose = effect.targetPose.copy(zoom = zoomLevel)
+            }
             is com.uvp.sim.ui.model.DeviceEffectDto.ConfigChanged,
             is com.uvp.sim.ui.model.DeviceEffectDto.DeviceUpgradeRequested,
             is com.uvp.sim.ui.model.DeviceEffectDto.FormatSDCardRequested -> Unit
@@ -223,7 +229,7 @@ private fun startZoomEase(
     setActive: (Boolean) -> Unit,
 ) {
     setFrom(from)
-    setTo(to.coerceIn(1f, 16f))
+    setTo(to.coerceIn(1f, 20f))
     setStartMs(Clock.System.now().toEpochMilliseconds())
     setActive(true)
 }

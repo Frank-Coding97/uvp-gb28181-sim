@@ -49,6 +49,13 @@ class DeviceEffectMapperTest {
     }
 
     @Test
+    fun localPoseGoto_preserves_pose() {
+        val dto = DeviceEffect.LocalPoseGoto(PtzPose(-10f, 15f, 2f)).toDto()
+        assertIs<DeviceEffectDto.LocalPoseGoto>(dto)
+        assertEquals(PtzPoseDto(-10f, 15f, 2f), dto.targetPose)
+    }
+
+    @Test
     fun configChanged_preserves_fields_list() {
         val dto = DeviceEffect.ConfigChanged(listOf("device.name", "osd.position")).toDto()
         assertIs<DeviceEffectDto.ConfigChanged>(dto)

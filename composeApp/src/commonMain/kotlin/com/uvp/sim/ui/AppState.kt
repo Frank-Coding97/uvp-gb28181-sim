@@ -16,6 +16,7 @@ import com.uvp.sim.ui.model.RecordingFileDto
 import com.uvp.sim.ui.model.SessionMarkerDto
 import com.uvp.sim.ui.model.SimEventDto
 import com.uvp.sim.ui.model.SipStateDto
+import com.uvp.sim.ui.model.SubscriptionStatusDto
 import com.uvp.sim.ui.model.SystemLogDto
 
 /**
@@ -33,9 +34,9 @@ data class AppUiState(
     val sessionMarker: SessionMarkerDto? = null,
     /**
      * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 AppEngine 推。
-     * 主屏「位置订阅」「目录订阅」状态卡读这个 map 做活/灰判定。
+     * 主屏「位置订阅」「目录订阅」「PTZ 精准位置订阅」状态卡读这个 map。
      */
-    val subscriptions: Map<SubscriptionKind, SubscriptionStatus> = emptyMap(),
+    val subscriptions: Map<SubscriptionKind, SubscriptionStatusDto> = emptyMap(),
     /**
      * M2 设备控制运行时状态(AppEngine.deviceControlState 快照).
      * 由 SimulateScreen 的 PtzHudPanel + Camera3DView 订阅消费.
@@ -126,19 +127,10 @@ enum class SubscriptionKind {
     /** Catalog — 平台 SUBSCRIBE 后设备 NOTIFY 目录变更. */
     Catalog,
     /** Alarm — 平台 SUBSCRIBE Event:Alarm 后设备在每次报警时 NOTIFY. */
-    Alarm
+    Alarm,
+    /** PTZPosition — 平台订阅实际云台六字段变化. */
+    PtzPrecisePosition
 }
-
-/**
- * 订阅快照。所有字段都可空,M1 mock 全 false / null。
- */
-data class SubscriptionStatus(
-    val active: Boolean = false,
-    val subscriber: String? = null,
-    val expiresSeconds: Int? = null,
-    val remainingSeconds: Int? = null,
-    val notifyCount: Int = 0
-)
 
 /**
  * 录像状态快照。

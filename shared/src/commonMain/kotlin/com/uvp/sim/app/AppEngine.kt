@@ -510,6 +510,10 @@ class AppEngine(
         engine?.updatePoseFromRender(pan, tilt, zoom)
     }
 
+    fun adjustLocalPtzPosition(panDelta: Float, tiltDelta: Float, zoomDelta: Float) {
+        engine?.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
+    }
+
     /** ViewModel 用来更新 SimConfig 的 in-memory 视图(外部 save 后调,避免重复持久化)。
      *
      * Bug 修复(PR-USER-BUG-1):同步走 [rehydrateHolders] 重派生 catalogTree / mockGps /

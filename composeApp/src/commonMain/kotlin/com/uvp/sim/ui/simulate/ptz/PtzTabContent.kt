@@ -17,6 +17,15 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowLeft
+import androidx.compose.material.icons.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -37,7 +46,10 @@ import com.uvp.sim.ui.model.PtzPoseDto
  * 云台 Tab — 位姿三大字 + 聚焦/光圈进度 + 预置位/巡航 chips.
  */
 @Composable
-internal fun PtzTabContent(state: DeviceControlDto) {
+internal fun PtzTabContent(
+    state: DeviceControlDto,
+    onLocalPtzAdjust: (Float, Float, Float) -> Unit,
+) {
     Column {
         Row(
             modifier = Modifier
@@ -54,6 +66,8 @@ internal fun PtzTabContent(state: DeviceControlDto) {
             PoseStatDivider()
             PoseStat("变焦", state.zoomLevel, "×", isActive = state.zoomSpeed != 0f)
         }
+        Spacer(Modifier.height(8.dp))
+        LocalPtzControls(state, onLocalPtzAdjust)
         Spacer(Modifier.height(8.dp))
         // 聚焦 / 光圈进度条(平台 PTZCmd byte3 bit6/bit7 累积驱动)
         val cmd = state.lastCommand
@@ -113,6 +127,87 @@ internal fun PtzTabContent(state: DeviceControlDto) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun LocalPtzControls(
+    state: DeviceControlDto,
+    onAdjust: (Float, Float, Float) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(UvpColor.Bg)
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        Text(
+            "本地模拟 PTZ",
+            fontSize = 10.sp,
+            color = UvpColor.TextHint,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            LocalPtzControlPair(
+                label = "水平 ${formatPose(state.panAngle, "°")}°",
+                negativeIcon = { Icon(Icons.Outlined.KeyboardArrowLeft, "水平向左") },
+                positiveIcon = { Icon(Icons.Outlined.KeyboardArrowRight, "水平向右") },
+                onNegative = { onAdjust(-5f, 0f, 0f) },
+                onPositive = { onAdjust(5f, 0f, 0f) },
+            )
+            LocalPtzControlPair(
+                label = "俯仰 ${formatPose(state.tiltAngle, "°")}°",
+                negativeIcon = { Icon(Icons.Outlined.KeyboardArrowDown, "俯仰向下") },
+                positiveIcon = { Icon(Icons.Outlined.KeyboardArrowUp, "俯仰向上") },
+                onNegative = { onAdjust(0f, -5f, 0f) },
+                onPositive = { onAdjust(0f, 5f, 0f) },
+            )
+            LocalPtzControlPair(
+                label = "变焦 ${formatPose(state.zoomLevel, "×")}×",
+                negativeIcon = { Icon(Icons.Outlined.Remove, "缩小") },
+                positiveIcon = { Icon(Icons.Outlined.Add, "放大") },
+                onNegative = { onAdjust(0f, 0f, -0.5f) },
+                onPositive = { onAdjust(0f, 0f, 0.5f) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LocalPtzControlPair(
+    label: String,
+    negativeIcon: @Composable () -> Unit,
+    positiveIcon: @Composable () -> Unit,
+    onNegative: () -> Unit,
+    onPositive: () -> Unit,
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, fontSize = 9.sp, color = UvpColor.TextSecondary)
+        Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+            LocalPtzIconButton(onClick = onNegative, content = negativeIcon)
+            LocalPtzIconButton(onClick = onPositive, content = positiveIcon)
+        }
+    }
+}
+
+@Composable
+private fun LocalPtzIconButton(
+    onClick: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    IconButton(
+        onClick = onClick,
+        modifier = Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(UvpColor.PrimaryLight),
+    ) {
+        Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) { content() }
     }
 }
 

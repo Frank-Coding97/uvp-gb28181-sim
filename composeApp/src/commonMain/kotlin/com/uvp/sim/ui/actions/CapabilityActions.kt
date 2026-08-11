@@ -86,4 +86,7 @@ interface CapabilityActions {
      * 让 SetPreset 入库的是真实当前姿态而不是 0/0/1。
      */
     fun onPoseTick(pan: Float, tilt: Float, zoom: Float)
+
+    /** 本地模拟离散调整实际 PTZ 姿态，与平台控制共用 shared 状态。 */
+    fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float)
 }

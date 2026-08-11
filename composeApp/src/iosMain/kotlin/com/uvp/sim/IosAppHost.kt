@@ -43,7 +43,6 @@ import com.uvp.sim.ui.BroadcastState
 import com.uvp.sim.ui.RecordingStatus
 import com.uvp.sim.ui.SipEventBuffer
 import com.uvp.sim.ui.SubscriptionKind
-import com.uvp.sim.ui.SubscriptionStatus
 import com.uvp.sim.ui.actions.CapabilityActions
 import com.uvp.sim.ui.actions.HomeActions
 import com.uvp.sim.ui.actions.NetworkActions
@@ -467,18 +466,12 @@ fun IosApp() {
         )
     }
 
-    // rawSubs: Map<String, SubscriptionSnapshot> → Map<SubscriptionKind, SubscriptionStatus>。
+    // rawSubs: Map<String, SubscriptionSnapshot> → Map<SubscriptionKind, SubscriptionStatusDto>。
     // 未知 key 忽略(容错未来 engine 侧新增 kind)。参考 Android MainActivity L124-134。
     val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
         val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
             ?: return@mapNotNull null
-        key to SubscriptionStatus(
-            active = snap.active,
-            subscriber = snap.subscriber,
-            expiresSeconds = snap.expiresSeconds,
-            remainingSeconds = snap.remainingSeconds,
-            notifyCount = snap.notifyCount,
-        )
+        key to snap.toDto()
     }.toMap()
 
     // BroadcastDialog(engine 内部)→ BroadcastState(UI 层)。isReceiving 用 dialog 存在与否。
@@ -586,6 +579,9 @@ private fun buildActions(
         }
         override fun onPoseTick(pan: Float, tilt: Float, zoom: Float) {
             engine.updatePoseFromRender(pan, tilt, zoom)
+        }
+        override fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float) {
+            engine.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
         }
     }
     val recording = object : RecordingActions {

@@ -212,6 +212,8 @@ sealed class DeviceEffect {
     data class PresetRecall(val index: Int, val targetPose: PtzPose) : DeviceEffect()
     /** GB-2022 §9.3.4 PTZPreciseCtrl 触发的精确角度跳转 */
     data class PrecisePoseGoto(val targetPose: PtzPose) : DeviceEffect()
+    /** 手机端本地模拟位置变化，不表示收到平台 PTZPreciseCtrl。 */
+    data class LocalPoseGoto(val targetPose: PtzPose) : DeviceEffect()
     data class ConfigChanged(val changedFields: List<String>) : DeviceEffect()
     /** GB-2022 §9.3.4 DeviceUpgrade — UI snackbar 提示,不真 OTA */
     data class DeviceUpgradeRequested(val firmware: String) : DeviceEffect()

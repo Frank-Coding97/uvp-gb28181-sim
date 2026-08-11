@@ -47,6 +47,9 @@ internal fun StatusHeadline(state: DeviceControlDto) {
         effect is DeviceEffectDto.PrecisePoseGoto ->
             Triple("精确控制 → ${formatSignedAngle(effect.targetPose.pan)} / ${formatSignedAngle(effect.targetPose.tilt)}",
                 UvpColor.Primary, UvpColor.Primary)
+        effect is DeviceEffectDto.LocalPoseGoto ->
+            Triple("本地模拟 → ${formatSignedAngle(effect.targetPose.pan)} / ${formatSignedAngle(effect.targetPose.tilt)}",
+                UvpColor.Primary, UvpColor.Primary)
         hasMotion(state) -> Triple("PTZ 运动中", UvpColor.Primary, UvpColor.Primary)
         recentCmd -> Triple("刚收到 ${cmd!!.type}", UvpColor.SuccessText, UvpColor.Success)
         else -> Triple("等待平台下发控制指令", UvpColor.TextHint, UvpColor.Border)

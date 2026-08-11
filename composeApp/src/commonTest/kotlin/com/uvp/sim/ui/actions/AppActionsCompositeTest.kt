@@ -70,13 +70,15 @@ class AppActionsCompositeTest {
         composite.onToggleChannelStatus("ch-1", false)
         composite.onSimulateMediaStatusAbnormal(122)
         composite.onPoseTick(1f, 2f, 3f)
+        composite.onLocalPtzAdjust(5f, -2f, 1f)
 
         assertEquals(
             listOf("cap.onSnapshot", "cap.onAlarmReset", "cap.onAlarmFireDefault",
                    "cap.onBroadcastStop", "cap.onBroadcastToggleSpeaker:true",
                    "cap.onToggleChannelStatus:ch-1:false",
                    "cap.onSimulateMediaStatusAbnormal:122",
-                   "cap.onPoseTick:1.0:2.0:3.0"),
+                   "cap.onPoseTick:1.0:2.0:3.0",
+                   "cap.onLocalPtzAdjust:5.0:-2.0:1.0"),
             sink.calls
         )
     }
@@ -188,6 +190,8 @@ private class CapabilitySliceFake(private val sink: RoutingSink) : CapabilityAct
         sink.record("cap.onToggleChannelStatus:$channelId:$online")
     override fun onPoseTick(pan: Float, tilt: Float, zoom: Float) =
         sink.record("cap.onPoseTick:$pan:$tilt:$zoom")
+    override fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float) =
+        sink.record("cap.onLocalPtzAdjust:$panDelta:$tiltDelta:$zoomDelta")
 }
 
 private class RecordingSliceFake(private val sink: RoutingSink) : RecordingActions {
