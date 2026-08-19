@@ -1,6 +1,12 @@
 package com.uvp.sim.ui
 
 import android.Manifest
+import android.media.AudioAttributes
+import android.media.MediaPlayer
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.content.pm.PackageManager
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -16,6 +22,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.uvp.sim.compose.R
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.PlanarYUVLuminanceSource
@@ -121,6 +128,53 @@ actual fun ScanQrCode(
             val own = listOfNotNull(preview, analysis).toTypedArray()
             if (own.isNotEmpty()) runCatching { provider?.unbind(*own) }
             executor.shutdown()
+        }
+    }
+}
+
+/** Android 扫码确认反馈:轻提示音 + 一次短触感;失败时静默,不影响扫码主流程。 */
+actual fun playQrScanSuccessSound() {
+    runCatching {
+        val context = ShareContextHolder.context ?: return@runCatching
+        val player = MediaPlayer()
+        try {
+            val sound = context.resources.openRawResourceFd(R.raw.qr_scan_success)
+                ?: error("扫码提示音资源不存在")
+            sound.use {
+                player.setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build(),
+                )
+                player.setDataSource(it.fileDescriptor, it.startOffset, it.length)
+            }
+            player.setVolume(0.72f, 0.72f)
+            player.setOnCompletionListener { it.release() }
+            player.setOnErrorListener { mediaPlayer, _, _ ->
+                mediaPlayer.release()
+                true
+            }
+            player.prepare()
+            player.start()
+        } catch (_: Exception) {
+            player.release()
+        }
+    }
+    runCatching {
+        val context = ShareContextHolder.context ?: return@runCatching
+        val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.getSystemService(VibratorManager::class.java).defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Vibrator::class.java)
+        }
+        if (!vibrator.hasVibrator()) return@runCatching
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(VibrationEffect.createOneShot(35L, 120))
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(35L)
         }
     }
 }

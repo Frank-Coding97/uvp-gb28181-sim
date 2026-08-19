@@ -157,6 +157,8 @@ fun QrScanScreen(
                         return@ScanQrCode
                     }
                     consumed = true
+                    // 只对有效的 UVP 接入码提示一次,普通二维码和兑换失败都不响。
+                    playQrScanSuccessSound()
                     stage = QrScanStage.Exchanging
                     scope.launch {
                         when (val result = actions.onQrExchange(target.baseUrl, target.token)) {

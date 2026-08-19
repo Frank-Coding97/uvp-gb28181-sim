@@ -74,6 +74,9 @@ actual fun ScanQrCode(
     }
 }
 
+/** iOS 暂不改变既有扫码反馈行为。 */
+actual fun playQrScanSuccessSound() = Unit
+
 /**
  * 扫码 session 的持有者。UIKitView.factory 只交出 [view],start/stop 由
  * DisposableEffect 驱动 —— 保证"退出页面即释放相机"。

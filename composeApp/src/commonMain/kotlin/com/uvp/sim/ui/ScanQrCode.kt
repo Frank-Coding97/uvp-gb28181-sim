@@ -22,3 +22,6 @@ expect fun ScanQrCode(
     onError: (String) -> Unit,
     modifier: Modifier = Modifier,
 )
+
+/** 播放一次短促的扫码成功提示音。各平台自行决定是否提供声音反馈。 */
+expect fun playQrScanSuccessSound()
