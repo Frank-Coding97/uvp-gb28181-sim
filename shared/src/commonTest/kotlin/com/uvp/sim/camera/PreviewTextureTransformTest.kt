@@ -49,6 +49,28 @@ class PreviewTextureTransformTest {
     }
 
     @Test
+    fun cameraTransformedSurfaceKeepsBaseCoordinatesButUsesRotatedAspect() {
+        val result = PreviewTextureTransform.calculate(
+            bufferWidth = 1600,
+            bufferHeight = 1200,
+            cropLeft = 0,
+            cropTop = 0,
+            cropRight = 1600,
+            cropBottom = 1200,
+            rotationDegrees = 90,
+            mirrored = false,
+            hasCameraTransform = true,
+        )
+
+        assertEquals(1200, result.frameWidth)
+        assertEquals(1600, result.frameHeight)
+        assertContentEquals(
+            floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f),
+            result.textureCoordinates,
+        )
+    }
+
+    @Test
     fun cropRectIsMappedIntoNormalizedBufferCoordinates() {
         val result = PreviewTextureTransform.calculate(
             bufferWidth = 1280,

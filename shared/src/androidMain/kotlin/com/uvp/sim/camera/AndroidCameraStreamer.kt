@@ -291,6 +291,7 @@ class AndroidCameraStreamer(
                             cropBottom = crop.bottom,
                             rotationDegrees = info.rotationDegrees,
                             mirrored = info.isMirroring,
+                            hasCameraTransform = info.hasCameraTransform(),
                         )
                         renderer.configureCameraInput(
                             bufferWidth = bufferSize.width,
@@ -298,7 +299,8 @@ class AndroidCameraStreamer(
                             frameWidth = geometry.frameWidth,
                             frameHeight = geometry.frameHeight,
                             textureCoordinates = geometry.textureCoordinates,
-                            transformationDetail = "crop=$crop, rotation=${info.rotationDegrees}, mirrored=${info.isMirroring}",
+                            transformationDetail = "crop=$crop, rotation=${info.rotationDegrees}, " +
+                                "mirrored=${info.isMirroring}, hasCameraTransform=${info.hasCameraTransform()}",
                         )
                     }
                     request.provideSurface(target, mainExecutor) { /* released on streamer.release */ }

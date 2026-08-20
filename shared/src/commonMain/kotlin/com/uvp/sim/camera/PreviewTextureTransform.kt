@@ -24,6 +24,7 @@ internal object PreviewTextureTransform {
         cropBottom: Int,
         rotationDegrees: Int,
         mirrored: Boolean,
+        hasCameraTransform: Boolean = false,
     ): PreviewTextureGeometry {
         require(bufferWidth > 0 && bufferHeight > 0)
         require(cropLeft >= 0 && cropTop >= 0)
@@ -35,10 +36,12 @@ internal object PreviewTextureTransform {
 
         val cropWidth = cropRight - cropLeft
         val cropHeight = cropBottom - cropTop
+        val samplingRotation = if (hasCameraTransform) 0 else rotation
+        val samplingMirrored = mirrored && !hasCameraTransform
         val coordinates = FloatArray(outputCorners.size * 2)
         outputCorners.forEachIndexed { index, (outputX, outputY) ->
-            val mirroredX = if (mirrored) 1f - outputX else outputX
-            val (cropX, cropY) = when (rotation) {
+            val mirroredX = if (samplingMirrored) 1f - outputX else outputX
+            val (cropX, cropY) = when (samplingRotation) {
                 0 -> mirroredX to outputY
                 90 -> outputY to 1f - mirroredX
                 180 -> 1f - mirroredX to 1f - outputY
