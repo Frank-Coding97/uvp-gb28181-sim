@@ -93,6 +93,7 @@ internal class OsdRenderer(
     private var cameraBufferHeight: Int = targetHeight
     private var cameraFrameWidth: Int = targetWidth
     private var cameraFrameHeight: Int = targetHeight
+    private var cameraTextureCoordinates: FloatArray = DEFAULT_TEXTURE_COORDINATES.copyOf()
 
     val cameraInputSurface: Surface? get() = _cameraInputSurface
 
@@ -135,6 +136,7 @@ internal class OsdRenderer(
                     fboHeight,
                     cropToFill = true
                 )
+                cameraPass!!.setTextureCoordinates(cameraTextureCoordinates)
 
                 surfaceTexture = SurfaceTexture(cameraPass!!.cameraTextureId).apply {
                     setDefaultBufferSize(cameraBufferWidth, cameraBufferHeight)
@@ -231,15 +233,20 @@ internal class OsdRenderer(
         bufferWidth: Int,
         bufferHeight: Int,
         frameWidth: Int = bufferWidth,
-        frameHeight: Int = bufferHeight
+        frameHeight: Int = bufferHeight,
+        textureCoordinates: FloatArray = DEFAULT_TEXTURE_COORDINATES,
+        transformationDetail: String? = null,
     ) {
-        if (bufferWidth <= 0 || bufferHeight <= 0 || frameWidth <= 0 || frameHeight <= 0) return
+        if (bufferWidth <= 0 || bufferHeight <= 0 || frameWidth <= 0 || frameHeight <= 0 ||
+            textureCoordinates.size != TEXTURE_COORDINATE_COUNT
+        ) return
         val h = handler
         if (h == null) {
             cameraBufferWidth = bufferWidth
             cameraBufferHeight = bufferHeight
             cameraFrameWidth = frameWidth
             cameraFrameHeight = frameHeight
+            cameraTextureCoordinates = textureCoordinates.copyOf()
             return
         }
         val applyConfig = {
@@ -247,10 +254,13 @@ internal class OsdRenderer(
             cameraBufferHeight = bufferHeight
             cameraFrameWidth = frameWidth
             cameraFrameHeight = frameHeight
+            cameraTextureCoordinates = textureCoordinates.copyOf()
             surfaceTexture?.setDefaultBufferSize(bufferWidth, bufferHeight)
             cameraPass?.setFrameSize(frameWidth, frameHeight, fboWidth, fboHeight, cropToFill = true)
+            cameraPass?.setTextureCoordinates(cameraTextureCoordinates)
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "OSD_CAMERA_INPUT_CONFIG",
-                detail = "buffer=${bufferWidth}x${bufferHeight}, frame=${frameWidth}x${frameHeight}, fbo=${fboWidth}x${fboHeight}")
+                detail = "buffer=${bufferWidth}x${bufferHeight}, frame=${frameWidth}x${frameHeight}, " +
+                    "fbo=${fboWidth}x${fboHeight}${transformationDetail?.let { ", $it" } ?: ""}")
         }
         if (Looper.myLooper() == h.looper) {
             applyConfig()
@@ -396,6 +406,7 @@ internal class OsdRenderer(
                 fboHeight,
                 cropToFill = true
             )
+            cameraPass!!.setTextureCoordinates(cameraTextureCoordinates)
 
             surfaceTexture = SurfaceTexture(cameraPass!!.cameraTextureId).apply {
                 setDefaultBufferSize(cameraBufferWidth, cameraBufferHeight)
@@ -644,6 +655,14 @@ void main() {
     }
 
     companion object {
+        private const val TEXTURE_COORDINATE_COUNT = 8
+        private val DEFAULT_TEXTURE_COORDINATES = floatArrayOf(
+            0f, 1f,
+            1f, 1f,
+            0f, 0f,
+            1f, 0f,
+        )
+
         /** 单帧渲染预算 — 30fps 下每帧 33.3ms,留 33ms 给 OSD pipeline 整体处理。 */
         const val FRAME_BUDGET_MS = 33L
 

@@ -37,6 +37,9 @@ internal class CameraTexturePass {
         private set
 
     private val texMatrix = FloatArray(16)
+    private var frameScaleX = 1f
+    private var frameScaleY = 1f
+    private var textureCoordinates = DEFAULT_TEXTURE_COORDINATES.copyOf()
     private var initialized = false
 
     fun init() {
@@ -50,12 +53,7 @@ internal class CameraTexturePass {
 
         // 初始全屏四边形。v 坐标 Y 翻转(1→0):FBO 原点左下,补偿 blit 的 Y 翻转叠加。
         // setFrameSize() 调用后会按相机比例更新 VBO,默认 center-crop 铺满。
-        uploadVerts(floatArrayOf(
-            -1f, -1f, 0f, 1f,
-             1f, -1f, 1f, 1f,
-            -1f,  1f, 0f, 0f,
-             1f,  1f, 1f, 0f,
-        ))
+        uploadCurrentVertices()
 
         // OES external texture(SurfaceTexture 后续 attach)
         val texArr = IntArray(1)
@@ -108,12 +106,15 @@ internal class CameraTexturePass {
                 fy = 1f
             }
         }
-        uploadVerts(floatArrayOf(
-            -fx, -fy, 0f, 1f,
-             fx, -fy, 1f, 1f,
-            -fx,  fy, 0f, 0f,
-             fx,  fy, 1f, 0f,
-        ), update = true)
+        frameScaleX = fx
+        frameScaleY = fy
+        uploadCurrentVertices(update = true)
+    }
+
+    fun setTextureCoordinates(coordinates: FloatArray) {
+        if (!initialized || vbo == 0 || coordinates.size != TEXTURE_COORDINATE_COUNT) return
+        textureCoordinates = coordinates.copyOf()
+        uploadCurrentVertices(update = true)
     }
 
     /**
@@ -178,5 +179,25 @@ internal class CameraTexturePass {
             GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER, 0, verts.size * 4, buf)
         }
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+    }
+
+    private fun uploadCurrentVertices(update: Boolean = false) {
+        val uvs = textureCoordinates
+        uploadVerts(floatArrayOf(
+            -frameScaleX, -frameScaleY, uvs[0], uvs[1],
+             frameScaleX, -frameScaleY, uvs[2], uvs[3],
+            -frameScaleX,  frameScaleY, uvs[4], uvs[5],
+             frameScaleX,  frameScaleY, uvs[6], uvs[7],
+        ), update)
+    }
+
+    private companion object {
+        const val TEXTURE_COORDINATE_COUNT = 8
+        val DEFAULT_TEXTURE_COORDINATES = floatArrayOf(
+            0f, 1f,
+            1f, 1f,
+            0f, 0f,
+            1f, 0f,
+        )
     }
 }
