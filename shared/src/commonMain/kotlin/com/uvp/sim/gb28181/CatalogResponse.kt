@@ -112,4 +112,15 @@ $itemBody</DeviceList>
         sn = sn,
         tree = tree
     )
+
+    fun buildAllFromTree(
+        config: SimConfig,
+        sn: String,
+        tree: List<CatalogNode>,
+    ): List<String> = CatalogNotifyBuilder.renderResponseAll(
+        deviceId = config.device.deviceId,
+        sn = sn,
+        tree = tree,
+        pageSize = config.multiResponsePageSize.coerceIn(1, 10_000),
+    )
 }

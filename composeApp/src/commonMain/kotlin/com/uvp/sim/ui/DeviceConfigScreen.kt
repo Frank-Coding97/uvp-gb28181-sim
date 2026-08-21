@@ -62,6 +62,9 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
     var maxTimeouts by remember(state.config) {
         mutableStateOf(state.config.maxKeepaliveTimeouts.toString())
     }
+    var multiResponsePageSize by remember(state.config) {
+        mutableStateOf(state.config.multiResponsePageSize.toString())
+    }
     var manufacturer by remember(state.config) { mutableStateOf(state.config.device.manufacturer) }
     var model by remember(state.config) { mutableStateOf(state.config.device.model) }
     var firmware by remember(state.config) { mutableStateOf(state.config.device.firmware) }
@@ -109,6 +112,13 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
                 keyboard = KeyboardType.Number,
                 trailing = { UnitSuffix("次", !locked) }
             ) { maxTimeouts = it.filter { c -> c.isDigit() } }
+            InlineEditableRow(
+                label = "多响应每包",
+                value = multiResponsePageSize,
+                enabled = !locked,
+                keyboard = KeyboardType.Number,
+                trailing = { UnitSuffix("条", !locked) }
+            ) { multiResponsePageSize = it.filter { c -> c.isDigit() } }
         }
 
         SectionLabel("出厂信息 · DeviceInfo 应答字段")
@@ -162,7 +172,8 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
                         ),
                         expiresSeconds = expires.toIntOrNull()?.coerceIn(60, 86_400) ?: 3600,
                         keepaliveIntervalSeconds = keepalive.toIntOrNull()?.coerceIn(15, 600) ?: 60,
-                        maxKeepaliveTimeouts = maxTimeouts.toIntOrNull()?.coerceIn(1, 10) ?: 3
+                        maxKeepaliveTimeouts = maxTimeouts.toIntOrNull()?.coerceIn(1, 10) ?: 3,
+                        multiResponsePageSize = multiResponsePageSize.toIntOrNull()?.coerceIn(1, 10_000) ?: 50,
                     )
                 )
                 toast.success("设备配置已保存")
@@ -184,7 +195,7 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
 
         Spacer(Modifier.height(2.dp))
         Text(
-            "范围:注册周期 60–86400 秒;心跳间隔 15–600 秒;超时次数 1–10",
+            "范围:注册周期 60–86400 秒;心跳间隔 15–600 秒;超时次数 1–10;多响应每包 1–10000 条",
             fontSize = 10.sp,
             color = UvpColor.TextHint,
             modifier = Modifier.padding(horizontal = 4.dp)

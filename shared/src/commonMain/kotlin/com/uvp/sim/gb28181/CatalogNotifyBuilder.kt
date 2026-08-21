@@ -31,6 +31,22 @@ object CatalogNotifyBuilder {
     )
 
     /**
+     * 附录 M 多响应分包。所有包共享同一个 SN 和全量 SumNum，DeviceList Num 是当前包条数。
+     */
+    fun buildAll(
+        deviceId: String,
+        sn: Int,
+        tree: List<CatalogNode>,
+        pageSize: Int,
+    ): List<String> = renderEnvelopes(
+        wrapperTag = "Notify",
+        deviceId = deviceId,
+        sn = sn.toString(),
+        tree = tree,
+        pageSize = pageSize,
+    )
+
+    /**
      * P1-3 GB §9.3.1.4 增量 NOTIFY:body 顶层仍是 `<Notify><CmdType>Catalog</CmdType>`,
      * 但每个 Item 多一个 `<Event>ADD|DEL|UPDATE</Event>` 子标签。
      *
@@ -42,9 +58,27 @@ object CatalogNotifyBuilder {
         deviceId: String,
         sn: Int,
         events: List<CatalogChangeEvent>
+    ): String = renderIncrementalEnvelope(deviceId, sn, events, events.size)
+
+    fun buildIncrementalAll(
+        deviceId: String,
+        sn: Int,
+        events: List<CatalogChangeEvent>,
+        pageSize: Int,
+    ): List<String> {
+        if (events.isEmpty()) return listOf(renderIncrementalEnvelope(deviceId, sn, emptyList(), 0))
+        return events.chunked(pageSize.coerceIn(1, 10_000)).map { page ->
+            renderIncrementalEnvelope(deviceId, sn, page, events.size)
+        }
+    }
+
+    private fun renderIncrementalEnvelope(
+        deviceId: String,
+        sn: Int,
+        events: List<CatalogChangeEvent>,
+        sumNum: Int,
     ): String {
         val items = events.joinToString(separator = "\n") { renderEventItem(it) }
-        val sumNum = events.size
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -56,7 +90,7 @@ object CatalogNotifyBuilder {
         if (events.isEmpty()) {
             sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
         } else {
-            sb.append("<DeviceList Num=\"").append(sumNum).append("\">\n")
+            sb.append("<DeviceList Num=\"").append(events.size).append("\">\n")
             sb.append(items).append("\n")
             sb.append("</DeviceList>\n")
         }
@@ -139,6 +173,36 @@ object CatalogNotifyBuilder {
         tree = tree
     )
 
+    internal fun renderResponseAll(
+        deviceId: String,
+        sn: String,
+        tree: List<CatalogNode>,
+        pageSize: Int,
+    ): List<String> = renderEnvelopes(
+        wrapperTag = "Response",
+        deviceId = deviceId,
+        sn = sn,
+        tree = tree,
+        pageSize = pageSize,
+    )
+
+    private fun renderEnvelopes(
+        wrapperTag: String,
+        deviceId: String,
+        sn: String,
+        tree: List<CatalogNode>,
+        pageSize: Int,
+    ): List<String> {
+        val ordered = orderDfs(tree)
+        if (ordered.isEmpty()) {
+            return listOf(renderOrderedEnvelope(wrapperTag, deviceId, sn, emptyList(), 0))
+        }
+        val effectivePageSize = pageSize.coerceIn(1, 10_000)
+        return ordered.chunked(effectivePageSize).map { page ->
+            renderOrderedEnvelope(wrapperTag, deviceId, sn, page, ordered.size)
+        }
+    }
+
     private fun renderEnvelope(
         wrapperTag: String,
         deviceId: String,
@@ -146,8 +210,17 @@ object CatalogNotifyBuilder {
         tree: List<CatalogNode>
     ): String {
         val ordered = orderDfs(tree)
+        return renderOrderedEnvelope(wrapperTag, deviceId, sn, ordered, ordered.size)
+    }
+
+    private fun renderOrderedEnvelope(
+        wrapperTag: String,
+        deviceId: String,
+        sn: String,
+        ordered: List<CatalogNode>,
+        sumNum: Int,
+    ): String {
         val items = ordered.joinToString(separator = "\n") { renderItem(it) }
-        val sumNum = ordered.size
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -159,7 +232,7 @@ object CatalogNotifyBuilder {
         if (ordered.isEmpty()) {
             sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
         } else {
-            sb.append("<DeviceList Num=\"").append(sumNum).append("\">\n")
+            sb.append("<DeviceList Num=\"").append(ordered.size).append("\">\n")
             sb.append(items).append("\n")
             sb.append("</DeviceList>\n")
         }

@@ -36,6 +36,26 @@ class CatalogNotifyBuilderTest {
     }
 
     @Test
+    fun `buildAll splits packets with same SN and total count`() {
+        val tree = listOf(
+            root(),
+            CatalogNode("group1", CatalogNodeType.BusinessGroup, "G1", rootId),
+            CatalogNode("ch1", CatalogNodeType.VideoChannel, "C1", "group1"),
+            CatalogNode("ch2", CatalogNodeType.VideoChannel, "C2", "group1"),
+            CatalogNode("ch3", CatalogNodeType.VideoChannel, "C3", "group1"),
+        )
+
+        val packets = CatalogNotifyBuilder.buildAll(rootId, 17, tree, pageSize = 2)
+
+        assertEquals(3, packets.size)
+        assertTrue(packets.all { it.contains("<SN>17</SN>") })
+        assertTrue(packets.all { it.contains("<SumNum>5</SumNum>") })
+        assertTrue(packets[0].contains("<DeviceList Num=\"2\">"))
+        assertTrue(packets[1].contains("<DeviceList Num=\"2\">"))
+        assertTrue(packets[2].contains("<DeviceList Num=\"1\">"))
+    }
+
+    @Test
     fun `build empty tree emits Num zero element`() {
         val xml = CatalogNotifyBuilder.build(rootId, 1, emptyList())
         assertTrue(xml.contains("<SumNum>0</SumNum>"))

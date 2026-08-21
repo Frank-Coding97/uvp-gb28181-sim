@@ -77,6 +77,23 @@ class CatalogIncrementalNotifyTest {
     }
 
     @Test
+    fun multiResponsePacketsShareSnAndTotalCount() {
+        val events = listOf(
+            CatalogChangeEvent.Add(CatalogNode("v1", CatalogNodeType.VideoChannel, "一", rootId)),
+            CatalogChangeEvent.Update(CatalogNode("v2", CatalogNodeType.VideoChannel, "二", rootId)),
+            CatalogChangeEvent.Del("v3"),
+        )
+
+        val packets = CatalogNotifyBuilder.buildIncrementalAll(rootId, sn = 8, events = events, pageSize = 2)
+
+        assertEquals(2, packets.size)
+        assertTrue(packets.all { it.contains("<SN>8</SN>") })
+        assertTrue(packets.all { it.contains("<SumNum>3</SumNum>") })
+        assertTrue(packets[0].contains("<DeviceList Num=\"2\">"))
+        assertTrue(packets[1].contains("<DeviceList Num=\"1\">"))
+    }
+
+    @Test
     fun crlfLineEndings() {
         val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 1, events = emptyList())
         assertTrue(xml.contains("\r\n"))

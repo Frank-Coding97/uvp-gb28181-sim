@@ -56,6 +56,23 @@ class CatalogSubRouterTest {
     }
 
     @Test
+    fun catalog_query_uses_configured_multi_response_page_size() = runTest {
+        val cfg = SubRouterTestFixtures.config().copy(multiResponsePageSize = 1)
+        val f = SubRouterTestFixtures.newFixture(this, cfg)
+        val r = CatalogSubRouter(f.ctx, NoopRecordingService)
+        val xml = "<?xml version=\"1.0\"?><Query><CmdType>Catalog</CmdType><SN>17</SN>" +
+            "<DeviceID>34020000001110000001</DeviceID></Query>"
+
+        assertTrue(r.handle("Catalog", xml, fromUri = null))
+        runCurrent()
+
+        val bodies = f.transport.sent.map { it.body.decodeToString() }
+        assertTrue(bodies.size > 1, "默认目录包含多个节点，pageSize=1 应产生多条 MESSAGE")
+        assertTrue(bodies.all { it.contains("<SN>17</SN>") })
+        assertTrue(bodies.all { it.contains("<DeviceList Num=\"1\">") })
+    }
+
+    @Test
     fun device_info_query_emits_device_info_response() = runTest {
         val f = SubRouterTestFixtures.newFixture(this)
         val r = CatalogSubRouter(f.ctx, NoopRecordingService)

@@ -128,6 +128,30 @@ class CatalogSubscribeIntegrationTest {
     }
 
     @Test
+    fun catalogSubscribePaginatesInitialNotifyUsingConfiguredPageSize() = runTest {
+        val cfg = config().copy(multiResponsePageSize = 1)
+        val transport = MockSipTransport(cfg)
+        transport.connect()
+        val engine = TestEngine.create(cfg, transport, this, localIpProvider = { "192.168.1.50" })
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(catalogSubscribeRequest())
+        runCurrent()
+
+        val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
+        assertEquals(2, notifies.size, "默认两个可发布节点应按每包 1 条拆成两条 NOTIFY")
+        val bodies = notifies.map { it.body.decodeToString() }
+        assertTrue(bodies.all { it.contains("<SumNum>2</SumNum>") })
+        assertTrue(bodies.all { it.contains("<DeviceList Num=\"1\">") })
+        val sns = bodies.mapNotNull { "<SN>(\\d+)</SN>".toRegex().find(it)?.groupValues?.get(1) }
+        assertEquals(1, sns.distinct().size, "同一次多响应 NOTIFY 必须共享 SN")
+
+        engine.shutdown()
+    }
+
+    @Test
     fun catalogSubscribeDoesNotPushPeriodicNotify() = runTest {
         val transport = MockSipTransport(config())
         transport.connect()

@@ -55,18 +55,32 @@ internal class CatalogSubRouter(
     }
 
     private suspend fun sendCatalogResponse(sn: String) {
-        val xmlBody = CatalogResponse.buildFromTree(
+        val nodes = ManscdpInternals.publishableCatalogNodes(ctx.catalogTree.value)
+        val packets = CatalogResponse.buildAllFromTree(
             config = ctx.config,
             sn = sn,
-            tree = ManscdpInternals.publishableCatalogNodes(ctx.catalogTree.value),
+            tree = nodes,
         )
-        ManscdpInternals.sendMansMessage(
-            config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
-            localIp = ctx.localIp, localPort = ctx.localPort,
-            xmlBody = xmlBody,
-            errorLabel = "Catalog response",
-            simEventEmit = ctx.simEventEmit,
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "平台查询 Catalog → ${nodes.size} 条 / 分 ${packets.size} 包 sn=$sn"
         )
+        if (nodes.size > 10_000 && ctx.config.transport.name == "UDP") {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Network,
+                "Catalog 总记录超过 10000 条，GB/T 28181 建议改用 TCP 信令"
+            )
+        }
+        for (xmlBody in packets) {
+            val sent = ManscdpInternals.sendMansMessage(
+                config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
+                localIp = ctx.localIp, localPort = ctx.localPort,
+                xmlBody = xmlBody,
+                errorLabel = "Catalog response",
+                simEventEmit = ctx.simEventEmit,
+            )
+            if (!sent) break
+        }
     }
 
     private suspend fun sendDeviceInfoResponse(sn: String) {
@@ -202,19 +216,27 @@ internal class CatalogSubRouter(
             deviceName = ctx.config.device.name,
             items = hits,
             timeZoneId = tz,
+            pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
         )
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
             "平台查询录像 → 命中 ${hits.size} 条 / 分 ${packets.size} 包"
         )
+        if (hits.size > 10_000 && ctx.config.transport.name == "UDP") {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Network,
+                "RecordInfo 总记录超过 10000 条，GB/T 28181 建议改用 TCP 信令"
+            )
+        }
         for (xmlBody in packets) {
-            ManscdpInternals.sendMansMessage(
+            val sent = ManscdpInternals.sendMansMessage(
                 config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
                 localIp = ctx.localIp, localPort = ctx.localPort,
                 xmlBody = xmlBody,
                 errorLabel = "RecordInfo",
                 simEventEmit = ctx.simEventEmit,
             )
+            if (!sent) break
         }
     }
 

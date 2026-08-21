@@ -37,6 +37,8 @@ data class SimConfig(
     val expiresSeconds: Int = 3600,
     val keepaliveIntervalSeconds: Int = 60,
     val maxKeepaliveTimeouts: Int = 3,
+    /** 附录 M 多响应消息单包记录数。设备端配置，Catalog/RecordInfo 共用。 */
+    val multiResponsePageSize: Int = 50,
     /**
      * M-2 (audit §3) — SIP dialog 空闲超时(秒),`<= 0` 关闭 GC。默认 1800s = 30 分钟。
      * 超过该时长无任何 in-dialog 消息(INVITE / re-INVITE / NOTIFY / BYE)的 dialog

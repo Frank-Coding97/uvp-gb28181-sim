@@ -97,33 +97,45 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
 
     suspend fun sendCatalogNotify(dialog: SubscriptionDialog) {
         catalogNotifySn++
-        val xml = CatalogNotifyBuilder.build(
+        val packets = CatalogNotifyBuilder.buildAll(
             deviceId = ctx.config.device.deviceId,
             sn = catalogNotifySn,
             tree = ManscdpInternals.publishableCatalogNodes(ctx.catalogTree.value),
+            pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
         )
-        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
-        try {
-            ctx.outbox.send(notify).getOrThrow()
-            ctx.simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
-        } catch (e: Throwable) {
-            ctx.simEventEmit(SimEvent.TransportError("send Catalog NOTIFY: ${e::class.simpleName}: ${e.message}"))
-        }
+        sendCatalogPackets(dialog, packets, catalogNotifySn, "Catalog NOTIFY")
     }
 
     suspend fun sendCatalogIncrementalNotify(dialog: SubscriptionDialog, events: List<CatalogChangeEvent>) {
         catalogNotifySn++
-        val xml = CatalogNotifyBuilder.buildIncremental(
+        val packets = CatalogNotifyBuilder.buildIncrementalAll(
             deviceId = ctx.config.device.deviceId,
             sn = catalogNotifySn,
             events = events,
+            pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
         )
-        val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
-        try {
-            ctx.outbox.send(notify).getOrThrow()
-            ctx.simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = catalogNotifySn))
-        } catch (e: Throwable) {
-            ctx.simEventEmit(SimEvent.TransportError("send Catalog incremental NOTIFY: ${e::class.simpleName}: ${e.message}"))
+        sendCatalogPackets(dialog, packets, catalogNotifySn, "Catalog incremental NOTIFY")
+    }
+
+    private suspend fun sendCatalogPackets(
+        initialDialog: SubscriptionDialog,
+        packets: List<String>,
+        sn: Int,
+        errorLabel: String,
+    ) {
+        var dialog = initialDialog
+        for ((index, xml) in packets.withIndex()) {
+            if (index > 0) {
+                dialog = ctx.subscriptionRegistry.bumpNotify(initialDialog.callId) ?: return
+            }
+            val notify = buildNotifyForDialog(dialog, xml, includeUserAgent = false)
+            try {
+                ctx.outbox.send(notify).getOrThrow()
+                ctx.simEventEmit(SimEvent.NotifySent(kind = dialog.kind, sn = sn))
+            } catch (e: Throwable) {
+                ctx.simEventEmit(SimEvent.TransportError("send $errorLabel: ${e::class.simpleName}: ${e.message}"))
+                return
+            }
         }
     }
 
