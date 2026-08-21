@@ -1,6 +1,7 @@
 package com.uvp.sim.domain.coord.manscdp
 
 import com.uvp.sim.config.CatalogChangeEvent
+import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SubscriptionDialog
 import com.uvp.sim.domain.PtzNotifyCompletion
@@ -166,7 +167,7 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
         }
         notifySn++
         val xml = MobilePositionNotify.build(
-            deviceId = ctx.config.device.deviceId,
+            deviceId = CatalogTreeStore.positionChannelId(ctx.config, ctx.catalogTree.value),
             sn = notifySn,
             point = fix.point,
             speed = fix.speed,
@@ -273,13 +274,14 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
         val notifyCseq = cseqOverride ?: (dialog.cseqNotify + 1)
         val remaining = dialog.remainingSeconds
         val ssValue = if (remaining > 0) "active;expires=$remaining" else "terminated"
-        val event = if (dialog.kind == "PtzPrecisePosition") "PTZPosition" else "presence"
         return SipBuilders.buildNotify(
+            requestUri = dialog.notifyRequestUri,
             subscriberUri = dialog.subscriberUri,
+            notifierUri = dialog.notifierUri,
             callId = dialog.callId,
             fromTag = dialog.toTag,
             toTag = dialog.fromTag,
-            event = event,
+            event = dialog.event,
             subscriptionState = ssValue,
             cseq = notifyCseq,
             xmlBody = xmlBody,

@@ -1,7 +1,7 @@
 package com.uvp.sim.gb28181
 
 import com.uvp.sim.config.GeoPoint
-import kotlin.time.Clock
+import com.uvp.sim.domain.ProtocolClock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -52,7 +52,7 @@ object MobilePositionResponse {
     }
 
     private fun nowTimestamp(): String {
-        val now = Clock.System.now()
+        val now = ProtocolClock.now()
         val tz = TimeZone.currentSystemDefault()
         val ldt = now.toLocalDateTime(tz)
         return "${ldt.year}-${ldt.monthNumber.toString().padStart(2, '0')}-" +

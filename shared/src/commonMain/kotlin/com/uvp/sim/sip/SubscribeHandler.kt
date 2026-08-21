@@ -6,6 +6,9 @@ sealed class SubscribeIntent {
     data class NewSubscription(
         val kind: String,
         val subscriberUri: String,
+        val notifierUri: String,
+        val notifyRequestUri: String,
+        val event: String,
         val callId: String,
         val fromTag: String,
         val intervalSeconds: Int,
@@ -36,16 +39,15 @@ sealed class SubscribeIntent {
 object SubscribeHandler {
 
     private const val DEFAULT_EXPIRES_MOBILE_POSITION = 3600
-    private const val DEFAULT_EXPIRES_CATALOG = 86400  // GB §9.3.1 目录订阅典型 24h
+    private const val DEFAULT_EXPIRES_CATALOG = 600    // GB/T 28181-2016 附录 P.2.1 默认 600s
     private const val DEFAULT_EXPIRES_ALARM = 3600     // GB §9.5.2 报警订阅,比 Catalog 短(spec Q7)
     private const val DEFAULT_EXPIRES_PTZ_POSITION = 3600
 
     fun parse(request: SipRequest, knownCallIds: Set<String>): SubscribeIntent {
         val event = request.firstHeader(SipHeader.EVENT)
-        // GB28181 不同订阅类型的 Event 头不同:
-        //   §9.3.1.2 目录订阅:    Event: Catalog
-        //   §9.3.5   移动位置订阅: Event: presence
-        //   §9.5.2   报警订阅:    Event: Alarm
+        // GB/T 28181-2016 的订阅示例既有 Event:presence(J.20),也有
+        // 附录 P.4.1 的 Event:Catalog;id=num;对话内必须原样回显收到的 Event。
+        // 移动位置使用 presence,报警使用 presence/Alarm 取决于对端实现。
         // GB/T 28181-2022 PTZ 精准位置订阅:Event:PTZPosition。
         // 四种都接受,具体 kind:Alarm 直接由 Event 头判定(报警 SUBSCRIBE
         // body 可能不带标准 CmdType),presence/Catalog 看 body CmdType 再确认。
@@ -81,6 +83,16 @@ object SubscribeHandler {
 
         val fromHeader = request.fromHeader() ?: ""
         val subscriberUri = extractUri(fromHeader)
+        val notifierUri = extractUri(
+            request.toHeader() ?: return SubscribeIntent.Reject(400, "Missing To")
+        )
+        if (SipHeaderHelpers.parseUriUser(notifierUri).isBlank()) {
+            return SubscribeIntent.Reject(400, "To URI must contain device identity")
+        }
+        val notifyRequestUri = request.firstHeader(SipHeader.CONTACT)
+            ?.let(::extractUri)
+            ?.takeIf { it.isNotBlank() }
+            ?: return SubscribeIntent.Reject(400, "Missing Contact")
         val fromTag = incomingFromTag
 
         // Event: Alarm 短路 — 报警是事件流,不依赖 body CmdType,不周期推送(interval=0)。
@@ -88,6 +100,9 @@ object SubscribeHandler {
             return SubscribeIntent.NewSubscription(
                 kind = "Alarm",
                 subscriberUri = subscriberUri,
+                notifierUri = notifierUri,
+                notifyRequestUri = notifyRequestUri,
+                event = event.trim(),
                 callId = callId,
                 fromTag = fromTag,
                 intervalSeconds = 0,
@@ -129,6 +144,9 @@ object SubscribeHandler {
         return SubscribeIntent.NewSubscription(
             kind = kind,
             subscriberUri = subscriberUri,
+            notifierUri = notifierUri,
+            notifyRequestUri = notifyRequestUri,
+            event = event.trim(),
             callId = callId,
             fromTag = fromTag,
             intervalSeconds = interval,

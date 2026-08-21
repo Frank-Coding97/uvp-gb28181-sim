@@ -69,4 +69,29 @@ class CatalogTreeStoreTest {
         val tree = CatalogTreeStore.defaultTree(cfg())
         assertTrue(tree.all { it.fields["Status"] == "ON" }, "all nodes have Status=ON")
     }
+
+    @Test
+    fun `position channel keeps configured video channel when it is in active tree`() {
+        val tree = listOf(
+            CatalogNode("root", CatalogNodeType.Device, "X", "root"),
+            CatalogNode("other", CatalogNodeType.VideoChannel, "Other", "root"),
+            CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "Configured", "root")
+        )
+        assertEquals("34020000001320000001", CatalogTreeStore.positionChannelId(cfg(tree), tree))
+    }
+
+    @Test
+    fun `position channel falls back to first active video channel after catalog migration`() {
+        val tree = listOf(
+            CatalogNode("root", CatalogNodeType.Device, "X", "root"),
+            CatalogNode("34020000001320000010", CatalogNodeType.VideoChannel, "Current", "root")
+        )
+        assertEquals("34020000001320000010", CatalogTreeStore.positionChannelId(cfg(tree), tree))
+    }
+
+    @Test
+    fun `position channel falls back to configured id when active tree has no video channel`() {
+        val tree = listOf(CatalogNode("root", CatalogNodeType.Device, "X", "root"))
+        assertEquals("34020000001320000001", CatalogTreeStore.positionChannelId(cfg(tree), tree))
+    }
 }

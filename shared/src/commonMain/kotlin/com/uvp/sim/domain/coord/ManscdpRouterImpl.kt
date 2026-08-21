@@ -30,6 +30,7 @@ import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
+import com.uvp.sim.gb28181.ManscdpParser
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
@@ -647,12 +648,21 @@ internal class ManscdpRouterImpl(
 
     private suspend fun onNewSubscription(req: SipRequest, intent: SubscribeIntent.NewSubscription) {
         val toTag = SipBuilders.randomTag()
-        val ok = SipBuilders.buildSubscribe200(req, toTag, intent.expiresSeconds, userAgent = config.userAgent)
+        val ok = SipBuilders.buildSubscribe200(
+            req,
+            toTag,
+            intent.expiresSeconds,
+            userAgent = config.userAgent,
+            xmlBody = buildSubscribeResponseBody(req, intent),
+        )
         outbox.send(ok).getOrThrow()
 
         val dialog = SubscriptionDialog(
             kind = intent.kind,
             subscriberUri = intent.subscriberUri,
+            notifierUri = intent.notifierUri,
+            notifyRequestUri = intent.notifyRequestUri,
+            event = intent.event,
             callId = intent.callId,
             fromTag = intent.fromTag,
             toTag = toTag,
@@ -696,6 +706,40 @@ internal class ManscdpRouterImpl(
             "收到${subscriptionLabel(intent.kind)}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s",
         )
     }
+
+    /** GB/T 28181-2016 9.11.3/J.20:成功订阅响应携带 MANSCDP Response。 */
+    private fun buildSubscribeResponseBody(
+        request: SipRequest,
+        intent: SubscribeIntent.NewSubscription,
+    ): String? {
+        val requestXml = request.body.decodeToString()
+        val cmdType = ManscdpParser.cmdType(requestXml) ?: return null
+        val sn = ManscdpParser.sn(requestXml) ?: return null
+        val deviceId = ManscdpParser.deviceId(requestXml) ?: config.device.deviceId
+        return if (intent.kind == "Catalog") {
+            CatalogNotifyBuilder.renderResponse(
+                deviceId = deviceId,
+                sn = sn,
+                tree = ManscdpInternals.publishableCatalogNodes(catalogTree.value),
+            )
+        } else {
+            """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+<CmdType>${escapeXml(cmdType)}</CmdType>
+<SN>${escapeXml(sn)}</SN>
+<DeviceID>${escapeXml(deviceId)}</DeviceID>
+<Result>OK</Result>
+</Response>
+""".replace("\n", "\r\n")
+        }
+    }
+
+    private fun escapeXml(value: String): String = value
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&apos;")
 
     private suspend fun onRefreshSubscription(req: SipRequest, intent: SubscribeIntent.Refresh) {
         // R2 #6:仅靠 Call-ID 不够,fromTag 必须跟原 dialog 一致;否则按 RFC 3261 § 12 视为不同 dialog。

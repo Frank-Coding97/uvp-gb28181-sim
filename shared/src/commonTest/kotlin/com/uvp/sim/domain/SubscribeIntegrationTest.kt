@@ -47,7 +47,8 @@ class SubscribeIntegrationTest {
     private fun subscribeRequest(
         expires: Int = 10,
         interval: Int = 3,
-        callId: String = "sub-call@platform"
+        callId: String = "sub-call@platform",
+        event: String = "presence",
     ): SipRequest {
         val body = """<?xml version="1.0"?>
 <Query>
@@ -65,7 +66,8 @@ class SubscribeIntegrationTest {
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
-                SipMessage.Header(SipHeader.EVENT, "presence"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
+                SipMessage.Header(SipHeader.EVENT, event),
                 SipMessage.Header(SipHeader.EXPIRES, expires.toString())
             ),
             body = body
@@ -89,6 +91,7 @@ class SubscribeIntegrationTest {
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-ptz"),
                 SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=ptz-plat-tag"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
                 SipMessage.Header(SipHeader.CALL_ID, callId),
                 SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
                 SipMessage.Header(SipHeader.EVENT, "PTZPosition"),
@@ -113,7 +116,8 @@ class SubscribeIntegrationTest {
         runCurrent()
         transport.sent.clear()
 
-        transport.deliver(subscribeRequest(expires = 10, interval = 3))
+        val subscribe = subscribeRequest(expires = 10, interval = 3)
+        transport.deliver(subscribe)
         runCurrent()
 
         val responses = transport.sent.filterIsInstance<SipResponse>()
@@ -124,7 +128,20 @@ class SubscribeIntegrationTest {
         assertNotNull(ok200.firstHeader(SipHeader.SUBSCRIPTION_STATE))
 
         assertTrue(notifies.isNotEmpty(), "Expected initial NOTIFY")
-        val body = notifies.first().body.decodeToString()
+        val notify = notifies.first()
+        assertEquals(
+            subscribe.toHeader()!!.substringBefore('>') + ">",
+            notify.fromHeader()!!.substringBefore(";tag="),
+            "NOTIFY From URI 必须复用 SUBSCRIBE To URI",
+        )
+        assertEquals(
+            subscribe.fromHeader()!!.substringBefore(";tag="),
+            notify.toHeader()!!.substringBefore(";tag="),
+            "NOTIFY To URI 必须复用 SUBSCRIBE From URI",
+        )
+        assertTrue(notify.fromHeader()!!.contains(";tag="), "NOTIFY From 必须携带设备侧 dialog tag")
+        assertTrue(notify.toHeader()!!.endsWith(";tag=plat-tag"), "NOTIFY To 必须携带订阅方 dialog tag")
+        val body = notify.body.decodeToString()
         assertTrue(body.contains("<CmdType>MobilePosition</CmdType>"))
 
         engine.shutdown()

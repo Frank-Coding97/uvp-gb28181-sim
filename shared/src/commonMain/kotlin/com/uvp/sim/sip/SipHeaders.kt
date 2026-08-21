@@ -1,6 +1,6 @@
 package com.uvp.sim.sip
 
-import kotlin.time.Clock
+import com.uvp.sim.domain.ProtocolClock
 import kotlinx.datetime.DayOfWeek
 import kotlin.time.Instant
 import kotlinx.datetime.Month
@@ -17,7 +17,7 @@ import kotlin.random.Random
 object SipHeaders {
 
     /** RFC 1123 date string in GMT, e.g. `Sun, 06 Nov 1994 08:49:37 GMT`. */
-    fun rfc1123Date(instant: Instant = Clock.System.now()): String {
+    fun rfc1123Date(instant: Instant = ProtocolClock.now()): String {
         val ldt = instant.toLocalDateTime(TimeZone.UTC)
         val dow = when (ldt.dayOfWeek) {
             DayOfWeek.MONDAY -> "Mon"; DayOfWeek.TUESDAY -> "Tue"; DayOfWeek.WEDNESDAY -> "Wed"

@@ -1,7 +1,7 @@
 package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
-import kotlin.time.Clock
+import com.uvp.sim.domain.ProtocolClock
 import kotlin.time.Instant
 
 /**
@@ -16,7 +16,7 @@ import kotlin.time.Instant
 object SipBuilders {
 
     // ---- 公共头 / 随机 ID(委派 SipHeaders) ----
-    fun rfc1123Date(instant: Instant = Clock.System.now()): String = SipHeaders.rfc1123Date(instant)
+    fun rfc1123Date(instant: Instant = ProtocolClock.now()): String = SipHeaders.rfc1123Date(instant)
     fun subject(senderId: String, ssrc: String, receiverId: String): String = SipHeaders.subject(senderId, ssrc, receiverId)
     fun randomBranch(): String = SipHeaders.randomBranch()
     fun randomTag(): String = SipHeaders.randomTag()
@@ -86,13 +86,14 @@ object SipBuilders {
         SipResponseBuilders.buildSimpleError(request, statusCode, reasonPhrase, toTag)
 
     fun buildSubscribe200(
-        request: SipRequest, toTag: String, expires: Int, terminated: Boolean = false, userAgent: String? = null
-    ): SipResponse = SipResponseBuilders.buildSubscribe200(request, toTag, expires, terminated, userAgent)
+        request: SipRequest, toTag: String, expires: Int, terminated: Boolean = false,
+        userAgent: String? = null, xmlBody: String? = null
+    ): SipResponse = SipResponseBuilders.buildSubscribe200(request, toTag, expires, terminated, userAgent, xmlBody)
 
     fun buildNotify(
-        subscriberUri: String, callId: String, fromTag: String, toTag: String, event: String, subscriptionState: String,
+        requestUri: String, subscriberUri: String, notifierUri: String, callId: String, fromTag: String, toTag: String, event: String, subscriptionState: String,
         cseq: Int, xmlBody: String, localIp: String, localPort: Int, transport: String = "UDP", userAgent: String? = null
     ): SipRequest = SipResponseBuilders.buildNotify(
-        subscriberUri, callId, fromTag, toTag, event, subscriptionState, cseq, xmlBody, localIp, localPort, transport, userAgent
+        requestUri, subscriberUri, notifierUri, callId, fromTag, toTag, event, subscriptionState, cseq, xmlBody, localIp, localPort, transport, userAgent
     )
 }

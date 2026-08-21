@@ -16,6 +16,9 @@ class PtzNotifyTrackerTest {
     private fun dialog() = SubscriptionDialog(
         kind = "PtzPrecisePosition",
         subscriberUri = "sip:platform@host",
+        notifierUri = "sip:device@host",
+        notifyRequestUri = "sip:platform@host",
+        event = "PTZPosition",
         callId = "ptz-call@host",
         fromTag = "platform-tag",
         toTag = "device-tag",

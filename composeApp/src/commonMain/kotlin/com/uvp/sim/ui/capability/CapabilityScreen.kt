@@ -100,7 +100,7 @@ fun CapabilityScreen(
     }
     if (showClockSync) {
         SubPageContainer(onBack = { showClockSync = false }) {
-            ClockSyncScreen(state = state, onBack = { showClockSync = false })
+            ClockSyncScreen(state = state, actions = actions, onBack = { showClockSync = false })
         }
         return
     }

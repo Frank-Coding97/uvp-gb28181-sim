@@ -1,5 +1,6 @@
 package com.uvp.sim.domain.coord.manscdp
 
+import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.location.PositionFix
 import com.uvp.sim.gb28181.CatalogResponse
 import com.uvp.sim.gb28181.ConfigDownloadResponse
@@ -152,7 +153,7 @@ internal class CatalogSubRouter(
         // cross-review R1 #5 修复 — timestamp 用 fix.fixTimeMs(采样时间)而非 currentLocalIso(响应时间),
         // 否则平台会把陈旧坐标看成"刚采集"而无法识别。 fixTimeMs = 0 时 fall back 到当前时间(测试 fixture 兼容)。
         val xmlBody = MobilePositionResponse.build(
-            deviceId = ctx.config.device.deviceId,
+            deviceId = CatalogTreeStore.positionChannelId(ctx.config, ctx.catalogTree.value),
             sn = sn,
             point = fix.point,
             speed = fix.speed,

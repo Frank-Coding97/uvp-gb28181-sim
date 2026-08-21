@@ -60,9 +60,10 @@ class CatalogSubscribeIntegrationTest {
             SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-cat1"),
             SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=plat-tag"),
             SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+            SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
             SipMessage.Header(SipHeader.CALL_ID, callId),
             SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
-            SipMessage.Header(SipHeader.EVENT, "presence")
+            SipMessage.Header(SipHeader.EVENT, "Catalog;id=5432")
         )
         if (expires != null) headers += SipMessage.Header(SipHeader.EXPIRES, expires.toString())
         return SipRequest(
@@ -102,11 +103,20 @@ class CatalogSubscribeIntegrationTest {
 
         val responses = transport.sent.filterIsInstance<SipResponse>()
         assertTrue(responses.any { it.statusCode == 200 }, "Expected 200 OK for Catalog SUBSCRIBE")
+        val subscribeOk = responses.first { it.statusCode == 200 }
+        assertEquals("Catalog;id=5432", subscribeOk.firstHeader(SipHeader.EVENT))
+        assertEquals("Application/MANSCDP+xml", subscribeOk.firstHeader(SipHeader.CONTENT_TYPE))
+        assertTrue(subscribeOk.body.decodeToString().contains("<Response>"))
+        assertTrue(subscribeOk.body.decodeToString().contains("<CmdType>Catalog</CmdType>"))
+        assertTrue(subscribeOk.body.decodeToString().contains("<DeviceList"))
 
         val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
         assertEquals(1, notifies.size, "Expected exactly 1 initial NOTIFY")
 
-        val body = notifies.first().body.decodeToString()
+        val notify = notifies.first()
+        assertEquals("Catalog;id=5432", notify.firstHeader(SipHeader.EVENT))
+        assertEquals("sip:34020000002000000001@192.168.1.100:5060", notify.requestUri)
+        val body = notify.body.decodeToString()
         assertTrue(body.contains("<CmdType>Catalog</CmdType>"))
         assertTrue(body.contains("<DeviceList Num=\"2\">"), "default tree publishes 2 child nodes (root excluded)")
 
@@ -385,6 +395,7 @@ class CatalogSubscribeIntegrationTest {
                 SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-mp"),
                 SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=plat-mp"),
                 SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+                SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
                 SipMessage.Header(SipHeader.CALL_ID, "mp-sub@plat"),
                 SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
                 SipMessage.Header(SipHeader.EVENT, "presence"),

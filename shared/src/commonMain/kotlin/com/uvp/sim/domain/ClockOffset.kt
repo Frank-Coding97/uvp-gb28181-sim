@@ -4,6 +4,8 @@ import kotlin.time.TimeSource
 import kotlin.time.Clock
 import kotlin.time.Instant
 
+enum class TimeSyncSource { NONE, SIP_DATE, NTP }
+
 /**
  * SIP Date 头校时偏移状态(M5 batch2 §4.15 重定义)。
  *
@@ -21,7 +23,8 @@ data class ClockOffset(
     val platformBaselineMs: Long?,
     val recvLocalMs: Long?,
     val recvMonotonic: TimeSource.Monotonic.ValueTimeMark?,
-    val rawDateHeader: String?
+    val rawDateHeader: String?,
+    val source: TimeSyncSource = TimeSyncSource.NONE,
 ) {
     val isSynced: Boolean get() = platformBaselineMs != null
 
@@ -44,14 +47,19 @@ data class ClockOffset(
     }
 
     companion object {
-        val Empty = ClockOffset(null, null, null, null)
+        val Empty = ClockOffset(null, null, null, null, TimeSyncSource.NONE)
 
         /** 注册 200 OK Date 头解析成功后调用,锁定基准 + 当前单调时钟。 */
-        fun synced(platformInstant: Instant, rawHeader: String): ClockOffset = ClockOffset(
+        fun synced(
+            platformInstant: Instant,
+            rawHeader: String,
+            source: TimeSyncSource = TimeSyncSource.SIP_DATE,
+        ): ClockOffset = ClockOffset(
             platformBaselineMs = platformInstant.toEpochMilliseconds(),
             recvLocalMs = Clock.System.now().toEpochMilliseconds(),
             recvMonotonic = TimeSource.Monotonic.markNow(),
-            rawDateHeader = rawHeader
+            rawDateHeader = rawHeader,
+            source = source,
         )
     }
 }

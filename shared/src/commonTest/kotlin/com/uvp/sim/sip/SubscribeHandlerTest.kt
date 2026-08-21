@@ -11,6 +11,7 @@ class SubscribeHandlerTest {
         expires: String? = "1800",
         callId: String = "abc123@192.168.1.1",
         fromTag: String = "tag-from-platform",
+        toHeader: String? = "<sip:34020000001110000001@192.168.1.50:5060>",
         body: String = """<?xml version="1.0"?>
 <Query>
 <CmdType>MobilePosition</CmdType>
@@ -21,11 +22,12 @@ class SubscribeHandlerTest {
     ): SipRequest {
         val headers = mutableListOf(
             SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=$fromTag"),
-            SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+            SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
             SipMessage.Header(SipHeader.CALL_ID, callId),
             SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
             SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-abc")
         )
+        if (toHeader != null) headers += SipMessage.Header(SipHeader.TO, toHeader)
         if (event != null) headers += SipMessage.Header(SipHeader.EVENT, event)
         if (expires != null) headers += SipMessage.Header(SipHeader.EXPIRES, expires)
         return SipRequest(
@@ -46,6 +48,40 @@ class SubscribeHandlerTest {
         assertEquals(1800, intent.expiresSeconds)
         assertEquals("tag-from-platform", intent.fromTag)
         assertEquals("sip:34020000002000000001@3402000000", intent.subscriberUri)
+        assertEquals("sip:34020000001110000001@192.168.1.50:5060", intent.notifierUri)
+        assertEquals("sip:34020000002000000001@192.168.1.100:5060", intent.notifyRequestUri)
+    }
+
+    @Test
+    fun missingToRejects400() {
+        val intent = SubscribeHandler.parse(subscribeRequest(toHeader = null), emptySet())
+        assertIs<SubscribeIntent.Reject>(intent)
+        assertEquals(400, intent.statusCode)
+        assertEquals("Missing To", intent.reason)
+    }
+
+    @Test
+    fun toWithoutDeviceIdentityRejects400() {
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(toHeader = "<sip:192.168.1.50:5060>"),
+            emptySet(),
+        )
+        assertIs<SubscribeIntent.Reject>(intent)
+        assertEquals(400, intent.statusCode)
+        assertEquals("To URI must contain device identity", intent.reason)
+    }
+
+    @Test
+    fun missingContactRejects400() {
+        val request = subscribeRequest().copy(
+            headers = subscribeRequest().headers.filterNot {
+                SipHeader.canonicalize(it.name) == SipHeader.CONTACT
+            },
+        )
+        val intent = SubscribeHandler.parse(request, emptySet())
+        assertIs<SubscribeIntent.Reject>(intent)
+        assertEquals(400, intent.statusCode)
+        assertEquals("Missing Contact", intent.reason)
     }
 
     @Test
@@ -98,8 +134,8 @@ class SubscribeHandlerTest {
         val intent = SubscribeHandler.parse(req, emptySet())
         assertIs<SubscribeIntent.NewSubscription>(intent)
         assertEquals("Catalog", intent.kind)
-        // Catalog 默认 Expires 86400(24h)
-        assertEquals(86400, intent.expiresSeconds)
+        // GB/T 28181-2016 附录 P.2.1 默认 Expires 600s
+        assertEquals(600, intent.expiresSeconds)
         // Catalog 不周期推送,interval=0
         assertEquals(0, intent.intervalSeconds)
     }

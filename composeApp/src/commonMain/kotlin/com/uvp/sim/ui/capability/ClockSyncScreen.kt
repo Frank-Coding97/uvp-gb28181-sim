@@ -12,13 +12,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,7 +39,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.AppUiState
+import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.domain.TimeSyncSource
 import kotlinx.coroutines.delay
 import kotlin.time.Clock
 import kotlin.time.Instant
@@ -53,10 +60,13 @@ import kotlinx.datetime.toLocalDateTime
  * 不修改手机系统时钟,仅显示。
  */
 @Composable
-fun ClockSyncScreen(state: AppUiState, onBack: () -> Unit) {
+fun ClockSyncScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
     com.uvp.sim.ui.PlatformBackHandler(enabled = true, onBack = onBack)
     val offset = state.clockOffset
     var nowMs by remember { mutableStateOf(Clock.System.now().toEpochMilliseconds()) }
+    var ntpServer by remember(state.config.timeSync.ntpServer) {
+        mutableStateOf(state.config.timeSync.ntpServer)
+    }
     LaunchedEffect(Unit) {
         while (true) { delay(1_000); nowMs = Clock.System.now().toEpochMilliseconds() }
     }
@@ -71,31 +81,101 @@ fun ClockSyncScreen(state: AppUiState, onBack: () -> Unit) {
             Text("设备校时", color = UvpColor.Text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
         }
 
-        if (!offset.isSynced) {
-            UnSyncedHint()
-        } else {
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                InfoCard("平台基准时间", formatIsoLocal(offset.platformBaselineMs!!),
-                    subtitle = "解析自注册 200 OK 的 Date 头")
-                InfoCard("当前对外设备时间", formatIsoLocal(offset.adjustedNowMs()),
-                    subtitle = "= 平台基准 + 单调时钟流逝(对外 ISO 时间统一基于此)")
-                InfoCard("本地系统时间", formatIsoLocal(nowMs),
-                    subtitle = "未经校准的手机墙钟,仅参考")
-                val deltaMs = offset.localOffsetMs() ?: 0L
-                InfoCard("校时偏移", formatOffsetMs(deltaMs),
-                    subtitle = "平台 − 本地(正值=平台超前)")
-                InfoCard(
-                    title = "原始 Date 头",
-                    value = offset.rawDateHeader.orEmpty(),
-                    subtitle = "RFC1123 / ISO8601 双格式兼容",
-                    monospace = true
-                )
-            }
+        Column(
+            modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
+        ) {
+            NtpConfigCard(
+                enabled = state.config.timeSync.ntpEnabled,
+                server = ntpServer,
+                onServerChange = { ntpServer = it },
+                onEnabledChange = { enabled ->
+                    actions.onConfigSave(state.config.copy(
+                        timeSync = state.config.timeSync.copy(ntpEnabled = enabled),
+                    ))
+                },
+                onApply = {
+                    actions.onConfigSave(state.config.copy(
+                        timeSync = state.config.timeSync.copy(ntpServer = ntpServer.trim()),
+                    ))
+                },
+            )
             Spacer(Modifier.height(12.dp))
-            DisclaimerNote()
+            if (!offset.isSynced) {
+                UnSyncedHint()
+            } else {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    InfoCard("当前校时源", when (offset.source) {
+                        TimeSyncSource.NTP -> "NTP"
+                        TimeSyncSource.SIP_DATE -> "SIP Date"
+                        TimeSyncSource.NONE -> "未校时"
+                    }, subtitle = if (offset.source == TimeSyncSource.NTP) {
+                        "NTP 优先；失效自动回退 SIP Date"
+                    } else {
+                        "注册 200 OK Date 头"
+                    })
+                    InfoCard("平台基准时间", formatIsoLocal(offset.platformBaselineMs!!),
+                        subtitle = "当前逻辑协议时钟基准")
+                    InfoCard("当前对外设备时间", formatIsoLocal(offset.adjustedNowMs()),
+                        subtitle = "= 平台基准 + 单调时钟流逝(对外 ISO 时间统一基于此)")
+                    InfoCard("本地系统时间", formatIsoLocal(nowMs),
+                        subtitle = "未经校准的手机墙钟,仅参考")
+                    val deltaMs = offset.localOffsetMs() ?: 0L
+                    InfoCard("校时偏移", formatOffsetMs(deltaMs),
+                        subtitle = "平台 − 本地(正值=平台超前)")
+                    InfoCard(
+                        title = "校时来源原文",
+                        value = offset.rawDateHeader.orEmpty(),
+                        subtitle = if (offset.source == TimeSyncSource.NTP) "NTP 服务地址" else "RFC1123 / ISO8601",
+                        monospace = true
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                DisclaimerNote()
+            }
+            Spacer(Modifier.height(14.dp))
+        }
+    }
+}
+
+@Composable
+private fun NtpConfigCard(
+    enabled: Boolean,
+    server: String,
+    onServerChange: (String) -> Unit,
+    onEnabledChange: (Boolean) -> Unit,
+    onApply: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        color = UvpColor.Surface,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("NTP 优先", color = UvpColor.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text("关闭或请求失败时自动使用 SIP Date", color = UvpColor.TextHint, fontSize = 11.sp)
+                }
+                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+            }
+            if (enabled) {
+                OutlinedTextField(
+                    value = server,
+                    onValueChange = onServerChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("NTP 服务器") },
+                    placeholder = { Text("ntp.aliyun.com") },
+                    singleLine = true,
+                )
+                Button(
+                    onClick = onApply,
+                    enabled = server.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("应用 NTP 地址") }
+            }
         }
     }
 }
@@ -110,7 +190,7 @@ private fun UnSyncedHint() {
             Text("尚未校时", color = UvpColor.Warning, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             Text(
-                "设备未注册或平台 200 OK 未带 Date 头。注册成功后自动校时。",
+                "设备未注册，或 NTP 与平台 SIP Date 均不可用。注册成功后自动校时。",
                 color = UvpColor.TextSecondary, fontSize = 12.sp
             )
         }
@@ -142,7 +222,7 @@ private fun InfoCard(title: String, value: String, subtitle: String? = null, mon
 @Composable
 private fun DisclaimerNote() {
     Text(
-        "注:校时仅记录平台与本地的偏移,不修改手机系统时钟。对外 SIP / MANSCDP 时间戳基于校准基准生成。",
+        "注:校时仅维护逻辑协议时钟,不修改手机系统时钟。内部日志与超时仍使用系统/单调时钟。",
         color = UvpColor.TextHint, fontSize = 11.sp,
         modifier = Modifier.padding(horizontal = 14.dp)
     )

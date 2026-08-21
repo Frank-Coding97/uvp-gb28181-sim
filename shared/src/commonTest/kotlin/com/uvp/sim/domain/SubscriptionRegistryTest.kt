@@ -19,6 +19,9 @@ class SubscriptionRegistryTest {
     ) = SubscriptionDialog(
         kind = "MobilePosition",
         subscriberUri = "sip:platform@192.168.1.100:5060",
+        notifierUri = "sip:device@192.168.1.50:5060",
+        notifyRequestUri = "sip:platform@192.168.1.100:5060",
+        event = "presence",
         callId = callId,
         fromTag = "platform-tag",
         toTag = "device-tag",

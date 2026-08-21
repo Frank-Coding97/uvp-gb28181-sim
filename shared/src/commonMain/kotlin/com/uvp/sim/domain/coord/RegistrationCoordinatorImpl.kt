@@ -2,8 +2,11 @@ package com.uvp.sim.domain.coord
 
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ClockOffset
+import com.uvp.sim.domain.TimeSyncSource
 import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.NetworkState
+import com.uvp.sim.network.KtorNtpClient
+import com.uvp.sim.network.NtpClient
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
@@ -19,6 +22,7 @@ import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipOutbox
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -66,6 +70,7 @@ internal class RegistrationCoordinatorImpl(
     callIdSetter: ((String) -> Unit)? = null,
     fromTagProvider: (() -> String?)? = null,
     fromTagSetter: ((String) -> Unit)? = null,
+    private val ntpClient: NtpClient = KtorNtpClient(),
 ) : RegistrationCoordinator {
 
     private val _state = MutableStateFlow(RegistrationState.Disconnected)
@@ -135,6 +140,9 @@ internal class RegistrationCoordinatorImpl(
     private var renewalJob: Job? = null
     private var isRenewal: Boolean = false
 
+    private var ntpRefreshJob: Job? = null
+    private var sipDateFallback: ClockOffset? = null
+
     // 注销是一个需要等待平台响应的 REGISTER 事务,不能跟上一次注册共用 pending。
     private var unregisterCompletion: CompletableDeferred<Boolean>? = null
 
@@ -203,6 +211,8 @@ internal class RegistrationCoordinatorImpl(
             registerRetryCount = 0
             renewalJob?.cancel()
             renewalJob = null
+            ntpRefreshJob?.cancel()
+            ntpRefreshJob = null
             isRenewal = false
             heartbeat?.stop()
             heartbeat = null
@@ -311,6 +321,7 @@ internal class RegistrationCoordinatorImpl(
             registerJob?.cancel(); registerJob = null
             retryJob?.cancel(); retryJob = null
             renewalJob?.cancel(); renewalJob = null
+            ntpRefreshJob?.cancel(); ntpRefreshJob = null
             heartbeat?.stop(); heartbeat = null
         }
     }
@@ -409,12 +420,12 @@ internal class RegistrationCoordinatorImpl(
             in 200..299 -> {
                 cancelRegisterTimeoutLocked()
                 registerRetryCount = 0
-                applySipDateSync(resp)
                 unregisterCompletion?.let { completion ->
                     finishUnregisterLocked(true)
                     completion.complete(true)
                     return
                 }
+                applySipDateSync(resp)
                 if (!isRenewal) {
                     _state.value = RegistrationState.Registered
                     _events.emit(RegistrationEvent.Registered)
@@ -596,22 +607,58 @@ internal class RegistrationCoordinatorImpl(
 
     private fun applySipDateSync(resp: SipResponse) {
         val rawDate = resp.firstHeader(SipHeader.DATE)
-        if (rawDate.isNullOrBlank()) return
-        val platformInstant = SipDateParser.parse(rawDate)
-        if (platformInstant == null) {
-            SystemLogger.emit(
-                LogLevel.Warning, LogTag.Lifecycle,
-                "Date 头解析失败,fallback 本地时钟",
-                detail = rawDate,
-            )
-            return
+        if (!rawDate.isNullOrBlank()) {
+            val platformInstant = SipDateParser.parse(rawDate)
+            if (platformInstant == null) {
+                SystemLogger.emit(
+                    LogLevel.Warning, LogTag.Lifecycle,
+                    "Date 头解析失败,fallback 本地时钟",
+                    detail = rawDate,
+                )
+            } else {
+                val offset = ClockOffset.synced(platformInstant, rawDate, TimeSyncSource.SIP_DATE)
+                sipDateFallback = offset
+                _clockOffset.value = offset
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Lifecycle,
+                    "已校时:SIP Date ${rawDate.trim()}",
+                )
+            }
         }
-        val offset = ClockOffset.synced(platformInstant, rawDate)
-        _clockOffset.value = offset
-        SystemLogger.emit(
-            LogLevel.Info, LogTag.Lifecycle,
-            "已校时:平台 ${rawDate.trim()}",
-        )
+        if (config.timeSync.ntpEnabled) startNtpRefresh() else {
+            ntpRefreshJob?.cancel()
+            ntpRefreshJob = null
+        }
+    }
+
+    private fun startNtpRefresh() {
+        ntpRefreshJob?.cancel()
+        val cfg = config.timeSync
+        ntpRefreshJob = scope.launch {
+            while (true) {
+                try {
+                    val sample = ntpClient.query(cfg.ntpServer, cfg.ntpPort, NTP_TIMEOUT_MS)
+                    _clockOffset.value = ClockOffset.synced(
+                        sample.instant,
+                        "NTP ${cfg.ntpServer}:${cfg.ntpPort}",
+                        TimeSyncSource.NTP,
+                    )
+                    SystemLogger.emit(
+                        LogLevel.Info, LogTag.Lifecycle,
+                        "已校时:NTP ${cfg.ntpServer}:${cfg.ntpPort},RTT=${sample.roundTripMillis}ms",
+                    )
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    _clockOffset.value = sipDateFallback ?: ClockOffset.Empty
+                    SystemLogger.emit(
+                        LogLevel.Warning, LogTag.Lifecycle,
+                        "NTP 校时失败,已回退 SIP Date: ${error.message ?: error::class.simpleName}",
+                    )
+                }
+                delay(cfg.refreshIntervalSeconds.coerceAtLeast(1) * 1_000L)
+            }
+        }
     }
 
     private fun scheduleExpiresRenewal() {
@@ -662,6 +709,7 @@ internal class RegistrationCoordinatorImpl(
         const val UNREGISTER_TIMEOUT_MS: Long = 3_000L
         const val MAX_REGISTER_RETRIES: Int = 3
         const val INITIAL_RETRY_DELAY_MS: Long = 2_000L
+        const val NTP_TIMEOUT_MS: Long = 1_500L
 
         /** OPTIONS 200 OK 的 Allow 头方法集(与 SimulatorEngine.ALLOWED_OPTIONS_METHODS 同步)。 */
         val ALLOWED_OPTIONS_METHODS: List<SipMethod> = listOf(

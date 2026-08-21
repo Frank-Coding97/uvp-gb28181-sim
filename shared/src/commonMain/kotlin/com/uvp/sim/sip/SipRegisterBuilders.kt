@@ -37,6 +37,7 @@ object SipRegisterBuilders {
                 SipMessage.Header(SipHeader.MAX_FORWARDS, "70"),
                 SipMessage.Header(SipHeader.USER_AGENT, config.userAgent),
                 SipMessage.Header(SipHeader.DATE, SipHeaders.rfc1123Date()),
+                SipMessage.Header(SipHeader.X_GB_VER, config.gbVersion.xGbVer),
                 SipMessage.Header(SipHeader.EXPIRES, config.expiresSeconds.toString())
             )
         )

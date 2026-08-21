@@ -97,6 +97,9 @@ class ManscdpRouterLifecycleTest {
         SubscriptionDialog(
             kind = "MobilePosition",
             subscriberUri = "sip:platform@192.168.1.100:5060",
+            notifierUri = "sip:device@192.168.1.50:5060",
+            notifyRequestUri = "sip:platform@192.168.1.100:5060",
+            event = "presence",
             callId = callId,
             fromTag = "plat-tag",
             toTag = "dev-tag",
@@ -172,6 +175,9 @@ class ManscdpRouterLifecycleTest {
             SubscriptionDialog(
                 kind = "Catalog",
                 subscriberUri = "sip:platform@192.168.1.100:5060",
+                notifierUri = "sip:device@192.168.1.50:5060",
+                notifyRequestUri = "sip:platform@192.168.1.100:5060",
+                event = "Catalog",
                 callId = "cat-1",
                 fromTag = "plat-tag", toTag = "dev-tag",
                 intervalSeconds = 60, expiresSeconds = 300, remainingSeconds = 300,

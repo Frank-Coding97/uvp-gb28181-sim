@@ -24,7 +24,14 @@ enum class SubscriptionLifecycle {
 
 data class SubscriptionDialog(
     val kind: String,
+    /** SUBSCRIBE From URI, reused as NOTIFY To URI. */
     val subscriberUri: String,
+    /** SUBSCRIBE To URI, reused as NOTIFY From URI. */
+    val notifierUri: String,
+    /** SUBSCRIBE Contact URI, used as the NOTIFY request target. */
+    val notifyRequestUri: String,
+    /** Event package (including optional id parameter), echoed by NOTIFY. */
+    val event: String,
     val callId: String,
     val fromTag: String,
     val toTag: String,

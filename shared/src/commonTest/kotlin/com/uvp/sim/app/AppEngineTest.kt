@@ -128,6 +128,9 @@ class AppEngineTest {
             com.uvp.sim.domain.SubscriptionDialog(
                 kind = "MobilePosition",
                 subscriberUri = "sip:platform@10.0.0.1:5060",
+                notifierUri = "sip:device@10.0.0.2:5060",
+                notifyRequestUri = "sip:platform@10.0.0.1:5060",
+                event = "presence",
                 callId = "stale-call@host",
                 fromTag = "ft", toTag = "tt",
                 intervalSeconds = 60, expiresSeconds = 3600, remainingSeconds = 3600
@@ -209,6 +212,9 @@ class AppEngineTest {
             com.uvp.sim.domain.SubscriptionDialog(
                 kind = "MobilePosition",
                 subscriberUri = "sip:platform@10.0.0.1:5060",
+                notifierUri = "sip:device@10.0.0.2:5060",
+                notifyRequestUri = "sip:platform@10.0.0.1:5060",
+                event = "presence",
                 callId = "live-call@host",
                 fromTag = "ft", toTag = "tt",
                 intervalSeconds = 60, expiresSeconds = 3600, remainingSeconds = 3600

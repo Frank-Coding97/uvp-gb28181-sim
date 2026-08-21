@@ -22,6 +22,7 @@ object SipHeader {
     const val EVENT = "Event"
     const val SUBJECT = "Subject"
     const val DATE = "Date"
+    const val X_GB_VER = "X-GB-Ver"
 
     /** Convert any-case header name to canonical (matching one of the above). */
     fun canonicalize(name: String): String {
@@ -44,6 +45,7 @@ object SipHeader {
             "event", "o" -> EVENT
             "subject", "s" -> SUBJECT
             "date" -> DATE
+            "x-gb-ver" -> X_GB_VER
             else -> name  // unknown header -> keep as-is
         }
     }

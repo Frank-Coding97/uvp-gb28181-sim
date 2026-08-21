@@ -131,7 +131,9 @@ class SipComplianceTest {
 
     @Test fun notifyCarriesUserAgentAndDate() {
         val req = SipBuilders.buildNotify(
+            requestUri = "sip:34020000002000000001@10.0.0.1:5060",
             subscriberUri = "sip:34020000002000000001@10.0.0.1:5060",
+            notifierUri = "sip:34020000001320000001@3402000000",
             callId = "c1", fromTag = "lt", toTag = "rt",
             event = "presence", subscriptionState = "active;expires=600",
             cseq = 1, xmlBody = "<x/>",
@@ -139,6 +141,9 @@ class SipComplianceTest {
             userAgent = "UVP-Sim/0.1"
         )
         val text = req.toBytes().decodeToString()
+        assertTrue { text.contains("From: <sip:34020000001320000001@3402000000>;tag=lt\r\n") }
+        assertTrue { !text.contains("From: <sip:10.0.0.10:5060>") }
+        assertTrue { text.startsWith("NOTIFY sip:34020000002000000001@10.0.0.1:5060 SIP/2.0\r\n") }
         assertTrue { text.contains("User-Agent: UVP-Sim/0.1\r\n") }
         assertTrue { text.contains(Regex("Date: \\w{3}, .* GMT")) }
     }

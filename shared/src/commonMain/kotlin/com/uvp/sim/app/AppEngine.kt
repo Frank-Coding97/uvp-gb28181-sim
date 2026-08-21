@@ -13,6 +13,7 @@ import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.EngineCoordinators
 import com.uvp.sim.domain.EngineHolders
 import com.uvp.sim.domain.MockGpsSource
+import com.uvp.sim.domain.ProtocolClock
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
 import com.uvp.sim.domain.SubscriptionRegistry
@@ -109,6 +110,12 @@ class AppEngine(
         mockGps = runtime.buildLocationProvider(initialConfig.mockPosition),
         identityService = newDefaultIdentityService(localIpProvider = resources.localIpProvider),
     )
+
+    init {
+        ProtocolClock.install {
+            kotlin.time.Instant.fromEpochMilliseconds(holders.clockOffset.value.adjustedNowMs())
+        }
+    }
 
     val state: StateFlow<SipState> = holders.state.asStateFlow()
     val events: SharedFlow<SimEvent> = holders.events.asSharedFlow()

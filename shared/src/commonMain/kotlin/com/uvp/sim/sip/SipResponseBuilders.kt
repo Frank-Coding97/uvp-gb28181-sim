@@ -78,19 +78,20 @@ object SipResponseBuilders {
         return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
     }
 
-    /** Build a 200 OK for SUBSCRIBE with Subscription-State and Expires (RFC 6665 § 4.2.1). */
+    /** Build a 200 OK for SUBSCRIBE with Subscription-State, Expires and optional MANSCDP body. */
     fun buildSubscribe200(
         request: SipRequest,
         toTag: String,
         expires: Int,
         terminated: Boolean = false,
-        userAgent: String? = null
+        userAgent: String? = null,
+        xmlBody: String? = null,
     ): SipResponse {
         val newHeaders = mutableListOf<SipMessage.Header>()
         for (h in request.headers) {
             val canonical = SipHeader.canonicalize(h.name)
             when (canonical) {
-                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ -> newHeaders += h
+                SipHeader.VIA, SipHeader.FROM, SipHeader.CALL_ID, SipHeader.CSEQ, SipHeader.EVENT -> newHeaders += h
                 SipHeader.TO -> {
                     val v = if (!h.value.contains(";tag=")) "${h.value};tag=$toTag" else h.value
                     newHeaders += SipMessage.Header(SipHeader.TO, v)
@@ -103,15 +104,23 @@ object SipResponseBuilders {
         newHeaders += SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, ssValue)
         if (userAgent != null) newHeaders += SipMessage.Header(SipHeader.USER_AGENT, userAgent)
         newHeaders += SipMessage.Header(SipHeader.DATE, SipHeaders.rfc1123Date())
-        return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders)
+        val body = xmlBody?.encodeToByteArray() ?: ByteArray(0)
+        if (xmlBody != null) {
+            newHeaders += SipMessage.Header(SipHeader.CONTENT_TYPE, "Application/MANSCDP+xml")
+        }
+        newHeaders += SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
+        return SipResponse(statusCode = 200, reasonPhrase = "OK", headers = newHeaders, body = body)
     }
 
     /**
      * Build a NOTIFY request for in-dialog subscription notification.
-     * From/To are from the device perspective (From = device, To = subscriber).
+     * From/To are from the device perspective (From = SUBSCRIBE To, To = SUBSCRIBE From).
+     * The request URI is the SUBSCRIBE Contact remote target, not the To/From identity URI.
      */
     fun buildNotify(
+        requestUri: String,
         subscriberUri: String,
+        notifierUri: String,
         callId: String,
         fromTag: String,
         toTag: String,
@@ -129,7 +138,7 @@ object SipResponseBuilders {
         val headers = mutableListOf(
             SipMessage.Header(SipHeader.VIA,
                 "SIP/2.0/$transport $localIp:$localPort;rport;branch=$branch"),
-            SipMessage.Header(SipHeader.FROM, "<sip:$localIp:$localPort>;tag=$fromTag"),
+            SipMessage.Header(SipHeader.FROM, "<$notifierUri>;tag=$fromTag"),
             SipMessage.Header(SipHeader.TO, "<$subscriberUri>;tag=$toTag"),
             SipMessage.Header(SipHeader.CALL_ID, callId),
             SipMessage.Header(SipHeader.CSEQ, "$cseq NOTIFY"),
@@ -143,7 +152,7 @@ object SipResponseBuilders {
         headers += SipMessage.Header(SipHeader.CONTENT_LENGTH, body.size.toString())
         return SipRequest(
             method = SipMethod.NOTIFY,
-            requestUri = subscriberUri,
+            requestUri = requestUri,
             headers = headers,
             body = body
         )

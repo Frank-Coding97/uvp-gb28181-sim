@@ -17,6 +17,18 @@ import com.uvp.sim.config.SimConfig
  */
 object CatalogTreeStore {
 
+    /**
+     * 返回位置上报应使用的目录通道编码。
+     * 配置迁移或用户编辑目录后,DeviceConfig.videoChannelId 可能已经过期,
+     * 所以优先保留仍存在的配置通道,否则选择当前树中的第一个视频通道。
+     */
+    fun positionChannelId(config: SimConfig, tree: List<CatalogNode> = effectiveTree(config)): String {
+        val videoChannels = tree.filter { it.type == CatalogNodeType.VideoChannel }
+        return videoChannels.firstOrNull { it.id == config.device.videoChannelId }?.id
+            ?: videoChannels.firstOrNull()?.id
+            ?: config.device.videoChannelId
+    }
+
     fun defaultTree(config: SimConfig): List<CatalogNode> {
         val rootId = config.device.deviceId
         val root = CatalogNode(

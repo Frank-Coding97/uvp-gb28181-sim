@@ -8,4 +8,5 @@ fun ClockOffset.toDto(): ClockOffsetDto = ClockOffsetDto(
     platformBaselineMs = platformBaselineMs,
     recvLocalMs = recvLocalMs,
     rawDateHeader = rawDateHeader,
+    source = source,
 )

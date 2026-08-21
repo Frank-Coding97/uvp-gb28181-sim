@@ -1,5 +1,6 @@
 package com.uvp.sim.ui.model
 
+import com.uvp.sim.domain.TimeSyncSource
 import kotlin.time.Clock
 
 /**
@@ -16,6 +17,7 @@ data class ClockOffsetDto(
     val platformBaselineMs: Long?,
     val recvLocalMs: Long?,
     val rawDateHeader: String?,
+    val source: TimeSyncSource = TimeSyncSource.NONE,
 ) {
     val isSynced: Boolean get() = platformBaselineMs != null
 
@@ -36,6 +38,6 @@ data class ClockOffsetDto(
     }
 
     companion object {
-        val Empty = ClockOffsetDto(null, null, null)
+        val Empty = ClockOffsetDto(null, null, null, TimeSyncSource.NONE)
     }
 }

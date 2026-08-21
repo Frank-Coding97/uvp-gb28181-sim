@@ -15,6 +15,15 @@ data class GeoPoint(
     val latitude: Double = 39.915
 )
 
+/** 逻辑协议时钟配置。NTP 默认关闭；关闭或不可用时使用注册 200 OK 的 SIP Date。 */
+@Serializable
+data class TimeSyncConfig(
+    val ntpEnabled: Boolean = false,
+    val ntpServer: String = "ntp.aliyun.com",
+    val ntpPort: Int = 123,
+    val refreshIntervalSeconds: Int = 3600,
+)
+
 @Serializable
 data class SimConfig(
     val gbVersion: GbVersion = GbVersion.V2022,
@@ -38,6 +47,7 @@ data class SimConfig(
     val mockPosition: GeoPoint = GeoPoint(),
     val osd: OsdConfig = OsdConfig(),
     val network: NetworkConfig = NetworkConfig(),
+    val timeSync: TimeSyncConfig = TimeSyncConfig(),
     /**
      * GB §9.3.1 设备目录树。空 list 表示由 CatalogTreeStore 从 device 字段
      * 自动生成默认 3 节点扁平树(老 SimConfig 升级路径)。
@@ -159,9 +169,9 @@ typealias VideoCodec = com.uvp.sim.media.VideoCodec
 typealias AudioCodec = com.uvp.sim.media.AudioCodec
 
 @Serializable
-enum class GbVersion(val label: String) {
-    V2016("GB/T 28181-2016"),
-    V2022("GB/T 28181-2022")
+enum class GbVersion(val label: String, val xGbVer: String) {
+    V2016("GB/T 28181-2016", "2.0"),
+    V2022("GB/T 28181-2022", "3.0")
 }
 
 @Serializable

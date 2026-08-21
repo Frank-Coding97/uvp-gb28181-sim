@@ -1,9 +1,6 @@
 package com.uvp.sim.sip
 
 import kotlin.time.Instant
-import kotlinx.datetime.LocalDateTime
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toInstant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -36,15 +33,13 @@ class SipDateParserTest {
         assertEquals(Instant.parse("2026-06-18T07:30:00Z"), r)
     }
 
-    // ISO8601 无时区(WVP 实测格式)→ 按系统默认时区解析
+    // GB/T 28181 9.10 规定标准时间为北京时间；无时区 Date 必须固定按东八区解析。
     @Test
-    fun `parses ISO8601 without timezone using system zone`() {
+    fun `parses ISO8601 without timezone using Beijing time`() {
         val s = "2026-06-18T16:26:57.492"
         val r = SipDateParser.parse(s)
         assertNotNull(r)
-        // 不锁绝对值(测试机时区可能不同),仅断言"等价于按系统时区把 LocalDateTime 翻译成 Instant"
-        val expected = LocalDateTime.parse(s).toInstant(TimeZone.currentSystemDefault())
-        assertEquals(expected, r)
+        assertEquals(Instant.parse("2026-06-18T08:26:57.492Z"), r)
     }
 
     @Test

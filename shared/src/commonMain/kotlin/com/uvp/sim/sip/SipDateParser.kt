@@ -12,7 +12,7 @@ import kotlinx.datetime.toInstant
  * - **RFC1123**(主流):`Wed, 18 Jun 2026 07:30:00 GMT` —— WVP / 自家 SipBuilders 都用这个
  * - **ISO8601**:
  *   - 带 Z / +08:00 等显式时区:按 [Instant.parse] 直解
- *   - **无时区**:按**系统默认时区**解析(GB28181 业界惯例,WVP 实测发本地时间无后缀)
+ *   - **无时区**:按北京时间解析(GB/T 28181 9.10 规定标准时间为北京时间)
  *
  * 任何异常 / 格式不识别返回 null,不抛 —— 调用方按"未校时"降级。
  */
@@ -55,7 +55,7 @@ object SipDateParser {
     /**
      * ISO8601:
      * 1. 含显式时区(Z / ±HH:MM)→ Instant.parse 直解
-     * 2. 无时区(纯 LocalDateTime)→ 按**系统默认时区**解析
+     * 2. 无时区(纯 LocalDateTime)→ 按北京时间解析
      *    (WVP-Pro 实测会发 `2026-06-18T16:26:57.492` 这种本地时间无后缀,
      *     如果当 UTC 解析会差一个时区偏移)
      *
@@ -65,8 +65,8 @@ object SipDateParser {
         if (!s.contains('T')) return null
         // 优先按显式时区直解(Z / +08:00 / -05:00 等)
         runCatching { return Instant.parse(s) }
-        // 无时区 → LocalDateTime + 系统默认时区
-        runCatching { return LocalDateTime.parse(s).toInstant(TimeZone.currentSystemDefault()) }
+        // 无时区 → LocalDateTime + 北京时间。不能依赖手机当前时区，否则出境或手动改时区会偏移。
+        runCatching { return LocalDateTime.parse(s).toInstant(TimeZone.of("Asia/Shanghai")) }
         return null
     }
 

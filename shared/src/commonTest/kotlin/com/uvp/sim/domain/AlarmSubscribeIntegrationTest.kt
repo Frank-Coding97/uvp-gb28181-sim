@@ -47,6 +47,7 @@ class AlarmSubscribeIntegrationTest {
             SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-$callId"),
             SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=plat-$callId"),
             SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@3402000000>"),
+            SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
             SipMessage.Header(SipHeader.CALL_ID, callId),
             SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
             SipMessage.Header(SipHeader.EVENT, "Alarm")

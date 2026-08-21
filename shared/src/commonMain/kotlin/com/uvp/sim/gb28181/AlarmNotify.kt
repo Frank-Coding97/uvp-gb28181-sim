@@ -1,7 +1,7 @@
 package com.uvp.sim.gb28181
 
 import com.uvp.sim.config.SimConfig
-import kotlin.time.Clock
+import com.uvp.sim.domain.ProtocolClock
 import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -86,7 +86,7 @@ object AlarmNotify {
     }
 
     /** YYYY-MM-DDTHH:MM:SS in local time, zero-padded. */
-    private fun nowTimestamp(): String = formatTimestamp(Clock.System.now().toEpochMilliseconds())
+    private fun nowTimestamp(): String = formatTimestamp(ProtocolClock.now().toEpochMilliseconds())
 
     private fun formatTimestamp(epochMs: Long): String {
         val tz = TimeZone.currentSystemDefault()

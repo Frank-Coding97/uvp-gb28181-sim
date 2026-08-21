@@ -5,10 +5,14 @@ import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.GeoPoint
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.config.TimeSyncConfig
+import com.uvp.sim.domain.TimeSyncSource
 import com.uvp.sim.domain.MockSipTransport
 import com.uvp.sim.config.NetworkPreference
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.TransportType
+import com.uvp.sim.network.NtpClient
+import com.uvp.sim.network.NtpSample
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
@@ -19,6 +23,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -182,6 +188,82 @@ class RegistrationCoordinatorTest {
         val off = coord.clockOffset.value
         assertTrue(off != com.uvp.sim.domain.ClockOffset.Empty,
             "200 OK Date 头应被解析到 clockOffset")
+    }
+
+    @Test
+    fun `NTP enabled prefers NTP over SIP Date`() = runTest {
+        val transport = MockSipTransport().also { it.connect() }
+        val ntpInstant = Instant.parse("2026-08-21T08:16:12Z")
+        val coord = RegistrationCoordinatorImpl(
+            config = config().copy(timeSync = TimeSyncConfig(ntpEnabled = true, ntpServer = "ntp.test")),
+            transport = transport,
+            scope = this,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
+            localIpProvider = { "192.168.1.50" },
+            localPortProvider = { 5060 },
+            ntpClient = object : NtpClient {
+                override suspend fun query(server: String, port: Int, timeoutMillis: Long) =
+                    NtpSample(ntpInstant, offsetMillis = 1_000L, roundTripMillis = 20L)
+            },
+        )
+
+        coord.register()
+        runCurrent()
+        val req = transport.sent.filterIsInstance<SipRequest>().first()
+        coord.onIncoming(fake200OkRegister(
+            req.firstHeader(SipHeader.CALL_ID)!!,
+            req.firstHeader(SipHeader.FROM)!!.substringAfter("tag="),
+            dateHeader = "2026-08-21T16:16:11.000",
+        ).asEnvelope())
+        runCurrent()
+
+        assertEquals(TimeSyncSource.NTP, coord.clockOffset.value.source)
+        assertEquals(ntpInstant.toEpochMilliseconds(), coord.clockOffset.value.platformBaselineMs)
+        coord.shutdown()
+    }
+
+    @Test
+    fun `NTP refresh failure falls back to latest SIP Date`() = runTest {
+        val transport = MockSipTransport().also { it.connect() }
+        var calls = 0
+        val coord = RegistrationCoordinatorImpl(
+            config = config().copy(timeSync = TimeSyncConfig(
+                ntpEnabled = true,
+                ntpServer = "ntp.test",
+                refreshIntervalSeconds = 1,
+            )),
+            transport = transport,
+            scope = this,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
+            localIpProvider = { "192.168.1.50" },
+            localPortProvider = { 5060 },
+            ntpClient = object : NtpClient {
+                override suspend fun query(server: String, port: Int, timeoutMillis: Long): NtpSample {
+                    calls++
+                    if (calls > 1) error("timeout")
+                    return NtpSample(Instant.parse("2026-08-21T08:16:12Z"), 1_000L, 20L)
+                }
+            },
+        )
+
+        coord.register()
+        runCurrent()
+        val req = transport.sent.filterIsInstance<SipRequest>().first()
+        coord.onIncoming(fake200OkRegister(
+            req.firstHeader(SipHeader.CALL_ID)!!,
+            req.firstHeader(SipHeader.FROM)!!.substringAfter("tag="),
+            dateHeader = "2026-08-21T16:16:11.000",
+        ).asEnvelope())
+        runCurrent()
+        assertEquals(TimeSyncSource.NTP, coord.clockOffset.value.source)
+
+        advanceTimeBy(1_000L)
+        runCurrent()
+
+        assertEquals(TimeSyncSource.SIP_DATE, coord.clockOffset.value.source)
+        assertEquals(Instant.parse("2026-08-21T08:16:11Z").toEpochMilliseconds(),
+            coord.clockOffset.value.platformBaselineMs)
+        coord.shutdown()
     }
 
     @Test
