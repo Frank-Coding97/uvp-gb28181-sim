@@ -302,10 +302,14 @@ internal class ManscdpRouterImpl(
                     // 不通过 → 直接 drop(不发 200 / 403)避免暴露设备存在
                     // (reconnaissance 防御:LAN 扫描器无法用 200 / 403 区分 MANSCDP-capable 设备)。
                     if (!com.uvp.sim.sip.PlatformAuthorizer.isManscdpFromAuthorizedPlatform(envelope, config)) {
+                        // 带上 observedForms,便于区分"来源真的不对"与"地址形态没归一化好"
+                        // (2026-09-11/12 Catalog 全超时事故:sourceIp 被 PTR 成了 "Mac")。
                         SystemLogger.emit(
                             LogLevel.Warning, LogTag.Lifecycle,
                             "丢弃未授权 ${msg.method.name}:sourceIp=${envelope.sourceIp} fromUser=${
                                 msg.fromHeader()?.let { SipHeaderHelpers.parseUriUser(SipHeaderHelpers.parseUri(it), fallback = "") }
+                            } expectedIp=${config.server.ip} observedForms=${
+                                com.uvp.sim.network.hostComparableForms(envelope.sourceIp)
                             }",
                         )
                         return RoutingResult.Handled
@@ -720,7 +724,7 @@ internal class ManscdpRouterImpl(
             CatalogNotifyBuilder.renderResponse(
                 deviceId = deviceId,
                 sn = sn,
-                tree = ManscdpInternals.publishableCatalogNodes(catalogTree.value),
+                tree = catalogTree.value.filter { it.id == deviceId || it.id.startsWith(deviceId) || it.fields["CivilCode"].orEmpty().startsWith(deviceId) },
             )
         } else {
             """<?xml version="1.0" encoding="UTF-8"?>

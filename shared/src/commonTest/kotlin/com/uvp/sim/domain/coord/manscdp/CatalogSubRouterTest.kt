@@ -1,5 +1,7 @@
 package com.uvp.sim.domain.coord.manscdp
 
+import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.recording.NoopRecordingService
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
@@ -70,6 +72,57 @@ class CatalogSubRouterTest {
         assertTrue(bodies.size > 1, "默认目录包含多个节点，pageSize=1 应产生多条 MESSAGE")
         assertTrue(bodies.all { it.contains("<SN>17</SN>") })
         assertTrue(bodies.all { it.contains("<DeviceList Num=\"1\">") })
+    }
+
+    @Test
+    fun catalog_query_filters_business_group_subtree_and_echoes_target() = runTest {
+        val rootId = "34020000001110000001"
+        val groupId = "34020000002150000001"
+        val orgId = "34020000002160000001"
+        val channelId = "34020000001320000001"
+        val unrelatedId = "34020000001320000002"
+        val cfg = SubRouterTestFixtures.config().copy(catalogTree = listOf(
+            CatalogNode(rootId, CatalogNodeType.Device, "设备", rootId),
+            CatalogNode(groupId, CatalogNodeType.BusinessGroup, "重点场所", rootId),
+            CatalogNode(orgId, CatalogNodeType.VirtualOrg, "校园", groupId),
+            CatalogNode(channelId, CatalogNodeType.VideoChannel, "校门", orgId),
+            CatalogNode(unrelatedId, CatalogNodeType.VideoChannel, "无关通道", rootId),
+        ))
+        val f = SubRouterTestFixtures.newFixture(this, cfg)
+        val r = CatalogSubRouter(f.ctx, NoopRecordingService)
+        val xml = "<Query><CmdType>Catalog</CmdType><SN>18</SN><DeviceID>$groupId</DeviceID></Query>"
+
+        assertTrue(r.handle("Catalog", xml, fromUri = null))
+        runCurrent()
+
+        val body = f.transport.sent.single().body.decodeToString()
+        assertTrue(body.contains("<DeviceID>$groupId</DeviceID>"))
+        assertTrue(body.contains("<DeviceID>$orgId</DeviceID>"))
+        assertTrue(body.contains("<DeviceID>$channelId</DeviceID>"))
+        val itemIds = """<Item>\s*<DeviceID>(.+?)</DeviceID>"""
+            .toRegex()
+            .findAll(body)
+            .map { it.groupValues[1] }
+            .toSet()
+        assertFalse(rootId in itemIds)
+        assertFalse(unrelatedId in itemIds)
+    }
+
+    @Test
+    fun catalog_query_unknown_target_returns_empty_result() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val r = CatalogSubRouter(f.ctx, NoopRecordingService)
+
+        assertTrue(r.handle(
+            "Catalog",
+            "<Query><CmdType>Catalog</CmdType><SN>19</SN><DeviceID>34020000009990000001</DeviceID></Query>",
+            fromUri = null,
+        ))
+        runCurrent()
+
+        val body = f.transport.sent.single().body.decodeToString()
+        assertTrue(body.contains("<SumNum>0</SumNum>"))
+        assertFalse(body.contains("<DeviceList"))
     }
 
     @Test

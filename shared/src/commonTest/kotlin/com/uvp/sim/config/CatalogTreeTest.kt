@@ -12,10 +12,10 @@ class CatalogTreeTest {
         assertEquals("111", CatalogNodeType.Device.typeCode)
         assertEquals(1, CatalogNodeType.Device.parental)
 
-        assertEquals("137", CatalogNodeType.BusinessGroup.typeCode)
+        assertEquals("215", CatalogNodeType.BusinessGroup.typeCode)
         assertEquals(1, CatalogNodeType.BusinessGroup.parental)
 
-        assertEquals("138", CatalogNodeType.VirtualOrg.typeCode)
+        assertEquals("216", CatalogNodeType.VirtualOrg.typeCode)
         assertEquals(1, CatalogNodeType.VirtualOrg.parental)
 
         assertEquals("132", CatalogNodeType.VideoChannel.typeCode)

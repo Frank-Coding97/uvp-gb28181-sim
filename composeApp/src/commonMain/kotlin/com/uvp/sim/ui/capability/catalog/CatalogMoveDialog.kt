@@ -67,7 +67,7 @@ internal fun MoveDialog(
         title = { Text("移动 ${node.name}") },
         text = {
             if (candidates.isEmpty()) {
-                Text("没有合法目标(只能移到 Device/137/138 节点,且不能移到自身子树)",
+                Text("没有合法目标(只能移到系统/设备/业务分组/虚拟组织节点,且不能移到自身子树)",
                     color = UvpColor.TextSecondary, fontSize = 12.sp)
             } else {
                 LazyColumn(

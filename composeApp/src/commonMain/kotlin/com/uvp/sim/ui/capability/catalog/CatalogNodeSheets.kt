@@ -2,6 +2,7 @@ package com.uvp.sim.ui.capability.catalog
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -19,6 +20,8 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material.icons.outlined.WifiOff
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -26,6 +29,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -133,6 +140,8 @@ private fun ActionRow(icon: ImageVector, label: String, tint: Color, onClick: ()
 @Composable
 internal fun NodeEditorSheet(
     node: CatalogNode,
+    businessGroups: List<CatalogNode> = emptyList(),
+    businessGroupEnabled: Boolean = true,
     onDismiss: () -> Unit,
     onChange: (CatalogNode) -> Unit
 ) {
@@ -192,6 +201,24 @@ internal fun NodeEditorSheet(
                     onChange(node.copy(fields = node.fields + ("CivilCode" to it)))
                 }
             }
+            if (businessGroupEnabled && (
+                    node.type == CatalogNodeType.VideoChannel ||
+                        node.type == CatalogNodeType.AlarmChannel ||
+                        node.type == CatalogNodeType.Device ||
+                        node.type == CatalogNodeType.VirtualOrg
+                    )
+            ) {
+                BusinessGroupSelector(
+                    selectedId = node.fields["BusinessGroupID"],
+                    groups = businessGroups,
+                    onChange = { selectedId ->
+                        val fields = node.fields.toMutableMap()
+                        if (selectedId == null) fields.remove("BusinessGroupID")
+                        else fields["BusinessGroupID"] = selectedId
+                        onChange(node.copy(fields = fields))
+                    }
+                )
+            }
             Spacer(Modifier.height(4.dp))
             TextButton(
                 onClick = onDismiss,
@@ -200,6 +227,54 @@ internal fun NodeEditorSheet(
                 Text("完成", color = UvpColor.Primary, fontSize = 14.sp)
             }
         }
+    }
+}
+
+@Composable
+private fun BusinessGroupSelector(
+    selectedId: String?,
+    groups: List<CatalogNode>,
+    onChange: (String?) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val selected = groups.firstOrNull { it.id == selectedId }
+    val selectedText = when {
+        selected != null -> "${selected.name} (${selected.id})"
+        !selectedId.isNullOrBlank() -> "未知业务分组 ($selectedId)"
+        else -> "未关联业务分组"
+    }
+    Column {
+        Text("业务分组( BusinessGroupID )", color = UvpColor.TextSecondary, fontSize = 11.sp)
+        Box {
+            OutlinedTextField(
+                value = selectedText,
+                onValueChange = {},
+                readOnly = true,
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().clickable { expanded = true }
+            )
+            DropdownMenu(
+                expanded = expanded,
+                onDismissRequest = { expanded = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("未关联业务分组") },
+                    onClick = { expanded = false; onChange(null) }
+                )
+                groups.forEach { group ->
+                    DropdownMenuItem(
+                        text = { Text("${group.name} (${group.id})") },
+                        onClick = { expanded = false; onChange(group.id) }
+                    )
+                }
+            }
+        }
+        Text(
+            if (groups.isEmpty()) "当前目录还没有 215 业务分组，请先新增业务分组。"
+            else "独立于 ParentID，用于模拟 2022 业务归属。",
+            color = UvpColor.TextHint,
+            fontSize = 10.sp
+        )
     }
 }
 

@@ -23,6 +23,8 @@ internal fun classifyInviteTarget(channelId: String, catalogTree: List<CatalogNo
     val node = catalogTree.firstOrNull { it.id == channelId }
         ?: return 404 to "Channel Not Found"
     return when (node.type) {
+        CatalogNodeType.AdministrativeRegion -> 488 to "Not Acceptable Here (cannot invite administrative region)"
+        CatalogNodeType.System -> 488 to "Not Acceptable Here (cannot invite system)"
         CatalogNodeType.VideoChannel -> null
         CatalogNodeType.AlarmChannel -> 488 to "Not Acceptable Here (alarm channel does not stream)"
         CatalogNodeType.Device -> 488 to "Not Acceptable Here (cannot invite device root)"

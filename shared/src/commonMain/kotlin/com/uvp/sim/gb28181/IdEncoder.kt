@@ -15,6 +15,7 @@ import com.uvp.sim.config.CatalogNodeType
 object IdEncoder {
 
     fun genChildId(domain: String, type: CatalogNodeType, seq: Int): String {
+        require(type.typeCode.isNotEmpty()) { "administrative region uses a 2/4/6/8 digit code" }
         val prefix = domain.take(10).padEnd(10, '0')
         val seqStr = seq.toString().padStart(7, '0')
         return prefix + type.typeCode + seqStr

@@ -15,6 +15,8 @@ import com.uvp.sim.ui.UvpColor
  * 拆出来给 `capability/catalog/` 子包内多个文件复用。
  */
 internal fun CatalogNodeType.shortLabel(): String = when (this) {
+    CatalogNodeType.AdministrativeRegion -> "区划"
+    CatalogNodeType.System -> "系统"
     CatalogNodeType.Device -> "设备"
     CatalogNodeType.BusinessGroup -> "分组"
     CatalogNodeType.VirtualOrg -> "区划"
@@ -23,6 +25,8 @@ internal fun CatalogNodeType.shortLabel(): String = when (this) {
 }
 
 internal fun CatalogNodeType.icon(): ImageVector = when (this) {
+    CatalogNodeType.AdministrativeRegion -> Icons.Outlined.AccountTree
+    CatalogNodeType.System -> Icons.Outlined.AccountTree
     CatalogNodeType.Device -> Icons.Outlined.AccountTree
     CatalogNodeType.BusinessGroup -> Icons.Outlined.Folder
     CatalogNodeType.VirtualOrg -> Icons.Outlined.Folder
@@ -31,6 +35,8 @@ internal fun CatalogNodeType.icon(): ImageVector = when (this) {
 }
 
 internal fun CatalogNodeType.color(): Color = when (this) {
+    CatalogNodeType.AdministrativeRegion -> UvpColor.Primary
+    CatalogNodeType.System -> UvpColor.Primary
     CatalogNodeType.Device -> UvpColor.Primary
     CatalogNodeType.BusinessGroup -> UvpColor.Info
     CatalogNodeType.VirtualOrg -> UvpColor.Info
@@ -39,9 +45,11 @@ internal fun CatalogNodeType.color(): Color = when (this) {
 }
 
 internal fun CatalogNodeType.displayName(): String = when (this) {
+    CatalogNodeType.AdministrativeRegion -> "行政区划(2/4/6/8位)"
+    CatalogNodeType.System -> "系统(200)"
     CatalogNodeType.Device -> "设备根"
-    CatalogNodeType.BusinessGroup -> "业务分组(137)"
-    CatalogNodeType.VirtualOrg -> "虚拟组织(138)"
+    CatalogNodeType.BusinessGroup -> "业务分组(215)"
+    CatalogNodeType.VirtualOrg -> "虚拟组织(216)"
     CatalogNodeType.VideoChannel -> "视频通道(132)"
     CatalogNodeType.AlarmChannel -> "报警通道(134)"
 }

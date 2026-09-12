@@ -76,8 +76,8 @@ class InviteRoutingTest {
         CatalogNode("35020000001310000001", CatalogNodeType.Device, "Dev", "35020000001310000001"),
         CatalogNode("35020000001320000001", CatalogNodeType.VideoChannel, "Cam", "35020000001310000001"),
         CatalogNode("35020000001340000001", CatalogNodeType.AlarmChannel, "Alm", "35020000001310000001"),
-        CatalogNode("35020000001370000001", CatalogNodeType.BusinessGroup, "G1", "35020000001310000001"),
-        CatalogNode("35020000001380000001", CatalogNodeType.VirtualOrg, "区划", "35020000001310000001")
+        CatalogNode("35020000002150000001", CatalogNodeType.BusinessGroup, "G1", "35020000001310000001"),
+        CatalogNode("35020000002160000001", CatalogNodeType.VirtualOrg, "区划", "35020000001310000001")
     )
 
     private suspend fun bootRegistered(transport: MockSipTransport, engine: SimulatorEngine) {
@@ -158,7 +158,7 @@ class InviteRoutingTest {
         runCurrent()
         transport.sent.clear()
 
-        transport.deliver(inviteFor("35020000001370000001"))
+        transport.deliver(inviteFor("35020000002150000001"))
         runCurrent()
 
         val responses = transport.sent.filterIsInstance<SipResponse>()
@@ -176,7 +176,7 @@ class InviteRoutingTest {
         runCurrent()
         transport.sent.clear()
 
-        transport.deliver(inviteFor("35020000001380000001"))
+        transport.deliver(inviteFor("35020000002160000001"))
         runCurrent()
 
         val responses = transport.sent.filterIsInstance<SipResponse>()

@@ -41,7 +41,10 @@ internal class CatalogSubRouter(
     override suspend fun handle(cmdType: String, xml: String, fromUri: String?): Boolean {
         val sn = ManscdpParser.sn(xml) ?: "0"
         return when (cmdType) {
-            "Catalog" -> { sendCatalogResponse(sn); true }
+            "Catalog" -> {
+                sendCatalogResponse(sn, ManscdpParser.deviceId(xml) ?: ctx.config.device.deviceId)
+                true
+            }
             "DeviceInfo" -> { sendDeviceInfoResponse(sn); true }
             "DeviceStatus" -> { sendDeviceStatusResponse(sn); true }
             "ConfigDownload" -> {
@@ -54,8 +57,8 @@ internal class CatalogSubRouter(
         }
     }
 
-    private suspend fun sendCatalogResponse(sn: String) {
-        val nodes = ManscdpInternals.publishableCatalogNodes(ctx.catalogTree.value)
+    private suspend fun sendCatalogResponse(sn: String, targetId: String) {
+        val nodes = selectCatalogNodes(ctx.catalogTree.value, targetId)
         val packets = CatalogResponse.buildAllFromTree(
             config = ctx.config,
             sn = sn,
@@ -63,7 +66,7 @@ internal class CatalogSubRouter(
         )
         SystemLogger.emit(
             LogLevel.Info, LogTag.Network,
-            "平台查询 Catalog → ${nodes.size} 条 / 分 ${packets.size} 包 sn=$sn"
+            "平台查询 Catalog target=$targetId → ${nodes.size} 条 / 分 ${packets.size} 包 sn=$sn"
         )
         if (nodes.size > 10_000 && ctx.config.transport.name == "UDP") {
             SystemLogger.emit(
@@ -81,6 +84,30 @@ internal class CatalogSubRouter(
             )
             if (!sent) break
         }
+    }
+
+    private fun selectCatalogNodes(tree: List<com.uvp.sim.config.CatalogNode>, targetId: String): List<com.uvp.sim.config.CatalogNode> {
+        val publishable = ManscdpInternals.publishableCatalogNodes(tree)
+        if (targetId.isBlank()) return publishable
+        val target = tree.firstOrNull { it.id == targetId }
+        if (target != null) {
+            val byParent = tree.groupBy { it.parentId }
+            val result = mutableListOf<com.uvp.sim.config.CatalogNode>()
+            val visited = mutableSetOf<String>()
+            fun visit(id: String) {
+                if (!visited.add(id)) return
+                tree.firstOrNull { it.id == id }?.let { if (it !in result) result += it }
+                byParent[id].orEmpty().forEach { visit(it.id) }
+            }
+            visit(target.id)
+            return result.filterNot { it.type == com.uvp.sim.config.CatalogNodeType.Device && it.parentId == it.id && it.id != targetId }
+        }
+        if (targetId.length in setOf(2, 4, 6, 8) && targetId.all { it in '0'..'9' }) {
+            return publishable.filter { node ->
+                node.id.startsWith(targetId) || node.fields["CivilCode"].orEmpty().startsWith(targetId)
+            }
+        }
+        return emptyList()
     }
 
     private suspend fun sendDeviceInfoResponse(sn: String) {

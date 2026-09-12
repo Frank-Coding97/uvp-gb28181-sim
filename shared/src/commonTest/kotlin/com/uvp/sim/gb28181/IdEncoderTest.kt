@@ -21,15 +21,15 @@ class IdEncoderTest {
     }
 
     @Test
-    fun `genChildId for BusinessGroup produces type 137`() {
+    fun `genChildId for BusinessGroup produces type 215`() {
         val id = IdEncoder.genChildId("3402000000", CatalogNodeType.BusinessGroup, 1)
-        assertEquals("34020000001370000001", id)
+        assertEquals("34020000002150000001", id)
     }
 
     @Test
-    fun `genChildId for VirtualOrg produces type 138`() {
+    fun `genChildId for VirtualOrg produces type 216`() {
         val id = IdEncoder.genChildId("3402000000", CatalogNodeType.VirtualOrg, 1)
-        assertEquals("34020000001380000001", id)
+        assertEquals("34020000002160000001", id)
     }
 
     @Test
@@ -52,7 +52,7 @@ class IdEncoderTest {
     fun `parseTypeCode extracts type 3 digits`() {
         assertEquals("132", IdEncoder.parseTypeCode("34020000001320000001"))
         assertEquals("134", IdEncoder.parseTypeCode("34020000001340000005"))
-        assertEquals("137", IdEncoder.parseTypeCode("34020000001370000001"))
+        assertEquals("215", IdEncoder.parseTypeCode("34020000002150000001"))
         assertEquals("111", IdEncoder.parseTypeCode("34020000001110000001"))
     }
 

@@ -229,8 +229,8 @@ class CatalogSubscribeIntegrationTest {
         // 推一棵新树:加一个业务分组
         val newTree = listOf(
             CatalogNode("34020000001110000001", CatalogNodeType.Device, "DEV", "34020000001110000001"),
-            CatalogNode("34020000001370000001", CatalogNodeType.BusinessGroup, "新分组", "34020000001110000001"),
-            CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "新通道", "34020000001370000001")
+            CatalogNode("34020000002150000001", CatalogNodeType.BusinessGroup, "新分组", "34020000001110000001"),
+            CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "新通道", "34020000002150000001")
         )
         engine.updateCatalogTree(newTree)
         runCurrent()

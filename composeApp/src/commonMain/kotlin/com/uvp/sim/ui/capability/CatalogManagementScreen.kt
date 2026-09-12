@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.CatalogNodeType
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
@@ -276,6 +277,8 @@ fun CatalogManagementScreen(
     if (editingNode != null) {
         NodeEditorSheet(
             node = editingNode,
+            businessGroups = draft.filter { it.type == CatalogNodeType.BusinessGroup },
+            businessGroupEnabled = state.config.gbVersion == GbVersion.V2022,
             onDismiss = { editingId = null },
             onChange = { updated ->
                 draft = draft.map { if (it.id == updated.id) updated else it }

@@ -9,9 +9,11 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 enum class CatalogNodeType(val typeCode: String, val parental: Int) {
+    AdministrativeRegion("", 1),
+    System("200", 1),
     Device("111", 1),
-    BusinessGroup("137", 1),
-    VirtualOrg("138", 1),
+    BusinessGroup("215", 1),
+    VirtualOrg("216", 1),
     VideoChannel("132", 0),
     AlarmChannel("134", 0)
 }

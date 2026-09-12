@@ -27,7 +27,7 @@ class CatalogNotifyBuilderTest {
     fun `build emits DeviceList Num matching tree size`() {
         val tree = listOf(
             root(),
-            CatalogNode("34020000001370000001", CatalogNodeType.BusinessGroup, "G1", rootId),
+            CatalogNode("34020000002150000001", CatalogNodeType.BusinessGroup, "G1", rootId),
             CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "V1", rootId)
         )
         val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
@@ -56,10 +56,10 @@ class CatalogNotifyBuilderTest {
     }
 
     @Test
-    fun `build empty tree emits Num zero element`() {
+    fun `build empty tree omits DeviceList`() {
         val xml = CatalogNotifyBuilder.build(rootId, 1, emptyList())
         assertTrue(xml.contains("<SumNum>0</SumNum>"))
-        assertTrue(xml.contains("<DeviceList Num=\"0\">"))
+        assertTrue(!xml.contains("<DeviceList"))
     }
 
     @Test
@@ -151,6 +151,47 @@ class CatalogNotifyBuilderTest {
         val match = ch1Regex.find(xml)
         assertTrue(match != null)
         assertEquals("group1", match!!.groupValues[1])
+    }
+
+    @Test
+    fun `build emits BusinessGroupID for virtual organization`() {
+        val groupId = "34020000002150000001"
+        val orgId = "34020000002160000001"
+        val tree = listOf(
+            root(),
+            CatalogNode(groupId, CatalogNodeType.BusinessGroup, "重点场所", rootId),
+            CatalogNode(orgId, CatalogNodeType.VirtualOrg, "校园", groupId),
+        )
+
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val orgItem = """<Item>.*?<DeviceID>$orgId</DeviceID>.*?</Item>"""
+            .toRegex(RegexOption.DOT_MATCHES_ALL)
+            .find(xml)?.value.orEmpty()
+        assertTrue(orgItem.contains("<BusinessGroupID>$groupId</BusinessGroupID>"))
+    }
+
+    @Test
+    fun `build emits explicitly selected BusinessGroupID for channel`() {
+        val groupId = "34020000002150000001"
+        val channelId = "34020000001320000001"
+        val tree = listOf(
+            root(),
+            CatalogNode(groupId, CatalogNodeType.BusinessGroup, "重点场所", rootId),
+            CatalogNode(
+                channelId,
+                CatalogNodeType.VideoChannel,
+                "门岗摄像机",
+                rootId,
+                fields = mapOf("BusinessGroupID" to groupId)
+            )
+        )
+
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val channelItem = """<Item>.*?<DeviceID>$channelId</DeviceID>.*?</Item>"""
+            .toRegex(RegexOption.DOT_MATCHES_ALL)
+            .find(xml)?.value.orEmpty()
+        assertTrue(channelItem.contains("<ParentID>$rootId</ParentID>"))
+        assertTrue(channelItem.contains("<BusinessGroupID>$groupId</BusinessGroupID>"))
     }
 
     @Test

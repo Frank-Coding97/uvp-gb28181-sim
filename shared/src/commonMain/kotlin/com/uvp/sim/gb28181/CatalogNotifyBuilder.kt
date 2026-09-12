@@ -220,7 +220,7 @@ object CatalogNotifyBuilder {
         ordered: List<CatalogNode>,
         sumNum: Int,
     ): String {
-        val items = ordered.joinToString(separator = "\n") { renderItem(it) }
+        val items = ordered.joinToString(separator = "\n") { renderItem(it, ordered) }
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -230,7 +230,7 @@ object CatalogNotifyBuilder {
         sb.append("<DeviceID>").append(escapeXmlText(deviceId)).append("</DeviceID>\n")
         sb.append("<SumNum>").append(sumNum).append("</SumNum>\n")
         if (ordered.isEmpty()) {
-            sb.append("<DeviceList Num=\"0\"></DeviceList>\n")
+            // GB/T 28181-2022 附录 M:SumNum=0 时不携带目录列表。
         } else {
             sb.append("<DeviceList Num=\"").append(ordered.size).append("\">\n")
             sb.append(items).append("\n")
@@ -278,7 +278,7 @@ object CatalogNotifyBuilder {
         }
     }
 
-    private fun renderItem(node: CatalogNode): String {
+    private fun renderItem(node: CatalogNode, allNodes: List<CatalogNode> = emptyList()): String {
         val f = node.fields
         val parentId = if (node.parentId == node.id) node.id else node.parentId
         val sb = StringBuilder()
@@ -303,7 +303,23 @@ object CatalogNotifyBuilder {
         sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
         sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
         sb.append("<Status>").append(escapeXmlText(f["Status"] ?: "ON")).append("</Status>")
+        val businessGroupId = f["BusinessGroupID"] ?: findBusinessGroupId(node, allNodes)
+        if (businessGroupId != null) {
+            sb.append("\n<BusinessGroupID>").append(escapeXmlText(businessGroupId)).append("</BusinessGroupID>")
+        }
         sb.append("\n</Item>")
         return sb.toString()
+    }
+
+    private fun findBusinessGroupId(node: CatalogNode, allNodes: List<CatalogNode>): String? {
+        if (node.type != CatalogNodeType.VirtualOrg) return null
+        val byId = allNodes.associateBy { it.id }
+        var parent = byId[node.parentId]
+        val seen = mutableSetOf<String>()
+        while (parent != null && seen.add(parent.id)) {
+            if (parent.type == CatalogNodeType.BusinessGroup) return parent.id
+            parent = byId[parent.parentId]
+        }
+        return null
     }
 }
