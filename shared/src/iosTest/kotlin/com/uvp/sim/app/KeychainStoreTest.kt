@@ -1,6 +1,7 @@
 package com.uvp.sim.app
 
 import platform.Foundation.NSUUID
+import platform.Security.errSecMissingEntitlement
 import platform.Security.errSecNotAvailable
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -51,9 +52,18 @@ class KeychainStoreTest {
     private fun newAccount(): String =
         "test-${NSUUID().UUIDString}".also { accounts += it }
 
+    /**
+     * Keychain 不可用时跳过(而非判失败)。
+     *
+     * `simctl spawn` 直接跑裸可执行文件时,进程没有 keychain-access-groups
+     * entitlement,`SecItemAdd` 会返回 -34018(errSecMissingEntitlement)。
+     * Gradle 的 `iosSimulatorArm64Test` 走的是同一条路径,所以这是环境限制,
+     * 不是实现缺陷 —— 跟 [errSecNotAvailable] 一样按跳过处理。
+     */
     private fun saveOrSkip(account: String, password: String): Boolean {
         if (store.save(account, password)) return true
-        if (store.lastStatusForTest == errSecNotAvailable) return false
-        fail("Keychain save failed status=${store.lastStatusForTest}")
+        val status = store.lastStatusForTest
+        if (status == errSecNotAvailable || status == errSecMissingEntitlement) return false
+        fail("Keychain save failed status=$status")
     }
 }

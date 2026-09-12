@@ -15,5 +15,5 @@ import platform.UIKit.UIDevice
  * @return identifierForVendor UUID 字符串，获取失败返回 null
  */
 actual fun getHardwareId(context: Any?): String? {
-    return UIDevice.current.identifierForVendor?.UUIDString
+    return UIDevice.currentDevice.identifierForVendor?.UUIDString
 }

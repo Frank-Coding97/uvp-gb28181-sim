@@ -36,13 +36,11 @@ import platform.AVFoundation.AVCaptureDeviceInput
 import platform.AVFoundation.defaultDeviceWithDeviceType
 import platform.AVFoundation.AVCaptureDevicePositionBack
 import platform.AVFoundation.AVCaptureDeviceTypeBuiltInWideAngleCamera
-import platform.AVFoundation.AVCaptureOutput
 import platform.AVFoundation.AVCaptureSession
 import platform.AVFoundation.AVCaptureSessionPreset1280x720
 import platform.AVFoundation.AVCaptureSessionPreset1920x1080
 import platform.AVFoundation.AVCaptureSessionPreset640x480
 import platform.AVFoundation.AVCaptureVideoDataOutput
-import platform.AVFoundation.AVCaptureVideoDataOutputSampleBufferDelegateProtocol
 import platform.AVFoundation.AVMediaTypeVideo
 import platform.CoreFoundation.CFDictionaryCreateMutable
 import platform.CoreFoundation.CFDictionarySetValue
@@ -74,7 +72,6 @@ import platform.VideoToolbox.VTCompressionSessionInvalidate
 import platform.VideoToolbox.VTCompressionSessionRef
 import platform.VideoToolbox.VTCompressionSessionRefVar
 import platform.VideoToolbox.kVTEncodeFrameOptionKey_ForceKeyFrame
-import platform.darwin.NSObject
 import platform.darwin.dispatch_queue_create
 import platform.posix.size_tVar
 import kotlin.concurrent.Volatile
@@ -596,27 +593,6 @@ class IosCameraStreamer(private val config: CaptureConfig) {
             val ptr = dataPtrOut.value ?: return@memScoped null
             ptr.readBytes(totalLen)
         }
-    }
-}
-
-/**
- * `AVCaptureVideoDataOutputSampleBufferDelegate` NSObject subclass.
- *
- * Kotlin/Native requires ObjC delegates to be `NSObject` subclasses annotated
- * with `@ExportObjCClass` so the runtime registers the class with the ObjC
- * runtime. Forwards each captured [CMSampleBufferRef] to [onSample].
- */
-@OptIn(ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
-@kotlinx.cinterop.ExportObjCClass
-internal class CameraSampleDelegate(
-    private val onSample: (CMSampleBufferRef) -> Unit,
-) : NSObject(), AVCaptureVideoDataOutputSampleBufferDelegateProtocol {
-    override fun captureOutput(
-        output: AVCaptureOutput,
-        didOutputSampleBuffer: CMSampleBufferRef?,
-        fromConnection: AVCaptureConnection,
-    ) {
-        didOutputSampleBuffer?.let(onSample)
     }
 }
 

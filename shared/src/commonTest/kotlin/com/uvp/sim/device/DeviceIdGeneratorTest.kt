@@ -3,6 +3,7 @@ package com.uvp.sim.device
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.time.Clock
 
 class DeviceIdGeneratorTest {
 
@@ -37,7 +38,7 @@ class DeviceIdGeneratorTest {
 
     @Test
     fun `distribution check - 100 random inputs`() {
-        val inputs = (1..100).map { "hardware-id-$it-${System.currentTimeMillis()}" }
+        val inputs = (1..100).map { "hardware-id-$it-${Clock.System.now().toEpochMilliseconds()}" }
         val outputs = inputs.map { DeviceIdGenerator.deriveDeviceId(it) }.toSet()
 
         // 100 个输入应该产生 100 个不同输出（概率上几乎必然，冲突概率 < 100^2 / 10^19）

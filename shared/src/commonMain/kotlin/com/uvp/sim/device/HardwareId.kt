@@ -4,7 +4,7 @@ package com.uvp.sim.device
  * 获取设备硬件标识，用于派生唯一的 deviceId。
  *
  * - Android: Settings.Secure.ANDROID_ID（需要 Context）
- * - iOS: UIDevice.current.identifierForVendor
+ * - iOS: UIDevice.currentDevice.identifierForVendor
  * - JVM: null（桌面端无实现）
  *
  * @param context 平台相关上下文（Android 需要 android.content.Context，其他平台忽略）
