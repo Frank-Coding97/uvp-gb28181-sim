@@ -221,6 +221,13 @@ class TcpSipTransport(
                 val remoteAddr = sk.remoteAddress as? InetSocketAddress
                 val sourceIp = remoteAddr?.hostname ?: remote.host
                 val sourcePort = remoteAddr?.port ?: remote.port
+                // 授权门(可能跑在主线程)只读地址形式缓存、自己不做 DNS —— 这里把
+                // "配置侧"(remote.host + allowList)与"观测侧"(对端)都预热好,
+                // 避免首个 MANSCDP 因缓存未命中被 fail-closed 丢掉。
+                // primeHostForms 是 fire-and-forget,不会阻塞本接收循环。
+                primeHostForms(remote.host)
+                remote.allowList.forEach { primeHostForms(it) }
+                primeHostForms(sourceIp)
                 var shouldRelease = false
                 try {
                     while (isActive) {

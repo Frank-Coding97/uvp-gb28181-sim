@@ -83,6 +83,12 @@ class UdpSipTransport(
         // (Android viewModelScope = Dispatchers.Main)的 context,而本循环含阻塞网络 IO
         // (sk.receive / InetSocketAddress 反向 DNS),在主线程会触发 NetworkOnMainThreadException 崩溃。
         receiveJob = ownedScope.launch(Dispatchers.Default) {
+            // 授权门(可能跑在主线程)只读地址形式缓存、自己不做 DNS —— 这里先把
+            // "配置侧"(remote.host + allowList)的形式预热好,避免首个 MANSCDP 因
+            // 缓存未命中被 fail-closed 丢掉。primeHostForms 是 fire-and-forget,
+            // 不会阻塞本接收循环。
+            primeHostForms(remote.host)
+            remote.allowList.forEach { primeHostForms(it) }
             while (isActive) {
                 val datagram = try {
                     sk.receive()
@@ -94,9 +100,14 @@ class UdpSipTransport(
                 try {
                     val msg = SipParser.parse(bytes)
                     val sourceAddr = datagram.address as? InetSocketAddress
+                    // 这里读 hostname 可能触发反向 DNS(现场会把 192.168.126.126
+                    // 变成 "Mac"),所以本循环显式跑在 Dispatchers.Default;顺手把
+                    // "观测侧"的形式也预热进缓存,授权门随后同步比对即可命中。
+                    val sourceHost = sourceAddr?.hostname
+                    if (sourceHost != null) primeHostForms(sourceHost)
                     val envelope = SipEnvelope(
                         message = msg,
-                        sourceIp = sourceAddr?.hostname ?: "0.0.0.0",
+                        sourceIp = sourceHost ?: "0.0.0.0",
                         sourcePort = sourceAddr?.port ?: 0,
                         transport = TransportType.UDP,
                     )
