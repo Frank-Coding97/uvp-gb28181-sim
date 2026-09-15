@@ -86,6 +86,9 @@ class SipViewModel @JvmOverloads constructor(
     val catalogTree: StateFlow<List<CatalogNode>> get() = appEngine.catalogTree
     val alarmHistory: StateFlow<List<com.uvp.sim.domain.AlarmRecord>> get() = appEngine.alarmHistory
     val clockOffset: StateFlow<com.uvp.sim.domain.ClockOffset> get() = appEngine.clockOffset
+    val activeLiveStream: StateFlow<Boolean> get() = appEngine.activeLiveStream
+    fun onAppBackground() = appEngine.onAppBackground()
+    fun onAppForeground() = appEngine.onAppForeground()
 
     /** events 历史窗口(滚动列表,Android-only)。 */
     private val _events = MutableStateFlow<List<SimEvent>>(emptyList())

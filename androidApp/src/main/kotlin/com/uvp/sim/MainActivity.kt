@@ -102,6 +102,24 @@ class MainActivity : ComponentActivity() {
             else runtime.detachPreviewSurface()
         }
 
+        lifecycleScope.launch {
+            viewModel.activeLiveStream.collect { active ->
+                if (active) {
+                    runCatching {
+                        com.uvp.sim.media.LiveStreamingForegroundService.start(applicationContext)
+                    }.onFailure { error ->
+                        SystemLogger.emit(
+                            LogLevel.Warning,
+                            LogTag.Lifecycle,
+                            "直播前台服务启动失败: ${error::class.simpleName}: ${error.message}",
+                        )
+                    }
+                } else {
+                    com.uvp.sim.media.LiveStreamingForegroundService.stop(applicationContext)
+                }
+            }
+        }
+
         // 权限检查 — 没拿到就请求,拿到后媒体已就绪
         // v1 real-gps-source(plan §5.2):MobilePosition 上报需要 FINE_LOCATION,COARSE 兜底
         val needs = mutableListOf<String>()
@@ -279,15 +297,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        viewModel.onAppForeground()
         SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "前台恢复")
     }
 
     override fun onStop() {
+        viewModel.onAppBackground()
         super.onStop()
         SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "进入后台")
     }
 
     override fun onDestroy() {
+        if (!viewModel.activeLiveStream.value) {
+            com.uvp.sim.media.LiveStreamingForegroundService.stop(applicationContext)
+        }
         com.uvp.sim.ui.ShareContextHolder.context = null
         CameraPreviewBinder.setBinder(null)
         super.onDestroy()

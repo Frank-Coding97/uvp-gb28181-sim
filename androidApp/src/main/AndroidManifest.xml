@@ -53,6 +53,11 @@
             android:name="com.uvp.sim.recording.RecordingForegroundService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone" />
+
+        <service
+            android:name="com.uvp.sim.media.LiveStreamingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="camera|microphone" />
     </application>
 
 </manifest>

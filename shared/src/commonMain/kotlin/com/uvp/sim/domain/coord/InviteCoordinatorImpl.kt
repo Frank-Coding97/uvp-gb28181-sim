@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlin.time.Clock
+import com.uvp.sim.media.BackgroundMediaController
 
 /**
  * [InviteCoordinator] 真实现(PR4 T4.2 GREEN)。
@@ -119,6 +120,7 @@ internal class InviteCoordinatorImpl(
     // ---- 内部状态(从 Engine 搬过来) ----
     private val mutex = Mutex()
     private var activeStream: ActiveStream? = null
+    private val backgroundMedia = BackgroundMediaController()
     // R1 #3:并发 INVITE 竞态守卫。
     // 接受路径从"过滤通过"到"activeStream 赋值"之间没有锁,两路并发 INVITE 都能通过
     // `activeStream == null` 检查并各开一路 RTP / 200 OK。用 mutex 原子检查
@@ -144,6 +146,7 @@ internal class InviteCoordinatorImpl(
             shared = sharedState,
             rtpSenderFactory = factory,
             audioCapture = audioCapture,
+            backgroundMedia = backgroundMedia,
             clockOffsetProvider = clockOffsetProvider,
         )
     }
@@ -291,6 +294,7 @@ internal class InviteCoordinatorImpl(
         dialogHandler.cancelAckWatchdog()
         if (active != null) {
             _activeStreamSnapshot.value = null
+            backgroundMedia.onActiveInviteChanged(active = false)
             active.streamJob.cancel()
             active.audioJob?.cancel()
             active.statsJob?.cancel()
@@ -495,6 +499,7 @@ internal class InviteCoordinatorImpl(
             remoteHost = accepted.offer.remoteIp, remotePort = accepted.offer.remotePort, ssrc = accepted.ssrc,
         )
         _state.value = InviteState.Streaming
+        backgroundMedia.onActiveInviteChanged(active = true)
 
         // R3 #1:200 OK 已发(handler 内),activeStream 发布完成,现在切 SipState + start media
         mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.InviteReceived)
@@ -555,5 +560,28 @@ internal class InviteCoordinatorImpl(
             mutableSipState.value = SipStateMachine.transition(mutableSipState.value, SipEvent.CallEnded)
         }
     }
-}
 
+    override fun onAppBackground() {
+        val active = activeStream != null
+        backgroundMedia.enterBackground(active)
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Media,
+            if (active) "进入后台: 停止真实音视频采集，保持 INVITE 并推送占位流"
+            else "进入后台: 无活跃 INVITE，不推送 RTP",
+        )
+    }
+
+    override fun onAppForeground() {
+        val active = activeStream != null
+        backgroundMedia.enterForeground(active)
+        if (active) {
+            cameraCapture?.requestKeyFrame()
+            SystemLogger.emit(
+                LogLevel.Info,
+                LogTag.Media,
+                "回到前台: 重启采集，首个真实关键帧到达后切回相机画面",
+            )
+        }
+    }
+}

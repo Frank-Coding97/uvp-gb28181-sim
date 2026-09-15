@@ -7,7 +7,11 @@ import com.uvp.sim.network.RtpSender
 import com.uvp.sim.observability.LogTag
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,6 +40,7 @@ internal class InviteMediaPipeline(
     private val shared: InviteSharedState,
     private val rtpSenderFactory: (host: String, port: Int, mode: RtpMode, expectedClientHost: String?) -> RtpSender,
     private val audioCapture: com.uvp.sim.camera.AudioCapture?,
+    private val backgroundMedia: com.uvp.sim.media.BackgroundMediaController,
     private val clockOffsetProvider: () -> ClockOffset = { ClockOffset.Empty },
     private val rtcpSrIntervalMs: Long = RTCP_SR_INTERVAL_MS,
     private val mediaStatsIntervalMs: Long = MEDIA_STATS_INTERVAL_MS,
@@ -119,22 +124,46 @@ internal class InviteMediaPipeline(
         onMediaFailure: suspend (cid: String, reason: String) -> Unit,
     ): Job = shared.scope.launch(start = CoroutineStart.LAZY) {
         try {
-            cam.start().collect { frame ->
-                val ps = muxer.muxFrame(frame)
-                val timestamp90k = frame.timestampUs * 9 / 100
-                // R2 #2 verify-followup: pack 跟 send 在同一把 mutex,RFC 3550 序列号单调递增
-                // R4 #2:frameCount 一同收进 rtpMutex 保护范围,避免 stats/RTCP loop torn read
-                rtpMutex.withLock {
-                    val packets = packer.packFrame(ps, timestamp90k)
-                    for (p in packets) {
-                        rtp.send(p)
-                        shared.currentActiveStream()?.let {
-                            it.packetCount += 1
-                            it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
-                            it.lastRtpTimestamp = timestamp90k
+            var lastTimestampUs = -1L
+            val frameDurationUs = 1_000_000L / shared.config.video.frameRate.coerceAtLeast(1)
+            suspend fun send(frame: com.uvp.sim.media.H264Frame) {
+                val timestampUs = if (lastTimestampUs < 0L) frame.timestampUs
+                else frame.timestampUs.coerceAtLeast(lastTimestampUs + frameDurationUs)
+                lastTimestampUs = timestampUs
+                sendVideoFrame(frame.copy(timestampUs = timestampUs), muxer, packer, rtp, rtpMutex)
+            }
+
+            backgroundMedia.mode.collectLatest { mode ->
+                when (mode) {
+                    com.uvp.sim.media.BackgroundMediaMode.Inactive -> Unit
+                    com.uvp.sim.media.BackgroundMediaMode.Live -> cam.start().collect { send(it) }
+                    com.uvp.sim.media.BackgroundMediaMode.Placeholder -> {
+                        cam.stop()
+                        while (isActive) {
+                            send(com.uvp.sim.media.backgroundVideoFrame(shared.config.video.videoCodec, lastTimestampUs + frameDurationUs))
+                            delay(frameDurationUs / 1_000L)
                         }
                     }
-                    shared.currentActiveStream()?.let { it.frameCount += 1 }
+                    com.uvp.sim.media.BackgroundMediaMode.AwaitingKeyFrame -> coroutineScope {
+                        val keyFrameRequestJob = launch {
+                            delay(100L)
+                            cam.requestKeyFrame()
+                        }
+                        val placeholderJob = launch {
+                            while (isActive) {
+                                send(com.uvp.sim.media.backgroundVideoFrame(shared.config.video.videoCodec, lastTimestampUs + frameDurationUs))
+                                delay(frameDurationUs / 1_000L)
+                            }
+                        }
+                        cam.start().collect { frame ->
+                            if (frame.isKeyFrame) {
+                                keyFrameRequestJob.cancel()
+                                placeholderJob.cancelAndJoin()
+                                send(frame)
+                                backgroundMedia.onRealVideoKeyFrame()
+                            }
+                        }
+                    }
                 }
             }
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -156,24 +185,42 @@ internal class InviteMediaPipeline(
     ): Job = shared.scope.launch(start = CoroutineStart.LAZY) {
         try {
             var audioFrameCount = 0L
-            audio.start().collect { aFrame ->
+            var lastTimestampUs = -1L
+            val codec = shared.config.video.audioCodec
+            val frameDurationUs = com.uvp.sim.media.backgroundAudioFrameDurationUs(codec)
+            suspend fun send(aFrame: com.uvp.sim.media.AudioFrame) {
+                val timestampUs = if (lastTimestampUs < 0L) aFrame.timestampUs
+                else aFrame.timestampUs.coerceAtLeast(lastTimestampUs + frameDurationUs)
+                lastTimestampUs = timestampUs
                 audioFrameCount += 1
                 if (audioFrameCount == 1L) {
                     com.uvp.sim.observability.SystemLogger.emit(
-                        com.uvp.sim.observability.LogLevel.Info,
-                        LogTag.Media,
+                        com.uvp.sim.observability.LogLevel.Info, LogTag.Media,
                         "RTP_AUDIO_FIRST_FRAME codec=${aFrame.codec} payload=${aFrame.payload.size}",
                     )
                 }
-                val ps = muxer.muxAudio(aFrame)
-                val timestamp90k = aFrame.timestampUs * 9 / 100
+                val ps = muxer.muxAudio(aFrame.copy(timestampUs = timestampUs))
+                val timestamp90k = timestampUs * 9 / 100
                 rtpMutex.withLock {
-                    val packets = packer.packFrame(ps, timestamp90k)
-                    for (p in packets) {
-                        rtp.send(p)
+                    packer.packFrame(ps, timestamp90k).forEach { packet ->
+                        rtp.send(packet)
                         shared.currentActiveStream()?.let {
                             it.packetCount += 1
-                            it.octetCount += (p.size - 12).coerceAtLeast(0).toLong()
+                            it.octetCount += (packet.size - 12).coerceAtLeast(0).toLong()
+                        }
+                    }
+                }
+            }
+            backgroundMedia.mode.collectLatest { mode ->
+                when (mode) {
+                    com.uvp.sim.media.BackgroundMediaMode.Inactive -> Unit
+                    com.uvp.sim.media.BackgroundMediaMode.Live -> audio.start().collect { send(it) }
+                    com.uvp.sim.media.BackgroundMediaMode.Placeholder,
+                    com.uvp.sim.media.BackgroundMediaMode.AwaitingKeyFrame -> {
+                        audio.stop()
+                        while (isActive) {
+                            send(com.uvp.sim.media.backgroundAudioFrame(codec, lastTimestampUs + frameDurationUs))
+                            delay(frameDurationUs / 1_000L)
                         }
                     }
                 }
@@ -183,6 +230,28 @@ internal class InviteMediaPipeline(
         } catch (e: Throwable) {
             shared.simEventEmit(transportErrorOf("RTP audio send", e))
             shared.scope.launch { onMediaFailure(cid, "audio send failed: ${e::class.simpleName}") }
+        }
+    }
+
+    private suspend fun sendVideoFrame(
+        frame: com.uvp.sim.media.H264Frame,
+        muxer: com.uvp.sim.media.PsMuxer,
+        packer: com.uvp.sim.media.RtpPacker,
+        rtp: RtpSender,
+        rtpMutex: Mutex,
+    ) {
+        val ps = muxer.muxFrame(frame)
+        val timestamp90k = frame.timestampUs * 9 / 100
+        rtpMutex.withLock {
+            packer.packFrame(ps, timestamp90k).forEach { packet ->
+                rtp.send(packet)
+                shared.currentActiveStream()?.let {
+                    it.packetCount += 1
+                    it.octetCount += (packet.size - 12).coerceAtLeast(0).toLong()
+                    it.lastRtpTimestamp = timestamp90k
+                }
+            }
+            shared.currentActiveStream()?.let { it.frameCount += 1 }
         }
     }
 

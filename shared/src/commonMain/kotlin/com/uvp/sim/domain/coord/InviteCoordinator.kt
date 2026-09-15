@@ -29,6 +29,10 @@ internal interface InviteCoordinator : Coordinator {
      * 发 BYE,清 ActiveStream,回到 Idle。
      */
     suspend fun stopStream(reason: String = "user stop")
+
+    /** App 生命周期通知。只影响仍存在的活跃 INVITE 媒体，不改变 SIP 注册状态。 */
+    fun onAppBackground() = Unit
+    fun onAppForeground() = Unit
 }
 
 internal enum class InviteState {

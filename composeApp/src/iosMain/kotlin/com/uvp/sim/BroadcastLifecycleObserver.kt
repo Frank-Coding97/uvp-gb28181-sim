@@ -14,6 +14,9 @@ import platform.Foundation.NSNotificationCenter
 import platform.Foundation.NSOperationQueue
 import platform.UIKit.UIApplicationDidEnterBackgroundNotification
 import platform.UIKit.UIApplicationWillEnterForegroundNotification
+import platform.UIKit.UIApplication
+import platform.UIKit.UIBackgroundTaskIdentifier
+import platform.UIKit.UIBackgroundTaskInvalid
 import platform.darwin.NSObjectProtocol
 
 /**
@@ -35,6 +38,7 @@ class BroadcastLifecycleObserver(
 ) {
     private var bgObserver: NSObjectProtocol? = null
     private var fgObserver: NSObjectProtocol? = null
+    private var backgroundTaskId: UIBackgroundTaskIdentifier = UIBackgroundTaskInvalid
 
     fun attach() {
         if (bgObserver != null || fgObserver != null) return // 幂等
@@ -59,6 +63,9 @@ class BroadcastLifecycleObserver(
                         )
                     }
             }
+            engine.onAppBackground()
+            scope.launch { com.uvp.sim.camera.CameraSessionKeepalive.stop() }
+            beginLivePlaceholderTask()
             BroadcastAudioSession.onEnterBackground()
         }
 
@@ -72,6 +79,9 @@ class BroadcastLifecycleObserver(
                 "IOS_APP_ENTER_FG(broadcast 不主动重建,等平台重发 MESSAGE)",
             )
             BroadcastAudioSession.onEnterForeground()
+            endLivePlaceholderTask()
+            engine.onAppForeground()
+            scope.launch { restartCameraKeepalive() }
         }
     }
 
@@ -81,5 +91,47 @@ class BroadcastLifecycleObserver(
         fgObserver?.let { center.removeObserver(it) }
         bgObserver = null
         fgObserver = null
+        endLivePlaceholderTask()
+    }
+
+    private fun beginLivePlaceholderTask() {
+        if (!engine.activeLiveStream.value || backgroundTaskId != UIBackgroundTaskInvalid) return
+        backgroundTaskId = UIApplication.sharedApplication.beginBackgroundTaskWithExpirationHandler {
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Lifecycle,
+                "IOS_LIVE_PLACEHOLDER_EXPIRED → 主动结束 INVITE 媒体会话",
+            )
+            scope.launch {
+                try {
+                    engine.stopStream("iOS background task expired")
+                } finally {
+                    endLivePlaceholderTask()
+                }
+            }
+        }
+    }
+
+    private fun endLivePlaceholderTask() {
+        val task = backgroundTaskId
+        if (task == UIBackgroundTaskInvalid) return
+        backgroundTaskId = UIBackgroundTaskInvalid
+        UIApplication.sharedApplication.endBackgroundTask(task)
+    }
+
+    private suspend fun restartCameraKeepalive() {
+        val state = engine.state.value
+        if (state != com.uvp.sim.sip.SipState.Registered && state != com.uvp.sim.sip.SipState.InCall) return
+        val video = engine.config.value.video
+        com.uvp.sim.camera.CameraSessionKeepalive.start(
+            com.uvp.sim.camera.CaptureConfig(
+                widthPx = video.resolution.widthPx,
+                heightPx = video.resolution.heightPx,
+                frameRate = video.frameRate,
+                bitrateBps = video.bitrateKbps * 1_000,
+                keyframeIntervalSeconds = video.keyframeIntervalSeconds,
+                videoCodec = video.videoCodec,
+            )
+        )
     }
 }

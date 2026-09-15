@@ -17,9 +17,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -80,6 +83,11 @@ class SimulatorEngine internal constructor(
 
     /** 当前推流通道的显示名 — 委派给 InviteCoordinator(PR4 T4.3)。 */
     val currentChannelName: StateFlow<String> get() = invite.currentChannelName
+
+    /** 只表示平台已建立 INVITE 实时流，单纯 SIP 注册不计入。 */
+    val activeLiveStream: StateFlow<Boolean> = invite.activeStreamSnapshot
+        .map { it != null }
+        .stateIn(this.scope, SharingStarted.Eagerly, false)
 
     /** Engine 不在 InCall 时,把 registration.state 单向直写到 holders.state(InCall 由业务路径维护)。 */
     private val registrationStateBridge: Job = scope.launch {
@@ -209,6 +217,9 @@ class SimulatorEngine internal constructor(
 
     /** 5.5 device-initiated BYE — Invite 域。 */
     suspend fun stopStream(reason: String = "user stop") = invite.stopStream(reason)
+
+    fun onAppBackground() = invite.onAppBackground()
+    fun onAppForeground() = invite.onAppForeground()
 
     // Broadcast 域公开 API — 全部委派 BroadcastCoordinator
     val currentBroadcast: StateFlow<BroadcastDialog?> get() = broadcast.current

@@ -96,6 +96,10 @@ interface PlatformRuntime {
      */
     fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig)
 
+    /** App 前后台转换。平台实现用于立即释放/恢复受系统限制的采集资源。 */
+    fun onAppBackground() = Unit
+    fun onAppForeground() = Unit
+
     /**
      * 释放进程级媒体单例。仅 ViewModel.onCleared / 进程退出时调。
      * Android 释放 sStreamer + sRecordingService 引用,iOS no-op。

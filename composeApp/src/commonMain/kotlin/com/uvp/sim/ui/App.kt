@@ -29,7 +29,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
@@ -73,6 +72,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -237,7 +237,7 @@ fun App(state: AppUiState, actions: AppActions) {
                             // FloatingBottomBar 进子页时的滑出动画保持视觉一致。
                             if (!isFloatingBottomBar) {
                                 AnimatedVisibility(
-                                    visible = !WindowInsets.isImeVisible,
+                                    visible = WindowInsets.ime.getBottom(LocalDensity.current) == 0,
                                     enter = slideInVertically(
                                         initialOffsetY = { it },
                                         animationSpec = tween(220)

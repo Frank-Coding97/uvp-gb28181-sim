@@ -530,6 +530,21 @@ class AndroidCameraStreamer(
     }
 
     /**
+     * 后台时把 CameraX owner 降到 CREATED，确保包括屏幕预览在内的所有 use case
+     * 都停止访问传感器。前台恢复后重绑已有 use case。
+     */
+    fun setAppInForeground(foreground: Boolean) {
+        runOnMain {
+            lifecycleRegistry.currentState = if (foreground) {
+                Lifecycle.State.STARTED
+            } else {
+                Lifecycle.State.CREATED
+            }
+            if (foreground) rebind()
+        }
+    }
+
+    /**
      * Force the encoder to emit a key frame on the next pass.
      * Used in response to GB28181 IFameCmd from the platform (§9.3.4).
      */

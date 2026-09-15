@@ -133,6 +133,14 @@ class PlatformRuntimeAndroid(
         audio.setStreamer(newAudioStreamer)
     }
 
+    override fun onAppBackground() {
+        streamer?.setAppInForeground(false)
+    }
+
+    override fun onAppForeground() {
+        streamer?.setAppInForeground(true)
+    }
+
     override suspend fun release() {
         runCatching { streamer?.release() }
         streamer = null

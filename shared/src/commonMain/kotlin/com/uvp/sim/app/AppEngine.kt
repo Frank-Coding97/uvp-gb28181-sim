@@ -132,6 +132,9 @@ class AppEngine(
     private val _currentChannelName = MutableStateFlow(initialConfig.device.videoChannelName)
     val currentChannelName: StateFlow<String> = _currentChannelName.asStateFlow()
 
+    private val _activeLiveStream = MutableStateFlow(false)
+    val activeLiveStream: StateFlow<Boolean> = _activeLiveStream.asStateFlow()
+
     private val _currentBroadcast = MutableStateFlow<BroadcastDialog?>(null)
     val currentBroadcast: StateFlow<BroadcastDialog?> = _currentBroadcast.asStateFlow()
 
@@ -234,6 +237,7 @@ class AppEngine(
             }
 
             localBridgeJobs += engineScope.launch { eng.currentChannelName.collect { _currentChannelName.value = it } }
+            localBridgeJobs += engineScope.launch { eng.activeLiveStream.collect { _activeLiveStream.value = it } }
             localBridgeJobs += engineScope.launch { eng.currentBroadcast.collect { _currentBroadcast.value = it } }
             localBridgeJobs += engineScope.launch { eng.broadcastSpeakerOn.collect { _broadcastSpeakerOn.value = it } }
         } catch (t: Throwable) {
@@ -424,6 +428,7 @@ class AppEngine(
         engine = null
         transport = null
         snapshotHttp = null
+        _activeLiveStream.value = false
     }
 
     suspend fun disconnect() {
@@ -439,6 +444,17 @@ class AppEngine(
         engine = null
         transport = null
         snapshotHttp = null
+        _activeLiveStream.value = false
+    }
+
+    fun onAppBackground() {
+        engine?.onAppBackground()
+        runtime.onAppBackground()
+    }
+
+    fun onAppForeground() {
+        runtime.onAppForeground()
+        engine?.onAppForeground()
     }
 
     /**

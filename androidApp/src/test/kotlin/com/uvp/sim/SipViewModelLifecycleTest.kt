@@ -3,7 +3,9 @@ package com.uvp.sim
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
 import app.cash.turbine.test
+import com.uvp.sim.app.ConfigStore
 import com.uvp.sim.config.NetworkPreference
+import com.uvp.sim.config.SimConfig
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,6 +41,12 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
 class SipViewModelLifecycleTest {
+
+    private class InMemoryConfigStore : ConfigStore {
+        private var saved: SimConfig? = null
+        override suspend fun loadOnce(fallback: SimConfig): SimConfig = saved ?: fallback
+        override suspend fun save(config: SimConfig) { saved = config }
+    }
 
     private val testDispatcher = StandardTestDispatcher()
 
@@ -86,13 +94,15 @@ class SipViewModelLifecycleTest {
 
     @Test
     fun applyNetworkPreference_updates_config() = runTest(testDispatcher) {
-        val vm = SipViewModel(ApplicationProvider.getApplicationContext<Application>())
-        // 等 init 的 loadOnce + setConfig + apply(stored.preference) 都跑完,
-        // 否则 DataStore loadOnce(suspend)晚到会盖掉测试期间设置的值
+        val vm = SipViewModel(
+            ApplicationProvider.getApplicationContext<Application>(),
+            InMemoryConfigStore(),
+        )
+        // 等 init 的 loadOnce + setConfig + apply(stored.preference) 都跑完。
         advanceUntilIdle()
 
         vm.config.test {
-            // 初始 config(loadOnce 完成后)preference 应为 AUTO(冷启动空 DataStore)
+            // 初始 config(loadOnce 完成后)preference 应为 AUTO。
             assertEquals(NetworkPreference.AUTO, awaitItem().network.preference)
 
             vm.applyNetworkPreference(NetworkPreference.WIFI)
