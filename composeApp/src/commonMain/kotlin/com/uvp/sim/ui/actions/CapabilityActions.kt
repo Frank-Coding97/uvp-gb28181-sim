@@ -89,4 +89,13 @@ interface CapabilityActions {
 
     /** 本地模拟离散调整实际 PTZ 姿态，与平台控制共用 shared 状态。 */
     fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float)
+
+    /**
+     * 本机推光圈/聚焦的行程增量(0~1 归一化),与平台下发的 FI 族命令共用同一个
+     * `DeviceControlModel.focusLevel` / `irisLevel`。
+     *
+     * 单位与 [onLocalPtzAdjust] 不同(那边是角度与倍率),所以独立成一个方法而不是
+     * 给它加两个参数 —— 否则云台三轴的每个调用点都得补两个 `0f`。
+     */
+    fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float)
 }

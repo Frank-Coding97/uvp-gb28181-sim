@@ -583,6 +583,9 @@ private fun buildActions(
         override fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float) {
             engine.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
         }
+        override fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float) {
+            engine.adjustLocalLensPosition(focusDelta, irisDelta)
+        }
     }
     val recording = object : RecordingActions {
         override fun onRecordingStart() {

@@ -43,7 +43,10 @@ import com.uvp.sim.ui.simulate.ptz.StatusTabContent
  *
  * - 平台命令到达时自动切到对应 Tab(老板看屏幕就知道平台在做什么)
  * - 全中文化(REC → 录像 / GUARD → 布防 / Pan → 水平 ...)
- * - 设备 UI 严格只读(spec AC2),所有 chip / 灯 / 开关都是状态展示
+ * - 设备侧状态回显严格只读(spec AC2):所有 chip / 灯 / 进度条都只是平台下发的状态
+ * - **例外**:云台页内嵌一个本机方盘 + 光圈/聚焦长按键,那是模拟器自己的输入
+ *   (演示"设备本地也能推镜头"),不表示收到平台命令 —— 分别由 [onLocalPtzAdjust] /
+ *   [onLocalLensAdjust] 回调直接交给硬件层
  *
  * 命令到 Tab 映射:
  *   云台: PTZCmd(Motion+Preset) / PTZPreciseCtrl / HomePosition
@@ -54,6 +57,8 @@ import com.uvp.sim.ui.simulate.ptz.StatusTabContent
  * 2026-06-26 PR-F T1:4 Tab 内容拆到 [ptz] 子包,本文件只保留主入口编排.
  * 2026-06-27 轨 ④ PR-UI-PROTOCOL-FIX:HudTab.fromCommand 不再 parse rawHex,改读
  * `lastCommandCategory`(语义枚举,派生在 commonMain `deriveCommandCategory`).
+ * 2026-09-16 本机手操几经搬迁(画布底部横条 → 画布下方独立行),最终收进本面板的
+ * 云台页做成方盘控制台;其余三页仍是纯「平台指令回放」.
  */
 enum class HudTab(val title: String) {
     Ptz("云台"),
@@ -77,6 +82,7 @@ enum class HudTab(val title: String) {
 fun PtzHudPanel(
     state: DeviceControlDto,
     onLocalPtzAdjust: (Float, Float, Float) -> Unit,
+    onLocalLensAdjust: (Float, Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by remember { mutableStateOf(HudTab.Ptz) }
@@ -131,11 +137,17 @@ fun PtzHudPanel(
             badges = tabBadges.value,
         )
         Spacer(Modifier.height(10.dp))
-        // 固定高度避免 tab 切换时面板抖动，并容纳云台页的本地模拟控件。
+        // 固定高度避免 tab 切换时面板抖动.
+        // 2026-09-16 云台页重做成「云台控制台」(方盘 + 四周参数 + 预置位/看守位)后,
+        // 需求高从 200dp 抬到 260dp;多出来的这块来自画布下方那条本机调试条被收进本页,
+        // 画布高度基本维持调整后的值.
+        // 2026-09-16 下午:方盘按键 28→36dp、方盘边长 98→128dp(+30dp),按用户反馈
+        // 「卡片再大一点」,这里跟着抬到 284dp。云台页最高态(有巡航轨迹)实测约 271dp,
+        // 余量 13dp。再加高就得重新分配画布高度了。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(246.dp),
+                .height(284.dp),
             contentAlignment = Alignment.TopStart,
         ) {
             AnimatedContent(
@@ -147,7 +159,7 @@ fun PtzHudPanel(
                 label = "hud-tab-content"
             ) { tab ->
                 when (tab) {
-                    HudTab.Ptz -> PtzTabContent(state, onLocalPtzAdjust)
+                    HudTab.Ptz -> PtzTabContent(state, onLocalPtzAdjust, onLocalLensAdjust)
                     HudTab.Status -> StatusTabContent(state)
                     HudTab.Image -> ImageTabContent(state)
                     HudTab.Aux -> AuxTabContent(state)

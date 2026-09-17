@@ -256,6 +256,9 @@ class MainActivity : ComponentActivity() {
                 override fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float) {
                     viewModel.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
                 }
+                override fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float) {
+                    viewModel.adjustLocalLensPosition(focusDelta, irisDelta)
+                }
             }
             val recordingActions = object : RecordingActions {
                 override fun onRecordingStart() = logged("用户点击开始录像") { viewModel.startRecording() }

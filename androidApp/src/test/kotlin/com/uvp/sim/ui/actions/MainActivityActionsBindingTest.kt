@@ -79,12 +79,14 @@ class MainActivityActionsBindingTest {
         composite.onBroadcastStop()
         composite.onSimulateMediaStatusAbnormal(122)
         composite.onLocalPtzAdjust(5f, -2f, 1f)
+        composite.onLocalLensAdjust(0.05f, -0.05f)
 
         assertEquals(
             listOf(
                 "cap.onSnapshot", "cap.onAlarmReset", "cap.onAlarmFireDefault",
                 "cap.onBroadcastStop", "cap.onSimulateMediaStatusAbnormal:122",
-                "cap.onLocalPtzAdjust:5.0:-2.0:1.0"
+                "cap.onLocalPtzAdjust:5.0:-2.0:1.0",
+                "cap.onLocalLensAdjust:0.05:-0.05"
             ),
             sink.calls
         )
@@ -200,6 +202,8 @@ private class CapabilitySliceFake(private val sink: RoutingSink) : CapabilityAct
         sink.record("cap.onPoseTick:$pan:$tilt:$zoom")
     override fun onLocalPtzAdjust(panDelta: Float, tiltDelta: Float, zoomDelta: Float) =
         sink.record("cap.onLocalPtzAdjust:$panDelta:$tiltDelta:$zoomDelta")
+    override fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float) =
+        sink.record("cap.onLocalLensAdjust:$focusDelta:$irisDelta")
 }
 
 private class RecordingSliceFake(private val sink: RoutingSink) : RecordingActions {

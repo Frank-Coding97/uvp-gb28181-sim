@@ -32,14 +32,17 @@ import kotlinx.coroutines.delay
  *
  * 布局:
  * - 上 70%: [MonitoringStage] 3D 摄像机模型(Android: Filament; iOS: SceneKit;
- *   Desktop: 占位) + 各种 overlay
- * - 下 30%: [PtzHudPanel] 平台控制指令实时解码 HUD
+ *   Desktop: 占位) + 各种只读 overlay
+ * - 下 30%: [PtzHudPanel] 平台控制指令 HUD —— 云台页是本机控制台(方盘 + 参数 +
+ *   预置位/看守位),其余三页是平台指令回放
  *
  * 数据源:[AppUiState.deviceControl] StateFlow 写入,UI 订阅.
  *
  * 2026-06-26 PR-F T2:
  *   - MonitoringStage / overlays / StatusHeadline / CameraGlbView expect 拆到同包 4 个子文件
  *   - 主入口只剩 effect 路由 + Snackbar host + 全屏 flash
+ * 2026-09-16:本机 PTZ 手操几经搬迁(画布底部横条 → 画布下方独立行),最终收进
+ *   HUD 云台页做成方盘控制台;回调由此处直接转交 [PtzHudPanel]。
  */
 @Composable
 fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = Modifier) {
@@ -107,6 +110,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
             PtzHudPanel(
                 state = deviceControl,
                 onLocalPtzAdjust = actions::onLocalPtzAdjust,
+                onLocalLensAdjust = actions::onLocalLensAdjust,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 10.dp)

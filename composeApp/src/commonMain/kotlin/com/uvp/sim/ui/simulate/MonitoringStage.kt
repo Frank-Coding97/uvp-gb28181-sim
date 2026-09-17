@@ -28,10 +28,13 @@ import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.model.DeviceControlDto
 
 /**
- * 摄像监控台 — 顶部标题栏 + 下方 3D Filament 视图 + 各种 overlay 叠层.
+ * 摄像监控台 — 顶部标题栏 + 中间 3D Filament 视图(含装饰性 overlay)。
  *
  * 标题栏: 模拟中心 logo + StatusHeadline 状态短句.
- * 3D 区: CameraGlbView + FrostedGlass + AuxFeedback + Guard + DragZoom + IFrameChip.
+ * 3D 区: CameraGlbView + FrostedGlass + AuxFeedback + Guard + DragZoom + IFrameChip
+ *   + CameraGlbView 自带的 PtzThumbnail(右下角缩略图).
+ *   **这一层全是只读装饰,不放任何可交互控件** —— 曾经把本机 PTZ 手操条浮在这里,
+ *   会盖住右下角缩略图(2026-09-16 踩过)。手操现已收进 HUD 云台页([PtzTabContent])。
  */
 @Composable
 internal fun MonitoringStage(
