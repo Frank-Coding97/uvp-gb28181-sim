@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -32,6 +33,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.concurrent.Volatile
 
 /**
  * TCP-based SIP transport (RFC 3261 § 18.2.2).
@@ -42,6 +44,12 @@ import kotlinx.coroutines.withContext
  *
  * GB28181 § 5.2 requires both UDP and TCP support. Some platforms (especially
  * behind NAT/firewall) prefer TCP for reliability.
+ *
+ * **断链自愈(§5.2)**:本类只负责"发现 + 上报"—— read loop 被对端 FIN / 帧错误 / 读错误
+ * 打死时发一条 [connectionLost],并把半死连接标记成不可用。**重连节奏不在这里**,
+ * 因为"断了之后要不要重连、隔多久、重连完要不要重新注册"是会话层决策(见
+ * `com.uvp.sim.domain.SipReconnectSupervisor`)。传输层自己闷头重连会得到一条
+ * "TCP 通了但设备没注册"的连接,而平台侧看起来就是设备在线但其实收不到任何命令。
  */
 class TcpSipTransport(
     private val remote: RemoteEndpoint,
@@ -52,17 +60,59 @@ class TcpSipTransport(
     private val sendMutex = Mutex()
     private var socket: Socket? = null
     private var selector: SelectorManager? = null
-    private var readChannel: ByteReadChannel? = null
-    private var writeChannel: ByteWriteChannel? = null
+
+    // ⚠ 这两个字段被**三个不同的线程**读写:read loop(Dispatchers.Default)在断连时同步置空、
+    // send() 在读、isConnected 可能被自愈协程读。read loop 的写路径刻意不拿 mutex(置空必须
+    // 立即生效,否则上层还能往死链接里写),所以可见性只能靠 @Volatile ——
+    // 少了它,自愈流程可能读到缓存里的旧值,把已经死掉的连接判成"可用"从而跳过重建。
+    @Volatile private var readChannel: ByteReadChannel? = null
+    @Volatile private var writeChannel: ByteWriteChannel? = null
     private var receiveJob: Job? = null
+
+    /**
+     * 连接世代号 —— 每成功建连一次 +1。
+     *
+     * 用来切断一类极隐蔽的竞态:read loop 被动终止时,它只能**异步**释放 fd(要走 mutex),
+     * 而这个异步任务与调用方的重连流程是并发的。若前者晚于新一代 `connect()` 执行,不加保护
+     * 就会把**刚建好的新连接**关掉 —— 现象是「重连看起来成功了,但立刻又断」,而且每轮重建
+     * 都复现,极难从日志看出来(read loop 只在关掉之后才发现自己读的是个死 fd)。
+     * 有了世代号,被动收尾只释放"自己那一代"的 fd。
+     */
+    private var generation: Long = 0
+
     private val ownedScope: CoroutineScope = parentScope
         ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _incoming = MutableSharedFlow<SipEnvelope>(extraBufferCapacity = 64)
     override val incoming: Flow<SipEnvelope> = _incoming.asSharedFlow()
 
+    /**
+     * 被动断连流(见 [SipTransport.connectionLost])。
+     *
+     * `replay = 1` 是刻意的:订阅方(重连监管器)是在 `connect()` **之后**才挂上来的,
+     * 若平台在建连瞬间就把我们 RST 掉,那次丢失发生在订阅之前 —— 纯 `replay = 0` 会让它
+     * 掉在地上,表现为「连上就被关,但设备什么都不做」。回放一条最多只会在订阅瞬间被消费一次
+     * (已订阅的收集者不会再收),而本类的实例与订阅方同生命周期,不会跨会话回放陈旧事件。
+     */
+    private val _connectionLost = MutableSharedFlow<ConnectionLost>(
+        replay = 1,
+        extraBufferCapacity = 8,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    override val connectionLost: Flow<ConnectionLost> = _connectionLost.asSharedFlow()
+
     override val localPort: Int
         get() = (socket?.localAddress as? InetSocketAddress)?.port ?: -1
+
+    /**
+     * 可用 = socket 已建立 **且** read loop 还在。
+     *
+     * 后半句才是关键:被动断连时 socket 字段仍然非空(异步释放),只看 socket 会把
+     * "已经收不到任何东西的连接"报成可用,重连监管器于是一路 return 不再重建 ——
+     * 设备就这么安静地卡在一条死链上。
+     */
+    override val isConnected: Boolean
+        get() = socket != null && readChannel != null
 
     companion object {
         /**
@@ -182,7 +232,13 @@ class TcpSipTransport(
     }
 
     override suspend fun connect(): Unit = mutex.withLock {
-        if (socket != null) return
+        // 判据是 **readChannel 而非 socket**:read loop 被动终止时会**同步**置空 readChannel
+        // (让上层 send 立刻拿到明确失败),但 socket/selector 的 fd 释放是异步的。
+        // 只判 socket 会让重连流程直接 return,拿回一条"半死"连接 —— connect() 报成功、
+        // REGISTER 也写进去了,但**本机永远收不到任何响应**(read loop 早就不在了)。
+        // 这种"重连成功但什么都不恢复"比不重连更难排查,所以这里必须把半死连接重开。
+        if (socket != null && readChannel != null) return
+        releaseSocketLocked()
         // M-6 (audit §3) — 配置白名单不空时,目标 IP 必须命中。
         ServerAllowList.enforce(remote.host, remote.allowList)
         // Android 主线程会触发 NetworkOnMainThreadException(ktor tcp().connect() 内部
@@ -208,9 +264,11 @@ class TcpSipTransport(
             socket = sk
             readChannel = sk.openReadChannel()
             writeChannel = sk.openWriteChannel(autoFlush = true)
+            generation += 1
+            val gen = generation
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
-                "TCP connected → ${remote.host}:${remote.port} keepalive=on"
+                "TCP connected → ${remote.host}:${remote.port} keepalive=on (连接#$gen)"
             )
             // 同 UdpSipTransport:接收循环含阻塞网络 IO(InetSocketAddress 反向 DNS 等),
             // 显式跑在 Dispatchers.Default,避免继承调用方(Android viewModelScope = Main)
@@ -229,6 +287,8 @@ class TcpSipTransport(
                 remote.allowList.forEach { primeHostForms(it) }
                 primeHostForms(sourceIp)
                 var shouldRelease = false
+                // 被动终止的归类 + 原始文本,留给 finally 统一发信号(单点、不重复发)。
+                var lost: ConnectionLost? = null
                 try {
                     while (isActive) {
                         try {
@@ -236,6 +296,10 @@ class TcpSipTransport(
                             if (msg == null) {
                                 // EOF / 对端 FIN:跟 parse 错误同款,read 已结束,transport 不再可用。
                                 shouldRelease = true
+                                lost = ConnectionLost(
+                                    ConnectionLostReason.PeerClosed,
+                                    "对端关闭连接 ${remote.host}:${remote.port}",
+                                )
                                 break
                             }
                             _incoming.emit(
@@ -255,6 +319,10 @@ class TcpSipTransport(
                                 "TCP SIP framing error, dropping connection: ${e.message}"
                             )
                             shouldRelease = true
+                            lost = ConnectionLost(
+                                ConnectionLostReason.FramingError,
+                                e.message ?: "SIP 帧解析失败",
+                            )
                             break
                         } catch (e: Throwable) {
                             if (!isActive) break
@@ -263,6 +331,10 @@ class TcpSipTransport(
                                 "TCP read error: ${e::class.simpleName}: ${e.message}"
                             )
                             shouldRelease = true
+                            lost = ConnectionLost(
+                                ConnectionLostReason.ReadError,
+                                "${e::class.simpleName}: ${e.message}",
+                            )
                             break
                         }
                     }
@@ -276,7 +348,14 @@ class TcpSipTransport(
                     if (shouldRelease) {
                         writeChannel = null
                         readChannel = null
-                        ownedScope.launch { runCatching { close() } }
+                        // 先发断连信号、再异步放 fd:上层(重连监管器)要尽快开始退避计时,
+                        // 而 fd 释放要走 mutex,晚一点无所谓。
+                        // tryEmit:GOP 已满时丢最旧一条 —— 保留"最新一次断连"正是我们要的语义,
+                        // 这里绝不能为了投递一条信号把 read loop 的收尾卡住。
+                        lost?.let { _connectionLost.tryEmit(it) }
+                        // 跨代保护见 [generation]:这个 launch 与重连流程并发,晚一步执行时
+                        // 若无条件释放,就会顺手关掉重连**刚建好**的那条连接。
+                        ownedScope.launch { runCatching { releaseIfGeneration(gen) } }
                     }
                 }
             }
@@ -315,6 +394,19 @@ class TcpSipTransport(
         receiveJob = null
         readChannel = null
         writeChannel = null
+        releaseSocketLocked()
+        if (parentScope == null) {
+            ownedScope.cancel()
+        }
+    }
+
+    /**
+     * 释放当前 socket / selector 的 fd 并置空字段。**调用方必须已持有 [mutex]**。幂等。
+     *
+     * 抽出来是因为有两条释放路径:主动 [close] 与被动的 [releaseIfGeneration] —— 后者的跨代
+     * 判断只能夹在锁内,所以"判断"和"释放"不能再各写一份。
+     */
+    private suspend fun releaseSocketLocked() {
         // socket.close() / selector.close() 都涉及 fd 释放,在主线程上 strict
         // mode 同样会发火,统一到 IO。
         withContext(IoDispatcher) {
@@ -323,8 +415,21 @@ class TcpSipTransport(
             selector?.close()
             selector = null
         }
-        if (parentScope == null) {
-            ownedScope.cancel()
+    }
+
+    /**
+     * read loop 被动终止时的收尾:只释放 [gen] 那一代的 fd。
+     *
+     * 若期间连接已被重连流程替换(世代号变了),**什么都不做** —— 否则会把新连接关掉,
+     * 现象见 [generation] 的注释。
+     *
+     * 注意这里**不** cancel `ownedScope`(与 [close] 不同):一次被动断连只意味着"这条连接没了",
+     * 不意味着"这个 transport 退休了" —— 它还要被重连复用。真正退休时由 [close] 负责。
+     */
+    private suspend fun releaseIfGeneration(gen: Long) {
+        mutex.withLock {
+            if (gen != generation) return@withLock
+            releaseSocketLocked()
         }
     }
 

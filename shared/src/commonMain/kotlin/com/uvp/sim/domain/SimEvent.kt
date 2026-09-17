@@ -148,6 +148,32 @@ sealed class SimEvent {
         val attempt: Int,
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
+
+    // ---------- 传输层自愈(GB/T 28181 §5.2 长连接)----------
+    //
+    // 这一组事件的存在理由是**可观测**:长连接被对端打死是设备侧独有的故障 ——
+    // 平台那边只看到"设备不再心跳",设备这边旧实现干脆什么都不做(永久失联)。
+    // 不给它三条事件,联调时就只能靠抓包猜"它到底有没有在重连"。
+
+    /** TCP 长连接被对端 FIN / 帧错误 / 读错误打死(非我方 close)。 */
+    data class ConnectionLost(
+        val reason: com.uvp.sim.network.ConnectionLostReason,
+        val detail: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 已排定第 [attempt] 次重连,[delayMs] 毫秒后执行。 */
+    data class ReconnectScheduled(
+        val attempt: Int,
+        val delayMs: Long,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
+    /** 第 [attempt] 次重连成功,TCP 已重建,随后重新注册。 */
+    data class ReconnectSucceeded(
+        val attempt: Int,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
     data class InviteAckTimeout(
         val callId: String,
         override val timestampMs: Long = nowMs()
