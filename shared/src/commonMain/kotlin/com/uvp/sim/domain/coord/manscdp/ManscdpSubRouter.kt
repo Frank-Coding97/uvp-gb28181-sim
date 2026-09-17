@@ -1,6 +1,7 @@
 package com.uvp.sim.domain.coord.manscdp
 
 import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlModel
@@ -59,6 +60,14 @@ internal class ManscdpContext(
     val localIpProvider: () -> String,
     val localPortProvider: () -> Int,
     val clockOffsetProvider: () -> ClockOffset,
+    /**
+     * 本次交互应采用的协议版本 —— 附录 I 协商结果(见 [com.uvp.sim.sip.GbVersionNegotiation])。
+     *
+     * 与 [config] 上的 `gbVersion` 区分开:后者是**本机声明**的版本(REGISTER 里报出去的那个),
+     * 前者是 min(本机, 平台)。SubRouter 造应答形态时必须读这一个,否则平台是 2016 时仍会
+     * 收到 2022 才有的字段。
+     */
+    val effectiveGbVersionProvider: () -> GbVersion = { config.gbVersion },
     val stateRegisteredOrInCall: () -> Boolean,
     val simEventEmit: suspend (SimEvent) -> Unit,
     val scope: CoroutineScope? = null,
@@ -71,4 +80,8 @@ internal class ManscdpContext(
 ) {
     val localIp: String get() = localIpProvider()
     val localPort: Int get() = localPortProvider()
+    /** 本机声明版本(REGISTER 里报的) — 与 [effectiveGbVersion] 对照时才用。 */
+    val declaredGbVersion: GbVersion get() = config.gbVersion
+    /** 有效版本 = min(本机, 平台),附录 I 协商结果。造应答形态一律用它。 */
+    val effectiveGbVersion: GbVersion get() = effectiveGbVersionProvider()
 }

@@ -179,13 +179,19 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
         }
         notifySn++
         val xml = MobilePositionNotify.build(
-            deviceId = CatalogTreeStore.positionChannelId(ctx.config, ctx.catalogTree.value),
+            // 位置来源通道 —— 2016 形态作根 DeviceID(平台按它定位通道),
+            // 2022 形态下沉到 Item/DeviceID。见 MobilePositionNotify 的 KDoc。
+            sourceChannelId = CatalogTreeStore.positionChannelId(ctx.config, ctx.catalogTree.value),
             sn = notifySn,
             point = fix.point,
             speed = fix.speed,
             direction = fix.direction,
             altitude = fix.altitude,
             fixTimeMs = fix.fixTimeMs,
+            // 有效版本 = min(本机, 平台) —— 平台只声明 2016 时不得回 2022 的列表形态。
+            gbVersion = ctx.effectiveGbVersion,
+            // 2022 根 DeviceID 是「目标设备/系统编码」= 平台订阅的目标设备,不是通道编码。
+            rootDeviceId = ctx.config.device.deviceId,
         )
         val notify = buildNotifyForDialog(dialog, xml)
         try {

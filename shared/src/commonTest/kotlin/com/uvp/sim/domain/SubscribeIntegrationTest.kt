@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import com.uvp.sim.testing.TestEngine
@@ -24,8 +25,8 @@ import com.uvp.sim.testing.TestEngine
 @OptIn(ExperimentalCoroutinesApi::class)
 class SubscribeIntegrationTest {
 
-    private fun config() = SimConfig(
-        gbVersion = GbVersion.V2022,
+    private fun config(gbVersion: GbVersion = GbVersion.V2022) = SimConfig(
+        gbVersion = gbVersion,
         server = ServerConfig(
             ip = "192.168.1.100",
             port = 5060,
@@ -143,6 +144,76 @@ class SubscribeIntegrationTest {
         assertTrue(notify.toHeader()!!.endsWith(";tag=plat-tag"), "NOTIFY To 必须携带订阅方 dialog tag")
         val body = notify.body.decodeToString()
         assertTrue(body.contains("<CmdType>MobilePosition</CmdType>"))
+
+        engine.shutdown()
+    }
+
+    /**
+     * F-10 **端到端接线**回归:有效版本必须真的传到位置 NOTIFY 的构造器。
+     *
+     * 只测 builder 抓不住「接线接错版本源」这类错法 —— 例如误用 `config.gbVersion`
+     * (本机声明版本)而不是附录 I 协商结果 `effectiveGbVersion`,builder 单测照样全绿,
+     * 但平台只声明 2016 时设备仍会回 2022 形态。
+     */
+    @Test
+    fun initialPositionNotifyUses2022ListFormWhenNegotiated2022() = runTest {
+        val transport = MockSipTransport(config(gbVersion = GbVersion.V2022))
+        transport.connect()
+        val engine = TestEngine.create(
+            config(gbVersion = GbVersion.V2022), transport, this, localIpProvider = { "192.168.1.50" },
+        )
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(subscribeRequest())
+        runCurrent()
+
+        val body = transport.sent.filterIsInstance<SipRequest>()
+            .first { it.method == SipMethod.NOTIFY }.body.decodeToString()
+        assertTrue(body.contains("<SumNum>1</SumNum>"), "2022 应出列表形态: $body")
+        assertTrue(body.contains("<DeviceList Num=\"1\">"), "2022 应带 DeviceList@Num: $body")
+        assertTrue(body.contains("<CaptureTime>"), "2022 采集时间应下沉到 Item/CaptureTime: $body")
+        // 根 DeviceID 是订阅目标设备,不是位置来源通道。
+        assertTrue(
+            body.contains("<DeviceID>34020000001110000001</DeviceID>"),
+            "2022 根应是目标设备编码: $body",
+        )
+        assertTrue(
+            body.contains("<Item>\r\n<DeviceID>34020000001320000001</DeviceID>"),
+            "2022 通道编码应在 Item 内: $body",
+        )
+
+        engine.shutdown()
+    }
+
+    /** 同一订阅在 2016 协商结果下必须出**扁平形态** —— 且不得混入任何 2022 独有的元素。 */
+    @Test
+    fun initialPositionNotifyUses2016FlatFormWhenNegotiated2016() = runTest {
+        val transport = MockSipTransport(config(gbVersion = GbVersion.V2016))
+        transport.connect()
+        val engine = TestEngine.create(
+            config(gbVersion = GbVersion.V2016), transport, this, localIpProvider = { "192.168.1.50" },
+        )
+        registerEngine(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(subscribeRequest())
+        runCurrent()
+
+        val body = transport.sent.filterIsInstance<SipRequest>()
+            .first { it.method == SipMethod.NOTIFY }.body.decodeToString()
+        assertTrue(body.contains("<Longitude>"), "2016 应出扁平坐标: $body")
+        assertTrue(body.contains("<Latitude>"), "2016 应出扁平坐标: $body")
+        assertFalse(body.contains("<SumNum>"), "2016 不得出现 SumNum: $body")
+        assertFalse(body.contains("<DeviceList"), "2016 不得出现 DeviceList: $body")
+        assertFalse(body.contains("CaptureTime"), "2016 不得出现 CaptureTime: $body")
+        // 2016 的根 DeviceID 是位置来源通道(平台按它定位通道 / 写 SourceCode)。
+        assertTrue(
+            body.contains("<DeviceID>34020000001320000001</DeviceID>"),
+            "2016 根应是位置来源通道: $body",
+        )
 
         engine.shutdown()
     }
