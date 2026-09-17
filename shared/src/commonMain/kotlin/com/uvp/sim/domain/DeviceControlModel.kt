@@ -29,13 +29,22 @@ data class DeviceControlModel(
     val panAngle: Float = 0f,
     val tiltAngle: Float = 0f,
     val zoomLevel: Float = 1f,
+    /** 光圈位置 0~1(归一化行程)。位置由 [irisSpeed] 积分而来,不是每条命令加一点。 */
     val irisLevel: Float = 0.5f,
+    /** 聚焦位置 0~1(归一化行程)。同 [irisLevel]。 */
     val focusLevel: Float = 0.5f,
 
     // PTZ 实时速率(由 PTZCmd 写入,UI 层每帧消费)
     val panSpeed: Float = 0f,
     val tiltSpeed: Float = 0f,
     val zoomSpeed: Float = 0f,
+
+    // FI 族(聚焦/光圈)实时速率 —— 与上面三轴同级,因为标准里 FI 命令的形态完全一样:
+    // **带速度的"开始动作"指令**,而不是"走一步"指令(见 gb28181 表 A.6,字节5/6 是速度,
+    // 字节4 低 4 位清零即停)。所以设备侧存的是速率,位置由速率积分而来。
+    // 聚焦速度走字节5、光圈速度走字节6,单位都是 0~255。
+    val focusSpeed: Float = 0f,
+    val irisSpeed: Float = 0f,
 
     // 状态灯
     val isRecording: Boolean = false,
@@ -50,9 +59,15 @@ data class DeviceControlModel(
     val presets: Map<Int, PtzPose> = emptyMap(),
     val currentPresetIndex: Int? = null,
 
-    // GB-2022 看守位 — 设备唯一一个"无人时回到的默认位置",跟预置位是不同概念
-    val homePosition: PtzPose? = null,
+    // 看守位(GB/T 28181-2016 §9.3.1 控制 / 2022 才补 §9.5.3 查询)—
+    // 设备端存的是**配置三件套**,不是坐标:指向哪个预置位 + 无云台操作多久自动归位 + 开关。
+    // 坐标本体在 [presets] 里,这里只存引用。跟预置位是不同概念。
+    val homePosition: PtzPose? = null,          // 指向的预置位坐标快照(UI 回显用)
     val homePositionEnabled: Boolean = true,
+    /** 看守位指向的预置位号(wire 上是 `PresetIndex`,0~255)。null = 平台从未下发过看守位。 */
+    val homePositionPresetIndex: Int? = null,
+    /** 无云台操作后自动归位的等待秒数(wire 上是 `ResetTime`)。null = 平台未下发该项。 */
+    val homePositionResetTime: Int? = null,
 
     // GB-2022 §9.5.3 巡航轨迹 — 一组预置位序列 + 停留时长 + 速度
     // key = 轨迹号 1-N,value = 该轨迹的有序预置位编号列表

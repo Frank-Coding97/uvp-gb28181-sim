@@ -42,37 +42,61 @@ internal class DefaultPtzHandler(
         val hex = ManscdpParser.tagValue(xml, "PTZCmd") ?: return
         when (val ins = PtzCmdDecoder.decodeInstruction(hex)) {
             is PtzInstruction.Motion -> handlePtzMotion(ins.cmd, hex)
+            is PtzInstruction.Lens -> handlePtzLens(ins, hex)
             is PtzInstruction.Preset -> presetHandler.handlePtzPreset(ins, hex)
             is PtzInstruction.Aux -> auxHandler.handlePtzAux(ins, hex)
             is PtzInstruction.Cruise -> handlePtzCruise(ins, hex)
-            null -> { /* 校验失败 / 未知子族,200 OK 由 ack 兜底 */ }
+            // 校验失败 / 标准未定义该字节4(null)→ 不猜语义,200 OK 由 ack 兜底
+            null -> Unit
         }
     }
 
+    /**
+     * PTZ 族(表 A.5):只动云台三轴。
+     *
+     * ⚠️ 这里**不再**累计聚焦/光圈。本族字节4 的 bit7/bit6 恒为 0;原实现却在这里按
+     * bit7/bit6 判 Focus Near/Far、又把字节6 的低 4 位当聚焦速度,于是 0x44/0x48
+     * (光圈放大/缩小)落进来被拆成「聚焦远 + 下/上」—— 现象就是**平台一调光圈、
+     * 云台跟着仰俯**。聚焦/光圈已归 FI 族,见 [handlePtzLens]。
+     */
     private fun handlePtzMotion(ptz: PtzCommand, hex: String) {
         state.update {
-            // Focus 累计:WVP 按住按钮每秒发 ~5-10 条,每条 +/- 一个 step.
-            // step = focusSpeed * 0.005,speed=15 → 0.075/cmd,speed=1 → 0.005/cmd.
-            val focusDelta = when (ptz.focusDirection) {
-                FocusDirection.NEAR -> -ptz.focusSpeed * 0.005f
-                FocusDirection.FAR -> ptz.focusSpeed * 0.005f
-                FocusDirection.NONE -> 0f
-            }
-            val newFocusLevel = (it.focusLevel + focusDelta).coerceIn(0f, 1f)
-            // Iris 累计:跟 focus 同步累加机制
-            val irisDelta = when (ptz.irisDirection) {
-                IrisDirection.OPEN -> ptz.irisSpeed * 0.005f
-                IrisDirection.CLOSE -> -ptz.irisSpeed * 0.005f
-                IrisDirection.NONE -> 0f
-            }
-            val newIrisLevel = (it.irisLevel + irisDelta).coerceIn(0f, 1f)
             it.copy(
                 panSpeed = mapPanSpeed(ptz),
                 tiltSpeed = mapTiltSpeed(ptz),
                 zoomSpeed = mapZoomSpeed(ptz),
-                focusLevel = newFocusLevel,
-                irisLevel = newIrisLevel,
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), ptz)
+            )
+        }
+    }
+
+    /**
+     * FI 族(GB/T 28181-2022 表 A.6):聚焦 / 光圈。
+     *
+     * 写进去的是**速率**而不是位置 —— 标准里 FI 命令与方向命令同形:带速度的"开始动作"
+     * 指令,字节4 低 4 位清零(0x40)才停。所以设备侧存速度、位置由 UI 的积分节拍
+     * (见 `PtzTabContent`)按「速率 × 时间」推出来;松手时平台补一条 0x40 → 速率归零 → 停。
+     *
+     * 两轴可以同时有效(表下注 1 允许组合下发,如 0x46 = 光圈放大 + 聚焦近),各自独立推进。
+     * 速度字节也是各占一个:字节5 = 聚焦速度、字节6 = 光圈速度(不对称是标准本身如此)。
+     *
+     * **不动云台三轴**:FI 命令不涉及 pan/tilt/zoom,那三轴该按自己的速率继续走,
+     * 由各自的停止指令负责收尾 —— 在 FI 里顺手把它们清零会造出标准没定义的行为。
+     */
+    private fun handlePtzLens(lens: PtzInstruction.Lens, hex: String) {
+        state.update {
+            it.copy(
+                focusSpeed = when (lens.focus) {
+                    FocusDirection.NEAR -> -lens.focusSpeed * LENS_RATE_PER_SPEED
+                    FocusDirection.FAR -> lens.focusSpeed * LENS_RATE_PER_SPEED
+                    FocusDirection.NONE -> 0f
+                },
+                irisSpeed = when (lens.iris) {
+                    IrisDirection.OPEN -> lens.irisSpeed * LENS_RATE_PER_SPEED
+                    IrisDirection.CLOSE -> -lens.irisSpeed * LENS_RATE_PER_SPEED
+                    IrisDirection.NONE -> 0f
+                },
+                lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), lens.toPtzCommand()),
             )
         }
     }
@@ -174,3 +198,12 @@ internal class DefaultPtzHandler(
         }
     }
 }
+
+/**
+ * FI 速度(标准口径 00H~FFH)→ 归一化行程速率(每秒)。
+ *
+ * `255 × (0.5/255) = 0.5/s`,即满速推完一整条行程(0%~100%)约 2 秒。
+ * 平台默认档位 6 换算过来是 153,约 3.3 秒走完 —— 跟方向盘满速转一圈同一量级,
+ * 演示时既看得出在动、又不会一按就到头。
+ */
+private const val LENS_RATE_PER_SPEED = 0.5f / 255f

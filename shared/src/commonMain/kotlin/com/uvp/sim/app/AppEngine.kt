@@ -537,6 +537,11 @@ class AppEngine(
         engine?.adjustLocalPtzPosition(panDelta, tiltDelta, zoomDelta)
     }
 
+    /** 本机推光圈/聚焦(FI 族)。见 [SimulatorEngine.adjustLocalLensPosition]。 */
+    fun adjustLocalLensPosition(focusDelta: Float, irisDelta: Float) {
+        engine?.adjustLocalLensPosition(focusDelta, irisDelta)
+    }
+
     /** ViewModel 用来更新 SimConfig 的 in-memory 视图(外部 save 后调,避免重复持久化)。
      *
      * Bug 修复(PR-USER-BUG-1):同步走 [rehydrateHolders] 重派生 catalogTree / mockGps /

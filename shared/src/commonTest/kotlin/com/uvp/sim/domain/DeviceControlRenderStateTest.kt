@@ -164,17 +164,20 @@ class DeviceControlRenderStateTest {
         // 罗列所有 Model 当前合法字段,触发编译期检查
         val _all = listOf<Any?>(
             m.panAngle, m.tiltAngle, m.zoomLevel, m.irisLevel, m.focusLevel,
-            m.panSpeed, m.tiltSpeed, m.zoomSpeed,
+            m.panSpeed, m.tiltSpeed, m.zoomSpeed, m.focusSpeed, m.irisSpeed,
             m.isRecording, m.isGuarded, m.isAlarming, m.isRebooting,
             m.dragZoomRect,
             m.presets, m.currentPresetIndex,
             m.homePosition, m.homePositionEnabled,
+            m.homePositionPresetIndex, m.homePositionResetTime,
             m.cruiseTracks, m.activeCruiseTrack,
             m.auxStates, m.auxTimestamps,
             m.lastCommand, m.lastPreciseCtrl,
             m.upgradeProgress, m.pendingEffect,
         )
-        // 26 字段(同 plan §a 列表 + 25 个原 DeviceControlState 字段一一对应)
-        assertEquals(25, _all.size)
+        // 29 字段(同 plan §a 列表 + 25 个原 DeviceControlState 字段一一对应;
+        // 2026-09-16 新增 homePositionPresetIndex / homePositionResetTime 两个看守位配置字段,
+        // 以及 focusSpeed / irisSpeed 两个 FI 族速率字段)
+        assertEquals(29, _all.size)
     }
 }

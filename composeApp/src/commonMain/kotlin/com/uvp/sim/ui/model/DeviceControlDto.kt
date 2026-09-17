@@ -73,6 +73,9 @@ data class DeviceControlDto(
     val panSpeed: Float = 0f,
     val tiltSpeed: Float = 0f,
     val zoomSpeed: Float = 0f,
+    /** FI 族(聚焦/光圈)实时速率,见 `DeviceControlModel.focusSpeed`。 */
+    val focusSpeed: Float = 0f,
+    val irisSpeed: Float = 0f,
     val isRecording: Boolean = false,
     val isGuarded: Boolean = false,
     val isAlarming: Boolean = false,
@@ -82,6 +85,10 @@ data class DeviceControlDto(
     val currentPresetIndex: Int? = null,
     val homePosition: PtzPoseDto? = null,
     val homePositionEnabled: Boolean = true,
+    /** 看守位指向的预置位号(`PresetIndex`)。null = 平台从未下发过看守位。 */
+    val homePositionPresetIndex: Int? = null,
+    /** 无云台操作后自动归位的等待秒数(`ResetTime`)。null = 平台未下发该项。 */
+    val homePositionResetTime: Int? = null,
     val cruiseTracks: Map<Int, List<Int>> = emptyMap(),
     val activeCruiseTrack: Int? = null,
     val auxStates: Map<Int, Boolean> = emptyMap(),

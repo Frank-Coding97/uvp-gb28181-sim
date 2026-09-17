@@ -3,6 +3,7 @@ package com.uvp.sim.domain
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.coord.RegistrationEvent
 import com.uvp.sim.domain.coord.RegistrationState
+import com.uvp.sim.domain.devicecontrol.nowMs
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
@@ -78,6 +79,19 @@ class SimulatorEngine internal constructor(
         }
     }
 
+    /**
+     * 本机(而非平台)推光圈/聚焦的行程增量,范围 0~1。
+     *
+     * 与 [adjustLocalPtzPosition] 分开是因为云台三轴和 FI 两轴的**语义单位不同**
+     * (前者的 pan/tilt 是角度、zoom 是倍率;后者是归一化行程 0~1),合成一个签名
+     * 只会让调用方每次都要传三个 0。落库仍是同一个 `DeviceControlModel`。
+     */
+    fun adjustLocalLensPosition(focusDelta: Float, irisDelta: Float) {
+        holders.deviceControlState.update {
+            it.adjustLocalPtzPosition(0f, 0f, 0f, focusDelta, irisDelta)
+        }
+    }
+
     private val mutex = Mutex()
     private var inboundJob: Job? = null
 
@@ -114,6 +128,79 @@ class SimulatorEngine internal constructor(
     }
     private val registrationClockBridge: Job = scope.launch {
         registration.clockOffset.collect { off -> holders.clockOffset.value = off }
+    }
+
+    /**
+     * 看守位自动归位 —— GB/T 28181 里 `ResetTime` 的语义是"无云台操作等待该秒数后归位到
+     * `PresetIndex`",这是**设备行为**不是配置数据。平台把配置下发下来之后,期待发生的就是
+     * 这件事;不实现它,界面上就只是个数字,演示时什么也不会发生。
+     *
+     * 用秒级轮询而不是"每条 PTZ 命令挂一个定时器":云台操作有四个入口(平台方向命令、
+     * 平台精准定位、本机方向盘、本机光圈/聚焦长按键),每个入口都要"取消旧倒计时 + 重排";
+     * 挂定时器要在这四处各写一遍,漏一处就出现"刚推完就被拉回去"。轮询只要一个活动信号。
+     *
+     * 活动信号 = (最后一条命令的时间戳, 当前是否正在转)。第二位是为了覆盖**本机手操** ——
+     * 它走 `adjustLocalPtzPosition`,不写 `lastCommand`,只看时间戳的话人手正在转云台时
+     * 倒计时照走,松手前就被硬拉回看守位。
+     *
+     * 判定逻辑本身是纯函数 [decideHomePositionReturn],这里只负责喂参数与落动作。
+     */
+    private val homePositionAutoReturnJob: Job = scope.launch {
+        var observed = CameraActivity(0L, false)
+        var idleSeconds = 0L
+        var returned = false
+        while (true) {
+            delay(HOME_POSITION_TICK_MS)
+            val model = holders.deviceControlState.value
+            val activity = CameraActivity(model.lastCommand?.timestampMs ?: 0L, model.isCameraMoving)
+            if (activity != observed) {
+                // 有人动了云台 → 倒计时归零,并重新武装下一次归位。
+                observed = activity
+                idleSeconds = 0
+                returned = false
+                continue
+            }
+            idleSeconds++
+            val plan = decideHomePositionReturn(model, idleSeconds, returned) ?: continue
+            returned = true
+            applyHomePositionReturn(plan, idleSeconds)
+            // 归位自己写进去的 lastCommand 也算一次"活动信号变化"。不在这里同步掉的话,
+            // 下一拍会把它误认成新的云台操作 → 清零倒计时 + 重新武装 → 每 ResetTime 秒
+            // 再归一次位,无限循环刷日志。
+            observed = CameraActivity(
+                holders.deviceControlState.value.lastCommand?.timestampMs ?: 0L,
+                false,
+            )
+        }
+    }
+
+    private fun applyHomePositionReturn(plan: HomePositionReturnPlan, idleSeconds: Long) {
+        // 归位是**唯一由设备自己发起**的动作,平台侧看不到、SIP 上也没有报文,不看日志就
+        // 完全无从判断它有没有发生(现场排障时尤其致命:画面动了却不知道是谁动的)。
+        // 而且它是周期性的,若那条 `returned` 闩失效,这里会**每 ResetTime 秒刷一条** ——
+        // 日志本身就是那个回归的观测点。
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Media,
+            "看守位自动归位 → P${plan.presetIndex} (空闲 ${idleSeconds}s) " +
+                "pan=${plan.target.pan} tilt=${plan.target.tilt} zoom=${plan.target.zoom}",
+        )
+        holders.deviceControlState.update {
+            it.copy(
+                panAngle = plan.target.pan,
+                tiltAngle = plan.target.tilt,
+                zoomLevel = plan.target.zoom,
+                currentPresetIndex = plan.presetIndex,
+                // 用 HomePositionReturn 而不是 PresetRecall:两个 effect 在三个渲染端各有
+                // 独立分支,前者就是为"看守位归位"准备的(它不区分来源是自动还是平台下发)。
+                pendingEffect = DeviceEffect.HomePositionReturn(plan.target),
+                lastCommand = LastDeviceCommand(
+                    "HomePosition",
+                    "AutoReturn#${plan.presetIndex}",
+                    nowMs(),
+                ),
+            )
+        }
     }
 
     /** Initiate registration. Returns immediately; observe [state] for completion. */
@@ -189,6 +276,7 @@ class SimulatorEngine internal constructor(
         // 的 stop 协程,provider 状态泄漏到下一 session。
         manscdp.shutdown()
         registrationStateBridge.cancel(); registrationEventBridge.cancel(); registrationClockBridge.cancel()
+        homePositionAutoReturnJob.cancel()
         scope.cancel()
     }
 
@@ -288,3 +376,21 @@ class SimulatorEngine internal constructor(
         register()
     }
 }
+
+/**
+ * 看守位自动归位的巡检间隔。
+ *
+ * 1 秒足够:`ResetTime` 最小 10 秒(平台侧 `UpdatePTZHomePosition` 的校验),1 秒粒度下最多
+ * 晚归位 1 秒,肉眼看不出来;更密只是白跑协程。也正因为间隔恰好是 1 秒,`idleSeconds`
+ * 可以直接用拍数累加,不需要另读时钟。
+ */
+private const val HOME_POSITION_TICK_MS = 1_000L
+
+/**
+ * 云台"活动信号" —— 用来给看守位倒计时复位。
+ *
+ * 两个分量缺一不可:时间戳覆盖**平台**下发(每条命令都会写 `lastCommand`),`moving` 位覆盖
+ * **本机**手操(走 `adjustLocalPtzPosition`,不写 `lastCommand`)。只看时间戳的话,人正按住
+ * 方向键转云台时倒计时照走,松手前就会被硬拉回看守位。
+ */
+private data class CameraActivity(val lastCommandAt: Long, val moving: Boolean)

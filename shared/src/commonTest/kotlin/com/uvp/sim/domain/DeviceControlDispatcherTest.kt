@@ -10,6 +10,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
 import kotlin.test.assertSame
@@ -208,28 +209,63 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
-    fun `case 11 — HomePosition 首次 → 存入当前 pose`() {
+    fun `case 11 — HomePosition 首次(预置位不存在) → 只落配置, 不凭空造预置位`() {
+        // 标准语义:HomePosition 是**配置**命令(Enabled / ResetTime / PresetIndex),
+        // 不是"现在就回位"。平台下发一个设备上还不存在的预置位号时,真实设备不会因此
+        // 新建一个预置位 —— 所以这里只应落配置三件套,presets 保持为空。
+        // 2026-09-16 修正:原实现会造预置位 + 立即归位(把配置命令当成了调用命令)。
         val state = MutableStateFlow(
             DeviceControlModel(panAngle = 30f, tiltAngle = -10f, zoomLevel = 2f)
         )
         val d = newDispatcher(state)
-        d.dispatch("<C><HomePosition><Enabled>1</Enabled><PresetIndex>1</PresetIndex></HomePosition></C>")
-        val saved = state.value.presets[1]
-        assertNotNull(saved)
-        assertEquals(30f, saved!!.pan)
-        assertEquals(-10f, saved.tilt)
-        assertEquals(2f, saved.zoom)
+        d.dispatch(
+            "<C><HomePosition><Enabled>1</Enabled><ResetTime>30</ResetTime>" +
+                "<PresetIndex>1</PresetIndex></HomePosition></C>"
+        )
+        assertTrue(state.value.homePositionEnabled)
+        assertEquals(1, state.value.homePositionPresetIndex)
+        assertEquals(30, state.value.homePositionResetTime)
+        assertEquals(emptyMap(), state.value.presets)     // 不凭空造
+        assertNull(state.value.pendingEffect)             // 配置命令不产生"归位"动作
     }
 
     @Test
-    fun `case 12 — HomePosition 已存在 → 触发回归 effect`() {
+    fun `case 12 — HomePosition 已存在 → 落配置并指向该预置位(不立即归位)`() {
         val target = PtzPose(pan = 45f, tilt = 0f, zoom = 1f)
         val state = MutableStateFlow(DeviceControlModel(presets = mapOf(1 to target)))
         val d = newDispatcher(state)
         d.dispatch("<C><HomePosition><Enabled>1</Enabled><PresetIndex>1</PresetIndex></HomePosition></C>")
-        val eff = state.value.pendingEffect
-        assertTrue(eff is DeviceEffect.HomePositionReturn)
-        assertEquals(target, (eff as DeviceEffect.HomePositionReturn).targetPose)
+        assertEquals(1, state.value.homePositionPresetIndex)
+        assertEquals(target, state.value.homePosition)    // 坐标快照指向该预置位
+        assertNull(state.value.pendingEffect)             // 标准里"启用看守位" ≠ "立刻调用"
+    }
+
+    @Test
+    fun `case 12b — HomePosition Enabled=0 → 关闭看守位, 配置项保留`() {
+        val state = MutableStateFlow(
+            DeviceControlModel(homePositionPresetIndex = 3, homePositionResetTime = 60)
+        )
+        val d = newDispatcher(state)
+        d.dispatch("<C><HomePosition><Enabled>0</Enabled></HomePosition></C>")
+        assertFalse(state.value.homePositionEnabled)
+        // 只关开关:平台没下发的字段(指向/归位时间)应保留上一次的值
+        assertEquals(3, state.value.homePositionPresetIndex)
+        assertEquals(60, state.value.homePositionResetTime)
+    }
+
+    @Test
+    fun `case 12c — HomePosition 越界字段在入口被钳到可表示区间`() {
+        // PresetIndex / ResetTime 会被 HomePositionQuery 的应答原样回传,而平台侧解析器
+        // 对 PresetIndex > 255 / ResetTime < 0 直接判协议非法。不钳的话,一条手造的越界
+        // 报文会让这台设备**永久**只能回非法应答,且现象指向查询而不是当初那条控制命令。
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+        d.dispatch(
+            "<C><HomePosition><Enabled>1</Enabled><ResetTime>-5</ResetTime>" +
+                "<PresetIndex>300</PresetIndex></HomePosition></C>"
+        )
+        assertEquals(0, state.value.homePositionResetTime)
+        assertEquals(255, state.value.homePositionPresetIndex)
     }
 
     @Test
@@ -340,10 +376,17 @@ class DeviceControlDispatcherTest {
 
     // ---------- T3 预置位 CRUD ----------
 
-    /** 预置位 hex helper — byte3 = 0x81/0x82/0x83, byte4 = 编号 */
+    /**
+     * 预置位 hex helper — 字节4 = 0x81/0x82/0x83,**字节5 固定 0x00、字节6 = 编号**。
+     *
+     * ⛔ 编号**不在**字节5。预置位是整字节三族里唯一把参数放数据2的
+     * (巡航/扫描族的组号才在字节5)。2026-09-16 真机联调时这里与解码器一起错了,
+     * 导致互相印证不出问题 —— 所以另外在 `PtzCmdDecoderTest` 里加了一条**硬编码
+     * 平台真实报文**的锚点用例,不再依赖这个 helper。
+     */
     private fun presetHex(opCode: Int, presetIndex: Int): String {
-        val sum = (0xA5 + 0x0F + 0x01 + opCode + presetIndex + 0 + 0) and 0xFF
-        return listOf(0xA5, 0x0F, 0x01, opCode, presetIndex, 0, 0, sum)
+        val sum = (0xA5 + 0x0F + 0x01 + opCode + 0 + presetIndex + 0) and 0xFF
+        return listOf(0xA5, 0x0F, 0x01, opCode, 0, presetIndex, 0, sum)
             .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
     }
 
@@ -584,32 +627,90 @@ class DeviceControlDispatcherTest {
         assertTrue(s.lastCommand?.rawHex?.contains("unmapped") == true)
     }
 
-    // ---------- Focus 累计 ----------
+    // ---------- FI 族(表 A.6:聚焦 / 光圈)----------
+    //
+    // 历史:这一节原先叫「Focus 累计」,把 byte3 的 bit6/bit7 当 Focus Near/Far、
+    // 把 byte6 低 4 位当聚焦速度,并断言"每条命令累加 focusLevel 0.005×速度"。
+    // 三处都与标准不符(见 `gb28181/PtzCmdDecoder.kt` 表 A.6 的位定义),已重写为:
+    //   · 字节4 走 0x40|光圈位|聚焦位,字节5 才是聚焦速度
+    //   · 设备侧存的是**速率**不是位置 —— FI 命令和方向命令同形,是"带速度的开始动作"
 
-    /** Focus hex helper — byte3 = 0x40 / 0x80,byte6 低 4 位 = focus speed */
-    private fun focusHex(near: Boolean, focusSpeed: Int): String {
-        val opCode = if (near) 0x80 else 0x40
-        val b6 = focusSpeed and 0x0F
-        val sum = (0xA5 + 0x0F + 0x01 + opCode + 0 + 0 + b6) and 0xFF
-        return listOf(0xA5, 0x0F, 0x01, opCode, 0, 0, b6, sum)
+    /**
+     * FI 族 hex helper(表 A.6)。
+     *
+     * byte4 = 0x40 | bit3(光圈缩) | bit2(光圈放) | bit1(聚焦近) | bit0(聚焦远)
+     * byte5 = 聚焦速度、byte6 = 光圈速度、byte7 高 4 位 = 0。
+     */
+    private fun fiHex(
+        irisOpen: Boolean = false,
+        irisClose: Boolean = false,
+        focusNear: Boolean = false,
+        focusFar: Boolean = false,
+        focusSpeed: Int = 0,
+        irisSpeed: Int = 0,
+    ): String {
+        var op = 0x40
+        if (irisClose) op = op or 0x08
+        if (irisOpen) op = op or 0x04
+        if (focusNear) op = op or 0x02
+        if (focusFar) op = op or 0x01
+        val b4 = focusSpeed and 0xFF
+        val b5 = irisSpeed and 0xFF
+        val sum = (0xA5 + 0x0F + 0x01 + op + b4 + b5 + 0) and 0xFF
+        return listOf(0xA5, 0x0F, 0x01, op, b4, b5, 0, sum)
             .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
     }
 
+    /** FI 速度 → 归一化行程速率(与 `PtzHandler.LENS_RATE_PER_SPEED` 同一口径)。 */
+    private fun lensRate(speed: Int): Float = speed * 0.5f / 255f
+
     @Test
-    fun `Focus_1 — Near 累减 focusLevel`() {
+    fun `FI_1 — 聚焦只写速率,不动位置`() {
         val state = MutableStateFlow(DeviceControlModel(focusLevel = 0.5f))
         val d = newDispatcher(state)
-        // speed=10 → step = 10*0.005 = 0.05 → 0.5-0.05=0.45
-        d.dispatch("<C><PTZCmd>${focusHex(near = true, focusSpeed = 10)}</PTZCmd></C>")
-        kotlin.test.assertEquals(0.45f, state.value.focusLevel, absoluteTolerance = 0.001f)
+        d.dispatch("<C><PTZCmd>${fiHex(focusNear = true, focusSpeed = 102)}</PTZCmd></C>")
+        val s = state.value
+        // 近焦 → 负速率(位置往"近"端走)
+        kotlin.test.assertEquals(-lensRate(102), s.focusSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0f, s.irisSpeed, absoluteTolerance = 1e-5f)
+        // 位置不动:推进它的是 UI 的积分节拍(速率×时间),不是这一条命令
+        kotlin.test.assertEquals(0.5f, s.focusLevel, absoluteTolerance = 1e-5f)
     }
 
     @Test
-    fun `Focus_2 — Far 累加 focusLevel + clamp 上限`() {
-        val state = MutableStateFlow(DeviceControlModel(focusLevel = 0.96f))
+    fun `FI_2 — 0x40 停止把两轴速率归零`() {
+        val state = MutableStateFlow(DeviceControlModel(focusSpeed = 0.3f, irisSpeed = -0.2f))
         val d = newDispatcher(state)
-        // speed=15 → step = 0.075,0.96+0.075 = 1.035 → clamp 到 1.0
-        d.dispatch("<C><PTZCmd>${focusHex(near = false, focusSpeed = 15)}</PTZCmd></C>")
-        kotlin.test.assertEquals(1.0f, state.value.focusLevel, absoluteTolerance = 0.001f)
+        // 0x40 = 表 A.6 该族停止(bit3~bit0 全清),两轴一起停
+        d.dispatch("<C><PTZCmd>${fiHex()}</PTZCmd></C>")
+        kotlin.test.assertEquals(0f, state.value.focusSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0f, state.value.irisSpeed, absoluteTolerance = 1e-5f)
+    }
+
+    @Test
+    fun `FI_3 — 光圈放大不得带动云台(回归)`() {
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+        // 0x44 = 表 A.6 光圈放大。原实现把它按 PTZ 族拆位,得到「聚焦远 + 俯仰下」,
+        // 现象是**平台一调光圈、云台跟着仰俯**,且三轴速率被莫名写非 0。
+        d.dispatch("<C><PTZCmd>${fiHex(irisOpen = true, irisSpeed = 255)}</PTZCmd></C>")
+        val s = state.value
+        kotlin.test.assertEquals(0f, s.panSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0f, s.tiltSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0f, s.zoomSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0f, s.focusSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(lensRate(255), s.irisSpeed, absoluteTolerance = 1e-5f)
+    }
+
+    @Test
+    fun `FI_4 — 光圈与聚焦可组合下发,两条速率各自独立(表A6 注1)`() {
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+        d.dispatch(
+            "<C><PTZCmd>${fiHex(irisOpen = true, focusFar = true, focusSpeed = 204, irisSpeed = 51)}</PTZCmd></C>"
+        )
+        val s = state.value
+        kotlin.test.assertEquals(lensRate(204), s.focusSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(lensRate(51), s.irisSpeed, absoluteTolerance = 1e-5f)
     }
 }

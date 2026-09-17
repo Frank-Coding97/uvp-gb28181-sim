@@ -150,11 +150,12 @@ internal class DeviceControlSubRouter(
     }
 
     private suspend fun sendPresetQueryResponse(sn: String, channelId: String) {
+        val presets = ctx.deviceControlState.value.presets
         val xmlBody = PresetQueryResponse.build(
             config = ctx.config,
             sn = sn,
             channelId = channelId,
-            presets = ctx.deviceControlState.value.presets,
+            presets = presets,
         )
         val ok = ManscdpInternals.sendMansMessage(
             config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
@@ -163,7 +164,14 @@ internal class DeviceControlSubRouter(
             errorLabel = "PresetQuery response",
             simEventEmit = ctx.simEventEmit,
         )
-        if (ok) SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 PresetQuery → 已应答(空清单)sn=$sn")
+        // ⛔ 这里原来写死 "(空清单)" —— 而且**不管实际发了什么都这么打**。
+        //    2026-09-16 排查预置位存不进去时,就被这句骗了一轮:它看起来像"设备确认自己没有
+        //    预置位",实际设备明明存了,是解码端把编号读错字节。日志里写死的括号值和
+        //    真实载荷脱钩,比不写更有害。现在按真实条数打(与同文件其它查询应答一致)。
+        if (ok) SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "平台查询 PresetQuery → 已应答(${presets.size} 个)sn=$sn"
+        )
     }
 
     private suspend fun sendPtzPreciseStatusResponse(sn: String, channelId: String) {
@@ -188,18 +196,40 @@ internal class DeviceControlSubRouter(
         )
     }
 
+    /**
+     * 应答 `HomePositionQuery`(GB/T 28181-2022 新增的**查询**;控制那一半 2016 就有)。
+     *
+     * 2026-09-16 按标准修正了三处偏差:
+     *  1. **必须带 `<HomePosition>` 包裹层**。原来把 `Enabled`/`ResetTime`/`PresetIndex` 直接
+     *     平铺在 `<Response>` 下;平台侧解析器找的是 `<HomePosition>` **子元素**,平铺会被读成
+     *     "有应答但不带数据"(`ResponseHasData=false`),于是设备上真实的看守位配置永远传不回
+     *     平台,平台只能一直显示"未确认"。这是"设备配好了、平台看不见"这一类问题的根因。
+     *  2. `ResetTime` 原来写死 30,现在回真实配置值 —— 否则平台侧对账比对 `ResetTime` 必然
+     *     mismatch,每次控制都会被标成对账失败。
+     *  3. `PresetIndex` 原来是 `if (s.homePosition != null) 1 else 0`,凭空造了个 1。现在回真实值。
+     *
+     * 「平台从未下发过」用 `homePositionPresetIndex == null` 判定,而不是看 `homePositionEnabled`
+     * —— 后者在 `DeviceControlModel` 里默认是 `true`,单看它会把"从没配过"误报成"已启用"。
+     * 未配置时统一回 `Enabled=0 / ResetTime=0 / PresetIndex=0`:标准没有定义"查不到"的应答形态,
+     * 全零是标准形式里最接近"本机没有看守位配置"的一档,也不会让平台误以为有个 P0 在守着。
+     */
     private suspend fun sendHomePositionQueryResponse(sn: String, channelId: String) {
         val s = ctx.deviceControlState.value
         val responseDeviceId = channelId.ifBlank { ctx.config.device.deviceId }
-        val presetIndex = if (s.homePosition != null) 1 else 0
+        val configured = s.homePositionPresetIndex != null
+        val enabled = if (configured && s.homePositionEnabled) 1 else 0
+        val resetTime = if (configured) (s.homePositionResetTime ?: 0) else 0
+        val presetIndex = s.homePositionPresetIndex ?: 0
         val xmlBody = "<?xml version=\"1.0\" encoding=\"GB2312\"?>\r\n" +
             "<Response>\r\n" +
             "<CmdType>HomePositionQuery</CmdType>\r\n" +
             "<SN>$sn</SN>\r\n" +
             "<DeviceID>$responseDeviceId</DeviceID>\r\n" +
-            "<Enabled>${if (s.homePositionEnabled) 1 else 0}</Enabled>\r\n" +
-            "<ResetTime>30</ResetTime>\r\n" +
+            "<HomePosition>\r\n" +
+            "<Enabled>$enabled</Enabled>\r\n" +
+            "<ResetTime>$resetTime</ResetTime>\r\n" +
             "<PresetIndex>$presetIndex</PresetIndex>\r\n" +
+            "</HomePosition>\r\n" +
             "</Response>\r\n"
         val ok = ManscdpInternals.sendMansMessage(
             config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
@@ -208,7 +238,10 @@ internal class DeviceControlSubRouter(
             errorLabel = "HomePositionQuery response",
             simEventEmit = ctx.simEventEmit,
         )
-        if (ok) SystemLogger.emit(LogLevel.Info, LogTag.Network, "HomePositionQuery sn=$sn → 已应答")
+        if (ok) SystemLogger.emit(
+            LogLevel.Info, LogTag.Network,
+            "平台查询 HomePositionQuery → 已应答(Enabled=$enabled ResetTime=$resetTime PresetIndex=$presetIndex)sn=$sn"
+        )
     }
 
     private suspend fun sendStorageCardStatusResponse(sn: String, channelId: String) {

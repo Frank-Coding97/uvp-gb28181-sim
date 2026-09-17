@@ -83,9 +83,19 @@ class DeviceControlSubRouterTest {
         )
     }
 
+    /**
+     * 平台从未下发过看守位时应答 "没配置"。
+     *
+     * 断言必须看到 **`<HomePosition>` 包裹层** —— 只查 `<CmdType>` 是分不出"带数据"和
+     * "不带数据"的,而平台侧解析器找的正是这个子元素:平铺三字段(老实现)会被读成
+     * `ResponseHasData=false`,设备上真实的看守位配置永远传不回平台。这条用例就是
+     * 为了让那种退化必然变红。
+     */
     @Test
-    fun home_position_query_emits_response() = runTest {
+    fun home_position_query_wraps_config_in_home_position_element() = runTest {
         val f = SubRouterTestFixtures.newFixture(this)
+        // 默认 DeviceControlModel:homePositionPresetIndex == null(平台没配过),
+        // 但 homePositionEnabled 默认是 true —— 老实现直接用它会回 "Enabled=1"。
         val dispatcher = DeviceControlDispatcher(f.deviceControlState, f.ctx.config, NoopActions, this)
         val r = DeviceControlSubRouter(f.ctx, NoopRecordingService, dispatcher) {}
         val xml = "<?xml version=\"1.0\"?><Query><CmdType>HomePositionQuery</CmdType><SN>3</SN>" +
@@ -93,9 +103,40 @@ class DeviceControlSubRouterTest {
 
         assertTrue(r.handle("HomePositionQuery", xml, fromUri = null))
         runCurrent()
-        assertTrue(
-            with(SubRouterTestFixtures) { f.transport.containsBody("<CmdType>HomePositionQuery</CmdType>") },
+
+        val body = f.transport.sent
+            .map { it.body.decodeToString() }
+            .single { it.contains("<CmdType>HomePositionQuery</CmdType>") }
+        assertTrue(body.contains("<HomePosition>"), "缺 <HomePosition> 包裹层: $body")
+        assertTrue(body.contains("</HomePosition>"), "缺 </HomePosition>: $body")
+        assertTrue(body.contains("<Enabled>0</Enabled>"), "未配置时 Enabled 必须为 0,实际: $body")
+        assertTrue(body.contains("<ResetTime>0</ResetTime>"), "未配置时 ResetTime 必须为 0,实际: $body")
+        assertTrue(body.contains("<PresetIndex>0</PresetIndex>"), "未配置时 PresetIndex 必须为 0,实际: $body")
+    }
+
+    /** 平台下发过看守位后,查询应答必须回**真实**配置,不能是写死的 30 / 凭空造的 1。 */
+    @Test
+    fun home_position_query_echoes_the_configured_values() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        f.deviceControlState.value = f.deviceControlState.value.copy(
+            homePositionEnabled = true,
+            homePositionPresetIndex = 3,
+            homePositionResetTime = 20,
         )
+        val dispatcher = DeviceControlDispatcher(f.deviceControlState, f.ctx.config, NoopActions, this)
+        val r = DeviceControlSubRouter(f.ctx, NoopRecordingService, dispatcher) {}
+        val xml = "<?xml version=\"1.0\"?><Query><CmdType>HomePositionQuery</CmdType><SN>5</SN>" +
+            "<DeviceID>34020000001320000001</DeviceID></Query>"
+
+        assertTrue(r.handle("HomePositionQuery", xml, fromUri = null))
+        runCurrent()
+
+        val body = f.transport.sent
+            .map { it.body.decodeToString() }
+            .single { it.contains("<CmdType>HomePositionQuery</CmdType>") }
+        assertTrue(body.contains("<Enabled>1</Enabled>"), "实际: $body")
+        assertTrue(body.contains("<ResetTime>20</ResetTime>"), "ResetTime 必须回真实值而非写死的 30: $body")
+        assertTrue(body.contains("<PresetIndex>3</PresetIndex>"), "PresetIndex 必须回真实值而非凭空造的 1: $body")
     }
 
     @Test
