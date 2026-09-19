@@ -165,7 +165,7 @@ private class FakeRecordingService : RecordingService {
         private set
     val deleteIds = mutableListOf<String>()
 
-    override suspend fun start(source: RecordSource, channelId: String): Result<Unit> {
+    override suspend fun start(source: RecordSource, channelId: String, streamNumber: Int): Result<Unit> {
         startCalls += 1
         return Result.success(Unit)
     }

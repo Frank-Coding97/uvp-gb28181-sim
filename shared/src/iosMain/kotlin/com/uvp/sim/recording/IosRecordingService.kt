@@ -159,6 +159,15 @@ class IosRecordingService(
     private var activeStartMs: Long = 0L
     private var activeSegmentIndex: Int = 0
     private var activeSource: RecordSource = RecordSource.Manual
+
+    /**
+     * A.2.3.1.4 `RecordCmd` 点名的码流号（0-主码流 / 1-子码流1 …）。
+     *
+     * 只**记账**后写进 [RecordingFile.streamNumber]：模拟器只有一路真实码流，
+     * 这个值不参与编码档位切换（见 `RecordingFile.streamNumber` 的口径边界）。
+     * 记它的意义在**回读一致** —— 平台按码流筛录像时设备给得出确定的答案。
+     */
+    private var activeStreamNumber: Int = 0
     private var guardJob: Job? = null
 
     @kotlin.concurrent.Volatile
@@ -192,7 +201,11 @@ class IosRecordingService(
         }
     }
 
-    override suspend fun start(source: RecordSource, channelId: String): Result<Unit> =
+    override suspend fun start(
+        source: RecordSource,
+        channelId: String,
+        streamNumber: Int,
+    ): Result<Unit> =
         mutex.withLock {
             if (_state.value is RecordingState.Recording) {
                 SystemLogger.emit(
@@ -237,6 +250,7 @@ class IosRecordingService(
                 activeChannelId = channelId
                 activeStartMs = now.toEpochMilliseconds()
                 activeSource = source
+                activeStreamNumber = streamNumber
                 if (!pendingSegmentSplit) activeSegmentIndex = 0
                 pendingSegmentSplit = false
 
@@ -689,6 +703,7 @@ class IosRecordingService(
                 channel = channel,
                 started = started,
                 source = source,
+                streamNumber = activeStreamNumber,
                 isSplit = isSplit,
             )
         )
@@ -716,6 +731,7 @@ class IosRecordingService(
             source = ctx.source,
             type = RecordType.Time,
             secrecy = 0,
+            streamNumber = ctx.streamNumber,
         )
     }
 
@@ -800,6 +816,8 @@ class IosRecordingService(
         val channel: String,
         val started: Long,
         val source: RecordSource,
+        /** A.2.3.1.4 平台点名的码流号，随录像写进索引（只记账，不切编码档位）。 */
+        val streamNumber: Int,
         val isSplit: Boolean,
     )
 

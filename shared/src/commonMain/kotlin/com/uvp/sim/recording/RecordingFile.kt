@@ -39,7 +39,18 @@ data class RecordingFile(
     val thumbnailPath: String? = null,
     val source: RecordSource = RecordSource.Manual,
     val type: RecordType = RecordType.Time,
-    val secrecy: Int = 0
+    val secrecy: Int = 0,
+    /**
+     * A.2.3.1.4 `RecordCmd` 携带的码流号（0-主码流 / 1-子码流1 / 2-子码流2，以此类推）。
+     *
+     * ⚠️ **口径边界（刻意为之）**：模拟器只有**一路真实码流**（手机摄像头），所以这里只
+     * **记账** —— 平台按码流筛录像时（A.2.4.5 `StreamNumber`）设备能给出确定答案，
+     * 但底层并没有真的切换编码档位。与 `VideoParamAttribute` / `BasicParam` 的记账口径一致。
+     *
+     * 带默认值 `0`：旧 `index.json` 里没有这个键，反序列化必须能兜住（本仓曾因
+     * 新增字段没给默认值而整份配置丢失）。
+     */
+    val streamNumber: Int = 0
 )
 
 /**

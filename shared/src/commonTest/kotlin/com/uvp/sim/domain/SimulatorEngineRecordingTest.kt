@@ -55,7 +55,7 @@ class SimulatorEngineRecordingTest {
         var stops = 0
         override val state = MutableStateFlow<RecordingState>(RecordingState.Idle)
         override val files: StateFlow<List<RecordingFile>> = MutableStateFlow(initialFiles)
-        override suspend fun start(source: RecordSource, channelId: String): Result<Unit> {
+        override suspend fun start(source: RecordSource, channelId: String, streamNumber: Int): Result<Unit> {
             starts += source to channelId
             return Result.success(Unit)
         }

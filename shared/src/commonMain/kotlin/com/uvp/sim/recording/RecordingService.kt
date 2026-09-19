@@ -19,8 +19,17 @@ interface RecordingService {
     val state: StateFlow<RecordingState>
     val files: StateFlow<List<RecordingFile>>
 
-    /** 启动录像。channelId 通常 = config.device.videoChannelId。 */
-    suspend fun start(source: RecordSource, channelId: String): Result<Unit>
+    /**
+     * 启动录像。channelId 通常 = config.device.videoChannelId。
+     *
+     * @param streamNumber A.2.3.1.4 `RecordCmd` 携带的 `<StreamNumber>`（**2022 新增**）：
+     *   「0-主码流，1-子码流1，2-子码流2，以此类推（可选），缺省 0」。
+     *   落到 [RecordingFile.streamNumber]，于是平台按码流筛录像（A.2.4.5 `StreamNumber`）
+     *   时设备给得出**与录制时一致**的答案（端到端自洽）。
+     *   ⚠️ 口径边界：模拟器只有一路真实码流（手机摄像头），这里只**记账** ——
+     *   底层不会真的切换编码档位。与 `VideoParamAttribute` / `BasicParam` 的记账口径一致。
+     */
+    suspend fun start(source: RecordSource, channelId: String, streamNumber: Int = 0): Result<Unit>
 
     /** 停止录像。返回最新 finalize 的那一段;若不在录像中返回 success(null)。 */
     suspend fun stop(): Result<RecordingFile?>
@@ -42,7 +51,7 @@ object NoopRecordingService : RecordingService {
     override val state = kotlinx.coroutines.flow.MutableStateFlow<RecordingState>(RecordingState.Idle)
     override val files = kotlinx.coroutines.flow.MutableStateFlow<List<RecordingFile>>(emptyList())
 
-    override suspend fun start(source: RecordSource, channelId: String): Result<Unit> =
+    override suspend fun start(source: RecordSource, channelId: String, streamNumber: Int): Result<Unit> =
         Result.success(Unit)
 
     override suspend fun stop(): Result<RecordingFile?> = Result.success(null)

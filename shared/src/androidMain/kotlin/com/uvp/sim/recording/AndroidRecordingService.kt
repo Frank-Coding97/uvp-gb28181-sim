@@ -90,6 +90,15 @@ class AndroidRecordingService(
     private var activeStartMs: Long = 0L
     private var activeSegmentIndex: Int = 0
     private var activeSource: RecordSource = RecordSource.Manual
+
+    /**
+     * A.2.3.1.4 `RecordCmd` 点名的码流号（0-主码流 / 1-子码流1 …）。
+     *
+     * 只**记账**后写进 [RecordingFile.streamNumber]：模拟器只有一路真实码流，
+     * 这个值不参与编码档位切换（见 `RecordingFile.streamNumber` 的口径边界）。
+     * 记它的意义在**回读一致** —— 平台按码流筛录像时设备给得出确定的答案。
+     */
+    private var activeStreamNumber: Int = 0
     private var thumbJob: Job? = null
     private var guardJob: Job? = null
     @Volatile private var pendingSegmentSplit: Boolean = false
@@ -177,7 +186,11 @@ class AndroidRecordingService(
         }
     }
 
-    override suspend fun start(source: RecordSource, channelId: String): Result<Unit> = mutex.withLock {
+    override suspend fun start(
+        source: RecordSource,
+        channelId: String,
+        streamNumber: Int,
+    ): Result<Unit> = mutex.withLock {
         // R2 #8:整段 start 必须串行 — 原代码只在 mutex 内检查 _state,然后释放锁去做 pipeline / file 创建
         // + 字段赋值,并发两路 start 都能通过检查并各开一路 pipeline,activeOutputFile 互相覆盖。
         val current = _state.value
@@ -219,6 +232,7 @@ class AndroidRecordingService(
             activeChannelId = channelId
             activeStartMs = now.toEpochMilliseconds()
             activeSource = source
+            activeStreamNumber = streamNumber
             if (!pendingSegmentSplit) activeSegmentIndex = 0
             pendingSegmentSplit = false
             _state.value = RecordingState.Recording(
@@ -334,6 +348,8 @@ class AndroidRecordingService(
         val started = activeStartMs
         val channel = activeChannelId
         val source = activeSource
+        // 快照码流号（与 source/channel 同批）—— 平台点名录的那一路，写进索引供 RecordInfo 回读。
+        val streamNumber = activeStreamNumber
         pipeline = null
         activeOutputFile = null
 
@@ -363,7 +379,8 @@ class AndroidRecordingService(
             thumbnailPath = null,
             source = source,
             type = RecordType.Time,
-            secrecy = 0
+            secrecy = 0,
+            streamNumber = streamNumber,
         )
         scope.launch {
             mutex.withLock {

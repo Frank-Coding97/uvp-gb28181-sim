@@ -75,7 +75,7 @@ class PlaybackDialogIdentityTest {
     private class FakeRecordingService(files: List<RecordingFile>) : RecordingService {
         override val state = MutableStateFlow<RecordingState>(RecordingState.Idle)
         override val files: StateFlow<List<RecordingFile>> = MutableStateFlow(files)
-        override suspend fun start(source: RecordSource, channelId: String): Result<Unit> = Result.success(Unit)
+        override suspend fun start(source: RecordSource, channelId: String, streamNumber: Int): Result<Unit> = Result.success(Unit)
         override suspend fun stop(): Result<RecordingFile?> = Result.success(null)
         override suspend fun load() = Unit
         override suspend fun delete(id: String): Result<Unit> = Result.success(Unit)
