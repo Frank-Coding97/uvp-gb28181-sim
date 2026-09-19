@@ -348,6 +348,11 @@ fun IosApp() {
     val catalogTree by engine.catalogTree.collectAsState()
     val alarmHistory by engine.alarmHistory.collectAsState()
     val clockOffset by engine.clockOffset.collectAsState()
+    // 附录 I:平台在注册响应里声明的协议版本(null = 未声明/不可识别)。
+    val platformVersion by engine.platformVersion.collectAsState()
+    // §9.1.1 f:平台看到的本机端点 —— 判定「是否在 NAT 后」,据此提示该不该改用 TCP。
+    val rportObservation by engine.rportObservation.collectAsState()
+    val reconnect by engine.reconnect.collectAsState()
     val rawSubs by engine.subscriptions.collectAsState()
     val currentBroadcast by engine.currentBroadcast.collectAsState()
     val speakerOn by engine.broadcastSpeakerOn.collectAsState()
@@ -360,8 +365,11 @@ fun IosApp() {
     var recordingState by remember { mutableStateOf<RecordingState>(RecordingState.Idle) }
     var recordingFiles by remember { mutableStateOf<List<RecordingFile>>(emptyList()) }
 
-    // 冷启动:load persisted config → setConfig → apply network preference。参考 Android SipViewModel。
+    // 冷启动:恢复设备侧运行状态 → load persisted config → setConfig → apply network preference。
     LaunchedEffect(Unit) {
+        // 设备状态(预置位 / 巡航轨迹 / 看守位 / 姿态)先于配置恢复:进程重启后设备侧若为空,
+        // 平台侧看不出任何异常(轨迹还在库里、巡航指令照样 sent),只会表现为"点了设备不动"。
+        engine.restoreDeviceState()
         val stored = engine.configStore.loadOnce(IosAppHost.defaultConfig())
         if (stored != engine.config.value) {
             engine.setConfig(stored)
@@ -502,7 +510,7 @@ fun IosApp() {
         systemEvents = systemLogs.map { it.toDto() },
         sessionMarker = SessionTracker.current.toDto(),
         subscriptions = subscriptions,
-        deviceControl = deviceControl.toDto(),
+        deviceControl = deviceControl.toDto(config),
         recording = recordingStatus,
         // playback: v1.1 iOS 无回放路径,保留默认 PlaybackStatus()。
         catalogTree = catalogTree,
@@ -514,6 +522,9 @@ fun IosApp() {
         // iOS 不支持强制绑网卡,localIp 留空但 preference 会跟着 UI 切换 apply。
         networkRuntimeState = networkState.toDto(),
         clockOffset = clockOffset.toDto(),
+        platformGbVersion = platformVersion,
+        rportObservation = rportObservation,
+        reconnect = reconnect,
     )
 
     val actions = buildActions(
@@ -585,6 +596,9 @@ private fun buildActions(
         }
         override fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float) {
             engine.adjustLocalLensPosition(focusDelta, irisDelta)
+        }
+        override fun onFrontOsdSave(state: com.uvp.sim.gb28181.FrontOsdState?) {
+            engine.updateFrontOsd(state)
         }
     }
     val recording = object : RecordingActions {

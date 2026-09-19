@@ -63,6 +63,8 @@ class PlatformResourcesIos : PlatformResources {
     override val httpEngineFactory: (() -> HttpClientEngine)? = { Darwin.create() }
 
     override val configStore: ConfigStore = ConfigStoreIos()
+
+    override val deviceStateStore: DeviceStateStore = DeviceStateStoreIos()
 }
 
 /**

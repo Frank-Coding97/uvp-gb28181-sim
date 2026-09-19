@@ -2,6 +2,7 @@ package com.uvp.sim.app
 
 import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.AlarmRecord
@@ -10,27 +11,35 @@ import com.uvp.sim.domain.BroadcastEndReason
 import com.uvp.sim.domain.CatalogTreeStore
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.DeviceControlModel
+import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.EngineCoordinators
 import com.uvp.sim.domain.EngineHolders
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.ProtocolClock
+import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.domain.ReconnectAttempt
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
 import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.SubscriptionSnapshot
+import com.uvp.sim.domain.VirtualStorageCards
 import com.uvp.sim.domain.newDefaultIdentityService
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
 import com.uvp.sim.domain.coord.ManscdpRouterImpl
 import com.uvp.sim.domain.coord.PlaybackCoordinatorImpl
 import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
+import com.uvp.sim.domain.withDeviceConfig
 import com.uvp.sim.gb28181.AlarmPayload
+import com.uvp.sim.gb28181.FrontOsdState
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.RemoteEndpoint
 import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.network.UdpSipTransport
+import com.uvp.sim.sip.GbVersionNegotiation
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.sip.SipOutboxImpl
 import com.uvp.sim.sip.SipState
 import com.uvp.sim.observability.LogLevel
@@ -46,6 +55,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 
@@ -98,6 +108,19 @@ class AppEngine(
     @Volatile private var osdConfigFlowProvider: () -> kotlinx.coroutines.flow.StateFlow<com.uvp.sim.config.OsdConfig> =
         { kotlinx.coroutines.flow.MutableStateFlow(initialConfig.osd).asStateFlow() }
 
+    /**
+     * 设备侧虚拟存储卡(GB-2022 A.2.4.14 / A.2.6.16)—— **单一真源**。
+     *
+     * 透传给 `ManscdpRouterImpl` → `DeviceControlSubRouter`,由后者在应答时把「卡片 + 本次读数」
+     * 一起写进 [holders] 的 `deviceControlState`,模拟中心的「存储卡」卡片再读它渲染。
+     * ⛔ 两处各自 `new` 会出现"设备屏幕显示 2 张卡 32G、平台收到 1 张卡 8G" —— 见 [VirtualStorageCards]。
+     *
+     * 放在 AppEngine(而非 Engine)的理由同 [holders]:存储卡是**设备物理事实**,
+     * 不该随"改配置 → disconnect/connect"重建而换一批卡 —— 那会让设备屏幕上的容量
+     * 在一次重连后毫无理由地变掉(而平台库里的旧值也还在,两边当场对不上)。
+     */
+    private val virtualStorageCards = VirtualStorageCards()
+
     /** holders 在 AppEngine own,Engine 通过构造接引用 — 公开 StateFlow 直读 holder,免去 9 个 collect bridge。 */
     private val holders: EngineHolders = EngineHolders(
         state = MutableStateFlow(SipState.Disconnected),
@@ -105,16 +128,34 @@ class AppEngine(
         deviceControlState = MutableStateFlow(DeviceControlModel()),
         catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(initialConfig)),
         clockOffset = MutableStateFlow(ClockOffset.Empty),
+        platformVersion = MutableStateFlow<GbVersion?>(null),
+        rportObservation = MutableStateFlow<RportObservation?>(null),
+        reconnect = MutableStateFlow<ReconnectAttempt?>(null),
         alarmHistoryStore = AlarmHistoryStore(),
         subscriptionRegistry = SubscriptionRegistry(engineScope),
         mockGps = runtime.buildLocationProvider(initialConfig.mockPosition),
         identityService = newDefaultIdentityService(localIpProvider = resources.localIpProvider),
     )
 
+    /**
+     * 设备状态的节流落盘器(2026-09-17)。
+     *
+     * 挂在 holders 上而不是 [SimulatorEngine] 上:engine 会随"改配置 → disconnect/connect"
+     * 反复重建,而设备状态**不该**跟着重置 —— 它属于 AppEngine 的生命周期。
+     */
+    private val deviceStatePersister = DeviceStatePersister(
+        source = holders.deviceControlState,
+        store = resources.deviceStateStore,
+    )
+
+    /** 冷启动是否已尝试过恢复(含"读了但没存档"的情况)—— 幂等闩,见 [restoreDeviceState]。 */
+    @Volatile private var deviceStateRestoreAttempted = false
+
     init {
         ProtocolClock.install {
             kotlin.time.Instant.fromEpochMilliseconds(holders.clockOffset.value.adjustedNowMs())
         }
+        deviceStatePersister.start(engineScope)
     }
 
     val state: StateFlow<SipState> = holders.state.asStateFlow()
@@ -128,6 +169,27 @@ class AppEngine(
     val catalogTree: StateFlow<List<CatalogNode>> = holders.catalogTree.asStateFlow()
     val alarmHistory: StateFlow<List<AlarmRecord>> = holders.alarmHistoryStore.history
     val clockOffset: StateFlow<ClockOffset> = holders.clockOffset.asStateFlow()
+    /**
+     * 附录 I 协商结果:平台在注册响应里声明的协议版本(null = 未声明/不可识别)。
+     * UI 在设备设置页把它与本机声明并排显示 —— 现场联调时一眼确认两侧是否真在协商。
+     */
+    val platformVersion: StateFlow<GbVersion?> = holders.platformVersion.asStateFlow()
+
+    /**
+     * 平台视角的我方端点 + 是否经地址转换(null = 平台未回填 Via 的 received/rport)。
+     *
+     * 现场价值:回答「我填的地址平台能连上吗」。判定为 NAT 时,设置页会提示改用 TCP ——
+     * 否则这类故障表现为「注册成功但点播/云台/查询全部超时」,和防火墙丢包长得一样。
+     */
+    val rportObservation: StateFlow<RportObservation?> = holders.rportObservation.asStateFlow()
+
+    /**
+     * SIP 长连接自愈状态(GB/T 28181 §5.2;null = 未在重连)。
+     *
+     * 直接读 holder 而非 `engine?.reconnect`:**engine 会随配置变更重建**,
+     * 从 engine 取会在重建那一瞬变成 null,横幅闪一下"未连接"再跳回来。
+     */
+    val reconnect: StateFlow<ReconnectAttempt?> = holders.reconnect.asStateFlow()
 
     private val _currentChannelName = MutableStateFlow(initialConfig.device.videoChannelName)
     val currentChannelName: StateFlow<String> = _currentChannelName.asStateFlow()
@@ -140,6 +202,57 @@ class AppEngine(
 
     private val _broadcastSpeakerOn = MutableStateFlow(true)
     val broadcastSpeakerOn: StateFlow<Boolean> = _broadcastSpeakerOn.asStateFlow()
+
+    /**
+     * 冷启动恢复设备侧运行状态 —— 预置位 / 巡航轨迹 / 看守位 / 姿态 / 辅助开关(2026-09-17)。
+     *
+     * **为什么必须存在**:没有它,App 进程一重启设备侧就是一台**全新设备**(这些状态全在内存里,
+     * DataStore 只存 SIP 配置)。而平台侧完全看不出来 —— 库里轨迹还在、`enabled` 是 NULL、
+     * 点「开始巡航」照样下发成功、操作记录也是 `sent`,模拟器画面却纹丝不动,因为 `0x88`
+     * 引用的那些预置位在**设备侧**一个都不存在。看守位更直接:它硬依赖预置位,号不存在就
+     * **完全不动作**。现场排障时这表现为「这个功能没做」,实际只是设备数据没了。
+     *
+     * **幂等**:多次调用只有第一次真读盘。engine 重建(改配置 → disconnect/connect)时
+     * 内存里的状态一定比磁盘新,再读一次会把操作员刚做的现场操作回退掉。
+     *
+     * **时序**:调用方应在冷启动尽可能早的位置调(见 SipViewModel.init),理由见下面的
+     * 姿态恢复段 —— 3D 场景持有自己的 pan/tilt 且单向回写 Model,恢复晚了会被场景回写覆盖。
+     */
+    suspend fun restoreDeviceState() {
+        if (deviceStateRestoreAttempted) return
+        deviceStateRestoreAttempted = true
+        val snapshot = runCatching { resources.deviceStateStore.loadOnce() }
+            .onFailure { e ->
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Resource,
+                    "设备状态存档读取失败,按全新设备启动: ${e::class.simpleName}: ${e.message}",
+                )
+            }
+            .getOrNull()
+        if (snapshot == null || !snapshot.hasContent) {
+            SystemLogger.emit(LogLevel.Info, LogTag.Resource, "本机无设备状态存档,按全新设备启动")
+            return
+        }
+        holders.deviceControlState.update { snapshot.restoreInto(it) }
+        // 这条日志是现场排障的关键观测点:"设备侧到底有没有数据"以前只能靠反复点巡航试探,
+        // 现在冷启动一看就知道。
+        SystemLogger.emit(LogLevel.Info, LogTag.Resource, "设备状态已恢复:${snapshot.summary()}")
+
+        // 姿态光写 Model 不够 —— 3D 场景(Android GlbSceneState / iOS Filament view)持有自己的
+        // pan/tilt,只**单向**回写 Model,从不读它。所以这里推一个 LocalPoseGoto 让已经挂载的
+        // 渲染端落位;渲染端若还没挂载,它 attach 时会自行按 Model 对齐(见 GlbSceneState.attach)。
+        // 两条通路互补,缺一条就会在某个时序下变成"存档写了但画面没动,166ms 后被回写覆盖"。
+        //
+        // 用 LocalPoseGoto 而不是 PresetRecall:后者在 Android 走 easeToPose,而 easeToPose 有
+        // "开机自检中直接 return"的守卫 —— 冷启动恰好就在自检窗口内,恢复会被静默丢掉。
+        if (snapshot.panAngle != 0f || snapshot.tiltAngle != 0f || snapshot.zoomLevel != 1f) {
+            val pose = PtzPose(snapshot.panAngle, snapshot.tiltAngle, snapshot.zoomLevel)
+            holders.deviceControlState.update {
+                it.copy(pendingEffect = DeviceEffect.LocalPoseGoto(pose))
+            }
+        }
+    }
 
     /**
      * 连接平台。装配链:transport → buildHolders(已 lazy)→ buildCoordinators → Engine →
@@ -348,7 +461,14 @@ class AppEngine(
             broadcastInvoker = broadcast,
             recordingService = recordingService ?: com.uvp.sim.recording.NoopRecordingService,
             mockGps = holders.mockGps,
+            // 与 holders 里那份物理清单是**同一个实例** —— 否则卡片与报文会各掷各的骰子。
+            virtualStorageCards = virtualStorageCards,
             clockOffsetProvider = { holders.clockOffset.value },
+            // 附录 I:出站报文形态取 min(本机声明, 平台声明);平台未声明时退回本机版本。
+            // 读的是 holders(而非构造期 cfg) —— 协商结论在注册响应到达时才产生。
+            effectiveGbVersionProvider = {
+                GbVersionNegotiation.effective(cfg.gbVersion, holders.platformVersion.value)
+            },
             stateRegisteredOrInCall = { holders.state.value == SipState.Registered || holders.state.value == SipState.InCall },
             broadcastBusy = {
                 // 双重 busy 判断:
@@ -429,6 +549,9 @@ class AppEngine(
         transport = null
         snapshotHttp = null
         _activeLiveStream.value = false
+        // 重连标记必须跟 engine 一起清:它由 engine 的监管器写,engine 没了就没人再改它,
+        // 留着会让横幅一直显示"正在重连(第 N 次)"而实际什么都没在跑。
+        holders.reconnect.value = null
     }
 
     suspend fun disconnect() {
@@ -445,11 +568,14 @@ class AppEngine(
         transport = null
         snapshotHttp = null
         _activeLiveStream.value = false
+        holders.reconnect.value = null
     }
 
     fun onAppBackground() {
         engine?.onAppBackground()
         runtime.onAppBackground()
+        // 切后台是"进程随时可能被系统回收"的前一刻,按节拍等下一次结算就太晚了 —— 显式落一次。
+        engineScope.launch { deviceStatePersister.flush() }
     }
 
     fun onAppForeground() {
@@ -522,6 +648,23 @@ class AppEngine(
     suspend fun updateCatalogTree(tree: List<CatalogNode>) {
         holders.catalogTree.value = tree
         engine?.updateCatalogTree(tree)
+    }
+
+    /**
+     * 用户在「设置 → OSD 水印 → GB/T 28181 前端 OSD」手动配置后回写。
+     *
+     * ★ `state = null` 的语义是**清除平台值、回到出厂派生**：用户在本地三层 OSD 那边改了配置时，
+     * 设备当前的 OSD 就应当由本地方案决定。不这样做的话，平台会一直读到"自己配过的那个旧值"，
+     * 而设备屏幕上显示的已经是本地新值 —— 两边对不上，且**看起来都正常**。
+     *
+     * ⛔ 走本族唯一的写入口 [withDeviceConfig]，但**不碰 `pendingEffect` / `lastCommand`** ——
+     * 那两个字段是"平台改了配置"给操作员的提示，本地自己改再弹一次会被误认成平台下发。
+     * 落盘交给挂在同一份状态上的 `DeviceStatePersister`（节流），这里不要手动存。
+     */
+    fun updateFrontOsd(state: FrontOsdState?) {
+        holders.deviceControlState.update { model ->
+            model.withDeviceConfig { it.copy(frontOsd = state) }
+        }
     }
     suspend fun pushCatalogNotify() { engine?.pushCatalogNotify() }
     suspend fun pushCatalogIncremental(events: List<CatalogChangeEvent>) { engine?.pushCatalogIncremental(events) }

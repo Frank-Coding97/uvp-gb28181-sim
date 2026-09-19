@@ -49,6 +49,15 @@ interface PlatformResources {
     val snapshotCache: JpegLocalCache?
     val httpEngineFactory: (() -> HttpClientEngine)?
 
-    /** 持久化层。 */
+    /** 配置持久化层。 */
     val configStore: ConfigStore
+
+    /**
+     * 设备侧运行状态持久化层(预置位 / 巡航轨迹 / 看守位 / 姿态 / 辅助开关)。
+     *
+     * 与 [configStore] 并列而不是合并 —— 两者的写入频率、失败代价与介质都不同,
+     * 详见 [DeviceStateStore] 的注释。没有它,App 进程一重启设备侧就是一台全新设备,
+     * 而平台界面完全看不出这件事。
+     */
+    val deviceStateStore: DeviceStateStore
 }
