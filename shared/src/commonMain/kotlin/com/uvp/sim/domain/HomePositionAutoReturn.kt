@@ -41,6 +41,17 @@ internal fun decideHomePositionReturn(
     alreadyReturned: Boolean,
 ): HomePositionReturnPlan? {
     if (alreadyReturned) return null
+
+    // ⛔ 巡航进行中**不做**自动归位。
+    //
+    // 巡航本身就是一串云台动作(见 [cruiseStepAt]),它每一步都会写 `lastCommand` 从而把空闲
+    // 倒计时清零 —— 但那只在**步与步之间**成立:停留时间(dwell,默认 30 秒)期间设备确实
+    // "没在动",于是 `ResetTime` 比 dwell 短时(平台允许 10 秒起)看守位会在巡航中途把镜头
+    // 拽回看守位,接着下一拍巡航又把它转走 —— 两个"设备自主行为"抢同一个 pose,画面抽搐。
+    // 标准里两者互不提及,没有"谁优先"的规定;按操作员的意图,他按了巡航就该一直巡,
+    // 直到他停掉巡航、或 ResetTime 从**巡航停止之后**重新计时。
+    if (model.activeCruiseTrack != null) return null
+
     if (!model.homePositionEnabled) return null
 
     // ResetTime 是"等多久",0 在这套语义里没有可用含义 —— 平台侧也只在 >= 10 时才允许

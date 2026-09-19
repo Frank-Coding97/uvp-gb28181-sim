@@ -16,6 +16,32 @@ fun DeviceControlModel.toPtzPositionSnapshot(): PtzPositionSnapshot {
 }
 
 /**
+ * 用指定的三轴姿态覆盖快照，**光学三量按同一公式重算**。
+ *
+ * 用途：`PTZPosition` 查询应答（A.2.6.15）要求六字段齐全，而设备"当前姿态"有两个来源 ——
+ * 平台下发过精确控制时是 [DeviceControlModel.lastPreciseCtrl]，否则是 UI 积分出来的
+ * `panAngle/tiltAngle/zoomLevel`。后者直接走 [toPtzPositionSnapshot]；前者需要把
+ * 三轴换掉，但 `HorizontalFieldAngle` / `VerticalFieldAngle` / `MaxViewDistance`
+ * **必须跟着新的变焦倍数重算** —— 它们是变焦的函数，copy 旧值会让应答自相矛盾
+ * （报 3 倍变焦却带 1 倍的视场角），而平台侧据此算的视场范围会整体偏掉。
+ *
+ * ⛔ 光学公式只在这里和 [toPtzPositionSnapshot] 各写一次是**刻意**的：两处都从同一组
+ * `BASE_*` 常量出发，但取值来源不同（一个是 model 字段、一个是入参 pose），
+ * 抽成一个函数反而要传两套参数。
+ */
+fun PtzPositionSnapshot.withPose(pose: PtzPose): PtzPositionSnapshot {
+    val effectiveZoom = pose.zoom.coerceAtLeast(1f).toDouble()
+    return copy(
+        pan = pose.pan.toDouble(),
+        tilt = pose.tilt.toDouble(),
+        zoom = pose.zoom.toDouble(),
+        horizontalFieldAngle = BASE_HORIZONTAL_FIELD_ANGLE / effectiveZoom,
+        verticalFieldAngle = BASE_VERTICAL_FIELD_ANGLE / effectiveZoom,
+        maxViewDistance = BASE_MAX_VIEW_DISTANCE * effectiveZoom,
+    )
+}
+
+/**
  * 本机手操把云台姿态按**增量**推进(UI 长按反复调用)。
  *
  * 2026-09-16 扩了两个可选增量给 FI 族(聚焦/光圈):平台下发 FI 命令时只发"带速度的开始

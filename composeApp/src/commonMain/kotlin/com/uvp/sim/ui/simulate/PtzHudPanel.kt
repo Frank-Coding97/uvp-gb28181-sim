@@ -51,7 +51,7 @@ import com.uvp.sim.ui.simulate.ptz.StatusTabContent
  * 命令到 Tab 映射:
  *   云台: PTZCmd(Motion+Preset) / PTZPreciseCtrl / HomePosition
  *   状态: RecordCmd / GuardCmd / AlarmCmd / TeleBoot
- *   图像: IFameCmd / SnapShotCmd / DragZoomIn-Out / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack
+ *   图像: IFameCmd / IFrameCmd / SnapShotCmd / DragZoomIn-Out / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack
  *   辅助: PTZCmd(Aux on/off,byte3=0x89/0x8A)
  *
  * 2026-06-26 PR-F T1:4 Tab 内容拆到 [ptz] 子包,本文件只保留主入口编排.

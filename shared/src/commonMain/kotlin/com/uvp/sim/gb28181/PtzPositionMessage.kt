@@ -17,7 +17,14 @@ data class PtzPositionMessage(
     val position: PtzPositionSnapshot,
 ) {
     companion object {
-        private const val CMD_TYPE = "PTZPosition"
+        /**
+         * A.2.4.13 查询/订阅请求 与 A.2.6.15 查询应答**同名**的 CmdType。
+         *
+         * ⛔ 这是**唯一**真源：查询应答 [PtzPreciseStatusResponse] 也引用它 ——
+         * 曾经应答侧自己写了个 `PTZPreciseStatusQuery`，两版标准全文 0 命中，
+         * 于是平台按标准发的 MQ 查询**整条无人受理**（回了 200 但不处理）。
+         */
+        internal const val CMD_TYPE = "PTZPosition"
         private val DEVICE_ID_PATTERN = Regex("^[0-9]{20}$")
 
         fun build(sn: Int, deviceId: String, position: PtzPositionSnapshot): String {
@@ -45,9 +52,9 @@ data class PtzPositionMessage(
          * 避免平台收到部分状态却把它误判为完整精准位置。
          */
         fun parse(xml: String): PtzPositionMessage? {
-            val body = xml.trim()
-                .removePrefix("<?xml version=\"1.0\" encoding=\"GB2312\"?>")
-                .trim()
+            // ⛔ 别在这里写死某个编码的声明前缀:出站字符集按有效版本走(2016 GB2312 / 2022 GB18030),
+            // 硬编码前缀会在切版本时"静默剥不掉",表现为解析恒 null。用 stripXmlDeclaration。
+            val body = stripXmlDeclaration(xml.trim()).trim()
             if (!body.startsWith("<Response>") || !body.endsWith("</Response>")) return null
             if (!ManscdpParser.cmdType(body).equals(CMD_TYPE, ignoreCase = true)) return null
 

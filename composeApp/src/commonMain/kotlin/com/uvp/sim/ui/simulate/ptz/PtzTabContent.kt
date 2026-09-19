@@ -8,6 +8,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +45,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.model.CruiseTrackDto
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.PtzPoseDto
 import kotlinx.coroutines.delay
@@ -60,6 +63,8 @@ import kotlinx.coroutines.delay
  *     └──────┘   └─────────┘   │ [近][远] │
  *  ③ 预置位  [P1]…[P8]
  *  ④ 看守位  ● 已启用 · 指向 P3 · 归位 30s        平台下发
+ *  ⑤ 巡航    [#1 ▶ 1→3→5] [#2 · 2→4] [+3]        平台下发(可对账,超出上限只报数)
+ *            #1 运行中 · 每点停留 30s · 速度 128
  * ```
  *
  * **可交互 vs 只读**:方向盘(水平/俯仰)、变焦 −/+、光圈 −/+、聚焦 近/远 都是本机可操作的;
@@ -86,6 +91,7 @@ import kotlinx.coroutines.delay
  * 避免与只读 HUD 混淆,下午发现会盖住画布右下角的缩略图、改到画布下方独立占一行,
  * 最终收进本页做成方盘 —— 位置固定、不再和画布内任何元素抢空间。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun PtzTabContent(
     state: DeviceControlDto,
@@ -222,45 +228,166 @@ internal fun PtzTabContent(
         // ④ 看守位(GB/T 28181-2016 控制 / 2022 才补查询)
         HomePositionCard(state)
 
-        // ⑤ 巡航轨迹(若平台设过)
+        // ⑤ 巡航轨迹(平台设过才有)
+        //
+        // 这一块存在的意义是**对账**:平台点完"开始巡航",操作员在设备屏幕上核对
+        // 「#几在跑 / 点位链是不是我排的那个顺序 / 停留与速度有没有真的落下来」。
+        // 所以 chip 直接铺出自控层追出来的点位链(`#1 · 1→3→5`)—— 原来写的是 `T1·3`,
+        // 只能看出"有几条、每条几个点",看不出**是哪几个点、什么顺序**,等于没回显。
         if (state.cruiseTracks.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
+            val tracks = state.cruiseTracks.entries.sortedBy { it.key }
+            // 运行中的那条**排最前** —— HUD 这一块是给对账用的,而"哪条在跑"才是对账对象;
+            // 条数多到截断时,截掉的必须是旁观项,不能把正在跑的那条挤出去。
+            val ordered = tracks.sortedByDescending { it.key == state.activeCruiseTrack }
+            val shown = ordered.take(CRUISE_HUD_MAX_CHIPS)
+            val hidden = ordered.size - shown.size
             Row(verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel("巡航")
                 Spacer(Modifier.width(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    state.cruiseTracks.entries.sortedBy { it.key }.forEach { entry ->
-                        val trackNum = entry.key
-                        val points = entry.value
-                        val active = state.activeCruiseTrack == trackNum
-                        val bg = if (active) UvpColor.Primary else UvpColor.BorderLight
-                        val fg = if (active) Color.White else UvpColor.TextSecondary
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(99.dp))
-                                .background(bg)
-                                .padding(horizontal = 8.dp, vertical = 3.dp),
-                        ) {
-                            Text(
-                                "T$trackNum·${points.size}",
-                                color = fg,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                        }
+                // ⛔ 必须**限量**(见 CRUISE_HUD_MAX_CHIPS),不能把全部轨迹都铺出来。
+                //    HUD 是**定高 Box、不滚动**(284dp,余量约 13dp),多出来的行会被直接裁掉 ——
+                //    被裁的偏偏是下面那行"运行中 · 停留/速度",也就是这块最该被看到的东西。
+                //    加 FlowRow 只是第二道保险(横向放不下时换行而不是把 chip 顶出可视区)。
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    shown.forEach { (trackNum, track) ->
+                        CruiseTrackChip(
+                            trackNum = trackNum,
+                            track = track,
+                            active = state.activeCruiseTrack == trackNum,
+                        )
+                    }
+                    if (hidden > 0) {
+                        // 只说"还有几条想看就得进平台",不放按钮 —— HUD 是只读回显面,不是编辑器。
+                        CruiseOverflowChip(hidden)
                     }
                 }
+            }
+            // 运行中那条的组级参数单独一行。速度/停留时间是**组级**的(见 CruiseTrackDto),
+            // 所以这里只说一次,不逐点标 —— 免得看起来像"每个点都能单独设"。
+            val runningNum = state.activeCruiseTrack
+            val running = runningNum?.let { num -> tracks.firstOrNull { it.key == num }?.value }
+            if (running != null) {
+                Spacer(Modifier.height(3.dp))
+                Text(
+                    "#$runningNum 运行中 · ${cruiseGroupParams(running)}",
+                    fontSize = 9.sp,
+                    lineHeight = 12.sp,
+                    maxLines = 1,
+                    color = UvpColor.Primary,
+                    fontWeight = FontWeight.Medium,
+                )
             }
         }
     }
 }
 
-/** 分区小标题(预置位 / 巡航 / 看守位),统一字号与颜色。 */
+/** 一块分区(预置位 / 巡航 / 看守位)在 HUD 里能占的高度是**硬预算** —— HUD 是定高
+ *  `Box`(284dp)、**不滚动**,超出来的行被直接裁掉,而且被裁的往往是最后那行
+ *  (巡航的"运行中 · 停留/速度")。所以巡航这块**限量显示**:
+ *
+ *  - [CRUISE_HUD_MAX_CHIPS] 条轨迹 chip(运行中的永远排第一,截掉的只会是旁观项);
+ *  - 每条 chip 里的点位链最多 [CRUISE_HUD_CHAIN_HEAD] 个编号,多出来的用 `…`。
+ *
+ *  两道限制都是为了让这一块**高度可预测**:最坏情况 ≈ label(34) + 2 chip(94×2) +
+ *  overflow(40) + 间距 ≈ 270dp 以内,横向放得下就不会换行。
+ *  完整信息在平台上能看到,HUD 只负责"设备这边到底是什么样"的对账。 */
+private const val CRUISE_HUD_MAX_CHIPS = 2
+
+/** chip 内点位链最多显示几个编号。链条长到 8 个以上时 chip 会横跨大半屏,挤掉别的 chip。 */
+private const val CRUISE_HUD_CHAIN_HEAD = 6
+
+/**
+ * 一条巡航轨迹的 chip:`#编号 · 点位链`。运行中填主题色,一眼能定位。
+ *
+ * ⛔ `lineHeight` 必须显式给。`Text(fontSize = 9.sp)` **只改字号**,行高仍继承
+ *    `bodyLarge` 的 24sp —— chip 会白白高出一倍,而 HUD 是定高的,省下来的这 12dp
+ *    正是"运行中参数行"能加进来的余量(2026-09-17 实测,见技能 uvp-gb28181-sim-app)。
+ */
+@Composable
+private fun CruiseTrackChip(trackNum: Int, track: CruiseTrackDto, active: Boolean) {
+    val bg = if (active) UvpColor.Primary else UvpColor.BorderLight
+    val fg = if (active) Color.White else UvpColor.TextSecondary
+    val chain = if (track.points.isEmpty()) {
+        "空"
+    } else if (track.points.size <= CRUISE_HUD_CHAIN_HEAD) {
+        track.points.joinToString("→")
+    } else {
+        // 截断必须留个尾巴,不然后面还有点位这件事就看不出来了
+        track.points.take(CRUISE_HUD_CHAIN_HEAD).joinToString("→") + "…"
+    }
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(99.dp))
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(
+            if (active) "#$trackNum ▶ $chain" else "#$trackNum · $chain",
+            color = fg,
+            fontSize = 9.sp,
+            lineHeight = 12.sp,
+            maxLines = 1,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/** 轨迹条数超出 HUD 显示上限时补的 `+N` chip。只报数、不做交互 ——
+ *  HUD 是设备侧回显面,不是轨迹管理器(增删改都在平台)。 */
+@Composable
+private fun CruiseOverflowChip(hidden: Int) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(99.dp))
+            .background(UvpColor.BorderLight)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(
+            "+$hidden",
+            color = UvpColor.TextSecondary,
+            fontSize = 9.sp,
+            lineHeight = 12.sp,
+            maxLines = 1,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/**
+ * 组级参数的读法(速度 / 停留时间)。
+ *
+ * **必须带单位**:`0x86`/`0x87` 的参数都是 12 位裸整数(1-4095),界面上光写 `128`
+ * 没人知道是档位还是百分比;停留时间也只有"秒"一种解释。平台侧同款坑已修
+ * (看守位的「空闲」字段),这里保持一致。
+ *
+ * null = 平台从未下发过该项 —— 如实说"未下发",不复用设备默认值冒充(设备查询应答里
+ * 回的那个默认值见 DeviceControlSubRouter.DEFAULT_CRUISE_*)。
+ */
+private fun cruiseGroupParams(track: CruiseTrackDto): String {
+    val parts = buildList {
+        track.dwellTime?.let { add("每点停留 ${it}s") }
+        track.speed?.let { add("速度 $it") }
+    }
+    return if (parts.isEmpty()) "平台未下发速度与停留时间" else parts.joinToString(" · ")
+}
+
+/** 分区小标题(预置位 / 巡航 / 看守位),统一字号与颜色。
+ *
+ *  ⛔ `lineHeight` 同样必须显式给,理由与 [CruiseTrackChip] 一致 —— 不写就是 24sp 行框。
+ *  这里尤其要紧:标题是各分区 `Row` 里**最高**的子项,它白吃 10dp 会直接抬高
+ *  每一个分区的高度(预置位行、看守位行都跟着变高),而 HUD 是硬预算的定高容器。
+ *  (2026-09-17:巡航 chip 已经降到 18dp,结果 Row 高度还是被这个 24dp 的标题顶住。) */
 @Composable
 private fun SectionLabel(text: String) {
     Text(
         text,
         fontSize = 10.sp,
+        lineHeight = 14.sp,
+        maxLines = 1,
         color = UvpColor.TextHint,
         fontWeight = FontWeight.Medium,
     )

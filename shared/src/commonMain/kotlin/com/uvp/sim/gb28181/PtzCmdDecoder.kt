@@ -139,17 +139,37 @@ object PtzCmdDecoder {
         return PtzInstruction.Aux(on, auxIndex)
     }
 
-    /** 巡航子命令解码. byte4 = 巡航号(1-N),byte5 = 预置位号 / 速度 / 时长(取决于 op). */
+    /**
+     * 巡航子命令解码。
+     *
+     * 字节位(见类头表):
+     * ```
+     *   字节5 = 巡航组号
+     *   字节6 = 预置位号(0x84/0x85) | 速度·时长的**低 8 位**(0x86/0x87)
+     *   字节7 高 4 位 = 速度·时长的**高 4 位**(仅 0x86/0x87)
+     * ```
+     *
+     * ⛔ 0x86/0x87 的参数是 **12 位**(标准:01H-FFFH),必须把字节7 的高半字节拼回来。
+     *    这里原来只取 `bytes[5]`(低 8 位)就把高 4 位丢了 —— 平台发速度 300(0x12C)
+     *    时字节6=0x2C、字节7 高半字节=0x1,设备读到的是 **44**。类头表格其实一直写着
+     *    "低 8 位 / 高 4 位",是实现没照着做。0x84/0x85 的字节7 是 0,不受影响。
+     */
     private fun decodeCruise(bytes: ByteArray, opCode: Int): PtzInstruction.Cruise {
         val op = when (opCode) {
-            0x84 -> CruiseOp.SET_POINT       // byte4=巡航号 byte5=预置位号
-            0x85 -> CruiseOp.DEL_POINT       // byte4=巡航号 byte5=预置位号
-            0x86 -> CruiseOp.SET_SPEED       // byte4=巡航号 byte5+byte6 高=速度
-            0x87 -> CruiseOp.SET_DWELL_TIME  // byte4=巡航号 byte5+byte6 高=停留时长
-            else -> CruiseOp.START           // 0x88: byte4=巡航号
+            0x84 -> CruiseOp.SET_POINT       // 字节5=巡航号 字节6=预置位号
+            0x85 -> CruiseOp.DEL_POINT       // 字节5=巡航号 字节6=预置位号
+            0x86 -> CruiseOp.SET_SPEED       // 字节5=巡航号 字节6 低8位 + 字节7 高4位 = 速度
+            0x87 -> CruiseOp.SET_DWELL_TIME  // 字节5=巡航号 字节6 低8位 + 字节7 高4位 = 停留时长
+            else -> CruiseOp.START           // 0x88: 字节5=巡航号
         }
         val trackNum = bytes[4].toInt() and 0xFF
-        val param = bytes[5].toInt() and 0xFF
+        val param = when (op) {
+            // 12 位重组:低 8 位在字节6,高 4 位在字节7 的高半字节
+            CruiseOp.SET_SPEED, CruiseOp.SET_DWELL_TIME ->
+                (bytes[5].toInt() and 0xFF) or (((bytes[6].toInt() and 0xF0) shr 4) shl 8)
+            // 预置位号是整字节,高半字节不参与
+            else -> bytes[5].toInt() and 0xFF
+        }
         return PtzInstruction.Cruise(op, trackNum, param)
     }
 
@@ -351,6 +371,25 @@ data class PtzCommand(
     val focusSpeed: Int = 0,
     val irisSpeed: Int = 0,
 )
+
+/**
+ * 是否是一条**停止**指令 —— 第 4~7 字节全零。
+ *
+ * 标准里**没有给出专门的「停止巡航」指令码**：巡航与扫描都用这条全零帧停（与方向族同一个
+ * 停止码，见类头那张整字节三族的对照表；控制层 `0x88` 只定义"开始巡航 + 组号"）。
+ * 平台侧 `PTZActionCruiseStop` / `PTZActionScanStop` 编出来的正是这一帧（其余字段留零），
+ * 所以设备侧只能靠"是不是全零"来区分「开始动作」和「停动作」。
+ *
+ * ⚠️ 判据用的是**解码后的语义**而不是原始字节：`decodeMotion` 已经把"方向为 NONE"的那些轴
+ * 的速度归一成 0，两者等价；用语义字段的好处是这个谓词跟着表 A.5 的语义走，
+ * 而不是跟着某一条报文的字节排布走。
+ */
+internal val PtzCommand.isFullStop: Boolean
+    get() = panDirection == PanDirection.NONE && tiltDirection == TiltDirection.NONE &&
+        zoomDirection == ZoomDirection.NONE && focusDirection == FocusDirection.NONE &&
+        irisDirection == IrisDirection.NONE &&
+        panSpeed == 0 && tiltSpeed == 0 && zoomSpeed == 0 &&
+        focusSpeed == 0 && irisSpeed == 0
 
 enum class PanDirection { LEFT, RIGHT, NONE }
 enum class TiltDirection { UP, DOWN, NONE }

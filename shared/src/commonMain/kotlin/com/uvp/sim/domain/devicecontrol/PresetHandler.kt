@@ -19,7 +19,17 @@ import kotlinx.coroutines.flow.update
  */
 interface PresetHandler {
     val maxPresetIndex: Int
-    fun handlePtzPreset(p: PtzInstruction.Preset, hex: String)
+
+    /**
+     * 预置位 CRUD。
+     *
+     * @param presetName A.2.3.1.2 `PTZCmdParams/PresetName`（**2022 新增**）：平台在
+     *   **设置**预置位时给的名字。null = 平台这次没给（或本指令不是 SET）。
+     *   落进 [DeviceControlModel.presetNames]，供 `PresetQuery` 应答原样带回 ——
+     *   原先不解析它，平台配的名字被静默丢弃。
+     */
+    fun handlePtzPreset(p: PtzInstruction.Preset, hex: String, presetName: String? = null)
+
     fun handleHomePosition(xml: String)
 }
 
@@ -39,7 +49,7 @@ internal class DefaultPresetHandler(
      * - CALL: 已存在则 emit [DeviceEffect.PresetRecall];不存在仅记 lastCommand
      * - DEL: 移除;若删除的正是 currentPresetIndex 则清零
      */
-    override fun handlePtzPreset(p: PtzInstruction.Preset, hex: String) {
+    override fun handlePtzPreset(p: PtzInstruction.Preset, hex: String, presetName: String?) {
         val idx = p.index
         if (idx !in 1..maxPresetIndex) {
             state.update {
@@ -57,8 +67,17 @@ internal class DefaultPresetHandler(
                     val pose = PtzPose(s.panAngle, s.tiltAngle, s.zoomLevel)
                     s.copy(
                         presets = s.presets + (idx to pose),
+                        // ⭐ 平台给了名字才记；这次没给就**保持原值不动** ——
+                        //    重复设置同一预置位而不带名字是常见操作（只调位姿），
+                        //    抹掉上次配好的名字会让平台看到"名字莫名丢了"。
+                        presetNames = if (presetName != null) s.presetNames + (idx to presetName)
+                            else s.presetNames,
                         currentPresetIndex = idx,
-                        lastCommand = LastDeviceCommand("PTZCmd", "SetPreset#$idx", nowMs())
+                        lastCommand = LastDeviceCommand(
+                            "PTZCmd",
+                            if (presetName != null) "SetPreset#$idx name=$presetName" else "SetPreset#$idx",
+                            nowMs()
+                        )
                     )
                 }
                 PresetOp.CALL -> {
@@ -79,6 +98,9 @@ internal class DefaultPresetHandler(
                 }
                 PresetOp.DEL -> s.copy(
                     presets = s.presets - idx,
+                    // 名字跟着预置位走 —— 位姿删了还留着名字会变成孤儿条目，
+                    // 回读时对不上任何预置位。
+                    presetNames = s.presetNames - idx,
                     currentPresetIndex = if (s.currentPresetIndex == idx) null else s.currentPresetIndex,
                     lastCommand = LastDeviceCommand("PTZCmd", "DelPreset#$idx", nowMs())
                 )

@@ -5,6 +5,8 @@ import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.PtzPose
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class PresetQueryResponseTest {
@@ -63,5 +65,65 @@ class PresetQueryResponseTest {
         val idx2 = xml.indexOf("<PresetID>2</PresetID>")
         val idx3 = xml.indexOf("<PresetID>3</PresetID>")
         assertTrue(idx1 in 1..idx2 && idx2 < idx3, "应按 index 升序排列")
+    }
+
+    // ---------- 2026-09-19 G-5：名字优先用平台配的 ----------
+
+    /**
+     * ⭐ A.2.3.1.2 `PTZCmdParams/PresetName`（2022 新增）下发的名字**必须**回读出来。
+     * 不回读等于"平台配的名字没保存"——平台会反复重配，操作员看着像功能坏了。
+     */
+    @Test fun build_usesPlatformProvidedPresetNames() {
+        val presets = mapOf(1 to PtzPose(0f, 0f, 1f), 3 to PtzPose(0f, 0f, 1f))
+        val names = mapOf(1 to "大门", 3 to "停车场入口")
+        val xml = PresetQueryResponse.build(cfg, sn = "9", channelId = "ch", presets = presets, presetNames = names)
+        assertTrue(xml.contains("<Item><PresetID>1</PresetID><PresetName>大门</PresetName></Item>"), "actual: $xml")
+        assertTrue(xml.contains("<Item><PresetID>3</PresetID><PresetName>停车场入口</PresetName></Item>"))
+    }
+
+    /**
+     * 只有**平台从没给过名字**的预置位才回退设备自造名。
+     * ⛔ 顺序不可颠倒 —— 有平台名还发自造名，平台会以为"自己配的名字没保存"。
+     */
+    @Test fun build_fallsBackToLocalNameOnlyForUnnamedPresets() {
+        val presets = mapOf(1 to PtzPose(0f, 0f, 1f), 2 to PtzPose(0f, 0f, 1f))
+        val names = mapOf(1 to "大门")
+        val xml = PresetQueryResponse.build(cfg, sn = "9", channelId = "ch", presets = presets, presetNames = names)
+        assertTrue(xml.contains("<PresetName>大门</PresetName>"))
+        assertTrue(xml.contains("<PresetName>Preset 2</PresetName>"), "只有 2 号回退自造名: $xml")
+        assertFalse(xml.contains("<PresetName>Preset 1</PresetName>"), "1 号有平台名，不得再发自造名")
+    }
+
+    /** `PresetName` 是**必选**元素（A.2.6.10），所以回退名不是"可选装饰"。 */
+    @Test fun build_everyItemAlwaysHasAPresetName() {
+        val presets = mapOf(1 to PtzPose(0f, 0f, 1f), 2 to PtzPose(0f, 0f, 1f), 3 to PtzPose(0f, 0f, 1f))
+        val xml = PresetQueryResponse.build(
+            cfg, sn = "9", channelId = "ch",
+            presets = presets, presetNames = mapOf(2 to "中门")
+        )
+        assertEquals(3, Regex("<PresetName>").findAll(xml).count(), "actual: $xml")
+    }
+
+    /** 平台名来自报文，含 XML 元字符时必须转义，否则整条 Response 变成畸形 XML。 */
+    @Test fun build_presetNameIsXmlEscaped() {
+        val presets = mapOf(1 to PtzPose(0f, 0f, 1f))
+        val xml = PresetQueryResponse.build(
+            cfg, sn = "9", channelId = "ch",
+            presets = presets, presetNames = mapOf(1 to "a&b<c>")
+        )
+        assertTrue(xml.contains("<PresetName>a&amp;b&lt;c&gt;</PresetName>"), "actual: $xml")
+        assertFalse(xml.contains("a&b<c>"), "未转义的名字不得出现")
+    }
+
+    /** 平台给了名字但该号预置位不存在 ⇒ 不凭空造条目（名字不是"预置位存在"的依据）。 */
+    @Test fun build_platformNameForNonExistentPreset_doesNotCreateEntry() {
+        val xml = PresetQueryResponse.build(
+            cfg, sn = "9", channelId = "ch",
+            presets = mapOf(1 to PtzPose(0f, 0f, 1f)),
+            presetNames = mapOf(1 to "大门", 7 to "幽灵")
+        )
+        assertTrue(xml.contains("<SumNum>1</SumNum>"))
+        assertEquals(1, Regex("<PresetID>").findAll(xml).count())
+        assertFalse(xml.contains("幽灵"), "不存在的预置位不该被名字造出来: $xml")
     }
 }

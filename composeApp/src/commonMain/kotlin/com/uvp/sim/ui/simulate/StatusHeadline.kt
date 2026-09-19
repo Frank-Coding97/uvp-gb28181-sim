@@ -28,7 +28,7 @@ import kotlinx.coroutines.delay
  * 顶部状态短句 — "现在平台/设备到底在干什么"维度的文案,
  * 跟底部 StatusDot(REC/GUARD/ALARM/REBOOT 持续开关状态) 不重叠.
  *
- * 优先级: 远程重启中 > 开机自检中 > 预置位调用 > PTZ 运动中 > 刚收到平台命令 (3s 内) > 等待中.
+ * 优先级: 远程重启中 > 开机自检中 > 巡航运行中 > 预置位调用 > PTZ 运动中 > 刚收到平台命令 (3s 内) > 等待中.
  */
 @Composable
 internal fun StatusHeadline(state: DeviceControlDto) {
@@ -38,10 +38,19 @@ internal fun StatusHeadline(state: DeviceControlDto) {
     val cmd = state.lastCommand
     val recentCmd = cmd != null && (nowMs - cmd.timestampMs) in 0..3_000
     val effect = state.pendingEffect
+    // 巡航进行中时每走一个点都会发一次 `PresetRecall`（设备侧就是一次预置位跳转）。不加这条
+    // 的话头条会打「预置位 P2 调用中」—— 操作员点的是「开始巡航」，看到的却像平台在单独调
+    // 预置位，而且跳点时会一直闪不同编号。设备自主行为要报出自己的身份。
+    val cruiseTrack = state.activeCruiseTrack
 
     val (text, color, dotColor) = when {
         effect is DeviceEffectDto.Reboot -> Triple("远程重启中", UvpColor.Primary, UvpColor.Primary)
         selfTesting -> Triple("开机自检中", UvpColor.Primary, UvpColor.Primary)
+        cruiseTrack != null && effect is DeviceEffectDto.PresetRecall ->
+            Triple("巡航 #$cruiseTrack 运行中 → P${effect.index}", UvpColor.Primary, UvpColor.Primary)
+        // 停留期间没有 pending effect，但巡航仍在跑，不能退回「等待平台下发控制指令」。
+        cruiseTrack != null ->
+            Triple("巡航 #$cruiseTrack 运行中", UvpColor.Primary, UvpColor.Primary)
         effect is DeviceEffectDto.PresetRecall ->
             Triple("预置位 P${effect.index} 调用中", UvpColor.Primary, UvpColor.Primary)
         effect is DeviceEffectDto.PrecisePoseGoto ->

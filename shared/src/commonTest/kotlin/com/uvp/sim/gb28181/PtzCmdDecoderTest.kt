@@ -163,6 +163,82 @@ class PtzCmdDecoderTest {
         assertEquals(1, ins.index)
     }
 
+    // ─── 巡航族 0x84~0x88(表 A.8)────────────────────────────────────────────
+    //
+    // 字节位:**字节5 = 巡航组号**,字节6 = 预置位号(0x84/0x85) 或 12 位参数的**低 8 位**
+    // (0x86/0x87),字节7 高 4 位 = 12 位参数的**高 4 位**。
+    // 下面一律**硬编码真实字节**、不用 helper 生成 —— helper 和解码器一起错时
+    // 两者会互相印证(预置位那条 2026-09-16 的坑就是这么骗过去的)。
+
+    @Test
+    fun `巡航 0x84 加入巡航点 组1 预置位3`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F01840103003D")
+        assertTrue(ins is PtzInstruction.Cruise, "expected Cruise, got $ins")
+        ins as PtzInstruction.Cruise
+        assertEquals(CruiseOp.SET_POINT, ins.op)
+        assertEquals(1, ins.trackNum)
+        assertEquals(3, ins.param)
+    }
+
+    @Test
+    fun `巡航 0x85 删除巡航点 组1 预置位3`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F01850103003E")
+        assertTrue(ins is PtzInstruction.Cruise, "expected Cruise, got $ins")
+        ins as PtzInstruction.Cruise
+        assertEquals(CruiseOp.DEL_POINT, ins.op)
+        assertEquals(1, ins.trackNum)
+        assertEquals(3, ins.param)
+    }
+
+    @Test
+    fun `巡航 0x88 开始巡航 组1`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F01880100003E")
+        assertTrue(ins is PtzInstruction.Cruise, "expected Cruise, got $ins")
+        ins as PtzInstruction.Cruise
+        assertEquals(CruiseOp.START, ins.op)
+        assertEquals(1, ins.trackNum)
+    }
+
+    /**
+     * ⛔ 回归锚点:12 位参数**必须**把字节7 的高半字节拼回来。
+     *
+     * `A50F0186012C1078` = 组1 设巡航速度 **300**(0x12C):字节6=0x2C(低 8 位)、
+     * 字节7 高半字节=0x1(高 4 位)。原实现只读 `bytes[5]`(字节6),解出来是 **44** ——
+     * 平台发 300、设备收到 44,而且是**静默**的。类头那张表一直写着"低 8 位 / 高 4 位",
+     * 是实现没照着做。
+     */
+    @Test
+    fun `巡航 0x86 设速度 12位参数要拼上字节7高半字节 300 不是 44`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F0186012C1078")
+        assertTrue(ins is PtzInstruction.Cruise, "expected Cruise, got $ins")
+        ins as PtzInstruction.Cruise
+        assertEquals(CruiseOp.SET_SPEED, ins.op)
+        assertEquals(1, ins.trackNum)
+        assertEquals(300, ins.param, "只取低 8 位会得到 44 —— 高 4 位丢了")
+    }
+
+    @Test
+    fun `巡航 0x87 设停留时间 12位满量程 4095`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018702FFF02D")
+        assertTrue(ins is PtzInstruction.Cruise, "expected Cruise, got $ins")
+        ins as PtzInstruction.Cruise
+        assertEquals(CruiseOp.SET_DWELL_TIME, ins.op)
+        assertEquals(2, ins.trackNum)
+        assertEquals(4095, ins.param)
+    }
+
+    @Test
+    fun `巡航 0x86 小值仍然正确 速度 45 高半字节为 0`() {
+        // 45 = 0x02D → 字节6=0x2D、字节7 高半字节=0x0。拼不拼高半字节都得 45,
+        // 这条用来钉住"小值不能被拼错"(高半字节误当地位就会变成 45+... )
+        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x86, 0x01, 0x2D, 0x00)
+        val ins = PtzCmdDecoder.decodeInstruction(hex)
+        assertTrue(ins is PtzInstruction.Cruise)
+        ins as PtzInstruction.Cruise
+        assertEquals(CruiseOp.SET_SPEED, ins.op)
+        assertEquals(45, ins.param)
+    }
+
     /**
      * ⛔ 回归锚点:平台真实下发的置预置位帧。
      *
