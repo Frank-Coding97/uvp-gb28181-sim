@@ -152,8 +152,14 @@ object MobilePositionNotify {
      *
      * 跟 [MobilePositionResponse.formatDouble] 行为一致 — 两处共用同款语义,
      * 一并维持 byte-equivalent 输出格式("%.Nf" 半进位 + 定长小数位)。
+     *
+     * ⭐ 2026-09-19 起为 **internal**：经纬度的 `double` 线格式在本包内已有三个出口
+     * （本文件、[BasicParamConfig] 的 2016 回读、[VideoUploadNotify]），
+     * 各写一份会演成"同一台设备的经纬度在三条报文里小数位不同"。
+     * ⛔ 别把科学计数法（`1.0E-5`）放出去：多数平台侧解析器只做朴素 `parseDouble`，
+     * 遇到 `E` 记法常判非法 —— 这正是本函数保留定长小数位的理由之一。
      */
-    private fun formatDouble(value: Double, decimals: Int): String {
+    internal fun formatDouble(value: Double, decimals: Int): String {
         if (decimals <= 0) return value.toLong().toString()
         var multiplier = 1L
         repeat(decimals) { multiplier *= 10 }

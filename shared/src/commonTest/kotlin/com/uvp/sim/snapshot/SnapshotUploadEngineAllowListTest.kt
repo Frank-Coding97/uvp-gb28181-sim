@@ -75,7 +75,7 @@ class SnapshotUploadEngineAllowListTest {
         h.engine.start(cfg("http://192.168.1.10:8088/snap/")).join()
         assertEquals(1, h.uploaderCalls, "uploader should be called")
         assertEquals(1, h.sentNotifies.size, "NOTIFY should be sent")
-        assertEquals(1, h.progress.count { it is SnapshotProgress.NotifySent })
+        assertEquals(1, h.progress.count { it is SnapshotProgress.Uploaded })
         assertEquals(0, h.progress.count { it is SnapshotProgress.UrlRejected })
     }
 

@@ -21,6 +21,7 @@ import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -108,6 +109,55 @@ class ManscdpRouterTest {
         ),
         body = xmlBody.encodeToByteArray(),
     )
+
+    /**
+     * G-2（2026-09-19）：设备升级的**对外报文只有一条**。
+     *
+     * §9.13.1 a)「设备升级流程结束后，目标设备发送设备软件升级结果通知命令」、
+     * §9.13.2 第 12 步同义 —— 标准里**没有逐秒进度**：`Percent` 这个元素在 2022 全书
+     * **0 命中**。原先那 4 条"假进度 NOTIFY"是编的，会让平台收到 4 条谁都忽略的噪声。
+     *
+     * 本条端到端跑通整条链（MESSAGE → DeviceControlSubRouter → Dispatcher →
+     * SystemHandler → actions.startUpgrade → Router 的升级协程），因此它能同时钉住
+     * 「条数」「元素名」「Percent 缺席」三件事 —— 只测 `buildXml` 是测不出条数的。
+     */
+    @Test
+    fun g2_1_upgradeFlow_sendsExactlyOneResultNotify_withNoPercent() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val router = newRouter(this, transport)
+
+        val xml = "<?xml version=\"1.0\"?><Control>" +
+            "<CmdType>DeviceControl</CmdType><SN>5</SN>" +
+            "<DeviceID>34020000001320000001</DeviceID>" +
+            "<DeviceUpgrade><Firmware>v1.2.3</Firmware>" +
+            "<FileURL>http://plat/fw.bin</FileURL>" +
+            "<SessionID>sess-1</SessionID></DeviceUpgrade></Control>"
+
+        router.onIncoming(incomingMessage("up-1@plat", xml).asEnvelope(sourceIp = "192.168.1.100"))
+        runCurrent()
+        // 流程：0/30/60/100 四个台阶，台阶间 1.5s（3 段）→ 结果通知 → 收尾 5s
+        advanceTimeBy(30_000L)
+        runCurrent()
+
+        val bodies = transport.sent.filterIsInstance<SipRequest>()
+            .filter { it.method == SipMethod.MESSAGE }
+            .map { it.body.decodeToString() }
+
+        val upgradeNotifies = bodies.filter { it.contains("DeviceUpgradeResult") }
+        assertEquals(
+            1, upgradeNotifies.size,
+            "标准只有流程结束后一条结果通知，实际 ${upgradeNotifies.size} 条: $upgradeNotifies"
+        )
+        val notify = upgradeNotifies.single()
+        assertTrue(notify.contains("<UpgradeResult>OK</UpgradeResult>"), "actual: $notify")
+        assertTrue(notify.contains("<Firmware>v1.2.3</Firmware>"), "actual: $notify")
+        assertTrue(notify.contains("<SessionID>sess-1</SessionID>"), "actual: $notify")
+        assertTrue(
+            bodies.none { it.contains("Percent") },
+            "Percent 两版标准 0 命中，任何一条报文里都不该出现"
+        )
+    }
 
     @Test
     fun t3_1_a_handleMessage_Catalog_query_responds_CatalogResponse() = runTest {

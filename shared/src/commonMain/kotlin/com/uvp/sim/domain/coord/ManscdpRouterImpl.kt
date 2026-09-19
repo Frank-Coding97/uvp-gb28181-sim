@@ -2,6 +2,7 @@ package com.uvp.sim.domain.coord
 
 import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.AlarmRecord
@@ -18,6 +19,7 @@ import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
 import com.uvp.sim.domain.toPtzPositionSnapshot
+import com.uvp.sim.domain.VirtualStorageCards
 import com.uvp.sim.domain.coord.manscdp.AlarmSubRouter
 import com.uvp.sim.domain.coord.manscdp.BroadcastSubRouter
 import com.uvp.sim.domain.coord.manscdp.CatalogSubRouter
@@ -31,6 +33,8 @@ import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.gb28181.ManscdpParser
+import com.uvp.sim.gb28181.SignalingCharset
+import com.uvp.sim.gb28181.decodeSignalingBody
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
@@ -102,7 +106,22 @@ internal class ManscdpRouterImpl(
     private val broadcastInvoker: BroadcastInvoker,
     private val recordingService: RecordingService,
     private val mockGps: LocationProvider,
+    /**
+     * 设备侧虚拟存储卡 —— **单一真源**,只负责透传给 [DeviceControlSubRouter]。
+     *
+     * 由 `AppEngine` 装配(而非本类或 SubRouter 自己 `new`):它是**设备物理事实**,
+     * 必须跨"改配置 → disconnect/connect"的 Engine 重建保持不变 —— 否则设备屏幕上显示的
+     * 容量会在一次重连后毫无理由地变掉,而平台库里的旧值还在,两边当场对不上。
+     * 默认值是给单测的兜底(生产路径必须注入)。
+     */
+    private val virtualStorageCards: VirtualStorageCards = VirtualStorageCards(),
     private val clockOffsetProvider: () -> ClockOffset = { ClockOffset.Empty },
+    /**
+     * 附录 I 协商后的有效版本提供者。默认取本机声明版本(单测/无平台场景),Engine 装配时
+     * 注入 min(本机, 平台) 的实时读取,让 Catalog/DeviceInfo/DeviceStatus/AlarmStatus
+     * 应答形态跟着平台实际能力走。
+     */
+    private val effectiveGbVersionProvider: () -> GbVersion = { config.gbVersion },
     private val stateRegisteredOrInCall: () -> Boolean = { true },
     private val broadcastBusy: () -> Boolean = { false },
     private val simEventEmit: suspend (SimEvent) -> Unit = {},
@@ -175,6 +194,7 @@ internal class ManscdpRouterImpl(
         localIpProvider = localIpProvider,
         localPortProvider = localPortProvider,
         clockOffsetProvider = clockOffsetProvider,
+        effectiveGbVersionProvider = effectiveGbVersionProvider,
         stateRegisteredOrInCall = stateRegisteredOrInCall,
         simEventEmit = simEventEmit,
         scope = scope,
@@ -185,6 +205,15 @@ internal class ManscdpRouterImpl(
 
     /** NOTIFY 扇出收口到独立 handler(cross-review R1 #3),共享同一份 [subRouterContext]。 */
     private val notifyHandler = SubscriptionNotifyHandler(subRouterContext)
+
+    /**
+     * 出站信令字符集 — GB/T 28181 §6.10(2022 是**应**采用 GB18030,2016 是宜采用 GB2312)。
+     *
+     * 取 [ManscdpContext.effectiveGbVersion] 而不是 `config.gbVersion`:字符集属于"出站报文形态",
+     * 跟 Catalog 字段裁剪 / DeviceInfo 字段集取同一个口径(对面是 2016 就别按 2022 出站)。
+     */
+    private val signalingCharset: SignalingCharset
+        get() = SignalingCharset.of(subRouterContext.effectiveGbVersion)
 
     private val ptzPositionJob: Job = CoroutineScope(scope.coroutineContext + SupervisorJob()).launch {
         mutableDeviceControlState
@@ -278,6 +307,7 @@ internal class ManscdpRouterImpl(
                     ctx = subRouterContext,
                     recordingService = recordingService,
                     dispatcher = deviceControlDispatcher,
+                    storageCards = virtualStorageCards,
                     alarmResetCallback = { by -> notifyHandler.pushAlarmResetNotify(by) },
                 ),
                 BroadcastSubRouter(
@@ -316,7 +346,10 @@ internal class ManscdpRouterImpl(
                     }
                     when (msg.method) {
                         SipMethod.MESSAGE -> { handleMessage(msg); RoutingResult.Handled }
-                        SipMethod.SUBSCRIBE -> { handleSubscribe(msg); RoutingResult.Handled }
+                        SipMethod.SUBSCRIBE -> {
+                            handleSubscribe(msg, envelope.sourceIp, envelope.sourcePort)
+                            RoutingResult.Handled
+                        }
                         else -> RoutingResult.Skip
                     }
                 }
@@ -369,6 +402,7 @@ internal class ManscdpRouterImpl(
             branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
             localIp = localIp, localPort = localPortProvider(),
             xmlBody = xml,
+            charset = signalingCharset,
         )
         try {
             outbox.send(msg).getOrThrow()
@@ -393,6 +427,7 @@ internal class ManscdpRouterImpl(
             branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
             localIp = localIp, localPort = localPortProvider(),
             xmlBody = body,
+            charset = signalingCharset,
         )
         try {
             outbox.send(msg).getOrThrow()
@@ -452,6 +487,7 @@ internal class ManscdpRouterImpl(
             branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
             localIp = localIp, localPort = localPortProvider(),
             xmlBody = xmlBody,
+            charset = signalingCharset,
         )
         try {
             outbox.send(msg).getOrThrow()
@@ -494,7 +530,7 @@ internal class ManscdpRouterImpl(
             onProgress = { progress ->
                 scope.launch {
                     when (progress) {
-                        is com.uvp.sim.snapshot.SnapshotProgress.NotifySent ->
+                        is com.uvp.sim.snapshot.SnapshotProgress.Uploaded ->
                             simEventEmit(
                                 SimEvent.SnapshotUploaded(
                                     sessionId = progress.sessionId,
@@ -502,6 +538,23 @@ internal class ManscdpRouterImpl(
                                     count = progress.count,
                                     total = progress.total,
                                 )
+                            )
+                        is com.uvp.sim.snapshot.SnapshotProgress.Finished ->
+                            SystemLogger.emit(
+                                LogLevel.Info, LogTag.Media,
+                                "抓拍批次结束: 成功 ${progress.uploaded}/${progress.requested} " +
+                                    "SessionID=${progress.sessionId}" +
+                                    if (progress.uploaded < progress.requested) {
+                                        "（部分/全部失败 —— 已在 UploadSnapShotFinished 里按 A.2.5.7 少报文件标识）"
+                                    } else {
+                                        ""
+                                    }
+                            )
+                        is com.uvp.sim.snapshot.SnapshotProgress.FinishNotifyFailed ->
+                            SystemLogger.emit(
+                                LogLevel.Warning, LogTag.Network,
+                                "抓拍完成通知发送失败（注意：图片本身已抓取并上传成功）: " +
+                                    "SessionID=${progress.sessionId} cause=${progress.cause}"
                             )
                         is com.uvp.sim.snapshot.SnapshotProgress.UploadFailedFinal ->
                             simEventEmit(
@@ -607,7 +660,7 @@ internal class ManscdpRouterImpl(
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send MESSAGE 200: ${e.message}"))
         }
-        val xml = message.body.decodeToString()
+        val xml = decodeSignalingBody(message.body, signalingCharset)
         val fromUri = message.fromHeader()?.let { SipHeaderHelpers.parseUri(it) }
         // P2-4(2026-06-28):dispatcher.route 返回 false 表示未识别 cmdType。
         // 协议上 200 已先回避免平台死循环重发,但日志 + SimEvent 告警让未知报文可观测。
@@ -639,8 +692,12 @@ internal class ManscdpRouterImpl(
      * - [onCancelSubscription] fromTag 校验 + 取消 + event emit
      * 主编排函数保留 intent dispatch,单一职责。
      */
-    private suspend fun handleSubscribe(req: SipRequest) {
-        val intent = SubscribeHandler.parse(req, subscriptionRegistry.knownCallIds())
+    private suspend fun handleSubscribe(req: SipRequest, sourceIp: String, sourcePort: Int) {
+        val intent = SubscribeHandler.parse(
+            req,
+            subscriptionRegistry.knownCallIds(),
+            transportSource = com.uvp.sim.sip.TransportSource(sourceIp, sourcePort),
+        )
         when (intent) {
             is SubscribeIntent.NewSubscription -> onNewSubscription(req, intent)
             is SubscribeIntent.Refresh -> onRefreshSubscription(req, intent)
@@ -658,6 +715,7 @@ internal class ManscdpRouterImpl(
             intent.expiresSeconds,
             userAgent = config.userAgent,
             xmlBody = buildSubscribeResponseBody(req, intent),
+            charset = signalingCharset,
         )
         outbox.send(ok).getOrThrow()
 
@@ -709,6 +767,14 @@ internal class ManscdpRouterImpl(
             LogLevel.Info, LogTag.Subscription,
             "收到${subscriptionLabel(intent.kind)}订阅: from=${intent.subscriberUri}, expires=${intent.expiresSeconds}s, interval=${intent.intervalSeconds}s",
         )
+        // 平台 SUBSCRIBE 未带 Contact 时按传输层来源回落 —— 接受订阅,但必须留痕:
+        // 将来 NOTIFY 发不到平台时,这条日志是唯一的线索(RFC 3261 §12.1.1 要求 UAC 带 Contact)。
+        if (intent.notifyRequestUriIsFallback) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Subscription,
+                "平台 SUBSCRIBE 未带 Contact,NOTIFY 请求 URI 已按来源地址回落: ${intent.notifyRequestUri}",
+            )
+        }
     }
 
     /** GB/T 28181-2016 9.11.3/J.20:成功订阅响应携带 MANSCDP Response。 */
@@ -716,7 +782,7 @@ internal class ManscdpRouterImpl(
         request: SipRequest,
         intent: SubscribeIntent.NewSubscription,
     ): String? {
-        val requestXml = request.body.decodeToString()
+        val requestXml = decodeSignalingBody(request.body, signalingCharset)
         val cmdType = ManscdpParser.cmdType(requestXml) ?: return null
         val sn = ManscdpParser.sn(requestXml) ?: return null
         val deviceId = ManscdpParser.deviceId(requestXml) ?: config.device.deviceId
@@ -725,6 +791,8 @@ internal class ManscdpRouterImpl(
                 deviceId = deviceId,
                 sn = sn,
                 tree = catalogTree.value.filter { it.id == deviceId || it.id.startsWith(deviceId) || it.fields["CivilCode"].orEmpty().startsWith(deviceId) },
+                version = subRouterContext.effectiveGbVersion,
+                channel = config.device.channel,
             )
         } else {
             """<?xml version="1.0" encoding="UTF-8"?>
@@ -757,7 +825,10 @@ internal class ManscdpRouterImpl(
             return
         }
         val toTag = existing?.toTag ?: SipBuilders.randomTag()
-        val ok = SipBuilders.buildSubscribe200(req, toTag, intent.newExpiresSeconds, userAgent = config.userAgent)
+        val ok = SipBuilders.buildSubscribe200(
+            req, toTag, intent.newExpiresSeconds,
+            userAgent = config.userAgent, charset = signalingCharset,
+        )
         outbox.send(ok).getOrThrow()
         subscriptionRegistry.refresh(intent.callId, intent.newExpiresSeconds)
 
@@ -786,7 +857,10 @@ internal class ManscdpRouterImpl(
             return
         }
         val toTag = d?.toTag ?: SipBuilders.randomTag()
-        val ok = SipBuilders.buildSubscribe200(req, toTag, 0, terminated = true, userAgent = config.userAgent)
+        val ok = SipBuilders.buildSubscribe200(
+            req, toTag, 0, terminated = true,
+            userAgent = config.userAgent, charset = signalingCharset,
+        )
         outbox.send(ok).getOrThrow()
         subscriptionRegistry.cancel(
             intent.callId,
@@ -855,6 +929,23 @@ internal class ManscdpRouterImpl(
     // GB-2022 §9.13 设备升级假进度(本类持有 — 跟 DeviceControlSubRouter 经回调触发)
     // ----------------------------------------------------------------------
 
+    /**
+     * GB-2022 §9.13 设备软件升级：**本地进度动画** + 流程结束后**一条**结果通知。
+     *
+     * ⛔ **2026-09-19 按标准改正**：标准只有「升级流程结束后发送一条结果通知」
+     * （§9.13.1 a)「设备升级流程结束后，目标设备发送设备软件升级结果通知命令」、
+     * §9.13.2 第 12 步同义），**没有逐秒进度** —— `Percent` 这个元素在 2022 全书
+     * **0 命中**。所以原先那 4 条"假进度 NOTIFY"是编出来的。
+     *
+     * 现在拆成两件互不相干的事：
+     *  - **本地进度**（[UpgradeProgress]）：设备屏幕上的进度条照旧走 0/30/60/100 ——
+     *    这是**本机 UI 状态**，不上报（平台侧没有接收它的字段）；
+     *  - **结果通知**：整条流程走完后发**一条** `UpgradeResult=OK`。
+     *
+     * ⚠️ 模拟器的升级**永远不会失败**（没有真实刷机动作）。失败分支的报文能力已在
+     * [com.uvp.sim.sip.DeviceUpgradeResultNotify] 备好（`ERROR` + `UpgradeFailedReason`），
+     * 等接入真实失败场景时用 —— ⛔ 别为了"演示好看"随机造一条失败上报。
+     */
     private suspend fun runUpgradeProgressFlow(sessionId: String, firmware: String) {
         try {
             val steps = listOf(0, 30, 60, 100)
@@ -869,24 +960,29 @@ internal class ManscdpRouterImpl(
                         )
                     )
                 }
-                sendDeviceUpgradeResultNotify(
-                    sessionId = sessionId, firmware = firmware, percent = percent,
-                    result = if (percent < 100)
-                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_IN_PROGRESS
-                    else
-                        com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_SUCCESS,
-                )
                 if (i < steps.lastIndex) delay(1_500L)
             }
+            // 流程结束 → 唯一的对外结果上报（标准口径）。
+            sendDeviceUpgradeResultNotify(
+                sessionId = sessionId,
+                firmware = firmware,
+                result = com.uvp.sim.sip.DeviceUpgradeResultNotify.RESULT_OK,
+            )
             delay(5_000L)
             mutableDeviceControlState.update { it.copy(upgradeProgress = null) }
         } catch (e: Throwable) {
-            SystemLogger.emit(LogLevel.Warning, LogTag.Lifecycle, "DeviceUpgrade 假进度异常: ${e.message}")
+            SystemLogger.emit(LogLevel.Warning, LogTag.Lifecycle, "DeviceUpgrade 流程异常: ${e.message}")
         }
     }
 
+    /**
+     * A.2.5.9 设备软件升级结果通知。
+     *
+     * @param result `tg:resultType` 的 `OK` / `ERROR`（[com.uvp.sim.sip.DeviceUpgradeResultNotify]）。
+     * @param failedReason `ERROR` 时的 `UpgradeFailedReason`（`01`/`02`/`03`/`99`）；成功传 null。
+     */
     private suspend fun sendDeviceUpgradeResultNotify(
-        sessionId: String, firmware: String, percent: Int, result: Int,
+        sessionId: String, firmware: String, result: String, failedReason: String? = null,
     ) {
         try {
             val id = identityService.nextMessageNotify()
@@ -902,13 +998,16 @@ internal class ManscdpRouterImpl(
                 sn = (cseqNow and 0xFFFF),
                 sessionId = sessionId,
                 firmware = firmware,
-                result = result,
-                percent = percent,
+                upgradeResult = result,
+                failedReason = failedReason,
+                charset = signalingCharset,
             )
             outbox.send(msg).getOrThrow()
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Network,
-                "DeviceUpgradeResult NOTIFY → 进度 $percent% result=$result session=$sessionId"
+                "设备升级结果通知 DeviceUpgradeResult → $result " +
+                    "session=$sessionId firmware=$firmware" +
+                    if (failedReason != null) " reason=$failedReason" else ""
             )
         } catch (e: Throwable) {
             simEventEmit(SimEvent.TransportError("send DeviceUpgradeResult NOTIFY: ${e.message}"))

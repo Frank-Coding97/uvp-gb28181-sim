@@ -126,7 +126,7 @@ class DeviceControlRenderStateTest {
         }
 
         // 图像类 → Image
-        listOf("IFameCmd", "SnapShotCmd", "DeviceConfig", "DeviceUpgrade", "FormatSDCard", "TargetTrack").forEach { type ->
+        listOf("IFameCmd", "IFrameCmd", "SnapShotCmd", "DeviceConfig", "DeviceUpgrade", "FormatSDCard", "TargetTrack").forEach { type ->
             assertEquals(
                 DeviceCommandCategory.Image,
                 deriveCommandCategory(LastDeviceCommand(type, "v", 100L)),

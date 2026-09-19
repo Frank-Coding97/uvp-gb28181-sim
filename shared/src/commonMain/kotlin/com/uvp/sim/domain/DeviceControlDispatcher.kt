@@ -102,7 +102,8 @@ class DeviceControlDispatcher(
             xml.contains("<PTZPreciseCtrl>") -> {
                 ptzHandler.handlePtzPrecise(xml); DeviceControlAck()
             }
-            ManscdpParser.tagValue(xml, "IFameCmd") != null -> {
+            ManscdpParser.tagValue(xml, "IFrameCmd") != null ||
+                ManscdpParser.tagValue(xml, "IFameCmd") != null -> {
                 systemHandler.handleIFrame(xml); DeviceControlAck()
             }
             ManscdpParser.tagValue(xml, "TeleBoot") != null -> {
@@ -125,6 +126,36 @@ class DeviceControlDispatcher(
             xml.contains("<BasicParam>") -> {
                 systemHandler.handleDeviceConfig(xml); DeviceControlAck()
             }
+            // A.2.1.13 VideoParamAttribute(2022 新增的配置类型)——
+            // 与 <BasicParam> **同属 DeviceConfig 这个 CmdType**,只能按块名分流。
+            // ⛔ 匹配时**不带收尾的 `>`**:本元素带 `Num` 属性(`<VideoParamAttribute Num="1">`),
+            //    写成 `contains("<VideoParamAttribute>")` 会**永远不命中**,而现象是
+            //    「平台下发成功、设备侧毫无反应」——正是最耗时的那种排查。
+            xml.contains("<VideoParamAttribute") -> {
+                systemHandler.handleVideoParamAttribute(xml); DeviceControlAck()
+            }
+            // A.2.3.2 设备配置族的其余 2022 新增类型（6 个）——
+            // 与 VideoParamAttribute 一样**按块名分流**，且**一个版本判断都不加**
+            // （被误登记成 2016 的真 2022 设备必须还有一次"试一下"的机会，
+            //  版本门禁只关设备主动声明那一半，见 ConfigDownloadResponse 的类注释）。
+            hasBlock(xml, "PictureMask") -> {
+                systemHandler.handlePictureMask(xml); DeviceControlAck()
+            }
+            hasBlock(xml, "OSDConfig") -> {
+                systemHandler.handleOsdConfig(xml); DeviceControlAck()
+            }
+            hasBlock(xml, "FrameMirror") -> {
+                systemHandler.handleFrameMirror(xml); DeviceControlAck()
+            }
+            hasBlock(xml, "AlarmReport") -> {
+                systemHandler.handleAlarmReport(xml); DeviceControlAck()
+            }
+            hasBlock(xml, "VideoRecordPlan") -> {
+                systemHandler.handleVideoRecordPlan(xml); DeviceControlAck()
+            }
+            hasBlock(xml, "VideoAlarmRecord") -> {
+                systemHandler.handleVideoAlarmRecord(xml); DeviceControlAck()
+            }
             // GB-2022 §9.3.4 新增项 — 200 OK + UI snackbar 提示,不真做业务
             xml.contains("<DeviceUpgrade>") -> {
                 systemHandler.handleDeviceUpgrade(xml); DeviceControlAck()
@@ -136,7 +167,7 @@ class DeviceControlDispatcher(
                 systemHandler.handleTargetTrack(xml); DeviceControlAck()
             }
             // GB-2022 §9.5 图像抓拍 — 7.5 新路径,优先于 7.4 旧 SnapShotCmd 匹配
-            xml.contains("<SnapShotConfig>") -> {
+            hasBlock(xml, "SnapShotConfig") -> {
                 systemHandler.handleSnapShotConfig(xml); DeviceControlAck()
             }
             ManscdpParser.tagValue(xml, "SnapShotCmd") != null -> {
@@ -145,4 +176,21 @@ class DeviceControlDispatcher(
             else -> DeviceControlAck(needSipResponse = false)
         }
     }
+
+    /**
+     * 块名匹配：同时接受**裸标签**（`<PictureMask>`）、**带属性**（`<PictureMask Num="1">`）
+     * 与**自闭**（`<PictureMask/>`、`<PictureMask />`）三种形态。
+     *
+     * ⛔ 写成 `contains("<X>")` 只在"元素永远不带属性"时才安全 —— 而标准改版、或对端实现
+     * 多写一个属性，就会**永久失配且不报错**。本仓为这一形态踩过一次
+     * （`VideoParamAttribute` 带 `Num`，`contains("<VideoParamAttribute>")` 永不命中）。
+     * 这里三种都认：`<X>` 精确匹配、`<X ` 匹配带属性的形态（含 `<X />`），
+     * `<X/>` 匹配不自闭前导空格的形态，且都不会误命中 `<XFoo`。
+     *
+     * ⭐ 自闭形态**必须路由进去**（而不是当作"没发"忽略）：各类型的 `parse()` 会把它判成
+     * `ConfigParse.Rejected` 并留一条 warn。若不路由，`<PictureMask/>` 这种
+     * "元素在、内容不成立"的报文就会被静默丢掉 —— 现场只能看到"配了没生效"。
+     */
+    private fun hasBlock(xml: String, name: String): Boolean =
+        xml.contains("<$name>") || xml.contains("<$name ") || xml.contains("<$name/>")
 }

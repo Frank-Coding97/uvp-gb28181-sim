@@ -61,6 +61,41 @@ data class UpgradeProgressDto(
 )
 
 /**
+ * UI 层 巡航轨迹 DTO. 1:1 映射 com.uvp.sim.domain.CruiseTrackState.
+ *
+ * `speed`/`dwellTime` 是**组级**的(控制层 `0x86`/`0x87` 只带巡航组号,不带点编号),
+ * null = 平台从未下发过该项,查询应答这时回设备默认值。
+ */
+data class CruiseTrackDto(
+    val points: List<Int> = emptyList(),
+    val speed: Int? = null,
+    val dwellTime: Int? = null,
+)
+
+/** UI 层 存储卡状态. 1:1 映射 com.uvp.sim.domain.StorageCardStatus(A.2.6.16 的五个小写取值)。 */
+enum class StorageCardStatusDto { Ok, Formatting, Unformatted, Idle, Error }
+
+/** UI 层 一张虚拟存储卡的物理属性. 1:1 映射 com.uvp.sim.domain.StorageCard. */
+data class StorageCardDto(
+    val id: Int,
+    val name: String,
+    val capacityMb: Int,
+)
+
+/**
+ * UI 层 某张卡的一次读数. 1:1 映射 com.uvp.sim.domain.StorageCardReading.
+ *
+ * [progress] 只在 [status] 为 [StorageCardStatusDto.Formatting] 时有值 —— 其余状态为 null,
+ * 不是 0。UI 也该照这个语义渲染("格式化中 45%" vs 别的状态不显示进度)。
+ */
+data class StorageCardReadingDto(
+    val cardId: Int,
+    val status: StorageCardStatusDto,
+    val progress: Int?,
+    val freeMb: Int,
+)
+
+/**
  * UI 层 设备控制状态 DTO. 1:1 映射 com.uvp.sim.domain.DeviceControlModel + 渲染派生字段.
  * 25 业务字段 + lastCommandCategory(渲染派生)— Mapper 由 (Model, RenderState) 双入参组装.
  */
@@ -89,7 +124,7 @@ data class DeviceControlDto(
     val homePositionPresetIndex: Int? = null,
     /** 无云台操作后自动归位的等待秒数(`ResetTime`)。null = 平台未下发该项。 */
     val homePositionResetTime: Int? = null,
-    val cruiseTracks: Map<Int, List<Int>> = emptyMap(),
+    val cruiseTracks: Map<Int, CruiseTrackDto> = emptyMap(),
     val activeCruiseTrack: Int? = null,
     val auxStates: Map<Int, Boolean> = emptyMap(),
     val auxTimestamps: Map<Int, Long> = emptyMap(),
@@ -102,4 +137,19 @@ data class DeviceControlDto(
      * **轨 ④ PR-UI-PROTOCOL-FIX**:UI 视图读这个,不再 parse rawHex.
      */
     val lastCommandCategory: DeviceCommandCategoryDto? = null,
+
+    // ---- GB-2022 A.2.4.14 / A.2.6.16 存储卡状态查询(模拟中心「存储卡」卡片)----
+    /** 虚拟存储卡物理清单。**空 + [storageCardQueryCount]==0 才是「平台还没查过」**。 */
+    val storageCards: List<StorageCardDto> = emptyList(),
+    /** 最近一次查询读到的读数,按卡号索引。 */
+    val storageCardReadings: Map<Int, StorageCardReadingDto> = emptyMap(),
+    /** 最近一次收到查询的时刻(ms)。null = 从未查过。 */
+    val storageCardQueriedAtMs: Long? = null,
+    /** 累计查询次数 —— 卡片「亮起」的触发键(用计数而不是时间戳,见 domain 侧注释)。 */
+    val storageCardQueryCount: Int = 0,
+
+    // ---- GB-2022 A.2.3.2 设备配置族(画面遮挡 / 前端 OSD / 画面翻转 / 录像计划 / 报警录像 /
+    //      报警上报 / 基本参数 / 图像抓拍)----
+    /** 平台下发过的配置的只读视图态(画布叠层 + HUD 图像页摘要共用)。 */
+    val deviceConfig: DeviceConfigDto = DeviceConfigDto(),
 )

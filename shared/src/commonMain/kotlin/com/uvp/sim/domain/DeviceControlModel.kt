@@ -1,6 +1,8 @@
 package com.uvp.sim.domain
 
+import com.uvp.sim.gb28181.DeviceConfigState
 import com.uvp.sim.gb28181.PtzCommand
+import com.uvp.sim.gb28181.VideoParamState
 
 /**
  * Wave 3 PR-DC-DECOUPLE(2026-06-26):「业务 Model」+ 「UI RenderState」两层架构。
@@ -57,6 +59,17 @@ data class DeviceControlModel(
 
     // 预置位 (HomePosition)
     val presets: Map<Int, PtzPose> = emptyMap(),
+
+    /**
+     * A.2.3.1.2 `PTZCmdParams/PresetName`（**2022 新增**）—— 平台在**设置**预置位时给的名字。
+     *
+     * 与 [presets] 分开存：那边是"位姿"（设备自己算出来的），这边是"平台起的名字"。
+     * 合成一个类型要动 UI 与 PTZ 回调两处消费点，而名字只被 `PresetQuery` 回读用到。
+     *
+     * ⛔ 平台**没下发过**名字的预置位不进这个表 —— 回读时按 `Preset $idx` 兜底，
+     * 而不是在这里预填一个假名（那会让"平台配过名"和"没配过"在设备侧再也分不出来）。
+     */
+    val presetNames: Map<Int, String> = emptyMap(),
     val currentPresetIndex: Int? = null,
 
     // 看守位(GB/T 28181-2016 §9.3.1 控制 / 2022 才补 §9.5.3 查询)—
@@ -70,8 +83,8 @@ data class DeviceControlModel(
     val homePositionResetTime: Int? = null,
 
     // GB-2022 §9.5.3 巡航轨迹 — 一组预置位序列 + 停留时长 + 速度
-    // key = 轨迹号 1-N,value = 该轨迹的有序预置位编号列表
-    val cruiseTracks: Map<Int, List<Int>> = emptyMap(),
+    // key = 轨迹号(控制层「巡航组号」= 查询层 <Number>),value = 该轨迹的配置
+    val cruiseTracks: Map<Int, CruiseTrackState> = emptyMap(),
     /** 当前正在执行的巡航轨迹号(null 表示未巡航) */
     val activeCruiseTrack: Int? = null,
 
@@ -93,8 +106,145 @@ data class DeviceControlModel(
     // null 表示当前没有升级任务。
     val upgradeProgress: UpgradeProgress? = null,
 
+    // GB-2022 A.2.4.14 / A.2.6.16 存储卡状态查询 —— 设备侧虚拟存储卡。
+    // 4 个字段同进同出,唯一写入口是 [withStorageCardQuery](别在别处单独 copy 其中一个)。
+    /**
+     * 虚拟存储卡**物理属性**清单(张数/盘名/容量)。
+     *
+     * 空 = 平台从未查询过 —— 清单与读数一起在应答时写入,因为它们来自**同一次读盘**。
+     * (另一种做法是装配期就把清单塞进来,让卡片在平台查询前也能显示容量;那会让本字段有
+     *  两个写者,而"平台查之前设备屏幕上凭空有张卡"本身也不比"查了才出现"更真实。)
+     */
+    val storageCards: List<StorageCard> = emptyList(),
+    /** 最近一次平台查询读到的读数,按卡号索引。空 = 平台从未查过(或设备确实没插卡,见下)。 */
+    val storageCardReadings: Map<Int, StorageCardReading> = emptyMap(),
+    /**
+     * 最近一次收到存储卡查询的时间戳(ms)。null = 平台**从未查过**。
+     *
+     * ⛔ 必须与 [storageCardReadings] 为空区分开:「没查过」和「查了但没有卡」在 UI 上
+     * 是两种完全不同的文案,只看 readings .isEmpty() 会把后者显示成"平台还没查"。
+     */
+    val storageCardQueriedAtMs: Long? = null,
+    /**
+     * 收到存储卡查询的**累计次数**。UI 卡片「亮起」的触发键。
+     *
+     * ⛔ 用计数而不是 [storageCardQueriedAtMs]:连点两次查询必须各亮一次,而同一毫秒内的
+     * 两次查询时间戳相同 → Compose 的 `LaunchedEffect(时间戳)` 键不变,动效不重播,
+     * 现象是"第二次点查询设备屏幕没反应"。
+     */
+    val storageCardQueryCount: Int = 0,
+
+    // GB-2022 A.2.1.13 `VideoParamAttribute` —— 平台**写入**过的视频参数,key = StreamNumber。
+    //
+    // ⛔ 空 map ≠ 「设备不支持该配置类型」。回读时缺席的码流会退回**出厂默认**
+    // (见 [com.uvp.sim.gb28181.VideoParamAttribute.effectiveParams]),所以回读应答
+    // **永远有值** —— 真实设备一上电就有编码配置。把"没人配过"报成"不支持",
+    // 是 A-5 判据链里最忌讳的假阴性。
+    val videoParams: Map<Int, VideoParamState> = emptyMap(),
+
+    /**
+     * GB/T 28181-2022 A.2.3.2 设备配置族中**其余类型**的平台写入值
+     * （画面遮挡 / 前端 OSD / 画面翻转 / 报警上报 / 录像计划 / 报警录像 / 基本参数 / 抓拍）。
+     *
+     * ⛔ 与 [videoParams] 并列而不是合并：那一个是按 `StreamNumber` 索引的逐码流表，
+     * 语义与本聚合不同，且早已进存档、接 UI（见 [DeviceConfigState] 的类注释）。
+     * 新类型**进本聚合**。
+     *
+     * 子项为 `null` = 平台从未下发过该类型 ⇒ 回读退回出厂默认（抓拍配置例外）。
+     */
+    val deviceConfigs: DeviceConfigState =
+        DeviceConfigState(),
+
     // 一次性效果触发器,UI 消费后置 null
     val pendingEffect: DeviceEffect? = null,
+)
+
+/**
+ * 记录一次存储卡状态查询的结果 —— **唯一的写入口**。
+ *
+ * ⛔ 为什么必须收口到一个函数:这 4 个字段是「一次查询」这一个事实的四个面。分两处 `update`
+ * 写会让 Compose 读到「次数已经 +1、读数还是上一次」的中间态 —— 卡片先亮一下旧数据再跳,
+ * 在真机上就是一次肉眼可见的闪动。同一次 `copy` 保证是单次 StateFlow 发射。
+ *
+ * ⛔ 刻意**不写** `lastCommand`:那是「云台活动信号」——`SimulatorEngine` 用它算看守位空闲
+ * 倒计时(`CameraActivity(model.lastCommand?.timestampMs, …)`)。存储卡查询不是云台操作,
+ * 写进去会把倒计时清零,表现为「平台在查存储卡,看守位就不自动归位了」。见
+ * `HomePositionAutoReturn` 的注释。
+ *
+ * @param cards 设备侧虚拟存储卡物理清单([VirtualStorageCards.cards])
+ * @param readings 本次读到的读数(每卡一条;设备没插卡时为空列表)
+ * @param atMs 收到查询的时刻(ms)
+ */
+fun DeviceControlModel.withStorageCardQuery(
+    cards: List<StorageCard>,
+    readings: List<StorageCardReading>,
+    atMs: Long,
+): DeviceControlModel = copy(
+    storageCards = cards,
+    storageCardReadings = readings.associateBy { it.cardId },
+    storageCardQueriedAtMs = atMs,
+    storageCardQueryCount = storageCardQueryCount + 1,
+)
+
+/**
+ * 记录一次平台下发的 `VideoParamAttribute`(A.2.1.13)—— **唯一的写入口**。
+ *
+ * 语义是**按码流覆盖**:本次报文里带了哪几路就覆盖哪几路,没带的保持原样
+ * (每条 `Item` 描述的是"这一路码流现在该是什么",不是"整份配置就是这些")。
+ *
+ * ⛔ **空 `Item` 列表时不要调本函数**。标准的 `Item` 是 `minOccurs="0"`,空配置合法,
+ * 但设备侧分不清"清空"与"平台没写这段"(A.2.1.13 的注释也承认这个歧义)。
+ * 贸然清空会把已经配好的码流抹掉、回读随即退回出厂默认 ——
+ * 在平台面板上表现为「刚配好的值自己变回去了」,极难归因。
+ * 调用方(`DefaultSystemHandler.handleVideoParamAttribute`)对空配置只记 `lastCommand`。
+ */
+fun DeviceControlModel.withVideoParamConfig(
+    items: List<VideoParamState>,
+): DeviceControlModel = copy(videoParams = videoParams + items.associateBy { it.streamNumber })
+
+/**
+ * 写入设备配置族里的**一个**类型（GB/T 28181-2022 A.2.3.2）—— 本族**唯一的写入口**。
+ *
+ * 用法固定为 `model.withDeviceConfig { it.copy(pictureMask = state) }`。
+ *
+ * ⛔ 为什么不让各 handler 直接 `model.copy(deviceConfigs = model.deviceConfigs.copy(...))`：
+ *   1. 那样每个 handler 都要自己拼一次嵌套 `copy`，漏一层就是"改了没生效"且**编译不报错**；
+ *   2. 「一次下发只写一个类型」这个约束写在入口上，比散在 8 个 handler 里靠自觉可靠 ——
+ *      一次 `update` 只发一次 StateFlow 值，UI 不会看到"半份配置"的中间态。
+ *
+ * ⛔ 与 [withVideoParamConfig] 一样：**解析被拒（`ConfigParse.Rejected`）时不要调本函数**。
+ * 拒收的语义是"这次下发设备没接受"，落任何值都会让回读变成一条设备从未执行过的配置。
+ */
+fun DeviceControlModel.withDeviceConfig(
+    transform: (DeviceConfigState) -> DeviceConfigState,
+): DeviceControlModel = copy(deviceConfigs = transform(deviceConfigs))
+
+/**
+ * 一条巡航轨迹在**设备侧**的完整配置(GB/T 28181-2022 §9.5.3 / 附录 A.2.6.13-A.2.6.14)。
+ *
+ * 为什么不是 `List<Int>`:巡航的「速度」和「停留时间」在控制层是**按组下发**的 ——
+ * `0x86 设置巡航速度` / `0x87 设置巡航停留时间` 的 PTZCmd 里只有**巡航组号**,
+ * 没有点的编号(见 [PtzCmdDecoder] 的字节表)。所以设备只能为**整条轨迹**存一个
+ * 速度和停留时间,这也正是查询应答里每个 [CruisePointState] 都回同一个值的原因。
+ *
+ * 应答报文是**按点**返回 `Speed`/`StayTime` 的,但设备**逐点不同**的参数平台下不下来,
+ * 因此这里如实存组级值,不做逐点建模 —— 免得读代码的人以为设备真能逐点配。
+ */
+data class CruiseTrackState(
+    /** 有序预置位编号列表 —— **顺序即巡航顺序**,由平台按 `0x84 加入巡航点` 的先后追出来。 */
+    val points: List<Int> = emptyList(),
+    /** 组级云台速度,wire 上 `0x86` 的 12 位参数(1-4095)。null = 平台从未下发过速度。 */
+    val speed: Int? = null,
+    /** 组级停留秒数,wire 上 `0x87` 的 12 位参数(1-4095)。null = 平台从未下发过停留时间。 */
+    val dwellTime: Int? = null,
+    /**
+     * A.2.3.1.2 `PTZCmdParams/CruiseTrackName`（**2022 新增**）—— 平台给这条轨迹起的名字
+     * （最长 32 字节）。null = 平台没给过 ⇒ 回读时由设备按 `巡航 N` 兜底。
+     *
+     * ⛔ 不预填设备自造名：那会让"平台配过名"和"没配过"在设备侧分不出来，
+     * 平台也就无法发现"我配的名字没保存"。
+     */
+    val name: String? = null,
 )
 
 /**
@@ -171,7 +321,7 @@ fun deriveRenderState(model: DeviceControlModel): DeviceControlRenderState =
  *   - PTZCmd:rawHex 以"雨刷/红外灯/加热/除雾/制冷/Aux"开头 → [DeviceCommandCategory.Aux];其余 → [Ptz]
  *   - PTZPreciseCtrl → [Ptz]
  *   - RecordCmd / GuardCmd / AlarmCmd / TeleBoot → [Status]
- *   - IFameCmd / SnapShotCmd / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack → [Image]
+ *   - IFameCmd / IFrameCmd / SnapShotCmd / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack → [Image]
  *   - HomePosition → [Ptz](原 HudTab.fromCommand 未列,但 HomePosition 属云台范畴)
  *   - 其他未知 type → null
  */
@@ -185,7 +335,7 @@ fun deriveCommandCategory(cmd: LastDeviceCommand): DeviceCommandCategory? = when
     }
     "PTZPreciseCtrl", "HomePosition" -> DeviceCommandCategory.Ptz
     "RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot" -> DeviceCommandCategory.Status
-    "IFameCmd", "SnapShotCmd", "DeviceConfig",
+    "IFameCmd", "IFrameCmd", "SnapShotCmd", "DeviceConfig",
     "DeviceUpgrade", "FormatSDCard", "TargetTrack" -> DeviceCommandCategory.Image
     else -> null
 }

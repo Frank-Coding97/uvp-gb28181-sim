@@ -42,8 +42,8 @@ class DeviceStatusResponseTest {
         assertTrue(xml.contains("<DeviceTime>2026-06-13T18:00:00</DeviceTime>"))
         assertTrue(xml.contains("<Encode>ON</Encode>"))
         assertTrue(xml.contains("<Record>ON</Record>"))
-        // 2022 嵌套
-        assertTrue(xml.contains("<Alarmstatus>"))
+        // 2022 嵌套（带大写 Num 属性，见下方专门的两版对照用例）
+        assertTrue(xml.contains("<Alarmstatus Num=\"1\">"))
         assertTrue(xml.contains("<DutyStatus>ALARM</DutyStatus>"))
         assertTrue(xml.contains("<DeviceID>34020000001340000001</DeviceID>"))
     }
@@ -59,26 +59,60 @@ class DeviceStatusResponseTest {
         assertTrue(xml.contains("<DutyStatus>OFFDUTY</DutyStatus>"))
     }
 
-    @Test fun build_v2016_emits_flat_alarmStatus_number() {
+    /**
+     * ⛔ 2016 也是**嵌套** `Alarmstatus` + `Item{DeviceID, DutyStatus}`，不是扁平数字。
+     *
+     * 2016 附录 A.2.6 g) 与 §9.5.3.3.2 正文（标准页 28）都这么写，正文原话
+     * 「报警设备状态列表**应包括**报警设备或区域或系统编码（DeviceID）、
+     * 报警设备状态（DutyStatus）」。原先发的 `<AlarmStatus>0|1</AlarmStatus>`
+     * 是**非 schema 元素** —— 严格校验的对端判整条报文非法。
+     *
+     * 两版的差异**只有属性名大小写**：2016 `num` / 2022 `Num`。
+     */
+    @Test fun build_v2016_emitsNestedAlarmstatusWithLowercaseNumAttribute() {
         val xml = DeviceStatusResponse.build(
             cfg(GbVersion.V2016),
             sn = "1",
             snapshot = onlineSnap.copy(alarming = true)
         )
-        // GB-2016 扁平 1/0
-        assertTrue(xml.contains("<AlarmStatus>1</AlarmStatus>"))
-        // 不应含 GB-2022 嵌套 tag
-        assertFalse(xml.contains("<Alarmstatus>"))
-        assertFalse(xml.contains("<DutyStatus>"))
+        assertTrue(xml.contains("<Alarmstatus num=\"1\">"), "2016 的属性名是小写 num: $xml")
+        assertTrue(xml.contains("<DutyStatus>ALARM</DutyStatus>"))
+        assertTrue(xml.contains("<DeviceID>34020000001340000001</DeviceID>"))
+        assertFalse(xml.contains("<AlarmStatus>"), "大写 S 的扁平方块是编的，两版都 0 命中: $xml")
     }
 
-    @Test fun build_v2016_alarmZero_whenNotAlarming() {
+    @Test fun build_v2016_dutyStatusOffduty_whenNotAlarming() {
         val xml = DeviceStatusResponse.build(
             cfg(GbVersion.V2016),
             sn = "1",
             snapshot = onlineSnap.copy(alarming = false)
         )
-        assertTrue(xml.contains("<AlarmStatus>0</AlarmStatus>"))
+        assertTrue(xml.contains("<Alarmstatus num=\"1\">"))
+        assertTrue(xml.contains("<DutyStatus>OFFDUTY</DutyStatus>"))
+    }
+
+    /**
+     * ⭐ 2022 分支的属性名是**大写** `Num`。
+     *
+     * 本条同时钉住另一类反复踩的坑：`Num` 是 `Alarmstatus` 的**属性**，
+     * 不是子元素 `<Num>1</Num>` —— 同类坑在 `RegionList` / `VideoParamAttribute`
+     * 上都出现过，症状统一为"平台侧有应答无数据"。
+     */
+    @Test fun build_v2022_numIsAnAttribute_notAChildElement() {
+        val xml = DeviceStatusResponse.build(cfg(GbVersion.V2022), sn = "1", snapshot = onlineSnap)
+        assertTrue(xml.contains("<Alarmstatus Num=\"1\">"), "2022 的属性名是大写 Num: $xml")
+        assertFalse(xml.contains("<Num>1</Num>"), "Num 不得是子元素: $xml")
+    }
+
+    /** 两版都要有嵌套块，只有属性名不同 —— 用同一份断言同时覆盖两版。 */
+    @Test fun bothVersions_shareTheSameNestedShape() {
+        for ((v, attr) in listOf(GbVersion.V2016 to "num", GbVersion.V2022 to "Num")) {
+            val xml = DeviceStatusResponse.build(cfg(v), sn = "1", snapshot = onlineSnap.copy(alarming = true))
+            assertTrue(xml.contains("<Alarmstatus $attr=\"1\">"), "$v 应有 <Alarmstatus $attr=\"1\">: $xml")
+            assertTrue(xml.contains("<Item>"), "$v 应有 Item: $xml")
+            assertTrue(xml.contains("<DutyStatus>ALARM</DutyStatus>"), "$v: $xml")
+            assertTrue(xml.contains("</Alarmstatus>"), "$v: $xml")
+        }
     }
 
     @Test fun build_xmlEncoding_isGB2312_andCrlf() {

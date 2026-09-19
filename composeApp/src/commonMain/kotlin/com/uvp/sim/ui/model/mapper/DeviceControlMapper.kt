@@ -1,11 +1,16 @@
 package com.uvp.sim.ui.model.mapper
 
+import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.CruiseTrackState
 import com.uvp.sim.domain.DeviceCommandCategory
 import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceControlRenderState
 import com.uvp.sim.domain.DragZoomRect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.domain.StorageCard
+import com.uvp.sim.domain.StorageCardReading
+import com.uvp.sim.domain.StorageCardStatus
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
 import com.uvp.sim.domain.deriveRenderState
@@ -15,6 +20,7 @@ import com.uvp.sim.gb28181.PanDirection
 import com.uvp.sim.gb28181.PtzCommand
 import com.uvp.sim.gb28181.TiltDirection
 import com.uvp.sim.gb28181.ZoomDirection
+import com.uvp.sim.ui.model.CruiseTrackDto
 import com.uvp.sim.ui.model.DeviceCommandCategoryDto
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.DragZoomRectDto
@@ -25,6 +31,9 @@ import com.uvp.sim.ui.model.PanDirectionDto
 import com.uvp.sim.ui.model.PtzCommandDto
 import com.uvp.sim.ui.model.PtzPoseDto
 import com.uvp.sim.ui.model.TiltDirectionDto
+import com.uvp.sim.ui.model.StorageCardDto
+import com.uvp.sim.ui.model.StorageCardReadingDto
+import com.uvp.sim.ui.model.StorageCardStatusDto
 import com.uvp.sim.ui.model.UpgradeProgressDto
 import com.uvp.sim.ui.model.UpgradeResultDto
 import com.uvp.sim.ui.model.ZoomDirectionDto
@@ -41,6 +50,20 @@ fun PtzPose.toDto(): PtzPoseDto = PtzPoseDto(pan, tilt, zoom)
 
 fun DragZoomRect.toDto(): DragZoomRectDto =
     DragZoomRectDto(midX, midY, lengthX, lengthY)
+
+fun CruiseTrackState.toDto(): CruiseTrackDto =
+    CruiseTrackDto(points = points, speed = speed, dwellTime = dwellTime)
+
+fun StorageCardStatus.toDto(): StorageCardStatusDto = StorageCardStatusDto.valueOf(name)
+
+fun StorageCard.toDto(): StorageCardDto = StorageCardDto(id = id, name = name, capacityMb = capacityMb)
+
+fun StorageCardReading.toDto(): StorageCardReadingDto = StorageCardReadingDto(
+    cardId = cardId,
+    status = status.toDto(),
+    progress = progress,
+    freeMb = freeMb,
+)
 
 fun PanDirection.toDto(): PanDirectionDto = PanDirectionDto.valueOf(name)
 fun TiltDirection.toDto(): TiltDirectionDto = TiltDirectionDto.valueOf(name)
@@ -90,6 +113,15 @@ fun DeviceCommandCategory.toDto(): DeviceCommandCategoryDto = DeviceCommandCateg
 fun toDeviceControlDto(
     model: DeviceControlModel,
     render: DeviceControlRenderState,
+    /**
+     * 设备的本机配置。
+     *
+     * ⛔ **刻意不给默认值**：设备配置族里有几项（前端 OSD 的坐标、遮挡区域的像素基准）
+     * 要按**视频帧的像素尺寸**归一化，而那个尺寸只在这里拿得到。给个 `SimConfig()` 兜底
+     * 会让"忘传"变成一次**静默的坐标错位**（矩形仍然画出来，只是位置不对）——
+     * 交给编译器拦住才是对的。
+     */
+    config: SimConfig,
 ): DeviceControlDto = DeviceControlDto(
     panAngle = model.panAngle,
     tiltAngle = model.tiltAngle,
@@ -112,7 +144,7 @@ fun toDeviceControlDto(
     homePositionEnabled = model.homePositionEnabled,
     homePositionPresetIndex = model.homePositionPresetIndex,
     homePositionResetTime = model.homePositionResetTime,
-    cruiseTracks = model.cruiseTracks,
+    cruiseTracks = model.cruiseTracks.mapValues { it.value.toDto() },
     activeCruiseTrack = model.activeCruiseTrack,
     auxStates = model.auxStates,
     auxTimestamps = model.auxTimestamps,
@@ -121,11 +153,16 @@ fun toDeviceControlDto(
     upgradeProgress = model.upgradeProgress?.toDto(),
     pendingEffect = model.pendingEffect?.toDto(),
     lastCommandCategory = render.lastCommandCategory?.toDto(),
+    storageCards = model.storageCards.map { it.toDto() },
+    storageCardReadings = model.storageCardReadings.mapValues { it.value.toDto() },
+    storageCardQueriedAtMs = model.storageCardQueriedAtMs,
+    storageCardQueryCount = model.storageCardQueryCount,
+    deviceConfig = model.toDeviceConfigDto(config),
 )
 
 /**
  * 便捷扩展:从 [DeviceControlModel] 直接出 DTO,内部用 [deriveRenderState] 派生渲染层。
  * 业务路径 / Android 壳收 model StateFlow 时用这个,UI 不需要单独 hold RenderState。
  */
-fun DeviceControlModel.toDto(): DeviceControlDto =
-    toDeviceControlDto(this, deriveRenderState(this))
+fun DeviceControlModel.toDto(config: SimConfig): DeviceControlDto =
+    toDeviceControlDto(this, deriveRenderState(this), config)

@@ -59,10 +59,11 @@ object AlarmStatusResponse {
     fun build(
         config: SimConfig,
         sn: String,
-        snapshot: AlarmStatusSnapshot
+        snapshot: AlarmStatusSnapshot,
+        gbVersion: GbVersion = config.gbVersion,
     ): String {
         val device = config.device
-        val body = if (config.gbVersion == GbVersion.V2022) {
+        val body = if (gbVersion == GbVersion.V2022) {
             val dutyStatus = if (snapshot.alarming) "ALARM" else "OFFDUTY"
             """<Num>1</Num>
 <Item>

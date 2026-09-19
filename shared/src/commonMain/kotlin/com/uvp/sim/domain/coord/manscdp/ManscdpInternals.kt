@@ -5,6 +5,7 @@ import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.SimEvent
+import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipDialogIdentityService
 import com.uvp.sim.sip.SipOutbox
@@ -32,6 +33,10 @@ internal object ManscdpInternals {
      * 调用方只需提供:identity service + 出栈 outbox + 报文体 xmlBody。
      * 异常被 catch 并通过 [simEventEmit] 发 TransportError,不再向上抛。
      *
+     * [charset] **必传**,由调用方按 `ctx.effectiveGbVersion` 取(`SignalingCharset.of(...)`)——
+     * 这里刻意不设默认值:有效版本 = min(本机, 平台),只有 SubRouter 层的 ctx 才知道,
+     * 在本函数里兜底成 config.gbVersion 会把"对面是 2016"这一路悄悄漏掉。
+     *
      * @return true=成功,false=发送失败(已 emit TransportError)
      */
     suspend fun sendMansMessage(
@@ -42,6 +47,7 @@ internal object ManscdpInternals {
         localPort: Int,
         xmlBody: String,
         errorLabel: String,
+        charset: SignalingCharset,
         simEventEmit: suspend (SimEvent) -> Unit,
     ): Boolean {
         return try {
@@ -55,6 +61,7 @@ internal object ManscdpInternals {
                 localIp = localIp,
                 localPort = localPort,
                 xmlBody = xmlBody,
+                charset = charset,
             )
             outbox.send(msg).getOrThrow()
             true
