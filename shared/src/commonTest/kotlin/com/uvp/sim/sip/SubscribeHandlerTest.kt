@@ -12,6 +12,9 @@ class SubscribeHandlerTest {
         callId: String = "abc123@192.168.1.1",
         fromTag: String = "tag-from-platform",
         toHeader: String? = "<sip:34020000001110000001@192.168.1.50:5060>",
+        contactHeader: String? = "<sip:34020000002000000001@192.168.1.100:5060>",
+        // 默认复刻平台真实形态:From 的 host 是 **SIP 域标识**(3402000000),不是地址。
+        fromHeader: String = "<sip:34020000002000000001@3402000000>;tag=$fromTag",
         body: String = """<?xml version="1.0"?>
 <Query>
 <CmdType>MobilePosition</CmdType>
@@ -21,12 +24,12 @@ class SubscribeHandlerTest {
 </Query>"""
     ): SipRequest {
         val headers = mutableListOf(
-            SipMessage.Header(SipHeader.FROM, "<sip:34020000002000000001@3402000000>;tag=$fromTag"),
-            SipMessage.Header(SipHeader.CONTACT, "<sip:34020000002000000001@192.168.1.100:5060>"),
+            SipMessage.Header(SipHeader.FROM, fromHeader),
             SipMessage.Header(SipHeader.CALL_ID, callId),
             SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
             SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP 192.168.1.100:5060;branch=z9hG4bK-abc")
         )
+        if (contactHeader != null) headers += SipMessage.Header(SipHeader.CONTACT, contactHeader)
         if (toHeader != null) headers += SipMessage.Header(SipHeader.TO, toHeader)
         if (event != null) headers += SipMessage.Header(SipHeader.EVENT, event)
         if (expires != null) headers += SipMessage.Header(SipHeader.EXPIRES, expires)
@@ -72,16 +75,135 @@ class SubscribeHandlerTest {
     }
 
     @Test
-    fun missingContactRejects400() {
-        val request = subscribeRequest().copy(
-            headers = subscribeRequest().headers.filterNot {
-                SipHeader.canonicalize(it.name) == SipHeader.CONTACT
-            },
+    fun contactPresent_isUsedVerbatim_andNotMarkedAsFallback() {
+        // ⛔ transportSource 必须传一个**与 Contact 不同**的地址:否则"Contact 优先"这条
+        // 语义根本没有被检验(来源缺席时回落本来就推不出东西,不变异也看不出来)。
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5060),
         )
-        val intent = SubscribeHandler.parse(request, emptySet())
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("sip:34020000002000000001@192.168.1.100:5060", intent.notifyRequestUri)
+        assertEquals(false, intent.notifyRequestUriIsFallback)
+    }
+
+    // ------------------------------------------------------------------
+    // Contact 缺失的回落策略(2026-09-19 起不再直接 400)
+    //
+    // 背景:本平台 `uac.go buildSubscribeRequest` 刻意不带 Contact,旧行为直接把整条
+    // Catalog / MobilePosition / PTZPosition 订阅链路打成 400(SIP 层无任何异常可看)。
+    // ------------------------------------------------------------------
+
+    @Test
+    fun missingContact_withoutAnySource_stillRejects400() {
+        // 兜底不能退化成"无条件接受":连来源都推不出来时,接受订阅只会换来一个发不出去的
+        // NOTIFY —— 不如 400 说得清楚。
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(contactHeader = null),
+            emptySet(),
+            transportSource = null,
+        )
         assertIs<SubscribeIntent.Reject>(intent)
         assertEquals(400, intent.statusCode)
         assertEquals("Missing Contact", intent.reason)
+    }
+
+    @Test
+    fun missingContact_fallsBackToTransportSource_whenFromHostIsDomainIdentifier() {
+        // 平台 From 的 host 是 SIP 域标识 `3402000000`(不可路由)→ 必须落到 sourceIp:sourcePort
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(contactHeader = null),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5060),
+        )
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("sip:34020000002000000001@192.168.10.106:5060", intent.notifyRequestUri)
+        assertEquals(true, intent.notifyRequestUriIsFallback)
+        // 回落不得影响其余字段
+        assertEquals("MobilePosition", intent.kind)
+        assertEquals(1800, intent.expiresSeconds)
+        assertEquals(5, intent.intervalSeconds)
+        assertEquals("tag-from-platform", intent.fromTag)
+    }
+
+    @Test
+    fun missingContact_prefersFromHostWhenItLooksLikeAnAddress() {
+        // From 直接写了地址时用它(比传输层来源更贴合 UAC 的自我声明),端口取自 From
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(
+                contactHeader = null,
+                fromHeader = "<sip:34020000002000000001@10.9.8.7:5070>;tag=tag-from-platform",
+            ),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5060),
+        )
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("sip:34020000002000000001@10.9.8.7:5070", intent.notifyRequestUri)
+        assertEquals(true, intent.notifyRequestUriIsFallback)
+    }
+
+    @Test
+    fun missingContact_fromHostWithoutPort_borrowsPortFromTransportSource() {
+        // From 有地址但没端口 → 端口借传输层来源的;⛔ 不能猜一个 5060 了事
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(
+                contactHeader = null,
+                fromHeader = "<sip:34020000002000000001@10.9.8.7>;tag=tag-from-platform",
+            ),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5080),
+        )
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("sip:34020000002000000001@10.9.8.7:5080", intent.notifyRequestUri)
+    }
+
+    @Test
+    fun missingContact_ipv6LiteralInFrom_isNotSplitOnInnerColon() {
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(
+                contactHeader = null,
+                fromHeader = "<sip:34020000002000000001@[fe80::1]:5062>;tag=tag-from-platform",
+            ),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5060),
+        )
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("sip:34020000002000000001@[fe80::1]:5062", intent.notifyRequestUri)
+    }
+
+    @Test
+    fun missingContact_fromWithoutUser_rejects400() {
+        // From 连 user 都没有 → 推不出订阅者身份,回 400(不是硬凑一个匿名 URI)
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(
+                contactHeader = null,
+                fromHeader = "<sip:192.168.9.9:5060>;tag=tag-from-platform",
+            ),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5060),
+        )
+        assertIs<SubscribeIntent.Reject>(intent)
+        assertEquals(400, intent.statusCode)
+    }
+
+    @Test
+    fun missingContact_onAlarmEvent_alsoFallsBack() {
+        // Alarm 走 Event 短路分支,是**另一处** NewSubscription 构造点 —— 同样要带回落标记
+        val intent = SubscribeHandler.parse(
+            subscribeRequest(
+                event = "Alarm",
+                expires = null,
+                contactHeader = null,
+                body = "<Query><SN>1</SN></Query>",
+            ),
+            emptySet(),
+            transportSource = TransportSource("192.168.10.106", 5060),
+        )
+        assertIs<SubscribeIntent.NewSubscription>(intent)
+        assertEquals("Alarm", intent.kind)
+        assertEquals("sip:34020000002000000001@192.168.10.106:5060", intent.notifyRequestUri)
+        assertEquals(true, intent.notifyRequestUriIsFallback)
     }
 
     @Test

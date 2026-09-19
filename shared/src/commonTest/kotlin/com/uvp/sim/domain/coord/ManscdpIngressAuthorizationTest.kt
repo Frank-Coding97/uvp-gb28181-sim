@@ -123,20 +123,26 @@ class ManscdpIngressAuthorizationTest {
         )
     }
 
-    private fun subscribeMessage(fromUser: String = platformServerId, callId: String = "sub-test"): SipRequest =
+    private fun subscribeMessage(
+        fromUser: String = platformServerId,
+        callId: String = "sub-test",
+        contactHeader: String? = "<sip:$fromUser@$platformIp:5060>",
+        body: String = SUBSCRIBE_CATALOG_BODY,
+    ): SipRequest =
         SipRequest(
             method = SipMethod.SUBSCRIBE,
             requestUri = "sip:34020000001110000001@$platformDomain",
-            headers = listOf(
-                SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP $platformIp:5060;branch=z9hG4bK-sub"),
-                SipMessage.Header(SipHeader.FROM, "<sip:$fromUser@$platformDomain>;tag=plat"),
-                SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@$platformDomain>"),
-                SipMessage.Header(SipHeader.CALL_ID, callId),
-                SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"),
-                SipMessage.Header("Event", "Catalog"),
-                SipMessage.Header(SipHeader.EXPIRES, "3600"),
-                SipMessage.Header(SipHeader.CONTACT, "<sip:$fromUser@$platformIp:5060>"),
-            ),
+            headers = buildList {
+                add(SipMessage.Header(SipHeader.VIA, "SIP/2.0/UDP $platformIp:5060;branch=z9hG4bK-sub"))
+                add(SipMessage.Header(SipHeader.FROM, "<sip:$fromUser@$platformDomain>;tag=plat"))
+                add(SipMessage.Header(SipHeader.TO, "<sip:34020000001110000001@$platformDomain>"))
+                add(SipMessage.Header(SipHeader.CALL_ID, callId))
+                add(SipMessage.Header(SipHeader.CSEQ, "1 SUBSCRIBE"))
+                add(SipMessage.Header("Event", "Catalog"))
+                add(SipMessage.Header(SipHeader.EXPIRES, "3600"))
+                if (contactHeader != null) add(SipMessage.Header(SipHeader.CONTACT, contactHeader))
+            },
+            body = body.encodeToByteArray(),
         )
 
     // ─────────────────────────── MESSAGE 路径 ───────────────────────────
@@ -217,11 +223,50 @@ class ManscdpIngressAuthorizationTest {
         runCurrent()
 
         assertEquals(RoutingResult.Handled, result)
-        // 合法 SUBSCRIBE 必有任何输出(200 OK + NOTIFY),空 sent = ingress 把它 drop 了
-        assertTrue(
-            transport.sent.isNotEmpty(),
-            "P1-3:合法 SUBSCRIBE 应进入 dispatch(发 200 OK / NOTIFY),实际 sent=${transport.sent}"
+        // ⛔ 原来这里只断言 sent.isNotEmpty() —— 而 400 也是 SipResponse,假守卫。
+        // 合法 SUBSCRIBE 必须是 **200 OK**(2026-09-19 起 body 补齐为 Catalog,该断言才有意义)。
+        val statuses = transport.sent.filterIsInstance<SipResponse>().map { it.statusCode }
+        assertTrue(200 in statuses, "合法 SUBSCRIBE 应回 200 OK,实际状态码=$statuses")
+    }
+
+    @Test fun subscribe_withoutContact_fallsBackToTransportEndpoint_andStillSucceeds() = runTest {
+        // 实测平台 `uac.go buildSubscribeRequest` 刻意不带 Contact。旧行为直接 400 ——
+        // 整条 Catalog / MobilePosition / PTZPosition 订阅链路在 SIP 层毫无征兆地全废。
+        val transport = MockSipTransport(config())
+        transport.connect()
+        val router = newRouter(this, transport)
+
+        val result = router.onIncoming(
+            subscribeMessage(contactHeader = null).asEnvelope(sourceIp = platformIp, sourcePort = 5068)
         )
+        runCurrent()
+
+        assertEquals(RoutingResult.Handled, result)
+        val statuses = transport.sent.filterIsInstance<SipResponse>().map { it.statusCode }
+        assertTrue(200 in statuses, "缺 Contact 时不得再回 400(Missing Contact),实际状态码=$statuses")
+
+        // 关键:NOTIFY 的 Request-URI 必须落到**传输层来源端点**,不能用 From 的 SIP 域标识
+        // (`3402000000`)去拼 —— 那样会得到一个发不出去的 URI,是更隐蔽的失败。
+        val notify = transport.sent.filterIsInstance<SipRequest>().firstOrNull { it.method == SipMethod.NOTIFY }
+        assertTrue(notify != null, "订阅建立后应发初始 Catalog NOTIFY")
+        assertEquals("sip:$platformServerId@$platformIp:5068", notify!!.requestUri)
+    }
+
+    @Test fun subscribe_withContact_keepsUsingContact() = runTest {
+        // 反面对照:有 Contact 时必须原样用它(不得被来源地址顶掉)—— Contact 可能指向
+        // 与信令不同的地址,这是 UAC 的明示声明。
+        val transport = MockSipTransport(config())
+        transport.connect()
+        val router = newRouter(this, transport)
+
+        router.onIncoming(
+            subscribeMessage(contactHeader = "<sip:$platformServerId@10.20.30.40:5090>")
+                .asEnvelope(sourceIp = platformIp, sourcePort = 5068)
+        )
+        runCurrent()
+
+        val notify = transport.sent.filterIsInstance<SipRequest>().firstOrNull { it.method == SipMethod.NOTIFY }
+        assertEquals("sip:$platformServerId@10.20.30.40:5090", notify?.requestUri)
     }
 
     @Test fun subscribe_forged_source_ip_dropped() = runTest {
@@ -255,5 +300,11 @@ class ManscdpIngressAuthorizationTest {
             responses.isEmpty(),
             "P1-3:SUBSCRIBE From serverId 错也必须 drop"
         )
+    }
+
+    private companion object {
+        const val SUBSCRIBE_CATALOG_BODY =
+            "<?xml version=\"1.0\"?><Query><CmdType>Catalog</CmdType><SN>1</SN>" +
+                "<DeviceID>34020000001110000001</DeviceID></Query>"
     }
 }
