@@ -31,6 +31,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.GbVersion
+import com.uvp.sim.gb28181.SignalingCharset
+import com.uvp.sim.sip.NatSituation
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.ui.model.SipStateDto
 
 /**
@@ -80,6 +83,19 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
                 selected = gbVersion,
                 enabled = !locked,
                 onSelect = { gbVersion = it }
+            )
+            NegotiatedVersionRow(
+                declared = gbVersion,
+                platform = state.platformGbVersion,
+                registered = locked,
+            )
+            SignalingCharsetRow(
+                declared = gbVersion,
+                platform = state.platformGbVersion,
+            )
+            AddressTranslationRow(
+                observation = state.rportObservation,
+                usesTcp = state.config.transport.name.equals("TCP", ignoreCase = true),
             )
         }
 
@@ -265,9 +281,112 @@ private fun GbVersionSelector(
     }
 }
 
+/**
+ * 附录 I 协商结果的只读展示。
+ *
+ * 为什么要露出来:出站报文形态取决于 min(本机声明, 平台声明) —— DeviceInfo 的
+ * HardwareVersion、DeviceStatus 的嵌套 Alarmstatus、AlarmStatus 的 DutyStatus 都跟着它走。
+ * 而「本机选了 2022,对面平台只声明 2.0」这件事在界面上原本完全不可见,联调时只能翻日志抓包。
+ */
 @Composable
-private fun UnitSuffix(text: String, enabled: Boolean) {
+private fun NegotiatedVersionRow(declared: GbVersion, platform: GbVersion?, registered: Boolean) {
+    val (text, color) = when {
+        platform != null -> {
+            val effective = minOf(declared, platform)
+            if (effective != declared) {
+                "平台声明 ${platform.xGbVer} · 有效 ${effective.xGbVer}(出站已降级)" to UvpColor.Warning
+            } else {
+                "平台声明 ${platform.xGbVer} · 有效 ${effective.xGbVer}" to UvpColor.TextHint
+            }
+        }
+        registered -> "平台未声明 X-GB-Ver,按本机 ${declared.xGbVer} 交互" to UvpColor.TextHint
+        else -> "平台版本:注册后协商" to UvpColor.TextHint
+    }
     Text(
+        text,
+        fontSize = 11.sp,
+        // 显式给行高:只改 fontSize 会继承 bodyLarge 的 24sp 行高,父容器一收窄就裁字。
+        lineHeight = 16.sp,
+        color = color,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+}
+
+/**
+ * 信令字符集(GB/T 28181 §6.10)的**只读**展示。
+ *
+ * 为什么不给下拉:字符集不是设备厂商可自由选的参数 —— 2016 §6.10 是「**宜**采用 GB 2312」、
+ * 2022 §6.10 是「**应**采用 GB 18030」,跟着上面选的国标版本走就是唯一正确解。给个下拉只会
+ * 制造「两个实现方各理解一次」,而选错的表现只是一片中文乱码,没人能看出是自己选错的。
+ *
+ * 为什么要露出来:出站到底用什么编码,原来在界面上**完全不可见**,联调时只能翻日志抓包 ——
+ * 「声明 GB2312 却发 UTF-8 字节」这种故障就是靠这一行一眼看出来的(理由同上面的 X-GB-Ver 协商行)。
+ *
+ * 取值口径与 [NegotiatedVersionRow] 一致:有效版本 = min(本机声明, 平台声明);平台未声明则不降级。
+ */
+@Composable
+private fun SignalingCharsetRow(declared: GbVersion, platform: GbVersion?) {
+    val effective = if (platform != null) minOf(declared, platform) else declared
+    val outbound = SignalingCharset.of(effective)
+    val strength = if (outbound == SignalingCharset.GB18030) "应" else "宜"
+    Text(
+        "信令字符集:出站 ${outbound.xmlLabel}(§6.10 $strength)· 入站按报文声明解码",
+        fontSize = 11.sp,
+        // 与上行同款:只改 fontSize 会继承 bodyLarge 的 24sp 行高,收窄时裁字。
+        lineHeight = 16.sp,
+        color = UvpColor.TextHint,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+}
+
+/**
+ * 平台视角的本机端点 —— 现场回答「平台到底能不能连上我」。
+ *
+ * 判定依据是注册响应 Via 里回填的 `received` / `rport`(RFC 3581)。
+ * ⛔ 这不是国标要求(GB/T 28181-2022 全文没有这两个参数,标准给 NAT 的答案是 TCP 长连接复用),
+ * 所以**平台不回填是正常的**:那种情况只说"未回填",不当错误。真正要抓的是它确实回填、
+ * 且与本机声明不一致时 —— 那说明中间存在地址转换,NAT 场景下必须用 TCP(§9.1.1 f)),
+ * 否则故障表现为「注册成功,但点播/云台/查询全部超时」,与防火墙丢包长得一模一样。
+ */
+@Composable
+private fun AddressTranslationRow(observation: RportObservation?, usesTcp: Boolean) {
+    val (text, color) = when {
+        // ⛔ UNKNOWN 必须与 null 合并处理:`assess` 在"平台没回填"时返回的**不是** null
+        // (它仍会带上本机端点供展示),只判 null 会让这种情况落到下面的兜底分支,
+        // 被说成"只回填了 IP 或端口之一" —— 与真实原因不符。
+        observation == null || observation.situation == NatSituation.UNKNOWN ->
+            "地址转换:平台未回填 Via 的 received/rport(不影响协议合规)" to UvpColor.TextHint
+
+        observation.situation == NatSituation.DIRECT ->
+            "地址转换:无 · 平台看到 ${observation.observedIp}:${observation.observedPort}" to
+                UvpColor.TextHint
+
+        observation.situation == NatSituation.NAT -> {
+            val observed = "${observation.observedIp}:${observation.observedPort}"
+            val local = "${observation.localIp}:${observation.localPort}"
+            if (usesTcp) {
+                "地址转换:有 · 平台看到 $observed(本机 $local)—— 已用 TCP 注册,符合 §9.1.1 f)" to
+                    UvpColor.TextHint
+            } else {
+                "地址转换:有 · 平台看到 $observed(本机 $local)—— NAT 场景须改用 TCP 注册" to
+                    UvpColor.Warning
+            }
+        }
+
+        else -> "地址转换:无法判定(平台只回填了 IP 或端口之一)" to UvpColor.TextHint
+    }
+    Text(
+        text,
+        fontSize = 11.sp,
+        // 与同卡片其它说明行一致:只改 fontSize 会继承 bodyLarge 的 24sp 行高,收窄时裁字。
+        lineHeight = 16.sp,
+        color = color,
+        modifier = Modifier.padding(bottom = 8.dp),
+    )
+}
+
+@Composable
+private fun UnitSuffix(text: String, enabled: Boolean) {    Text(
         text,
         fontSize = 11.sp,
         color = if (enabled) UvpColor.TextHint else UvpColor.BorderLight,

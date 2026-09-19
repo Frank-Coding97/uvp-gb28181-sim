@@ -2,6 +2,7 @@ package com.uvp.sim.ui.actions
 
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.gb28181.AlarmPayload
+import com.uvp.sim.gb28181.FrontOsdState
 import com.uvp.sim.ui.AlarmFireMode
 
 /**
@@ -98,4 +99,17 @@ interface CapabilityActions {
      * 给它加两个参数 —— 否则云台三轴的每个调用点都得补两个 `0f`。
      */
     fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float)
+
+    // ---- 设备配置族:前端 OSD(A.2.1.12 / A.2.3.2.11)----
+
+    /**
+     * 用户在「设置 → OSD 水印 → GB/T 28181 前端 OSD」区块保存。
+     *
+     * ⭐ 这一项**是设备自己的配置、平台可远程查改**（真机上就是一份配置两个入口），
+     * 所以允许本地编辑，编辑结果同时影响「回读给平台的值」与「界面回显」。
+     *
+     * [state] 为 `null` 的语义是**清除平台值、回到出厂派生** ——
+     * 用户在本地三层 OSD 那边改了配置时走这条（设备当前的 OSD 该由本地方案决定）。
+     */
+    fun onFrontOsdSave(state: FrontOsdState?)
 }

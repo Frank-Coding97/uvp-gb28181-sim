@@ -12,10 +12,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -50,8 +47,6 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
 
     // SnapshotFlash 全屏快门白光
     val snapshotFlashAlpha = remember { Animatable(0f) }
-    // IFrameFlash 角标
-    var iframeChipVisible by remember { mutableStateOf(false) }
     // ConfigChanged / DeviceUpgrade / FormatSDCard 三类 snackbar
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -62,11 +57,6 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
                 snapshotFlashAlpha.snapTo(0.85f)
                 delay(80)
                 snapshotFlashAlpha.animateTo(0f, animationSpec = tween(80))
-            }
-            is DeviceEffectDto.IFrameFlash -> {
-                iframeChipVisible = true
-                delay(700)  // 入 150 + 维持 250 + 出 300
-                iframeChipVisible = false
             }
             is DeviceEffectDto.ConfigChanged -> {
                 snackbarHostState.showSnackbar("配置已更新: ${e.changedFields.joinToString(", ")}")
@@ -101,7 +91,6 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
         ) {
             MonitoringStage(
                 state = deviceControl,
-                iframeChipVisible = iframeChipVisible,
                 onPoseTick = actions::onPoseTick,
                 modifier = Modifier
                     .fillMaxWidth()

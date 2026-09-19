@@ -30,7 +30,12 @@ object SnapShotConfigParser {
     private const val INTERVAL_MS_MAX = 60_000L
 
     fun parse(xml: String): SnapShotConfig? {
-        if (!xml.contains("<SnapShotConfig>")) return null
+        // ⛔ 用 [configBlockBody] 而不是 `contains("<SnapShotConfig>")`：后者在本族里是**已知的坑**
+        //    （`VideoParamAttribute` 带 `Num` 属性时 `contains("<X>")` 永不命中，现象是
+        //    "平台下发成功、设备侧毫无反应"）。标准里 `snapshotCfgType` 本身没有属性，
+        //    但按同一口径收口 —— 对端多写一个属性不该让整次下发静默失效。
+        //    自闭 `<SnapShotConfig/>` 与"元素不在"在这里都返回 null（调用方记一条拒收 warn）。
+        if (configBlockBody(xml, DeviceConfigBlock.SnapShot.configType) == null) return null
 
         val sessionId = ManscdpParser.tagValue(xml, "SessionID")?.takeIf { it.isNotBlank() }
             ?: return null

@@ -274,6 +274,19 @@ internal class GlbSceneState {
             }
         }
 
+        // 冷启动恢复:Model 里可能带着上次运行留下的姿态(AppEngine.restoreDeviceState)。
+        // 场景持有自己的 pan/tilt 且**单向**回写 Model(166ms 一次),从不读它 —— 首帧不对齐的话
+        // 场景会从 0° 起步、先跑完 6.5 秒开机自检,再由 poseSink 把 Model 覆写回 0°:存档等于白存,
+        // 用户还会看到 HUD 角度闪一下再归零。
+        // 走 jumpToPose 而不是 easeToPose:① 恢复要瞬时落位,不播 1.2 秒缓动;② jumpToPose 会顺手
+        // 关掉自检 —— 镜头本来就在那儿,重新自扫一遍才是错的(easeToPose 在自检期间还会被直接丢弃)。
+        val restored = stateProvider?.invoke()
+        if (restored != null &&
+            (restored.panAngle != 0f || restored.tiltAngle != 0f || restored.zoomLevel != 1f)
+        ) {
+            jumpToPose(PtzPoseDto(restored.panAngle, restored.tiltAngle, restored.zoomLevel))
+        }
+
         Choreographer.getInstance().postFrameCallback(frameCallback)
     }
 

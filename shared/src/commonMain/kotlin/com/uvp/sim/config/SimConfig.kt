@@ -158,6 +158,27 @@ enum class VideoResolution(val widthPx: Int, val heightPx: Int, val label: Strin
     HD_720P(1280, 720, "1280×720"),
     FHD_1080P(1920, 1080, "1920×1080");
 
+    /**
+     * GB/T 28181 附录 G（2022 版；2016 版为附录 F）SDP `f=` 字段的**分辨率码值**。
+     *
+     * 标准码表：1=QCIF / 2=CIF / 3=4CIF / 4=D1 / 5=720P / 6=1080P，其余用 `WxH` 形式。
+     *
+     * ⭐ **这是单一真源。** SDP 协商（[com.uvp.sim.sip.SipHeaderHelpers.buildSdpMediaSpec]）
+     * 与配置回读（[com.uvp.sim.gb28181.ConfigDownloadResponse]）必须都读它 ——
+     * 曾经两处各写一份 `when`：SDP 侧发码值 `5`、ConfigDownload 侧发人读串 `"720P"`，
+     * 同一台设备两条出口不一致，平台侧永远对不上。
+     *
+     * ⚠️ 待核：`SD_480P -> "4"` 映射到 D1（704×576）并不严谨，640×480 严格说该用
+     * `WxH` 形式。此处**保持既有 SDP 行为不变**，疑点另行记录（见
+     * `docs/gb28181-2022-video-param-attribute-panel.md` §九）。
+     */
+    val gb28181Code: Int
+        get() = when (this) {
+            SD_480P -> 4
+            HD_720P -> 5
+            FHD_1080P -> 6
+        }
+
     companion object {
         fun from(w: Int, h: Int): VideoResolution =
             entries.firstOrNull { it.widthPx == w && it.heightPx == h } ?: HD_720P
@@ -261,12 +282,18 @@ data class DeviceConfig(
 }
 
 /**
- * GB/T 28181-2022 Catalog Item 新增字段集合(§9.3.1)。
+ * GB/T 28181 Catalog Item 通道级属性(§9.3.1)。
  *
  * 这些字段是**通道级**属性,不是设备级。M1/M2 阶段只有一个视频通道,先把它平放在
  * [DeviceConfig] 里。后续多通道时再按 channel 拆。
  *
- * V2016 模式下这些字段不输出(由 [com.uvp.sim.gb28181.CatalogResponse] 按 gbVersion 决定)。
+ * ⭐ 输出形态**按有效国标版本分支**(2016 / 2022 两套,见
+ * `com.uvp.sim.gb28181.CatalogNotifyBuilder.renderItem`):
+ * - **2022**:全部字段进 `<Info>` 容器,另加 `PhotoelectricImagingType` / `CapturePositionType` /
+ *   `StreamNumberList`;`BusinessGroupID` 提到 `Item` 层
+ * - **2016**:`<Info>` 内不含上述 2022 独有字段,但**多出** [positionType] / [useType]
+ *   (这两个 2022 已删除),且 `BusinessGroupID` 仍留在 `<Info>` 内
+ * - 两版共用且位置相同:`PTZType` / `RoomType` / `SupplyLightType` / `DirectionType` / `Resolution`
  */
 @Serializable
 data class ChannelProfile(
@@ -274,45 +301,106 @@ data class ChannelProfile(
     val ipAddress: String = "0.0.0.0",
     val port: Int = 5060,
     val ptzType: PtzType = PtzType.FixedGun,
-    val positionType: PositionType = PositionType.Street,
+    /**
+     * ⛔ **仅 2016 输出**(2022 已删除该字段)。
+     * 默认取 `CentralPlaza`(4) —— 本枚举 2026-09-17 修正值域前旧默认是 `Street`(gbCode 也是 4),
+     * 保持 gbCode 不变以避免默认值语义漂移。
+     */
+    val positionType: PositionType = PositionType.CentralPlaza,
     val roomType: RoomType = RoomType.Outdoor,
+    /** ⛔ **仅 2016 输出**(2022 已删除该字段)。 */
     val useType: UseType = UseType.PublicSecurity,
     val supplyLightType: SupplyLightType = SupplyLightType.None,
     val directionType: DirectionType = DirectionType.North,
+    /**
+     * 光电成像类型(§9.3.1,**2022 新增**)。标准允许**多值** → 写进报文时用 `/` 分割。
+     * 手机摄像头默认可见光成像。
+     */
+    val photoelectricImagingTypes: List<PhotoelectricImagingType> =
+        listOf(PhotoelectricImagingType.VisibleLight),
+    /**
+     * 支持的码流编号列表(§9.3.1,**2022 新增**)。`"0"` = 主码流,`"0/1"` = 主码流 + 子码流 1。
+     *
+     * ⭐ 默认 **`"0/1"`**（2026-09-19 从 `"0"` 改过来的）。这不是"随手多写一路":
+     * 这个字段是设备在**目录**里对平台声明自己支持几段码流的地方，而平台侧
+     * 视频参数面板**按这份声明渲染行数**。默认只声明 `"0"` 的后果是：
+     * 面板永远只有主码流一行，"主子码流分别配置"这件事**在界面上根本演不出来**。
+     * 真 IPC 出厂就同时声明主/子两路，所以 `"0/1"` 才是更真实的默认值。
+     *
+     * ⚠️ 口径边界：本模拟器**不真的产出两路码流**（`VideoProfile` 只有一份，
+     * 点播子码流拿到的画面与主码流相同）。所以声明的意义是
+     * 「让码流维度在协议与面板上成立」，不是「真的编了两路」。
+     * 子码流的**参数档位**另有独立处理，见 `VideoParamAttribute.defaultFor`。
+     *
+     * ⚠️ 该字段随 [SimConfig] 持久化：真机上若存档里已经写着 `"0"`，改默认值不会生效 ——
+     * 在设置页改任意一项并保存即可把整份配置按新默认重写。
+     *
+     * ⛔ `CapturePositionType` **不在此处** —— 它取值须符合附录 O(约 9 页的 7 位层次码大表),
+     * 值域展开留待 B-5;当前仅支持经 `CatalogNode.fields["CapturePositionType"]` 透传。
+     */
+    val streamNumberList: String = "0/1",
     /** 字符串如 "1280*720/1920*1080",多分辨率以 / 分隔 */
     val resolution: String = "1280*720",
     /** 业务分组 ID,默认空字符串(平台一般可空) */
     val businessGroupId: String = ""
 )
 
-/** §9.3.1 PTZType:0 不支持 / 1 球机 / 2 半球 / 3 固定枪机 / 4 遥控枪机 */
+/**
+ * §9.3.1 PTZType 摄像机结构类型。
+ * - 2016 值域 1-4；2022 扩到 1-7（新增遥控半球 / 多目设备的全景拼接通道与分割通道）
+ * - [Unsupported] 的 `0` **两版标准都没有**，是模拟器内部占位值 → 渲染时该值**不输出** PTZType 元素
+ */
 @Serializable
 enum class PtzType(val gbCode: Int, val label: String) {
     Unsupported(0, "不支持"),
     Dome(1, "球机"),
     HalfDome(2, "半球"),
     FixedGun(3, "固定枪机"),
-    RemoteGun(4, "遥控枪机")
+    RemoteGun(4, "遥控枪机"),
+    RemoteHalfDome(5, "遥控半球"),
+    MultiLensPanorama(6, "多目设备全景/拼接通道"),
+    MultiLensSplit(7, "多目设备分割通道")
 }
 
-/** §9.3.1 PositionType:1 省级 / 2 市级 / 3 区县级 / 4 街道级 / 5 关键节点 */
+/**
+ * §9.3.1 PositionType 摄像机位置类型扩展 —— ⛔ **仅 2016 有，2022 已删除该字段**。
+ *
+ * 值域照 2016 附录 A 原文（标准页 52）：
+ * 1-省际检查站 / 2-党政机关 / 3-车站码头 / 4-中心广场 / 5-体育场馆 /
+ * 6-商业中心 / 7-宗教场所 / 8-校园周边 / 9-治安复杂区域 / 10-交通干线。
+ *
+ * ⛔ 别按「省级/市级/区县级/街道级监控点」那套平台侧分类理解 —— 标准里没有那个口径，
+ * 本枚举 2026-09-17 前正是写成了那套（发出去的值对不上标准）。
+ */
 @Serializable
 enum class PositionType(val gbCode: Int, val label: String) {
-    Province(1, "省级监控点"),
-    City(2, "市级监控点"),
-    District(3, "区县级监控点"),
-    Street(4, "街道级监控点"),
-    KeyNode(5, "关键节点")
+    Checkpoint(1, "省际检查站"),
+    Government(2, "党政机关"),
+    StationQuay(3, "车站码头"),
+    CentralPlaza(4, "中心广场"),
+    Stadium(5, "体育场馆"),
+    BusinessCenter(6, "商业中心"),
+    ReligiousSite(7, "宗教场所"),
+    Campus(8, "校园周边"),
+    ComplexArea(9, "治安复杂区域"),
+    TrafficArtery(10, "交通干线")
 }
 
-/** §9.3.1 RoomType:1 室内 / 2 室外 */
+/**
+ * §9.3.1 RoomType 摄像机安装位置。2016/2022 同值域 ——
+ * ⛔ **1 = 室外、2 = 室内**（缺省 1）。
+ * 本枚举 2026-09-17 前把两者写反了（Indoor=1 / Outdoor=2），会直接发出错误语义，已按标准修正。
+ */
 @Serializable
 enum class RoomType(val gbCode: Int, val label: String) {
-    Indoor(1, "室内"),
-    Outdoor(2, "室外")
+    Outdoor(1, "室外"),
+    Indoor(2, "室内")
 }
 
-/** §9.3.1 UseType:1 治安 / 2 交通 / 3 重点 */
+/**
+ * §9.3.1 UseType 摄像机用途。1-治安 / 2-交通 / 3-重点。
+ * ⛔ **仅 2016 有，2022 已删除该字段**。
+ */
 @Serializable
 enum class UseType(val gbCode: Int, val label: String) {
     PublicSecurity(1, "治安"),
@@ -320,15 +408,35 @@ enum class UseType(val gbCode: Int, val label: String) {
     Important(3, "重点")
 }
 
-/** §9.3.1 SupplyLightType:1 无补光 / 2 红外补光 / 3 白光补光 */
+/**
+ * §9.3.1 SupplyLightType 摄像机补光属性。
+ * 2016：1-无补光 / 2-红外补光 / 3-白光补光；2022 增设 4-激光补光 / 9-其他。
+ */
 @Serializable
 enum class SupplyLightType(val gbCode: Int, val label: String) {
     None(1, "无补光"),
     Infrared(2, "红外补光"),
-    White(3, "白光补光")
+    White(3, "白光补光"),
+    Laser(4, "激光补光"),
+    Other(9, "其他")
 }
 
-/** §9.3.1 DirectionType:1 东 / 2 西 / 3 南 / 4 北 / 5 东南 / 6 东北 / 7 西南 / 8 西北 */
+/**
+ * §9.3.1 PhotoelectricImagingType 摄像机光电成像类型 —— **2022 新增字段**(2016 无)。
+ * 1-可见光成像 / 2-热成像 / 3-雷达成像 / 4-X光成像 / 5-深度光场成像 / 9-其他。
+ * 标准允许**多值** → 写进报文时用英文半角 `/` 分割。
+ */
+@Serializable
+enum class PhotoelectricImagingType(val gbCode: Int, val label: String) {
+    VisibleLight(1, "可见光成像"),
+    Thermal(2, "热成像"),
+    Radar(3, "雷达成像"),
+    XRay(4, "X光成像"),
+    DepthLightField(5, "深度光场成像"),
+    Other(9, "其他")
+}
+
+/** §9.3.1 DirectionType 摄像机监视方位。1-东 / 2-西 / 3-南 / 4-北 / 5-东南 / 6-东北 / 7-西南 / 8-西北。两版相同。 */
 @Serializable
 enum class DirectionType(val gbCode: Int, val label: String) {
     East(1, "东"),

@@ -196,6 +196,8 @@ private class CapabilitySliceFake(private val sink: RoutingSink) : CapabilityAct
         sink.record("cap.onLocalPtzAdjust:$panDelta:$tiltDelta:$zoomDelta")
     override fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float) =
         sink.record("cap.onLocalLensAdjust:$focusDelta:$irisDelta")
+    override fun onFrontOsdSave(state: com.uvp.sim.gb28181.FrontOsdState?) =
+        sink.record("cap.onFrontOsdSave:${state?.sumNum ?: -1}")
 }
 
 private class RecordingSliceFake(private val sink: RoutingSink) : RecordingActions {

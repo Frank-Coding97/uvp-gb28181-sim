@@ -69,6 +69,8 @@ actual fun CameraGlbView(
     }
 
     var pose by remember { mutableStateOf(PtzPoseDto(0f, 0f, 1f)) }
+    // 是否已做过"冷启动姿态对齐"(见下方 LaunchedEffect)。
+    var initialPoseApplied by remember { mutableStateOf(false) }
     // Kotlin 层维护的 zoomLevel — 独立于 native `_zoom`,不影响 3D 相机 FOV,只喂缩略图 + poseTick。
     var zoomLevel by remember { mutableStateOf(1f) }
     var zoomEaseActive by remember { mutableStateOf(false) }
@@ -155,6 +157,24 @@ actual fun CameraGlbView(
             }
             delay(166)
         }
+    }
+
+    // 冷启动恢复:首次拿到 native view 时,把 Model 里恢复的姿态落到 3D 场景。
+    // native 侧 pan/tilt 是它自己累积的、只**单向**回写 Model(下面那条 166ms 循环),从不读 Model ——
+    // 不对齐的话 Model 恢复了 +30° 而画面还在 0°,166ms 后 poseTick 又把 Model 覆写回 0°:
+    // 存档等于白存,用户还会看到 HUD 角度闪一下再归零。
+    LaunchedEffect(sceneReady) {
+        if (!sceneReady || initialPoseApplied) return@LaunchedEffect
+        val view = nativeView ?: return@LaunchedEffect
+        initialPoseApplied = true
+        val restored = currentState
+        if (restored.panAngle == 0f && restored.tiltAngle == 0f && restored.zoomLevel == 1f) {
+            return@LaunchedEffect
+        }
+        // duration 0 = 瞬时落位,与 Android 的 jumpToPose 语义对齐(easeToPanAngle 的时间参数单位是秒)。
+        view.easeToPanAngle(restored.panAngle, restored.tiltAngle, 1f, 0.0)
+        zoomLevel = restored.zoomLevel.coerceIn(1f, 20f)
+        pose = PtzPoseDto(restored.panAngle, restored.tiltAngle, zoomLevel)
     }
 
     // T-C3-1..5: effect 消费 — HomePosition/Preset/PrecisePoseGoto 时,pan/tilt 交给 native easeTo,

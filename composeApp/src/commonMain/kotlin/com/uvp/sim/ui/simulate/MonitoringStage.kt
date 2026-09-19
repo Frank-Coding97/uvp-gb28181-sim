@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -31,15 +32,18 @@ import com.uvp.sim.ui.model.DeviceControlDto
  * 摄像监控台 — 顶部标题栏 + 中间 3D Filament 视图(含装饰性 overlay)。
  *
  * 标题栏: 模拟中心 logo + StatusHeadline 状态短句.
- * 3D 区: CameraGlbView + FrostedGlass + AuxFeedback + Guard + DragZoom + IFrameChip
+ * 3D 区: CameraGlbView + FrostedGlass + AuxFeedback + Guard + DragZoom
+ *   + DeviceConfigOverlay(画面遮挡黑块 + 前端 OSD 文本,GB-2022 A.2.3.2)
+ *   + StorageCardPanel(右上角存储卡 OSD)
  *   + CameraGlbView 自带的 PtzThumbnail(右下角缩略图).
  *   **这一层全是只读装饰,不放任何可交互控件** —— 曾经把本机 PTZ 手操条浮在这里,
  *   会盖住右下角缩略图(2026-09-16 踩过)。手操现已收进 HUD 云台页([PtzTabContent])。
+ *   ⚠️ 判据是**有没有 `clickable` / `pointerInput`**,不是"画布上什么都不许放":
+ *   `DeviceConfigOverlay` 是全尺寸的,但它同样只读,手势照常穿透。
  */
 @Composable
 internal fun MonitoringStage(
     state: DeviceControlDto,
-    iframeChipVisible: Boolean,
     onPoseTick: (Float, Float, Float) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -95,10 +99,25 @@ internal fun MonitoringStage(
                     RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)
                 )
         ) {
+            // GB-2022 A.2.1.23 画面翻转 —— 只施加在 3D 视图这一层。
+            //
+            // ⛔ 为什么只翻 3D 视图、不翻整个画布：本叠层里的遮挡块与前端 OSD 是"烧在画面上的
+            //    内容"，它们的位置由平台按画面坐标给定，跟着一起镜像会让设备显示的位置与
+            //    平台配置的坐标系统性错位（而且**看起来仍然正常**，最难排查）。
+            //
+            // ⚠️ 已知边界：Android 宿主是 `TextureView`，Compose 的 `graphicsLayer` 变换可靠；
+            //    iOS 走 CMP `UIKitView`（原生 Metal 视图），interop 视图的变换在部分版本上
+            //    可能不生效。所以「翻转」这一项的**判据请以 HUD 图像页的摘要行为准**，
+            //    画布效果算加分项。
             CameraGlbView(
                 state = state,
                 onPoseTick = onPoseTick,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer(
+                        scaleX = if (state.deviceConfig.frameMirror == 1 || state.deviceConfig.frameMirror == 3) -1f else 1f,
+                        scaleY = if (state.deviceConfig.frameMirror == 2 || state.deviceConfig.frameMirror == 3) -1f else 1f,
+                    )
             )
 
             // 磨砂玻璃质感叠层(在 3D 之上,GuardOverlay 之下)
@@ -120,14 +139,26 @@ internal fun MonitoringStage(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // IFameCmd 关键帧角标(右上角)— DeviceEffectDto.IFrameFlash 触发,250ms 维持
-            if (iframeChipVisible) {
-                IFrameChip(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(10.dp)
-                )
-            }
+            // 设备配置族(GB-2022 A.2.3.2)的只读叠层:画面遮挡(黑块)+ 前端 OSD 文本。
+            // 落位是**全画布**而不是某个角 —— 协议坐标是绝对像素、以画面左上角为原点,
+            // 只能在整幅画面上还原。同样不带 clickable,手势照常穿透(见该文件头的硬约束)。
+            // 顺序在 DragZoom 之后 / 存储卡卡片之前:遮挡是"画面内容",该盖住装饰层;
+            // 而存储卡是 UI 卡片,要在最上层。
+            DeviceConfigOverlay(
+                config = state.deviceConfig,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // 「存储卡」OSD(GB-2022 A.2.4.14 / A.2.6.16)— 平台查询到达时整块亮起 + 换上本次读数。
+            // 落位右上角:右下角是 CameraGlbView 的 PtzThumbnail,左上角是 Aux 角标,只有这里不打架。
+            // 与其它叠层一样是只读装饰(不带 clickable,手势照常穿透给 3D 视图)。
+            StorageCardPanel(
+                state = state,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 10.dp, end = 10.dp)
+            )
+
         }
     }
 }
