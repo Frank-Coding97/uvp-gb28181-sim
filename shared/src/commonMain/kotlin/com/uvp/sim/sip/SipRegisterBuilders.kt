@@ -1,6 +1,8 @@
 package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.SignalingCharset
+import com.uvp.sim.gb28181.encodeSignalingBody
 
 /**
  * REGISTER 域报文构造(saga §3.5 SipBuilders 拆分的 2/4):
@@ -96,17 +98,22 @@ object SipRegisterBuilders {
         branch: String,
         fromTag: String,
         localIp: String,
-        localPort: Int
+        localPort: Int,
+        charset: SignalingCharset
     ): SipRequest {
         val server = config.server
         val device = config.device
-        val body = """<?xml version="1.0" encoding="UTF-8"?>
+        // 信封声明由 encodeSignalingBody 按 charset 重写;这里的字面量只作形状参考,别当成真源。
+        val body = encodeSignalingBody(
+            """<?xml version="1.0" encoding="UTF-8"?>
 <Notify>
 <CmdType>Keepalive</CmdType>
 <SN>$sn</SN>
 <DeviceID>${device.deviceId}</DeviceID>
 <Status>OK</Status>
-</Notify>""".trimIndent().encodeToByteArray()
+</Notify>""".trimIndent(),
+            charset,
+        )
         return SipRequest(
             method = SipMethod.MESSAGE,
             requestUri = "sip:${server.serverId}@${server.domain}",

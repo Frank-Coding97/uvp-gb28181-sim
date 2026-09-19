@@ -12,6 +12,7 @@ import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.gb28181.PtzPositionMessage
 import com.uvp.sim.gb28181.PtzPositionSnapshot
+import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -67,6 +68,7 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
             branch = SipBuilders.randomBranch(), fromTag = id.fromTag,
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xml,
+            charset = SignalingCharset.of(ctx.effectiveGbVersion),
         )
         try {
             ctx.outbox.send(msg).getOrThrow()
@@ -102,6 +104,8 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
             sn = catalogNotifySn,
             tree = ManscdpInternals.publishableCatalogNodes(ctx.catalogTree.value),
             pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
+            version = ctx.effectiveGbVersion,
+            channel = ctx.config.device.channel,
         )
         sendCatalogPackets(dialog, packets, catalogNotifySn, "Catalog NOTIFY")
     }
@@ -113,6 +117,8 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
             sn = catalogNotifySn,
             events = events,
             pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
+            version = ctx.effectiveGbVersion,
+            channel = ctx.config.device.channel,
         )
         sendCatalogPackets(dialog, packets, catalogNotifySn, "Catalog incremental NOTIFY")
     }
@@ -307,6 +313,7 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
             localPort = ctx.localPort,
             transport = ctx.config.transport.name,
             userAgent = if (includeUserAgent) ctx.config.userAgent else null,
+            charset = SignalingCharset.of(ctx.effectiveGbVersion),
         )
     }
 

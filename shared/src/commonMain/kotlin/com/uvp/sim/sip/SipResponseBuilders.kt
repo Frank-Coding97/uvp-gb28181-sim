@@ -1,5 +1,8 @@
 package com.uvp.sim.sip
 
+import com.uvp.sim.gb28181.SignalingCharset
+import com.uvp.sim.gb28181.encodeSignalingBody
+
 /**
  * 通用响应 / NOTIFY 报文构造(saga §3.5 SipBuilders 拆分的 4/4):
  *  - buildSimple200 / buildOptionsResponse / buildSimpleResponse / buildSimpleError
@@ -78,7 +81,12 @@ object SipResponseBuilders {
         return SipResponse(statusCode = statusCode, reasonPhrase = reasonPhrase, headers = newHeaders)
     }
 
-    /** Build a 200 OK for SUBSCRIBE with Subscription-State, Expires and optional MANSCDP body. */
+    /**
+     * Build a 200 OK for SUBSCRIBE with Subscription-State, Expires and optional MANSCDP body.
+     *
+     * [charset] 是必传参数(即使本次不带 body)—— SUBSCRIBE 200 可以携带目录应答体,
+     * 一旦带上就属于 GB/T 28181 §6.10 的管辖范围,别让它变成"有 body 时忘了传编码"的暗门。
+     */
     fun buildSubscribe200(
         request: SipRequest,
         toTag: String,
@@ -86,6 +94,7 @@ object SipResponseBuilders {
         terminated: Boolean = false,
         userAgent: String? = null,
         xmlBody: String? = null,
+        charset: SignalingCharset
     ): SipResponse {
         val newHeaders = mutableListOf<SipMessage.Header>()
         for (h in request.headers) {
@@ -104,7 +113,7 @@ object SipResponseBuilders {
         newHeaders += SipMessage.Header(SipHeader.SUBSCRIPTION_STATE, ssValue)
         if (userAgent != null) newHeaders += SipMessage.Header(SipHeader.USER_AGENT, userAgent)
         newHeaders += SipMessage.Header(SipHeader.DATE, SipHeaders.rfc1123Date())
-        val body = xmlBody?.encodeToByteArray() ?: ByteArray(0)
+        val body = xmlBody?.let { encodeSignalingBody(it, charset) } ?: ByteArray(0)
         if (xmlBody != null) {
             newHeaders += SipMessage.Header(SipHeader.CONTENT_TYPE, "Application/MANSCDP+xml")
         }
@@ -131,9 +140,10 @@ object SipResponseBuilders {
         localIp: String,
         localPort: Int,
         transport: String = "UDP",
-        userAgent: String? = null
+        userAgent: String? = null,
+        charset: SignalingCharset
     ): SipRequest {
-        val body = xmlBody.encodeToByteArray()
+        val body = encodeSignalingBody(xmlBody, charset)
         val branch = SipHeaders.randomBranch()
         val headers = mutableListOf(
             SipMessage.Header(SipHeader.VIA,

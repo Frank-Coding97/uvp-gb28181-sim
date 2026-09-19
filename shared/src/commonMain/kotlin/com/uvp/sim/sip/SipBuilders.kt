@@ -2,6 +2,7 @@ package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ProtocolClock
+import com.uvp.sim.gb28181.SignalingCharset
 import kotlin.time.Instant
 
 /**
@@ -35,8 +36,9 @@ object SipBuilders {
     ): SipRequest = SipRegisterBuilders.buildUnregister(config, cseq, callId, branch, fromTag, localIp, localPort)
 
     fun buildKeepalive(
-        config: SimConfig, sn: Int, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int
-    ): SipRequest = SipRegisterBuilders.buildKeepalive(config, sn, cseq, callId, branch, fromTag, localIp, localPort)
+        config: SimConfig, sn: Int, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int,
+        charset: SignalingCharset
+    ): SipRequest = SipRegisterBuilders.buildKeepalive(config, sn, cseq, callId, branch, fromTag, localIp, localPort, charset)
 
     // ---- INVITE 域(委派 SipInviteBuilders) ----
     fun buildInvite200WithSdp(
@@ -68,8 +70,8 @@ object SipBuilders {
 
     fun buildMessage(
         config: SimConfig, cseq: Int, callId: String, branch: String, fromTag: String,
-        localIp: String, localPort: Int, xmlBody: String
-    ): SipRequest = SipInviteBuilders.buildMessage(config, cseq, callId, branch, fromTag, localIp, localPort, xmlBody)
+        localIp: String, localPort: Int, xmlBody: String, charset: SignalingCharset
+    ): SipRequest = SipInviteBuilders.buildMessage(config, cseq, callId, branch, fromTag, localIp, localPort, xmlBody, charset)
 
     // ---- 响应 / NOTIFY 域(委派 SipResponseBuilders) ----
     fun buildSimple200(request: SipRequest, toTag: String? = null, userAgent: String? = null): SipResponse =
@@ -87,13 +89,14 @@ object SipBuilders {
 
     fun buildSubscribe200(
         request: SipRequest, toTag: String, expires: Int, terminated: Boolean = false,
-        userAgent: String? = null, xmlBody: String? = null
-    ): SipResponse = SipResponseBuilders.buildSubscribe200(request, toTag, expires, terminated, userAgent, xmlBody)
+        userAgent: String? = null, xmlBody: String? = null, charset: SignalingCharset
+    ): SipResponse = SipResponseBuilders.buildSubscribe200(request, toTag, expires, terminated, userAgent, xmlBody, charset)
 
     fun buildNotify(
         requestUri: String, subscriberUri: String, notifierUri: String, callId: String, fromTag: String, toTag: String, event: String, subscriptionState: String,
-        cseq: Int, xmlBody: String, localIp: String, localPort: Int, transport: String = "UDP", userAgent: String? = null
+        cseq: Int, xmlBody: String, localIp: String, localPort: Int, transport: String = "UDP", userAgent: String? = null,
+        charset: SignalingCharset
     ): SipRequest = SipResponseBuilders.buildNotify(
-        requestUri, subscriberUri, notifierUri, callId, fromTag, toTag, event, subscriptionState, cseq, xmlBody, localIp, localPort, transport, userAgent
+        requestUri, subscriberUri, notifierUri, callId, fromTag, toTag, event, subscriptionState, cseq, xmlBody, localIp, localPort, transport, userAgent, charset
     )
 }

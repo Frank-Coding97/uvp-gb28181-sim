@@ -3,6 +3,7 @@ package com.uvp.sim.domain.coord.manscdp
 import com.uvp.sim.gb28181.AlarmStatusResponse
 import com.uvp.sim.gb28181.AlarmStatusSnapshot
 import com.uvp.sim.gb28181.ManscdpParser
+import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -38,12 +39,13 @@ internal class AlarmSubRouter(
             alarming = ctx.deviceControlState.value.isAlarming,
             alarmChannelId = ctx.config.device.alarmChannelId,
         )
-        val xmlBody = AlarmStatusResponse.build(ctx.config, sn, snapshot)
+        val xmlBody = AlarmStatusResponse.build(ctx.config, sn, snapshot, ctx.effectiveGbVersion)
         val ok = ManscdpInternals.sendMansMessage(
             config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "AlarmStatus response",
+            charset = SignalingCharset.of(ctx.effectiveGbVersion),
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(

@@ -3,6 +3,7 @@ package com.uvp.sim.sip
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.SignalingCharset
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -80,7 +81,7 @@ class MediaStatusNotifyTest {
         val req = MediaStatusNotify.build(
             config = stubConfig(), cseq = 5, callId = "abc",
             branch = "z9hG4bK-x", fromTag = "ft1",
-            localIp = "192.0.2.99", localPort = 5060, sn = 1
+            localIp = "192.0.2.99", localPort = 5060, sn = 1, charset = SignalingCharset.UTF8
         )
         assertEquals(SipMethod.MESSAGE, req.method)
     }
@@ -89,7 +90,7 @@ class MediaStatusNotifyTest {
         val req = MediaStatusNotify.build(
             config = stubConfig(), cseq = 5, callId = "abc",
             branch = "z9hG4bK-x", fromTag = "ft1",
-            localIp = "192.0.2.99", localPort = 5060, sn = 1
+            localIp = "192.0.2.99", localPort = 5060, sn = 1, charset = SignalingCharset.UTF8
         )
         assertEquals(
             "application/MANSCDP+xml",

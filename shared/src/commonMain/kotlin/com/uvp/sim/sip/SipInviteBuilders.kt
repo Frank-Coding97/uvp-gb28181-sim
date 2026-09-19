@@ -1,6 +1,8 @@
 package com.uvp.sim.sip
 
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.SignalingCharset
+import com.uvp.sim.gb28181.encodeSignalingBody
 
 /**
  * INVITE / ACK / BYE / MESSAGE 等 dialog 报文构造(saga §3.5 SipBuilders 拆分的 3/4)。
@@ -161,6 +163,10 @@ object SipInviteBuilders {
     /**
      * Build a generic outbound MESSAGE carrying a MANSCDP+xml body
      * (used by Catalog response, DeviceInfo response, Alarm Notify, etc.).
+     *
+     * [charset] 必传(不设默认值):GB/T 28181 §6.10 在 2022 是**应**采用 GB18030,
+     * 而传错的表现只是"对面中文乱码",不会报错 —— 让它必须由调用点显式决定,
+     * 编译器才能替我们兜住漏传。取值口径见 [SignalingCharset.of]。
      */
     fun buildMessage(
         config: SimConfig,
@@ -170,11 +176,13 @@ object SipInviteBuilders {
         fromTag: String,
         localIp: String,
         localPort: Int,
-        xmlBody: String
+        xmlBody: String,
+        charset: SignalingCharset
     ): SipRequest {
         val server = config.server
         val device = config.device
-        val body = xmlBody.encodeToByteArray()
+        // 声明与字节同源:改声明 + 真转码都在 encodeSignalingBody 里做,这里不再裸 encodeToByteArray()。
+        val body = encodeSignalingBody(xmlBody, charset)
         return SipRequest(
             method = SipMethod.MESSAGE,
             requestUri = "sip:${server.serverId}@${server.domain}",

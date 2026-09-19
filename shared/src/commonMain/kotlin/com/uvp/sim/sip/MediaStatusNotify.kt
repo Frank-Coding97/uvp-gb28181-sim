@@ -1,7 +1,12 @@
 package com.uvp.sim.sip
 
+import com.uvp.sim.gb28181.SignalingCharset
+
 /**
  * GB/T 28181 §9.5.3 MediaStatus Notify(M3 §D 录像下载完成通知)。
+ *
+ * ⛔ 下面示例里的 `encoding="GB2312"` 只表示**报文体形态**,真正的编码由
+ * [build] 的 `charset` 参数决定并由 `encodeSignalingBody` 落到字节 —— 别再按示例硬编码。
  *
  * 报文格式(NotifyType=121 = 历史媒体文件发送结束):
  * ```xml
@@ -55,6 +60,8 @@ object MediaStatusNotify {
      * @param localPort 设备本地 SIP 端口
      * @param sn Notify 序号(单 device 全局递增)
      * @param notifyType 默认 121(下载完成)
+     * @param charset 信令字符集(§6.10)。本体是纯 ASCII(CmdType/SN/DeviceID/NotifyType),
+     *   三种编码的字节完全相同,所以这里传**本机声明版本**即可 —— 它只决定 XML 声明那个标签。
      */
     fun build(
         config: com.uvp.sim.config.SimConfig,
@@ -65,7 +72,8 @@ object MediaStatusNotify {
         localIp: String,
         localPort: Int,
         sn: Int,
-        notifyType: Int = NOTIFY_TYPE_DOWNLOAD_END
+        notifyType: Int = NOTIFY_TYPE_DOWNLOAD_END,
+        charset: SignalingCharset,
     ): SipRequest = SipBuilders.buildMessage(
         config = config,
         cseq = cseq,
@@ -74,6 +82,7 @@ object MediaStatusNotify {
         fromTag = fromTag,
         localIp = localIp,
         localPort = localPort,
-        xmlBody = buildXml(config.device.deviceId, sn, notifyType)
+        xmlBody = buildXml(config.device.deviceId, sn, notifyType),
+        charset = charset,
     )
 }

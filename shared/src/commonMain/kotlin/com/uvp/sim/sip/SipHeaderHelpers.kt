@@ -83,11 +83,10 @@ internal object SipHeaderHelpers {
             com.uvp.sim.media.VideoCodec.H264 -> 2
             com.uvp.sim.media.VideoCodec.H265 -> 5
         }
-        val resolution = when (v.resolution) {
-            com.uvp.sim.config.VideoResolution.SD_480P -> 4
-            com.uvp.sim.config.VideoResolution.HD_720P -> 5
-            com.uvp.sim.config.VideoResolution.FHD_1080P -> 6
-        }
+        // 分辨率码值走 VideoResolution.gb28181Code —— 单一真源。
+        // 曾经这里和 ConfigDownloadResponse 各写一份 when，结果 SDP 侧发码值 5、
+        // 配置回读侧发人读串 "720P"，同一台设备两条出口不一致，平台永远对不上。
+        val resolution = v.resolution.gb28181Code
         val audioCodec = when (v.audioCodec) {
             com.uvp.sim.media.AudioCodec.G711A -> 1
             com.uvp.sim.media.AudioCodec.G711U -> 2

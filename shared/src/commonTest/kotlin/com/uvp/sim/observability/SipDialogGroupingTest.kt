@@ -4,6 +4,7 @@ import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipHeader
@@ -53,7 +54,9 @@ class SipDialogGroupingTest {
     }
 
     private fun buildKeepalive(callId: String, sn: Int, t: Long): SipFlowEvent {
-        val req = SipBuilders.buildKeepalive(cfg(), sn, sn, callId, "z9hG4bK-$sn", "ftag", "192.168.1.50", 5060)
+        val req = SipBuilders.buildKeepalive(
+            cfg(), sn, sn, callId, "z9hG4bK-$sn", "ftag", "192.168.1.50", 5060, SignalingCharset.UTF8
+        )
         return SipFlowEvent(t, outgoing = true, message = req, callId = callId)
     }
 

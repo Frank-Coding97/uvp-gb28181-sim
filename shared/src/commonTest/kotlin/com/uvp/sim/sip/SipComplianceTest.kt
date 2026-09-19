@@ -3,6 +3,7 @@ package com.uvp.sim.sip
 import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.SignalingCharset
 import kotlin.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -85,7 +86,8 @@ class SipComplianceTest {
         val req = SipBuilders.buildKeepalive(
             sampleConfig, sn = 1, cseq = 1,
             callId = "c1", branch = "z9hG4bK1", fromTag = "t1",
-            localIp = "10.0.0.10", localPort = 5060
+            localIp = "10.0.0.10", localPort = 5060,
+            charset = SignalingCharset.UTF8
         )
         val text = req.toBytes().decodeToString()
         assertTrue { text.contains("User-Agent: UVP-Sim/0.1\r\n") }
@@ -121,7 +123,8 @@ class SipComplianceTest {
         val invite = SipParser.parse(SipSamples.inviteRealplay.encodeToByteArray()) as SipRequest
         // SUBSCRIBE 200 builder 复用任何请求的 routing headers 即可
         val resp = SipBuilders.buildSubscribe200(
-            invite, toTag = "tt", expires = 600, userAgent = "UVP-Sim/0.1"
+            invite, toTag = "tt", expires = 600, userAgent = "UVP-Sim/0.1",
+            charset = SignalingCharset.UTF8
         )
         val text = resp.toBytes().decodeToString()
         assertTrue { text.contains("User-Agent: UVP-Sim/0.1\r\n") }
@@ -138,7 +141,8 @@ class SipComplianceTest {
             event = "presence", subscriptionState = "active;expires=600",
             cseq = 1, xmlBody = "<x/>",
             localIp = "10.0.0.10", localPort = 5060,
-            userAgent = "UVP-Sim/0.1"
+            userAgent = "UVP-Sim/0.1",
+            charset = SignalingCharset.UTF8
         )
         val text = req.toBytes().decodeToString()
         assertTrue { text.contains("From: <sip:34020000001320000001@3402000000>;tag=lt\r\n") }
