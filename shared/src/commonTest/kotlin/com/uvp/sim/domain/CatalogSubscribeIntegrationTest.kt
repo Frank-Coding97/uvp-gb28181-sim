@@ -7,6 +7,7 @@ import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.GeoPoint
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.gb28181.decodeSignalingTestBody
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMessage
@@ -237,7 +238,7 @@ class CatalogSubscribeIntegrationTest {
 
         val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
         assertEquals(1, notifies.size, "updateCatalogTree should push exactly one NOTIFY")
-        val body = notifies.first().body.decodeToString()
+        val body = notifies.first().body.decodeSignalingTestBody()
         // 推送 DeviceList 不含设备根 → 3 节点树发出去是 Num=2(分组 + 通道)
         assertTrue(body.contains("<DeviceList Num=\"2\">"))
         assertTrue(body.contains("<Name>新分组</Name>"))
@@ -282,7 +283,7 @@ class CatalogSubscribeIntegrationTest {
 
         val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
         assertEquals(1, notifies.size)
-        val body = notifies.first().body.decodeToString()
+        val body = notifies.first().body.decodeSignalingTestBody()
         // 增量 NOTIFY 标志
         assertTrue(body.contains("<Event>UPDATE</Event>"), "应是增量 NOTIFY")
         assertTrue(body.contains("<Name>改名通道</Name>"))

@@ -3,6 +3,7 @@ package com.uvp.sim.gb28181
 import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
+import com.uvp.sim.config.GbVersion
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -13,7 +14,7 @@ class CatalogIncrementalNotifyTest {
 
     @Test
     fun emptyEventsBuildsEmptyDeviceList() {
-        val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 1, events = emptyList())
+        val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 1, events = emptyList(), version = GbVersion.V2022)
         assertTrue(xml.contains("<CmdType>Catalog</CmdType>"))
         assertTrue(xml.contains("<SumNum>0</SumNum>"))
         assertTrue(xml.contains("<DeviceList Num=\"0\""))
@@ -24,7 +25,8 @@ class CatalogIncrementalNotifyTest {
         val node = CatalogNode("v1", CatalogNodeType.VideoChannel, "新通道", rootId)
         val xml = CatalogNotifyBuilder.buildIncremental(
             rootId, sn = 1,
-            events = listOf(CatalogChangeEvent.Add(node))
+            events = listOf(CatalogChangeEvent.Add(node)),
+            version = GbVersion.V2022,
         )
         assertTrue(xml.contains("<Event>ADD</Event>"))
         assertTrue(xml.contains("<DeviceID>v1</DeviceID>"))
@@ -36,7 +38,8 @@ class CatalogIncrementalNotifyTest {
     fun delEventEmitsMinimalItem() {
         val xml = CatalogNotifyBuilder.buildIncremental(
             rootId, sn = 1,
-            events = listOf(CatalogChangeEvent.Del("v1"))
+            events = listOf(CatalogChangeEvent.Del("v1")),
+            version = GbVersion.V2022,
         )
         assertTrue(xml.contains("<Event>DEL</Event>"))
         assertTrue(xml.contains("<DeviceID>v1</DeviceID>"))
@@ -49,7 +52,8 @@ class CatalogIncrementalNotifyTest {
         val node = CatalogNode("v1", CatalogNodeType.VideoChannel, "改名", rootId)
         val xml = CatalogNotifyBuilder.buildIncremental(
             rootId, sn = 1,
-            events = listOf(CatalogChangeEvent.Update(node))
+            events = listOf(CatalogChangeEvent.Update(node)),
+            version = GbVersion.V2022,
         )
         assertTrue(xml.contains("<Event>UPDATE</Event>"))
         assertTrue(xml.contains("<Name>改名</Name>"))
@@ -65,7 +69,8 @@ class CatalogIncrementalNotifyTest {
                 CatalogChangeEvent.Add(v1),
                 CatalogChangeEvent.Update(v2),
                 CatalogChangeEvent.Del("v3")
-            )
+            ),
+            version = GbVersion.V2022,
         )
         assertTrue(xml.contains("<SumNum>3</SumNum>"))
         // 三个 Event 标签都出现
@@ -84,7 +89,7 @@ class CatalogIncrementalNotifyTest {
             CatalogChangeEvent.Del("v3"),
         )
 
-        val packets = CatalogNotifyBuilder.buildIncrementalAll(rootId, sn = 8, events = events, pageSize = 2)
+        val packets = CatalogNotifyBuilder.buildIncrementalAll(rootId, sn = 8, events = events, pageSize = 2, version = GbVersion.V2022)
 
         assertEquals(2, packets.size)
         assertTrue(packets.all { it.contains("<SN>8</SN>") })
@@ -95,13 +100,13 @@ class CatalogIncrementalNotifyTest {
 
     @Test
     fun crlfLineEndings() {
-        val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 1, events = emptyList())
+        val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 1, events = emptyList(), version = GbVersion.V2022)
         assertTrue(xml.contains("\r\n"))
     }
 
     @Test
     fun snAndDeviceIdInjected() {
-        val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 42, events = emptyList())
+        val xml = CatalogNotifyBuilder.buildIncremental(rootId, sn = 42, events = emptyList(), version = GbVersion.V2022)
         assertTrue(xml.contains("<SN>42</SN>"))
         assertTrue(xml.contains("<DeviceID>$rootId</DeviceID>"))
     }

@@ -2,6 +2,7 @@ package com.uvp.sim.gb28181
 
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
+import com.uvp.sim.config.GbVersion
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -15,7 +16,7 @@ class CatalogNotifyBuilderTest {
 
     @Test
     fun `build emits Notify wrapper with CmdType Catalog`() {
-        val xml = CatalogNotifyBuilder.build(rootId, 42, listOf(root()))
+        val xml = CatalogNotifyBuilder.build(rootId, 42, listOf(root()), version = GbVersion.V2022)
         assertTrue(xml.contains("<Notify>"))
         assertTrue(xml.contains("</Notify>"))
         assertTrue(xml.contains("<CmdType>Catalog</CmdType>"))
@@ -30,7 +31,7 @@ class CatalogNotifyBuilderTest {
             CatalogNode("34020000002150000001", CatalogNodeType.BusinessGroup, "G1", rootId),
             CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "V1", rootId)
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         assertTrue(xml.contains("<SumNum>3</SumNum>"))
         assertTrue(xml.contains("<DeviceList Num=\"3\">"))
     }
@@ -45,7 +46,7 @@ class CatalogNotifyBuilderTest {
             CatalogNode("ch3", CatalogNodeType.VideoChannel, "C3", "group1"),
         )
 
-        val packets = CatalogNotifyBuilder.buildAll(rootId, 17, tree, pageSize = 2)
+        val packets = CatalogNotifyBuilder.buildAll(rootId, 17, tree, pageSize = 2, version = GbVersion.V2022)
 
         assertEquals(3, packets.size)
         assertTrue(packets.all { it.contains("<SN>17</SN>") })
@@ -57,7 +58,7 @@ class CatalogNotifyBuilderTest {
 
     @Test
     fun `build empty tree omits DeviceList`() {
-        val xml = CatalogNotifyBuilder.build(rootId, 1, emptyList())
+        val xml = CatalogNotifyBuilder.build(rootId, 1, emptyList(), version = GbVersion.V2022)
         assertTrue(xml.contains("<SumNum>0</SumNum>"))
         assertTrue(!xml.contains("<DeviceList"))
     }
@@ -69,7 +70,7 @@ class CatalogNotifyBuilderTest {
             CatalogNode("g1", CatalogNodeType.BusinessGroup, "G", rootId),
             CatalogNode("v1", CatalogNodeType.VirtualOrg, "V", rootId)
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         // 三个 Item 都是 Parental=1
         val parentalCount = "<Parental>1</Parental>".toRegex().findAll(xml).count()
         assertEquals(3, parentalCount)
@@ -81,14 +82,14 @@ class CatalogNotifyBuilderTest {
             CatalogNode("ch1", CatalogNodeType.VideoChannel, "V", rootId),
             CatalogNode("ch2", CatalogNodeType.AlarmChannel, "A", rootId)
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         val parental0 = "<Parental>0</Parental>".toRegex().findAll(xml).count()
         assertEquals(2, parental0)
     }
 
     @Test
     fun `build root ParentID equals own DeviceID`() {
-        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(root()))
+        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(root()), version = GbVersion.V2022)
         // 找根 Item:DeviceID=rootId 的 Item 内 ParentID 也应是 rootId
         val rootItemRegex = """<Item>.*?<DeviceID>$rootId</DeviceID>.*?<ParentID>(.+?)</ParentID>.*?</Item>"""
             .toRegex(RegexOption.DOT_MATCHES_ALL)
@@ -114,7 +115,7 @@ class CatalogNotifyBuilderTest {
             CatalogNode("group2", CatalogNodeType.BusinessGroup, "G2", rootId),
             CatalogNode("ch3", CatalogNodeType.VideoChannel, "C3", "group2")
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
 
         // 抽出 Item DeviceID 出现顺序
         val ids = """<Item>\s*<DeviceID>(.+?)</DeviceID>"""
@@ -134,7 +135,7 @@ class CatalogNotifyBuilderTest {
 
     @Test
     fun `build emits CRLF line endings`() {
-        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(root()))
+        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(root()), version = GbVersion.V2022)
         assertTrue(xml.contains("\r\n"), "XML should use CRLF line endings")
     }
 
@@ -145,7 +146,7 @@ class CatalogNotifyBuilderTest {
             CatalogNode("group1", CatalogNodeType.BusinessGroup, "G1", rootId),
             CatalogNode("ch1", CatalogNodeType.VideoChannel, "C1", "group1")
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         val ch1Regex = """<Item>.*?<DeviceID>ch1</DeviceID>.*?<ParentID>(.+?)</ParentID>.*?</Item>"""
             .toRegex(RegexOption.DOT_MATCHES_ALL)
         val match = ch1Regex.find(xml)
@@ -163,7 +164,7 @@ class CatalogNotifyBuilderTest {
             CatalogNode(orgId, CatalogNodeType.VirtualOrg, "校园", groupId),
         )
 
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         val orgItem = """<Item>.*?<DeviceID>$orgId</DeviceID>.*?</Item>"""
             .toRegex(RegexOption.DOT_MATCHES_ALL)
             .find(xml)?.value.orEmpty()
@@ -186,7 +187,7 @@ class CatalogNotifyBuilderTest {
             )
         )
 
-        val xml = CatalogNotifyBuilder.build(rootId, 1, tree)
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         val channelItem = """<Item>.*?<DeviceID>$channelId</DeviceID>.*?</Item>"""
             .toRegex(RegexOption.DOT_MATCHES_ALL)
             .find(xml)?.value.orEmpty()
@@ -207,7 +208,7 @@ class CatalogNotifyBuilderTest {
                 "Status" to "OFF"
             )
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(node))
+        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(node), version = GbVersion.V2022)
         assertTrue(xml.contains("<Manufacturer>Hikvision</Manufacturer>"))
         assertTrue(xml.contains("<Model>DS-2CD</Model>"))
         assertTrue(xml.contains("<Status>OFF</Status>"))
@@ -225,7 +226,7 @@ class CatalogNotifyBuilderTest {
                 "Owner" to "</Item><Item><DeviceID>injected</DeviceID></Item>"
             )
         )
-        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(node))
+        val xml = CatalogNotifyBuilder.build(rootId, 1, listOf(node), version = GbVersion.V2022)
         // 转义后 5 字符全没有原始形态
         assertTrue(xml.contains("<Name>Cam &amp;&lt;&gt;&quot;&apos; Inject</Name>"))
         assertTrue(xml.contains("<Manufacturer>A&amp;B</Manufacturer>"))

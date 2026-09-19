@@ -322,8 +322,18 @@ fun CatalogManagementScreen(
     if (showPreview) {
         val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
             ?: state.config.device.deviceId
+        // 预览按**有效国标版本**渲染 —— 注册成功后本机声明会被平台档位压到低者,
+        // 出站报文形态跟着有效版本走(与字符集、实际出站路径同一套口径)。
+        val declared = state.config.gbVersion
+        val platform = state.platformGbVersion
         CatalogPreviewDialog(
-            xml = CatalogNotifyBuilder.build(deviceId, sn = 0, tree = draft),
+            xml = CatalogNotifyBuilder.build(
+                deviceId = deviceId,
+                sn = 0,
+                tree = draft,
+                version = if (platform != null) minOf(declared, platform) else declared,
+                channel = state.config.device.channel,
+            ),
             onDismiss = { showPreview = false }
         )
     }
