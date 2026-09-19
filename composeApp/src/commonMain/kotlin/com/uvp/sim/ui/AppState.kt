@@ -1,7 +1,10 @@
 package com.uvp.sim.ui
 
 import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.domain.ReconnectAttempt
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.ui.actions.CapabilityActions
 import com.uvp.sim.ui.actions.HomeActions
 import com.uvp.sim.ui.actions.NetworkActions
@@ -90,7 +93,27 @@ data class AppUiState(
      * 能力中心「设备校时」tile + ClockSyncScreen 读这个,
      * 显示平台基准时间 / 偏移 / 原始 Date 头。
      */
-    val clockOffset: ClockOffsetDto = ClockOffsetDto.Empty
+    val clockOffset: ClockOffsetDto = ClockOffsetDto.Empty,
+    /**
+     * 平台在注册响应里声明的国标版本(附录 I 协商结果;null = 未声明/不可识别)。
+     * 设备设置页的「国标版本」卡片把它与本机声明并排显示 —— 现场确认两侧是否真在协商。
+     */
+    val platformGbVersion: GbVersion? = null,
+
+    /**
+     * 平台视角的本机端点 + 是否经地址转换(§9.1.1 f 的适用性判据;null = 平台未回填 Via)。
+     * 设置页「国标版本」卡片下方展示:判定为 NAT 且当前用 UDP 时会提示改用 TCP。
+     */
+    val rportObservation: RportObservation? = null,
+
+    /**
+     * SIP 长连接自愈状态(GB/T 28181 §5.2;null = 未在重连)。
+     *
+     * 存在的唯一目的是让横幅**别说谎**:连接被对端打死后注册状态会回到 Disconnected,
+     * 只看 [sip] 的话横幅会显示「未连接 · 配置已就绪」+ 一个注册按钮,而设备其实正在自己
+     * 重连 —— 操作员多半会去点那个按钮,或者直接判定"这功能坏了"。
+     */
+    val reconnect: ReconnectAttempt? = null
 )
 
 /**

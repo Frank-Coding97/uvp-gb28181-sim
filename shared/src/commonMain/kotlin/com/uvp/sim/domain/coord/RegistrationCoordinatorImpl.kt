@@ -1,8 +1,10 @@
 package com.uvp.sim.domain.coord
 
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.ClockOffset
 import com.uvp.sim.domain.TimeSyncSource
+import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.network.Heartbeat
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.KtorNtpClient
@@ -12,6 +14,9 @@ import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.sip.DigestAuth
+import com.uvp.sim.sip.GbVersionNegotiation
+import com.uvp.sim.sip.NatSituation
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.sip.SipBuilders
 import com.uvp.sim.sip.SipDateParser
 import com.uvp.sim.sip.SipHeader
@@ -20,6 +25,7 @@ import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipOutbox
+import com.uvp.sim.sip.ViaObservedEndpoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -81,6 +87,20 @@ internal class RegistrationCoordinatorImpl(
 
     private val _clockOffset = MutableStateFlow(ClockOffset.Empty)
     override val clockOffset: StateFlow<ClockOffset> = _clockOffset.asStateFlow()
+
+    private val _platformVersion = MutableStateFlow<GbVersion?>(null)
+    override val platformVersion: StateFlow<GbVersion?> = _platformVersion.asStateFlow()
+
+    /** 上一次已公告的平台版本原始值 + 是否公告过(null 原始值本身也是有效结论,需区分)。 */
+    private var platformVersionAnnounced: Boolean = false
+    private var announcedPlatformVersionRaw: String? = null
+
+    private val _rportObservation = MutableStateFlow<RportObservation?>(null)
+    override val rportObservation: StateFlow<RportObservation?> = _rportObservation.asStateFlow()
+
+    /** 同 platformVersion:结论未变时不重复打日志(401 + 200 会带着同样的回填来两次)。 */
+    private var rportObservationAnnounced: Boolean = false
+    private var announcedRportSignature: String? = null
 
     private val mutex = Mutex()
     private val localIp: String get() = localIpProvider()
@@ -255,6 +275,41 @@ internal class RegistrationCoordinatorImpl(
     // Coordinator 接口
     // ----------------------------------------------------------------------
 
+    /**
+     * 见 [RegistrationCoordinator.onConnectionLost] 的契约说明。这里只讲实现取舍:
+     *
+     * - **不动 NTP 刷新任务**:它走自己的 UDP socket([ntpClient]),跟 SIP 长连接是两条命,
+     *   一起掐掉会让"平台重启"这种事顺手把校时也停了。[unregister] 会停它是因为那一次真的是
+     *   会话终结(用户注销 / 换平台),这里不是。
+     * - **未决注销事务要显式 complete(false)**:[unregister] 里有 `withTimeoutOrNull(3s)
+     *   { completion.await() }`,不唤醒它就要干等到超时;而且它超时后会回来补调
+     *   `finishUnregisterLocked`,那时 `unregisterCompletion` 已被本方法清成 null,判等不成立 ——
+     *   所以先 complete 再清引用是安全的,不会双重收尾。
+     */
+    override suspend fun onConnectionLost() {
+        mutex.withLock {
+            cancelRegisterTimeoutLocked()
+            retryJob?.cancel(); retryJob = null
+            registerRetryCount = 0
+            renewalJob?.cancel(); renewalJob = null
+            isRenewal = false
+            heartbeat?.stop(); heartbeat = null
+            // 挂在这条连接上的未决事务都不可能再有结果了。
+            pendingRegister = null
+            unregisterCompletion?.let { it.complete(false) }
+            unregisterCompletion = null
+            // 版本协商结论与地址转换观察值随本次注册会话一起作废,下轮注册要重新"在注册过程中得知"。
+            _platformVersion.value = null
+            _rportObservation.value = null
+            _state.value = RegistrationState.Disconnected
+        }
+        SystemLogger.emit(
+            LogLevel.Warning,
+            LogTag.Lifecycle,
+            "传输连接被动断开,注册会话已作废(等重连后重新注册)",
+        )
+    }
+
     override suspend fun onIncoming(envelope: com.uvp.sim.network.SipEnvelope): RoutingResult {
         val msg = envelope.message
         return when (msg) {
@@ -415,7 +470,101 @@ internal class RegistrationCoordinatorImpl(
             }
     }
 
+    /**
+     * 附录 I「协议版本标识」:解析平台在注册响应里声明的 X-GB-Ver。
+     *
+     * 只在结论变化时打日志 —— 一次注册至少两条响应(401 挑战 + 200 OK),同值重复打只会刷屏。
+     *
+     * 平台未声明 / 不可识别时**不降级**:对面没说清自己能识别什么,贸然按 2016 出站等于白白
+     * 丢掉本机能力;这种情况留一条警告,提示联调双方去对齐版本头。
+     */
+    private fun applyPlatformVersion(resp: SipResponse) {
+        val raw = resp.firstHeader(SipHeader.X_GB_VER)
+        val parsed = GbVersionNegotiation.parse(raw)
+
+        // ⛔ 值更新必须**无条件**执行,去重只用来抑制重复日志。
+        // 注销会把 _platformVersion 清空(协商结论只对一次注册会话成立),而重新注册时平台
+        // 报的版本头通常与上一次**完全相同** —— 若把"结论没变就 return"放在最前面,流会永远
+        // 停在 null:设置页一直显示"平台版本:注册后协商",而实际早就协商完了。
+        _platformVersion.value = parsed
+
+        if (platformVersionAnnounced && announcedPlatformVersionRaw == raw) return
+        platformVersionAnnounced = true
+        announcedPlatformVersionRaw = raw
+
+        val effective = GbVersionNegotiation.effective(config.gbVersion, parsed)
+        if (parsed == null) {
+            val shown = if (raw.isNullOrBlank()) "缺失" else raw
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Lifecycle,
+                "平台注册响应未携带可识别的 X-GB-Ver($shown),后续仍按本机 ${config.gbVersion.xGbVer} 交互",
+            )
+            return
+        }
+        val downgraded = effective != config.gbVersion
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Lifecycle,
+            "版本协商:本机 ${config.gbVersion.xGbVer} × 平台 ${parsed.xGbVer} → 有效 ${effective.xGbVer}" +
+                if (downgraded) "(平台较低,出站报文按 2016 形态)" else "",
+        )
+    }
+
+    /**
+     * 从响应 Via 的 `received` / `rport` 回填得出「平台看到的我方端点」,并判定本机是否在地址转换之后。
+     *
+     * ⛔ 与 [applyPlatformVersion] 不同,**解析不出来是正常的**:`rport`/`received` 在
+     * GB/T 28181-2022 里零出现,平台完全可以不回填(甚至只回填其中一个)。所以无回填时只记
+     * Debug —— 否则每台正常设备的每次注册都刷一条"警告",真正的 NAT 判定反而被淹掉。
+     */
+    private fun applyRportObservation(resp: SipResponse) {
+        val observed = ViaObservedEndpoint.parse(resp.firstHeader(SipHeader.VIA))
+        val localPort = localPortProvider()
+        val observation = ViaObservedEndpoint.assess(localIp, localPort, observed)
+
+        // 同 applyPlatformVersion:值更新无条件,去重只压日志(401 挑战与 200 会带同样的回填各来一次)。
+        _rportObservation.value = observation
+
+        val signature = "${observation.observedIp}:${observation.observedPort}/${observation.situation.name}"
+        if (rportObservationAnnounced && announcedRportSignature == signature) return
+        rportObservationAnnounced = true
+        announcedRportSignature = signature
+
+        when (observation.situation) {
+            NatSituation.DIRECT -> SystemLogger.emit(
+                LogLevel.Info,
+                LogTag.Network,
+                "平台视角的本机端点 ${observation.observedIp}:${observation.observedPort} 与本机一致(未经过地址转换)",
+            )
+
+            NatSituation.NAT -> {
+                val seen = "${observation.observedIp}:${observation.observedPort}"
+                val advice = if (config.transport.name.equals("TCP", ignoreCase = true)) {
+                    "当前以 TCP 注册,符合 §9.1.1 f) 对 NAT 内侧设备的要求"
+                } else {
+                    "当前以 ${config.transport.name} 注册:NAT 场景下平台的下行报文会被转换设备丢弃" +
+                        "(表现为注册成功但点播/云台/查询全部超时),建议改用 TCP"
+                }
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Network,
+                    "本机处于地址转换之后:平台看到的端点是 $seen,本机声明 $localIp:$localPort。$advice",
+                )
+            }
+
+            NatSituation.UNKNOWN -> SystemLogger.emit(
+                LogLevel.Debug,
+                LogTag.Network,
+                "平台未回填 Via 的 received/rport,无法判断本机是否经地址转换(这不影响协议合规)",
+            )
+        }
+    }
+
     private suspend fun handleRegisterResponse(resp: SipResponse) {
+        // 附录 I:注册响应"无论成功或失败"都要带 X-GB-Ver —— 所以先解析再看状态码。
+        // 401 挑战里平台就已经报了自己的版本,没必要等到 200 才知道对面是几代。
+        applyPlatformVersion(resp)
+        // 同理:平台对 401 的响应里就已经回填了它看到的来源端点,不必等 200。
+        applyRportObservation(resp)
         when (resp.statusCode) {
             in 200..299 -> {
                 cancelRegisterTimeoutLocked()
@@ -523,6 +672,9 @@ internal class RegistrationCoordinatorImpl(
         if (success) {
             SystemLogger.emit(LogLevel.Info, LogTag.Lifecycle, "平台确认注销")
         }
+        // 协商结论与地址转换观察值只对一次注册会话成立:注销后清空,下轮注册重新"在注册过程中得知"。
+        _platformVersion.value = null
+        _rportObservation.value = null
         pendingRegister = null
         unregisterCompletion = null
         isRenewal = false
@@ -577,6 +729,11 @@ internal class RegistrationCoordinatorImpl(
                 fromTag = fromTag ?: SipBuilders.randomTag(),
                 localIp = localIp,
                 localPort = localPortProvider(),
+                // 心跳报文体是纯 ASCII,取值只影响 XML 声明那个标签;但仍按**有效版本**出站,
+                // 免得"对面是 2016 却声明 GB18030"这种口径分裂(§6.10)。
+                charset = SignalingCharset.of(
+                    GbVersionNegotiation.effective(config.gbVersion, _platformVersion.value),
+                ),
             )
             try {
                 outbox.send(msg).getOrThrow()

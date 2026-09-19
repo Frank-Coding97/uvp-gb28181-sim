@@ -1,5 +1,6 @@
 package com.uvp.sim.sip
 
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.domain.BroadcastDialog
 import com.uvp.sim.domain.BroadcastDialogState
 import com.uvp.sim.domain.BroadcastEndReason
@@ -55,9 +56,12 @@ class SipMessageRouterTest {
         override val state: StateFlow<RegistrationState> = MutableStateFlow(RegistrationState.Registered)
         override val events: SharedFlow<RegistrationEvent> = MutableSharedFlow()
         override val clockOffset: StateFlow<ClockOffset> = MutableStateFlow(ClockOffset.Empty)
+        override val platformVersion: StateFlow<GbVersion?> = MutableStateFlow(null)
+        override val rportObservation: StateFlow<RportObservation?> = MutableStateFlow(null)
         override suspend fun register() {}
         override suspend fun cancelRegister() {}
         override suspend fun unregister() {}
+        override suspend fun onConnectionLost() {}
         override suspend fun onIncoming(envelope: SipEnvelope): RoutingResult {
             calls += envelope.message
             return RoutingResult.Handled

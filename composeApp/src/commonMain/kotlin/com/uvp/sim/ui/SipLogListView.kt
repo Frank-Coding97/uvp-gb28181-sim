@@ -76,7 +76,10 @@ fun SipLogListView(events: List<SimEventDto>) {
 
 @Composable
 private fun SipChipRow(active: String, onChip: (String) -> Unit) {
-    val chips = listOf("全部", "REGISTER", "INVITE", "MESSAGE", "BYE")
+    // RECONNECT:长连接自愈(断连 → 退避 → 重建)这条链单独成类 —— 演示/联调"平台重启后
+    // 设备自己回来"时只筛这一类,不会被 REGISTER/MESSAGE 的常规心跳刷掉。
+    // 这一行是 horizontalScroll 的,加 chip 不会把后面的挤出屏幕。
+    val chips = listOf("全部", "REGISTER", "RECONNECT", "INVITE", "MESSAGE", "BYE")
     Row(
         modifier = Modifier
             .fillMaxWidth()

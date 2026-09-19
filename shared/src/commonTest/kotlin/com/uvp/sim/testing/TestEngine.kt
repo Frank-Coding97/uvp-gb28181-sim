@@ -2,8 +2,11 @@ package com.uvp.sim.testing
 
 import com.uvp.sim.app.PlatformResources
 import com.uvp.sim.app.ConfigStore
+import com.uvp.sim.app.DeviceStateSnapshot
+import com.uvp.sim.app.DeviceStateStore
 import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.CameraCapture
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.CatalogTreeStore
@@ -13,6 +16,7 @@ import com.uvp.sim.domain.EngineCoordinators
 import com.uvp.sim.domain.EngineHolders
 import com.uvp.sim.domain.MockGpsSource
 import com.uvp.sim.domain.PlaybackBuilder
+import com.uvp.sim.domain.ReconnectAttempt
 import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.SimulatorEngine
 import com.uvp.sim.domain.SubscriptionRegistry
@@ -29,6 +33,7 @@ import com.uvp.sim.network.RtpSender
 import com.uvp.sim.network.SipTransport
 import com.uvp.sim.recording.NoopRecordingService
 import com.uvp.sim.recording.RecordingService
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.sip.SipOutboxImpl
 import com.uvp.sim.sip.SipState
 import com.uvp.sim.snapshot.JpegLocalCache
@@ -75,6 +80,9 @@ internal object TestEngine {
             deviceControlState = MutableStateFlow(DeviceControlModel()),
             catalogTree = MutableStateFlow(CatalogTreeStore.effectiveTree(config)),
             clockOffset = MutableStateFlow(ClockOffset.Empty),
+            platformVersion = MutableStateFlow<GbVersion?>(null),
+            rportObservation = MutableStateFlow<RportObservation?>(null),
+            reconnect = MutableStateFlow<ReconnectAttempt?>(null),
             alarmHistoryStore = AlarmHistoryStore(),
             subscriptionRegistry = SubscriptionRegistry(scope),
             mockGps = MockGpsSource(config.mockPosition),
@@ -167,9 +175,16 @@ internal class TestResources(
     override val httpEngineFactory: (() -> HttpClientEngine)? = null,
     override val playbackBuilderFactory: ((CoroutineScope, com.uvp.sim.media.AudioCodec, (String, Int, RtpMode) -> RtpSender) -> PlaybackBuilder)? = null,
     override val configStore: ConfigStore = NoopConfigStore,
+    override val deviceStateStore: DeviceStateStore = NoopDeviceStateStore,
 ) : PlatformResources
 
 internal object NoopConfigStore : ConfigStore {
     override suspend fun loadOnce(fallback: SimConfig): SimConfig = fallback
     override suspend fun save(config: SimConfig) = Unit
+}
+
+/** 不落任何东西 —— 给"持久化与本用例无关"的场景用,避免测试之间通过存档串味。 */
+internal object NoopDeviceStateStore : DeviceStateStore {
+    override suspend fun loadOnce(): DeviceStateSnapshot? = null
+    override suspend fun save(snapshot: DeviceStateSnapshot) = Unit
 }

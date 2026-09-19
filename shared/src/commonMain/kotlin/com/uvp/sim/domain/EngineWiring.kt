@@ -1,6 +1,7 @@
 package com.uvp.sim.domain
 
 import com.uvp.sim.config.CatalogNode
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.domain.coord.BroadcastCoordinatorImpl
 import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.domain.coord.InviteCoordinatorImpl
@@ -8,6 +9,7 @@ import com.uvp.sim.domain.coord.ManscdpRouterImpl
 import com.uvp.sim.domain.coord.PlaybackCoordinatorImpl
 import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
 import com.uvp.sim.sip.DefaultSipDialogIdentityService
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.sip.SipDialogIdentityService
 import com.uvp.sim.sip.SipState
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -27,6 +29,24 @@ internal class EngineHolders(
     val deviceControlState: MutableStateFlow<DeviceControlModel>,
     val catalogTree: MutableStateFlow<List<CatalogNode>>,
     val clockOffset: MutableStateFlow<ClockOffset>,
+    /**
+     * 附录 I 协商结果:平台在注册响应里声明的协议版本(null = 未声明/不可识别)。
+     * 注册协调器是唯一写者,Engine 桥接到此供 UI 与出站报文版决策读取。
+     */
+    val platformVersion: MutableStateFlow<GbVersion?>,
+    /**
+     * SIP 长连接自愈状态(`null` = 未在重连)。见 [ReconnectAttempt]。
+     *
+     * 放在 holders(而非 Engine)的理由跟 [deviceControlState] 一样:engine 会随
+     * "改配置 → disconnect/connect" 反复重建,而"我正在重连"是**会话级**事实,
+     * 重建那一瞬不该在 UI 上闪一下"未连接"。
+     */
+    val reconnect: MutableStateFlow<ReconnectAttempt?>,
+    /**
+     * 平台视角的我方端点 + 是否处于地址转换之后(§9.1.1 f 的适用性判据)。
+     * 同 [platformVersion]:注册协调器是唯一写者,Engine 桥接到此供 UI 与排障读取。
+     */
+    val rportObservation: MutableStateFlow<RportObservation?>,
     val alarmHistoryStore: AlarmHistoryStore,
     val subscriptionRegistry: SubscriptionRegistry,
     val mockGps: LocationProvider,

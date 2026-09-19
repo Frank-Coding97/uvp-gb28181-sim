@@ -86,6 +86,14 @@ class SipViewModel @JvmOverloads constructor(
     val catalogTree: StateFlow<List<CatalogNode>> get() = appEngine.catalogTree
     val alarmHistory: StateFlow<List<com.uvp.sim.domain.AlarmRecord>> get() = appEngine.alarmHistory
     val clockOffset: StateFlow<com.uvp.sim.domain.ClockOffset> get() = appEngine.clockOffset
+    val platformVersion: StateFlow<com.uvp.sim.config.GbVersion?> get() = appEngine.platformVersion
+    /** 平台视角的本机端点 + 是否经地址转换(§9.1.1 f)。`null` = 平台未回填 Via。 */
+    val rportObservation: StateFlow<com.uvp.sim.sip.RportObservation?> get() = appEngine.rportObservation
+    /**
+     * SIP 长连接自愈状态(null = 未在重连)。见 [com.uvp.sim.domain.ReconnectAttempt] ——
+     * 主页横幅靠它区分「真的没连」和「断了但正在自己重连」。
+     */
+    val reconnect: StateFlow<com.uvp.sim.domain.ReconnectAttempt?> get() = appEngine.reconnect
     val activeLiveStream: StateFlow<Boolean> get() = appEngine.activeLiveStream
     fun onAppBackground() = appEngine.onAppBackground()
     fun onAppForeground() = appEngine.onAppForeground()
@@ -229,6 +237,11 @@ class SipViewModel @JvmOverloads constructor(
         // 3. networkController.apply(stored.network.preference) — 应用持久化网络偏好
         // 4. 之后才启动 networkController.state.collect 推给 AppEngine
         viewModelScope.launch {
+            // 0. 设备侧运行状态(预置位 / 巡航轨迹 / 看守位 / 姿态)先从本机存档恢复,再谈配置。
+            //    排在最前是有原因的:没有这一步,进程一重启设备侧就是一台全新设备,而平台界面
+            //    看不出任何异常 —— 点「开始巡航」照样下发成功、记录也是 sent,画面却不动,
+            //    现场会误判成「巡航功能没做」。
+            appEngine.restoreDeviceState()
             val stored = deriveChannelIds(
                 migrateDualChannel(resources.configStore.loadOnce(defaultConfig(application)))
             )
@@ -262,6 +275,12 @@ class SipViewModel @JvmOverloads constructor(
 
     fun adjustLocalLensPosition(focusDelta: Float, irisDelta: Float) =
         appEngine.adjustLocalLensPosition(focusDelta, irisDelta)
+
+    /**
+     * 前端 OSD（GB-2022 A.2.1.12）本地配置回写。见 [com.uvp.sim.app.AppEngine.updateFrontOsd]。
+     * `state = null` = 清除平台值、回到出厂派生。
+     */
+    fun updateFrontOsd(state: com.uvp.sim.gb28181.FrontOsdState?) = appEngine.updateFrontOsd(state)
 
     /** 双真实通道迁移:老配置 frontChannelId 为空时按 domain 补全前置通道 ID。 */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {

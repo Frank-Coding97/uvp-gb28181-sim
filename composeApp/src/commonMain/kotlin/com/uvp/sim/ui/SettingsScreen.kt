@@ -44,6 +44,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.OsdConfig
+import com.uvp.sim.gb28181.FrontOsdConfig
 
 /**
  * 设置 — 二级导航,展示"通道""音视频"两张大卡片,点击进入对应配置子页。
@@ -223,14 +224,48 @@ private fun SettingsSubPage(
 }
 
 /**
- * OSD 水印独立子页。本地草稿暂存编辑,点"保存"才落 onConfigSave 反映到渲染。
- * (位置已锁死、字段少,改成显式保存比即时热改更符合用户预期。)
+ * OSD 水印独立子页 —— **一份配置、两个入口**。
+ *
+ * 上面那张卡是「本机预览叠加」（行业 IPC 口径的三层），下面那张是「GB/T 28181 前端 OSD」
+ * （协议的绝对像素口径）。真机上这两者本就是同一份配置的两张脸，所以这里让它们**互相联动**：
+ * 改一边，另一边立刻按对方的换算规则跟随。
+ *
+ * 保存时按**最后编辑的那一侧**决定写哪一份（见 [OsdEditSource]）：
+ *  - 改本机三层 → 写 `config.osd` + **清掉平台值**：设备当前的 OSD 改由本地方案决定，
+ *    回读走 `defaultFor` 派生。不清的话平台会一直读到一份"自己配过的旧值"，
+ *    而屏幕上显示的已经是本地新值 —— 两边对不上且**看起来都正常**；
+ *  - 改国标区块 → 写 `frontOsd`（回读/回显以它为准）+ 把投影结果写进 `config.osd`，
+ *    让本机预览跟着变。
+ *
+ * ⚠️ 国标 → 本机是**有损**的（多条目 / 绝对坐标 / 本机没有字号颜色），
+ * 损失清单见 `FrontOsdConfig.toLocalOsd` 的 KDoc —— 那是模型不同构造成的，不是实现偷懒。
  */
 @Composable
 private fun OsdSettingsPage(state: AppUiState, actions: AppActions) {
     val toast = LocalToastHost.current
-    var draft by remember(state.config.osd) { mutableStateOf(state.config.osd) }
-    val dirty = draft != state.config.osd
+    val config = state.config
+    val platformFrontOsd = state.deviceControl.deviceConfig.frontOsd
+    // 生效的国标值：平台下发过就用平台的，否则按本机三层派生。
+    // ⛔ 走 FrontOsdConfig.effective 这**一个**入口，别在这里自己写 `?: defaultFor(...)` ——
+    //    两处各判一次，改一处就有一处还是老行为，而两边都显示得出东西。
+    val effectiveFrontOsd = remember(config, platformFrontOsd) {
+        FrontOsdConfig.effective(config, platformFrontOsd)
+    }
+
+    // ⭐ 本机三层那张卡的**基线**：平台配过 OSD 时，设备当前的前端 OSD 以平台值为准，
+    //    所以本机卡要显示的是"投影后的样子"（那才是屏幕上真的在画的东西）。
+    //    ⛔ 平台没配过时**不能**也走一遍投影：`toLocalOsd(defaultFor(config), config.osd)`
+    //    与 `config.osd` 并不相等（正反两个方向本就是有损的一对），
+    //    会把页面一打开就标成"已修改"，按下保存还会顺手清掉平台值。
+    val localBaseline = remember(config.osd, effectiveFrontOsd, platformFrontOsd) {
+        if (platformFrontOsd == null) config.osd else FrontOsdConfig.toLocalOsd(effectiveFrontOsd, config.osd)
+    }
+
+    var draft by remember(localBaseline) { mutableStateOf(localBaseline) }
+    var gbDraft by remember(effectiveFrontOsd) { mutableStateOf(effectiveFrontOsd) }
+    var lastEdited by remember { mutableStateOf(OsdEditSource.None) }
+
+    val dirty = draft != localBaseline || gbDraft != effectiveFrontOsd
 
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
@@ -239,13 +274,34 @@ private fun OsdSettingsPage(state: AppUiState, actions: AppActions) {
         OsdConfigCard(
             osd = draft,
             enabled = true,
-            onChange = { draft = it }
+            onChange = {
+                draft = it
+                // 改本机三层 → 国标区块按**正向**换算跟随（与回读应答同一条规则 defaultFor）。
+                gbDraft = FrontOsdConfig.defaultFor(config.copy(osd = it))
+                lastEdited = OsdEditSource.Local
+            }
+        )
+        FrontOsdCard(
+            state = gbDraft,
+            fromPlatform = platformFrontOsd != null,
+            enabled = true,
+            onChange = {
+                gbDraft = it
+                // 改国标 → 本机三层按**反向投影**跟随（有损，见 FrontOsdConfig.toLocalOsd）。
+                draft = FrontOsdConfig.toLocalOsd(it, draft)
+                lastEdited = OsdEditSource.Gb
+            }
         )
         Button(
             enabled = dirty,
             onClick = {
-                actions.onConfigSave(state.config.copy(osd = draft))
-                toast.success("OSD 配置已保存")
+                val fromGb = lastEdited == OsdEditSource.Gb
+                actions.onConfigSave(config.copy(osd = draft))
+                // 国标面编辑过 → 以它为准；否则清除平台值、回到出厂派生。
+                actions.onFrontOsdSave(if (fromGb) gbDraft else null)
+                toast.success(
+                    if (fromGb) "前端 OSD 已保存（平台可回读）" else "OSD 配置已保存（本机）"
+                )
             },
             modifier = Modifier.fillMaxWidth().height(44.dp),
             shape = RoundedCornerShape(8.dp),
@@ -264,3 +320,11 @@ private fun OsdSettingsPage(state: AppUiState, actions: AppActions) {
         }
     }
 }
+
+/**
+ * 「最后编辑的是哪一侧」—— 决定保存时哪份数据成为权威。
+ *
+ * 两侧同页且互相联动，所以"同时改两边"实际等价于"最后一次改的那边说了算"：
+ * 联动已经让另一侧跟随过了，不必再让它赢。
+ */
+private enum class OsdEditSource { None, Local, Gb }

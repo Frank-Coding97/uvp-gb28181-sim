@@ -18,6 +18,13 @@ fun SimEvent.toDto(): SimEventDto = when (this) {
     is SimEvent.RegistrationRetryScheduled -> SimEventDto.RegistrationRetryScheduled(delayMs, attempt, timestampMs)
     is SimEvent.AutoReregisterTriggered -> SimEventDto.AutoReregisterTriggered(reason, timestampMs)
 
+    // 传输层自愈(长连接)
+    // 注意用 [com.uvp.sim.network.ConnectionLostReason.label] 取措辞 —— 它是唯一来源,
+    // 系统日志 / 主页横幅读的是同一个值。UI 这边别再写一遍 when。
+    is SimEvent.ConnectionLost -> SimEventDto.ConnectionLost(reason.label, detail, timestampMs)
+    is SimEvent.ReconnectScheduled -> SimEventDto.ReconnectScheduled(attempt, delayMs, timestampMs)
+    is SimEvent.ReconnectSucceeded -> SimEventDto.ReconnectSucceeded(attempt, timestampMs)
+
     // Heartbeat
     is SimEvent.HeartbeatSent -> SimEventDto.HeartbeatSent(sequence, timestampMs)
     is SimEvent.HeartbeatAcknowledged -> SimEventDto.HeartbeatAcknowledged(sequence, timestampMs)

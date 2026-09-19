@@ -153,6 +153,11 @@ class MainActivity : ComponentActivity() {
             val broadcast by viewModel.broadcast.collectAsStateWithLifecycle()
             val networkState by viewModel.networkState.collectAsStateWithLifecycle()
             val clockOffset by viewModel.clockOffset.collectAsStateWithLifecycle()
+            // 附录 I:平台声明的协议版本 —— 设备设置页显示协商结果。
+            val platformVersion by viewModel.platformVersion.collectAsStateWithLifecycle()
+            // §9.1.1 f:平台看到的本机端点 —— 判定「是否在 NAT 后」,据此提示该不该改用 TCP。
+            val rportObservation by viewModel.rportObservation.collectAsStateWithLifecycle()
+            val reconnect by viewModel.reconnect.collectAsStateWithLifecycle()
             val subscriptions = rawSubs.mapNotNull { (kind, snap) ->
                 val key = try { SubscriptionKind.valueOf(kind) } catch (_: Exception) { null }
                     ?: return@mapNotNull null
@@ -179,7 +184,7 @@ class MainActivity : ComponentActivity() {
                 systemEvents = sysLogs.map { it.toDto() },
                 sessionMarker = SessionTracker.current?.toDto(),
                 subscriptions = subscriptions,
-                deviceControl = deviceControl.toDto(),
+                deviceControl = deviceControl.toDto(config),
                 recording = recordingStatus,
                 catalogTree = catalogTree,
                 lastCatalogSavedAt = lastCatalogSavedAt,
@@ -189,6 +194,9 @@ class MainActivity : ComponentActivity() {
                 broadcast = broadcast,
                 networkRuntimeState = networkState.toDto(),
                 clockOffset = clockOffset.toDto(),
+                platformGbVersion = platformVersion,
+                rportObservation = rportObservation,
+                reconnect = reconnect,
             )
             val homeActions = object : HomeActions {
                 override fun onConnect() = logged("用户点击注册") { viewModel.connect() }
@@ -259,6 +267,16 @@ class MainActivity : ComponentActivity() {
                 override fun onLocalLensAdjust(focusDelta: Float, irisDelta: Float) {
                     viewModel.adjustLocalLensPosition(focusDelta, irisDelta)
                 }
+
+                override fun onFrontOsdSave(state: com.uvp.sim.gb28181.FrontOsdState?) = logged(
+                    if (state == null) {
+                        "用户清除前端 OSD 平台值 → 回到出厂派生"
+                    } else {
+                        "用户保存前端 OSD：文字 ${state.items.size} 条 · " +
+                            "时间${if (state.timeEnable == 1) "开" else "关"} · " +
+                            "窗口 ${state.length}×${state.width}"
+                    }
+                ) { viewModel.updateFrontOsd(state) }
             }
             val recordingActions = object : RecordingActions {
                 override fun onRecordingStart() = logged("用户点击开始录像") { viewModel.startRecording() }

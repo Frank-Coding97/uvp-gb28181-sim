@@ -18,6 +18,11 @@ sealed class SimEventDto {
     data class RegistrationRetryScheduled(val delayMs: Long, val attempt: Int, override val timestampMs: Long) : SimEventDto()
     data class AutoReregisterTriggered(val reason: String, override val timestampMs: Long) : SimEventDto()
 
+    // 传输层自愈(GB/T 28181 §5.2 长连接)
+    data class ConnectionLost(val reasonLabel: String, val detail: String, override val timestampMs: Long) : SimEventDto()
+    data class ReconnectScheduled(val attempt: Int, val delayMs: Long, override val timestampMs: Long) : SimEventDto()
+    data class ReconnectSucceeded(val attempt: Int, override val timestampMs: Long) : SimEventDto()
+
     // Heartbeat
     data class HeartbeatSent(val sequence: Int, override val timestampMs: Long) : SimEventDto()
     data class HeartbeatAcknowledged(val sequence: Int, override val timestampMs: Long) : SimEventDto()

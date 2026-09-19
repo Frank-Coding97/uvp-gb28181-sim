@@ -119,6 +119,19 @@ internal fun logRowSpec(ev: SimEventDto): LogRowSpec? = when (ev) {
         "", "↻", true, "TRY", UvpColor.Info,
         "第 ${ev.attempt} 次重试 · ${ev.delayMs}ms 后", category = "REGISTER"
     )
+    is SimEventDto.ConnectionLost -> LogRowSpec(
+        "", "⚠", true, "LOST", UvpColor.Danger,
+        "长连接被动断开 · ${ev.reasonLabel} · ${ev.detail.take(40)}",
+        highlight = true, category = "RECONNECT"
+    )
+    is SimEventDto.ReconnectScheduled -> LogRowSpec(
+        "", "↻", true, "RC", UvpColor.Warning,
+        "第 ${ev.attempt} 次重连 · ${ev.delayMs}ms 后", category = "RECONNECT"
+    )
+    is SimEventDto.ReconnectSucceeded -> LogRowSpec(
+        "", "↻", false, "RC", UvpColor.Success,
+        "TCP 重连成功(第 ${ev.attempt} 次) · 重新注册", category = "RECONNECT"
+    )
     is SimEventDto.InviteAckTimeout -> LogRowSpec(
         "", "⚠", true, "ACK", UvpColor.Warning,
         "平台 ACK 未到达 · ${ev.callId.take(20)}",

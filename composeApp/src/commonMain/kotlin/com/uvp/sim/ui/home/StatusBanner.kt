@@ -36,6 +36,11 @@ import com.uvp.sim.ui.model.SipStateDto
  * 未连接时右侧嵌"注册"按钮,用户一眼可点。
  * 注册中显示"取消",已注册显示"注销"。
  * 底部再没有独立的注册按钮块 —— 减少 44dp 高度让首屏能装更多内容。
+ *
+ * **重连优先于注册状态**(GB/T 28181 §5.2 长连接):连接被对端打死后注册状态会回到
+ * Disconnected,只按 [AppUiState.sip] 渲染就会显示「未连接 · 配置已就绪」+「注册」按钮 ——
+ * 而设备其实正在自己重连。那句话是错的,且会诱导操作员去点按钮、或者直接判定功能坏了。
+ * 所以只要 [AppUiState.reconnect] 非空,横幅一律改报"正在第 N 次自动重连"。
  */
 @Composable
 internal fun StatusBanner(
@@ -44,29 +49,40 @@ internal fun StatusBanner(
     onFeedback: (String) -> Unit = {},
     sipConfigEditing: Boolean = false,
 ) {
-    val spec = when (state.sip) {
-        SipStateDto.Registered, SipStateDto.InCall -> BannerSpec(
-            UvpColor.SuccessBg, UvpColor.SuccessBorder, UvpColor.Success,
-            "设备已注册", UvpColor.SuccessText,
-            "心跳 ${state.config.keepaliveIntervalSeconds}s"
-        )
-        SipStateDto.Registering -> BannerSpec(
-            UvpColor.WarningBg, UvpColor.WarningBorder, UvpColor.Warning,
-            "正在注册…", UvpColor.Warning, "等待平台响应"
-        )
-        SipStateDto.Disconnected -> BannerSpec(
-            UvpColor.BorderLight, UvpColor.Border, UvpColor.TextHint,
-            "未连接", UvpColor.TextSecondary,
-            if (state.config.isReadyToRegister) "配置已就绪"
-            else "请先填写 SIP 配置"
-        )
-        SipStateDto.Failed -> {
-            val reason = state.events.filterIsInstance<com.uvp.sim.ui.model.SimEventDto.RegistrationFailed>()
-                .firstOrNull()?.reason ?: "未知原因"
+    val spec = when {
+        state.reconnect != null -> {
+            val attempt = state.reconnect
             BannerSpec(
-                UvpColor.DangerBg, UvpColor.DangerBorder, UvpColor.Danger,
-                "注册失败", UvpColor.DangerText, reason
+                UvpColor.WarningBg, UvpColor.WarningBorder, UvpColor.Warning,
+                "连接已断开 · 正在重连",
+                UvpColor.Warning,
+                "第 ${attempt.attempt} 次 · ${attempt.reason.label}",
             )
+        }
+        else -> when (state.sip) {
+            SipStateDto.Registered, SipStateDto.InCall -> BannerSpec(
+                UvpColor.SuccessBg, UvpColor.SuccessBorder, UvpColor.Success,
+                "设备已注册", UvpColor.SuccessText,
+                "心跳 ${state.config.keepaliveIntervalSeconds}s"
+            )
+            SipStateDto.Registering -> BannerSpec(
+                UvpColor.WarningBg, UvpColor.WarningBorder, UvpColor.Warning,
+                "正在注册…", UvpColor.Warning, "等待平台响应"
+            )
+            SipStateDto.Disconnected -> BannerSpec(
+                UvpColor.BorderLight, UvpColor.Border, UvpColor.TextHint,
+                "未连接", UvpColor.TextSecondary,
+                if (state.config.isReadyToRegister) "配置已就绪"
+                else "请先填写 SIP 配置"
+            )
+            SipStateDto.Failed -> {
+                val reason = state.events.filterIsInstance<com.uvp.sim.ui.model.SimEventDto.RegistrationFailed>()
+                    .firstOrNull()?.reason ?: "未知原因"
+                BannerSpec(
+                    UvpColor.DangerBg, UvpColor.DangerBorder, UvpColor.Danger,
+                    "注册失败", UvpColor.DangerText, reason
+                )
+            }
         }
     }
     Row(
@@ -86,14 +102,15 @@ internal fun StatusBanner(
             SipStateDto.Registered -> "1280×720 · 预览"
             else -> null
         }
-        val subText = streamLabel ?: spec.extra
+        // 重连中不显示分辨率/预览这类"链路正常"的暗示 —— 它此刻不成立。
+        val subText = if (state.reconnect != null) spec.extra else (streamLabel ?: spec.extra)
         if (subText.isNotEmpty()) {
             Spacer(Modifier.width(8.dp))
             Text(
                 "· $subText",
                 fontSize = 10.sp,
                 color = UvpColor.TextHint,
-                fontFamily = if (streamLabel != null) FontFamily.Monospace else FontFamily.Default,
+                fontFamily = if (streamLabel != null && state.reconnect == null) FontFamily.Monospace else FontFamily.Default,
                 maxLines = 1
             )
         }

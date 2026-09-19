@@ -1,5 +1,6 @@
 package com.uvp.sim.domain
 
+import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.coord.RegistrationEvent
 import com.uvp.sim.domain.coord.RegistrationState
@@ -9,6 +10,7 @@ import com.uvp.sim.network.SipTransport
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.sip.SipMessageRouter
 import com.uvp.sim.sip.SipMessageRouterImpl
 import com.uvp.sim.sip.SipState
@@ -52,6 +54,20 @@ class SimulatorEngine internal constructor(
 
     val state: StateFlow<SipState> = holders.state.asStateFlow()
     val clockOffset: StateFlow<ClockOffset> = holders.clockOffset.asStateFlow()
+    /**
+     * 附录 I 协商结果:平台在注册响应里声明的协议版本(null = 未声明/不可识别)。
+     * UI 用它显示「本机声明 × 平台声明 → 有效版本」,联调时一眼看出两侧是否真在协商。
+     */
+    val platformVersion: StateFlow<GbVersion?> = holders.platformVersion.asStateFlow()
+    /**
+     * 平台视角的我方端点 + 是否经地址转换(null = 平台未回填,不代表不在 NAT 后)。
+     * UI 用它显示「平台看到的你是 X」,并在判定为 NAT 时提示改用 TCP(§9.1.1 f)。
+     */
+    val rportObservation: StateFlow<RportObservation?> = holders.rportObservation.asStateFlow()
+    /**
+     * SIP 长连接自愈状态(null = 未在重连)。见 [ReconnectAttempt]。
+     */
+    val reconnect: StateFlow<ReconnectAttempt?> = holders.reconnect.asStateFlow()
     val events: SharedFlow<SimEvent> = holders.events.asSharedFlow()
     /**
      * Wave 4 PR-UI-PROTOCOL-FIX:UI 直接订阅 [DeviceControlModel](业务模型),
@@ -129,6 +145,15 @@ class SimulatorEngine internal constructor(
     private val registrationClockBridge: Job = scope.launch {
         registration.clockOffset.collect { off -> holders.clockOffset.value = off }
     }
+    /** 附录 I:注册协调器解析出的平台协议版本桥接到 holders,供 UI 与出站报文版决策读。 */
+    private val registrationVersionBridge: Job = scope.launch {
+        registration.platformVersion.collect { ver -> holders.platformVersion.value = ver }
+    }
+
+    /** §9.1.1 f 的适用性判据:平台看到的我方端点(经地址转换时与本地不同)桥接到 holders。 */
+    private val rportObservationBridge: Job = scope.launch {
+        registration.rportObservation.collect { observation -> holders.rportObservation.value = observation }
+    }
 
     /**
      * 看守位自动归位 —— GB/T 28181 里 `ResetTime` 的语义是"无云台操作等待该秒数后归位到
@@ -203,9 +228,110 @@ class SimulatorEngine internal constructor(
         }
     }
 
+    /**
+     * 巡航执行 —— `0x88 开始巡航` 之后的**设备自主行为**。
+     *
+     * 标准只给了"开始巡航 + 组号"，**没有任何执行进度的上报**：设备得自己按那条轨迹的点位链
+     * 依次转过去、每个点停留 `StayTime` 秒。不实现这一段，平台那边只会显示"启动指令已下发"，
+     * 而设备画面**纹丝不动** —— 用户 2026-09-17 报的「调用之后模拟器模拟设备不动」就是它
+     * （同一类缺口，看守位归位当时也是这么补的，见 [homePositionAutoReturnJob]）。
+     *
+     * 秒级轮询，与 [homePositionAutoReturnJob] 同构：判定本身是纯函数 [cruiseStepAt]，
+     * 这里只做「起步/停车的边沿判定 + 计时 + 落动作」。
+     *
+     * 起步**立即**走第一个点（不等 `dwell`）：`dwell` 的语义是"到点后停留多久再走下一个"，
+     * 不含起步。等一个 dwell 再动的话，操作员点完按钮要干看默认 30 秒画面才有变化。
+     */
+    private val cruiseExecutionJob: Job = scope.launch {
+        var runningTrack: Int? = null
+        var stepIndex = 0
+        var secondsOnStep = 0L
+        while (true) {
+            delay(CRUISE_TICK_MS)
+            val model = holders.deviceControlState.value
+            val trackNum = model.activeCruiseTrack
+            if (trackNum == null) {
+                // 停了（平台发的全零停止指令 / 0x88 组号 0）。清干净，下次启动从第 0 步重来。
+                runningTrack = null
+                stepIndex = 0
+                secondsOnStep = 0
+                continue
+            }
+            if (trackNum != runningTrack) {
+                // 起步，或平台在巡航途中换了另一条轨迹 —— 两种都从新轨迹的第 0 步重新开始。
+                // （换轨必须重置步号，否则会拿着 A 的步号去索引 B 的点位链。）
+                runningTrack = trackNum
+                stepIndex = 0
+                secondsOnStep = 0
+                val first = cruiseStepAt(model, 0)
+                if (first == null) {
+                    // 启动成功但一步都走不了：本机一个该轨迹引用的预置位都没有。
+                    // 只在起步这一刻报一次（下一拍起走 `current == null` 分支，不再刷日志）。
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Media,
+                        "巡航 #$trackNum 启动但本机无可用点位（该轨迹引用的预置位在本机都不存在），停在原地",
+                    )
+                    continue
+                }
+                applyCruiseStep(first)
+                continue
+            }
+            val current = cruiseStepAt(model, stepIndex)
+            if (current == null) {
+                // 轨迹被删空 / 点位全没了。不动，也不刷日志。
+                secondsOnStep = 0
+                continue
+            }
+            secondsOnStep++
+            if (secondsOnStep < current.dwellSeconds) continue
+            secondsOnStep = 0
+            stepIndex++
+            val next = cruiseStepAt(model, stepIndex)
+            if (next == null) {
+                secondsOnStep = 0
+                continue
+            }
+            applyCruiseStep(next)
+        }
+    }
+
+    private fun applyCruiseStep(plan: CruiseStepPlan) {
+        // 巡航是**设备自发**的动作：平台只看得到自己发出去的那条启动指令，SIP 上没有任何报文能
+        // 证明"设备真的在巡"。不写日志的话，现场排障时画面在动却不知道是谁在动 —— 同
+        // `applyHomePositionReturn` 的取舍。这行同时是"节拍有没有跑偏"的观测点。
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Media,
+            "巡航 #${plan.trackNum} 第 ${plan.pointIndex + 1}/${plan.pointCount} 个点 → P${plan.presetIndex} " +
+                "pan=${plan.target.pan} tilt=${plan.target.tilt} zoom=${plan.target.zoom} " +
+                "(停留 ${plan.dwellSeconds}s)",
+        )
+        holders.deviceControlState.update {
+            it.copy(
+                panAngle = plan.target.pan,
+                tiltAngle = plan.target.tilt,
+                zoomLevel = plan.target.zoom,
+                currentPresetIndex = plan.presetIndex,
+                // 复用 PresetRecall 而不是新增一个 effect：巡航的每一步在**设备侧就是一次预置位
+                // 调用**，三个渲染端都已接了它（ease 到该点位姿 + 高亮对应 chip），语义完全对得上。
+                pendingEffect = DeviceEffect.PresetRecall(plan.presetIndex, plan.target),
+                // 写 lastCommand 有两个作用：① HUD 自动切到「云台」页并显示这一步的动作；
+                // ② 它同时是看守位的**活动信号**，让空闲倒计时在整段巡航期间保持清零
+                //    （另有 [decideHomePositionReturn] 里那道"巡航中不归位"的硬闸）。
+                lastCommand = LastDeviceCommand(
+                    "PTZCmd",
+                    "巡航 #${plan.trackNum} 第 ${plan.pointIndex + 1}/${plan.pointCount} 个点 → P${plan.presetIndex}",
+                    nowMs(),
+                ),
+            )
+        }
+    }
+
     /** Initiate registration. Returns immediately; observe [state] for completion. */
     suspend fun register() {
         startInboundIfNeeded()
+        startReconnectIfNeeded()
         holders.events.emit(SimEvent.RegistrationStarted("${config.server.ip}:${config.server.port}"))
         registration.register()
         syncStateFromRegistration()
@@ -277,6 +403,13 @@ class SimulatorEngine internal constructor(
         manscdp.shutdown()
         registrationStateBridge.cancel(); registrationEventBridge.cancel(); registrationClockBridge.cancel()
         homePositionAutoReturnJob.cancel()
+        cruiseExecutionJob.cancel()
+        // 显式 stop 而不是只靠下面的 scope.cancel():stop() 会把 holder 上的"正在重连"
+        // 清成 null。只 cancel scope 的话那个标记会留在 UI 上,而 engine 重建后**没人会清它**
+        // (新的监管器只在自己的 recover 流程里写),横幅就一直挂着"正在重连"。
+        reconnectSupervisor.stop()
+        registrationVersionBridge.cancel()
+        rportObservationBridge.cancel()
         scope.cancel()
     }
 
@@ -351,6 +484,62 @@ class SimulatorEngine internal constructor(
         }
     }
 
+    /**
+     * SIP 长连接自愈(GB/T 28181 §5.2 传输层)。见 [SipReconnectSupervisor] 的职责边界说明。
+     *
+     * **为什么挂在 Engine 而不挂在 AppEngine**:监管器的寿命必须等于"这一次会话"——
+     * 用户注销 / 改配置走的是 `AppEngine.disconnect → engine.shutdown() → scope.cancel()`,
+     * 挂在这里它就自然停;若挂在 AppEngine,用户点了注销之后它还会把连接拉起来,
+     * 现象是「点了注销,几秒后设备自己又注册回来了」,而日志上看是设备主动行为,极难归因。
+     */
+    private val reconnectSupervisor = SipReconnectSupervisor(
+        transport = transport,
+        scope = scope,
+        onSessionLost = { loss -> onTransportLost(loss) },
+        register = { this@SimulatorEngine.register() },
+        emitEvent = { ev -> holders.events.emit(ev) },
+        onAttemptChanged = { attempt -> holders.reconnect.value = attempt },
+    )
+
+    /**
+     * 连接被对端打死后、重建连接**之前**的会话收尾。
+     *
+     * ⛔ 顺序不能换,两步各堵一个坑:
+     * 1. **先停活跃流**:INVITE 会话已经随连接死了,但 [holders.state] 还停在 `InCall`,
+     *    而 [registrationStateBridge] 只在"当前不是 InCall"时才把注册状态写过去。
+     *    不先摘掉这个闩,注册状态后面就算被作废成 Disconnected,UI 也**永远读不到**,
+     *    横幅会一直显示「设备已注册 · LIVE」—— 这正是这次要修掉的那句谎话。
+     *    (同款处置见 [registrationEventBridge] 收到 AutoReregisterTriggered 的分支。)
+     * 2. **再作废注册会话**:`RegistrationCoordinatorImpl.register()` 开头有
+     *    "状态仍是 Registered 就 return" 的守卫 —— 不作废的话重连流程会跑完、
+     *    TCP 也真连上了,但**一次 REGISTER 都不会发出去**。
+     */
+    private suspend fun onTransportLost(loss: com.uvp.sim.network.ConnectionLost) {
+        val reason = loss.reason.label
+        // 这三条 stop 都会尝试发 BYE / 收尾报文,而连接已经死了 —— 失败是预期内的,
+        // 不能让它把后面的会话作废流程带崩。没有活跃流时它们在入口就返回(不发报文)。
+        runCatching { invite.stopStream("SIP 连接断开: $reason") }
+            .onFailure { logSessionCleanupFailure("invite", it) }
+        runCatching { broadcast.stop(BroadcastEndReason.Error) }
+            .onFailure { logSessionCleanupFailure("broadcast", it) }
+        runCatching { playback.stop("SIP 连接断开") }
+            .onFailure { logSessionCleanupFailure("playback", it) }
+        registration.onConnectionLost()
+    }
+
+    private fun logSessionCleanupFailure(domain: String, error: Throwable) {
+        SystemLogger.emit(
+            LogLevel.Warning,
+            LogTag.Network,
+            "断连收尾:停 $domain 失败(连接已死,预期内): ${error::class.simpleName}: ${error.message}",
+        )
+    }
+
+    private fun startReconnectIfNeeded() {
+        // 幂等(UDP 无连接可断,connectionLost 是空流 → 起来也只是挂着一个空 collect)。
+        reconnectSupervisor.start()
+    }
+
     private suspend fun handleIncoming(envelope: com.uvp.sim.network.SipEnvelope) {
         messageRouter.route(envelope)
     }
@@ -385,6 +574,15 @@ class SimulatorEngine internal constructor(
  * 可以直接用拍数累加,不需要另读时钟。
  */
 private const val HOME_POSITION_TICK_MS = 1_000L
+
+/**
+ * 巡航执行的巡检间隔。
+ *
+ * 1 秒的理由与看守位不同：那边是"最小 `ResetTime` 10 秒，1 秒粒度足够"；这边是**停留时间**
+ * 的粒度 —— 平台写侧允许 1-4095 秒、演示里常用 5 秒，1 秒粒度意味着最多晚一步 1 秒。
+ * 更密（比如 100ms）只是白跑协程：整条链的节拍由 `dwellTime` 决定，设备不会因为查得勤就动得快。
+ */
+private const val CRUISE_TICK_MS = 1_000L
 
 /**
  * 云台"活动信号" —— 用来给看守位倒计时复位。
