@@ -1067,6 +1067,112 @@ class DeviceControlDispatcherTest {
         assertNull(s.videoParams.getValue(0).videoBitRate, "VBR 时码率应回到缺席")
     }
 
+    // ===== A.2.3.2 配置族：一条报文可并存多个块（2026-09-20 真机修复） =====
+
+    /** 平台实测下发过的报文形态：两个块并存，中间没有任何分隔。 */
+    private fun multiBlockControl(vararg blocks: String) =
+        "<Control><CmdType>DeviceConfig</CmdType><SN>9</SN>" +
+            "<DeviceID>34020000001320000001</DeviceID>" +
+            blocks.joinToString("") +
+            "</Control>"
+
+    private val pictureMaskBlock =
+        "<PictureMask><On>1</On><SumNum>1</SumNum><RegionList Num=\"1\">" +
+            "<Item><Seq>1</Seq><Point>10,20,30,40</Point></Item></RegionList></PictureMask>"
+
+    /**
+     * ⭐⭐ **一条 `<Control CmdType="DeviceConfig">` 里并存多个块时，每一块都必须生效。**
+     *
+     * 平台的 apply 会把"这一次要改的全部类型"合并在同一条报文里下发。实测 payload
+     * `{"blocks":{"frameMirror":{"value":1},"pictureMask":{"on":0,"regions":[]}}}`
+     * ⇒ 报文里 `<PictureMask>…</PictureMask><FrameMirror>1</FrameMirror>` **并存**。
+     *
+     * ⛔ 原先配置族各占一个 `when` 分支、而那条链**命中即停** ⇒ `PictureMask` 排在前，
+     *    命中后直接 `return`，**`FrameMirror` 连 handler 都没进**。2026-09-20 真机现象：
+     *  ```
+     *    只发 FrameMirror       ⇒ 生效
+     *    与 PictureMask 一起发   ⇒ App 日志只剩「平台下发 DeviceConfig PictureMask → 已记 …」，
+     *                             FrameMirror 一个字都没有，设备存档纹丝不动，
+     *                             平台回读恒 `FrameMirror.value=1(实际 0)`
+     *  ```
+     * ⚠️ 两侧都不报错（设备回 200 + `Result=OK`，因为至少认出了 PictureMask）——
+     * 这是本仓最难定位的"静默丢命令"。
+     */
+    @Test
+    fun `DeviceConfig — 一条报文里的多个块必须全部生效`() {
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+
+        val ack = d.dispatch(multiBlockControl(pictureMaskBlock, "<FrameMirror>3</FrameMirror>"))
+
+        assertTrue(ack.needSipResponse, "认出了至少一块 ⇒ 应回 OK")
+        val cfg = state.value.deviceConfigs
+        assertNotNull(cfg.pictureMask, "PictureMask 块必须落状态")
+        assertEquals(1, cfg.pictureMask?.on)
+        assertEquals(
+            3, cfg.frameMirror?.value,
+            "FrameMirror 不能被排在前面的 PictureMask 吃掉（这正是线上那条 (实际 0) 的成因）"
+        )
+    }
+
+    /**
+     * ⛔ **块的先后顺序不能影响结果** —— 平台的 blocks 是 JSON 对象，键序不保证；
+     * 只要有一条按"第一个命中的块"来分派，就会变成"用户改了哪个字段生效看运气"。
+     */
+    @Test
+    fun `DeviceConfig — 块顺序颠倒也必须全部生效`() {
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+
+        d.dispatch(multiBlockControl("<FrameMirror>2</FrameMirror>", pictureMaskBlock))
+
+        val cfg = state.value.deviceConfigs
+        assertEquals(2, cfg.frameMirror?.value, "FrameMirror 排在前时同样要生效")
+        assertNotNull(cfg.pictureMask, "PictureMask 排在后时也要生效（不能被提前 return 吃掉）")
+        assertEquals(1, cfg.pictureMask?.on)
+    }
+
+    /** 三个块并存（BasicParam 走的是另一个 handler，与聚合里的字段不在一处）。 */
+    @Test
+    fun `DeviceConfig — 三个块并存时各不相同地落状态`() {
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+
+        val ack = d.dispatch(
+            multiBlockControl(
+                "<BasicParam><Name>多块设备</Name><Expiration>3600</Expiration></BasicParam>",
+                pictureMaskBlock,
+                "<FrameMirror>1</FrameMirror>",
+            )
+        )
+
+        assertTrue(ack.needSipResponse)
+        val cfg = state.value.deviceConfigs
+        assertEquals("多块设备", cfg.basicParam?.name)
+        assertEquals(1, cfg.pictureMask?.on)
+        assertEquals(1, cfg.frameMirror?.value)
+    }
+
+    /**
+     * 反向锚点：**一块都不认识**时仍要回 ERROR（`needSipResponse=false`）。
+     *
+     * 这句是给平台"显式失败"用的 —— 回 OK 再等一个永远 `type_absent` 的回读，
+     * 比直接失败更难定位。改成遍历之后这条语义必须原样保留。
+     */
+    @Test
+    fun `DeviceConfig — 一块都不认识时回 ERROR`() {
+        val state = MutableStateFlow(DeviceControlModel())
+        val d = newDispatcher(state)
+
+        val ack = d.dispatch(
+            "<Control><CmdType>DeviceConfig</CmdType><SN>9</SN>" +
+                "<DeviceID>34020000001320000001</DeviceID><SomethingElse>1</SomethingElse></Control>"
+        )
+
+        assertFalse(ack.needSipResponse, "没有任何已知配置块 ⇒ 回 ERROR，让平台显式失败")
+        assertNull(state.value.deviceConfigs.frameMirror)
+    }
+
     // ================= 2026-09-19 G-5：A.2.3.1.2 `PTZCmdParams` 名字下发 ---------------
 
     /**
