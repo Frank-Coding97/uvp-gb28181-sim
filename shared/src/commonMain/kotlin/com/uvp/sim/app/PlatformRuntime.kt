@@ -8,6 +8,8 @@ import com.uvp.sim.config.GeoPoint
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.domain.location.LocationProvider
+import com.uvp.sim.osd.FrameMirrorTransform
+import com.uvp.sim.osd.VideoMaskOverlay
 import com.uvp.sim.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -95,6 +97,31 @@ interface PlatformRuntime {
      * iOS 当前 no-op(媒体管线 v1.1)。
      */
     fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig)
+
+    /**
+     * 装「画面遮挡」来源（GB-2022 A.2.1.17）—— 平台下发的遮挡要**烧进真实视频流**，
+     * 而不是只画在 Compose 画布上。
+     *
+     * 由 `AppEngine` 在构造期调一次，supplier 逐帧读 `deviceControlState.pictureMask`
+     * 与 `config.video.resolution`（协议参考帧）派生。
+     *
+     * ⛔ 给默认空实现（而不是抽象方法）：本接口还有 `FakePlatformRuntime` 等多个实现，
+     * 加抽象方法会连累每一个实现；而"没装遮挡来源 ⇒ 行为与加本功能之前逐帧一致"
+     * 本来就是正确的默认。
+     */
+    fun installVideoMaskSupplier(supplier: () -> VideoMaskOverlay) = Unit
+
+    /**
+     * 装「画面翻转」来源（GB-2022 A.2.1.23）—— 平台下发的翻转要**烧进真实视频流**，
+     * 而不是只翻「模拟中心」那块 3D 画布（画布是另一条链路，平台点播到的画面不看它）。
+     *
+     * 由 `AppEngine` 在构造期调一次，supplier 逐帧读 `deviceControlState.frameMirror`
+     * 并用 [FrameMirrorTransform.of] 换算（码值 → 布尔对的映射只在那里发生一次）。
+     *
+     * ⛔ 默认空实现，理由同 [installVideoMaskSupplier]：本接口有多个实现，
+     * 而"没装来源 ⇒ 行为与加本功能之前逐帧一致"本来就是正确的默认。
+     */
+    fun installFrameMirrorSupplier(supplier: () -> FrameMirrorTransform) = Unit
 
     /** App 前后台转换。平台实现用于立即释放/恢复受系统限制的采集资源。 */
     fun onAppBackground() = Unit

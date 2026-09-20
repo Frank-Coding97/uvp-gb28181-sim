@@ -156,6 +156,36 @@ class AppEngine(
             kotlin.time.Instant.fromEpochMilliseconds(holders.clockOffset.value.adjustedNowMs())
         }
         deviceStatePersister.start(engineScope)
+
+        // 画面遮挡（GB-2022 A.2.1.17）要烧进**真实视频流**，而不是只画在 Compose 画布上 ——
+        // 模拟器推给平台的是手机真实摄像头画面，「模拟中心」那块 3D 画布是另一条链路，
+        // 黑块画在那里等于平台一点都看不到遮挡。
+        //
+        // ⭐ 来源只有两个，都在本类里：平台下发的 `deviceConfigs.pictureMask`（状态）+
+        // `config.video.resolution`（**协议参考帧** —— 平台就是按它换算 `Point` 像素的，
+        // 而采集/FBO/编码尺寸也是从同一个字段派生的，所以这一份归一化同时对得上两者）。
+        // 装成 lambda 由渲染端逐帧读，不建 collect 协程（少一条生命周期要管）。
+        runtime.installVideoMaskSupplier {
+            com.uvp.sim.osd.VideoMaskOverlay.of(
+                holders.deviceControlState.value.deviceConfigs.pictureMask,
+                _config.value.video.resolution.widthPx,
+                _config.value.video.resolution.heightPx,
+            )
+        }
+
+        // 画面翻转（GB-2022 A.2.1.23）同理：平台点「上下翻转」要真的翻**推给平台的那路画面**，
+        // 而不是只翻「模拟中心」那块 3D 画布（画布与推流是两条互不相干的链路）。
+        //
+        // ⭐ 这里只取 `frameMirror?.value` 一个整数就交给渲染端 —— 码值 → (mirrorX, mirrorY)
+        // 的换算收敛在 `FrameMirrorTransform.of` 一处，Android GL 与 iOS CoreImage 两侧
+        // 都不许再写一份 `when`（各写一份正是"改一处、另一平台静默不一致"的来源）。
+        // ⛔ 不在这里把 null 兜成 0：`of()` 对 null 与 0 都返回"不翻"（画面表现相同），
+        // 而"平台没配过 / 配了不启用"这两态的区分由展示层读 null 判断 —— 不靠这里丢信息。
+        runtime.installFrameMirrorSupplier {
+            com.uvp.sim.osd.FrameMirrorTransform.of(
+                holders.deviceControlState.value.deviceConfigs.frameMirror?.value,
+            )
+        }
     }
 
     val state: StateFlow<SipState> = holders.state.asStateFlow()

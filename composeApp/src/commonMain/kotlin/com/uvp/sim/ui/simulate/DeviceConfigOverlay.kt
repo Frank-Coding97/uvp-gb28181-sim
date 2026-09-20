@@ -20,12 +20,14 @@ import com.uvp.sim.ui.model.DeviceConfigDto
 /**
  * 画布上的「平台下发的设备配置」只读叠层 —— GB/T 28181-2022 A.2.3.2 的设备配置族在设备屏幕上的可见面。
  *
- * ## 画什么
- *  - **画面遮挡**（A.2.1.17）：按 `RegionList/Item/Point` 的两个角点画黑块。
- *    这是本批功能里**演起来最直观**的一项：平台配 2 个区域，设备屏幕上直接多两块黑。
+ * ## 画什么（⛔ 2026-09-19 起只剩一样）
  *  - **前端 OSD 文本**（A.2.1.12）：按 `Item/Text` + `X/Y` 把文本落在像素坐标处。
- *  - **画面翻转**（A.2.1.23）不在这里 —— 它是整个画面的变换，由 [MonitoringStage] 施加在
- *    3D 视图那一层（本叠层是"烧在画面上的内容"，不该跟着镜像一起翻）。
+ *  - **画面遮挡**（A.2.1.17）**已不在这里画**（曾经是按 `RegionList/Item/Point` 两个角点画黑块）。
+ *    它改为**烧进真实视频流**，理由见下方 `BoxWithConstraints` 里那段注释。
+ *  - **画面翻转**（A.2.1.23）不在这里 —— 它是**真流**上整幅画面的变换，施加点在采集链路
+ *    （Android `CameraTexturePass` / iOS `IosFrameProcessor`，由 `installFrameMirrorSupplier`
+ *    装配，且在 OSD/遮挡**之前**）。**本机 3D 画布不参与**（2026-09-20 明确）：那是另一条
+ *    与推流互不相干的链路，在它上面翻一次不代表平台点播到的画面会动。
  *
  * ## 坐标：只做**一次**归一化，这里只乘画布尺寸
  * 协议坐标全部是视频帧的绝对像素，已在 `DeviceConfigMapper` 里按帧宽高归一化成 0~1。
@@ -35,8 +37,10 @@ import com.uvp.sim.ui.model.DeviceConfigDto
  * ## 四条硬约束（技能里记着代价，别顺手破坏）
  *  1. **不带任何 `clickable` / `pointerInput`**：画布上的手势必须能穿透给 3D 视图。
  *     判据是"有没有可交互修饰符"，而不是"是不是画在画布上" —— 只读叠层一直都可以放。
- *  2. **叠层顺序**：本层放在装饰层之后、`StorageCardPanel` 之前。
- *     遮挡块是"画面内容"，应当盖住磨砂/雨刷这些装饰效果；但存储卡卡片是 UI 卡片，要在最上层。
+ *  2. **叠层顺序**：本层放在装饰层（磨砂 / 雨刷 / 力场罩 / 拉框）之后、`PtzThumbnail` 之前。
+ *     ⚠️ 原先"遮挡块该盖住装饰效果"这条理由**已随遮挡搬走而失效**（只剩 OSD 文字，它本就在最上）。
+ *     ⚠️ 存储卡原本也是本层的一张 UI 卡片（右上角，所以它当时排在最上），2026-09-19 已搬去
+ *     HUD「状态」页（`ptz/StorageCardSection.kt`）—— 画布这层只留"画面里的东西"。
  *  3. **文字必须显式给 `lineHeight`**：`UvpTheme` 没有覆写 `typography`，`Text(fontSize = 11.sp)`
  *     的实际行框仍继承 Material3 的 `lineHeight = 24.sp`。
  *  4. **画布底色是深色**（`CameraStageBase`）：文字/遮挡一律按深底配色，
@@ -59,28 +63,13 @@ internal fun DeviceConfigOverlay(
         val widthPx = constraints.maxWidth.toFloat()
         val heightPx = constraints.maxHeight.toFloat()
 
-        // ---- 画面遮挡（A.2.1.17）----
-        if (config.pictureMask.on) {
-            for (rect in config.pictureMask.rects) {
-                val leftPx = rect.left * widthPx
-                val topPx = rect.top * heightPx
-                val widthPxRect = (rect.right - rect.left) * widthPx
-                val heightPxRect = (rect.bottom - rect.top) * heightPx
-                if (widthPxRect <= 0f || heightPxRect <= 0f) continue
-                Box(
-                    modifier = Modifier
-                        .offset(
-                            x = with(density) { leftPx.toDp() },
-                            y = with(density) { topPx.toDp() },
-                        )
-                        .size(
-                            width = with(density) { widthPxRect.toDp() },
-                            height = with(density) { heightPxRect.toDp() },
-                        )
-                        .background(Color.Black)
-                )
-            }
-        }
+        // ⛔⛔ 画面遮挡（A.2.1.17）2026-09-19 起**不在这里画**。
+        // 黑块已改为**烧进真实视频流**（Android = `OsdRenderer` 的 FBO 段 `MaskPass`；
+        // iOS = `IosFrameProcessor` 的 CoreImage 组合）。原实现画在这块 3D 画布上，
+        // 而画布与"推给平台的手机摄像头画面"是**两条互不相干的链路** ——
+        // 平台点播到的画面一点遮挡都没有，等于遮挡做在了唯一不上传的那条链路上。
+        // 设备屏幕上的可见面改由 HUD「图像」页的遮挡区域列表承担（`ptz/ImageTabContent.kt`）。
+        // ⛔ 别因为"画布上看不到遮挡了"就把这段加回来 —— 那只会让缺陷重新变得看不见。
 
         // ---- 前端 OSD 文本（A.2.1.12）----
         for (line in config.osdLines) {

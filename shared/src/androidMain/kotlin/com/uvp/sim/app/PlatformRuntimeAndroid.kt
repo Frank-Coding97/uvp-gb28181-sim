@@ -9,6 +9,9 @@ import com.uvp.sim.camera.AudioCaptureConfig
 import com.uvp.sim.camera.CameraCapture
 import com.uvp.sim.camera.CaptureConfig
 import com.uvp.sim.config.OsdConfig
+import com.uvp.sim.osd.FrameMirrorTransform
+import com.uvp.sim.osd.OsdRendererHolder
+import com.uvp.sim.osd.VideoMaskOverlay
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.recording.AndroidRecordingService
 import com.uvp.sim.recording.RecordingService
@@ -139,6 +142,31 @@ class PlatformRuntimeAndroid(
 
     override fun onAppForeground() {
         streamer?.setAppInForeground(true)
+    }
+
+    /**
+     * 画面遮挡（GB-2022 A.2.1.17）烧进视频流 —— 装到 [OsdRendererHolder]。
+     *
+     * ⭐ 装"进程级"而不是逐个 streamer 传参：遮挡是同一条画面源上的属性，
+     * `OsdRendererHolder.acquire` 的 3 个调用点（直播 / 录像 / 屏幕预览）共享同一个
+     * renderer，装一次全部生效 —— 否则会出现"直播有遮挡、录像没有"这种不一致。
+     *
+     * 早于任何 [buildCameraCapture] 之前调用（`AppEngine.init` 里），
+     * 所以 `acquire` 时拿到的必然是这个 supplier。
+     */
+    override fun installVideoMaskSupplier(supplier: () -> VideoMaskOverlay) {
+        OsdRendererHolder.installMaskSupplier(supplier)
+    }
+
+    /**
+     * 画面翻转（GB-2022 A.2.1.23）烧进视频流 —— 装到 [OsdRendererHolder]。
+     *
+     * 与 [installVideoMaskSupplier] 同一形状、同一理由（同一条画面源上的属性，
+     * 直播/录像/屏幕预览必须共享）。差别只在施加位置：这个是
+     * `CameraTexturePass` 的顶点（相机画面那一层），遮挡是 fbo 上的叠加绘制。
+     */
+    override fun installFrameMirrorSupplier(supplier: () -> FrameMirrorTransform) {
+        OsdRendererHolder.installMirrorSupplier(supplier)
     }
 
     override suspend fun release() {

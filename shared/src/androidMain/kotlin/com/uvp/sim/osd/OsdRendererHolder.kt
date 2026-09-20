@@ -32,6 +32,39 @@ internal object OsdRendererHolder {
     private val lock = Object()
 
     /**
+     * 画面遮挡的**实时快照来源**（GB-2022 A.2.1.17），进程级只装一次。
+     *
+     * ⭐ 做成进程级的 install 而不是往 [acquire] 加参数：`acquire` 有 3 个调用点
+     * （直播 streamer / 录像 pipeline / 屏幕预览），而遮挡是**同一条画面源**上的属性 ——
+     * 逐个传参数会让"录像有遮挡、直播没有"这种不一致成为可能，且每加一个消费者都要记得传。
+     * 装一次、所有消费者共享，与 [current] 本身是单例这件事同构。
+     *
+     * 默认返回 [VideoMaskOverlay.EMPTY]（不画），所以测试 / 桌面 runtime 不装也行为不变。
+     * ⚠️ 读它的时机是 GL 线程逐帧，所以 source 内部读的必须是线程安全的值
+     * （`AppEngine` 传进来的实现读的是 `StateFlow.value`，满足）。
+     */
+    @Volatile
+    private var maskSupplier: () -> VideoMaskOverlay = { VideoMaskOverlay.EMPTY }
+
+    /** 装画面遮挡来源。重复装以最后一次为准（进程内只有一个场景）。 */
+    fun installMaskSupplier(supplier: () -> VideoMaskOverlay) {
+        maskSupplier = supplier
+    }
+
+    /**
+     * 画面翻转（GB-2022 A.2.1.23）的实时来源 —— 与 [maskSupplier] **同一形状、同一理由**：
+     * 它是同一条画面源上的属性，必须一次装好、直播/录像/屏幕预览共享，
+     * 否则会出现"直播翻了、录像没翻"这种不一致。
+     */
+    @Volatile
+    private var mirrorSupplier: () -> FrameMirrorTransform = { FrameMirrorTransform.NONE }
+
+    /** 装画面翻转来源。重复装以最后一次为准。 */
+    fun installMirrorSupplier(supplier: () -> FrameMirrorTransform) {
+        mirrorSupplier = supplier
+    }
+
+    /**
      * 获取当前 OsdRenderer。第一次调用懒启动 GL pipeline。
      *
      * 调用方负责后续 [release]([acquire] 配对)。
@@ -53,7 +86,9 @@ internal object OsdRendererHolder {
             context = context.applicationContext,
             configFlow = configFlow,
             targetWidth = targetWidth,
-            targetHeight = targetHeight
+            targetHeight = targetHeight,
+            maskSupplier = { maskSupplier() },
+            frameMirrorSupplier = { mirrorSupplier() }
         )
         return if (renderer.start()) {
             current = renderer

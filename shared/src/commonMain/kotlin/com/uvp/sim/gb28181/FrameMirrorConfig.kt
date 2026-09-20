@@ -19,8 +19,11 @@ import kotlinx.serialization.Serializable
  *   - `2` 上下镜像（上下翻转）
  *   - `3` 中心镜像（上下左右都翻转）
  *
- * ⚠️ 本仓前端 `deviceConfigGroups.ts` 的 `MIRROR_OPTIONS` 把 **1/2 写反了**
- * （那是照海康 ISP 口径编的，不是国标）。以本标准原文为准 —— 1 是水平、2 是上下。
+ * ⛔ **值域以本标准原文为准，不要拿对端的下拉框当基准**：平台侧前端的 `MIRROR_OPTIONS`
+ * 曾经按海康 ISP 口径把 **1/2 写反**（那是 ISP 的语义，不是国标的），2026-09 已对齐国标。
+ * 排查这类"两侧都觉得自己对"的偏差时，唯一裁判是 A.2.1.23 的 enumeration 原文。
+ * 渲染侧同源的那份换算是 `FrameMirrorTransform.of()`（Android GL 与 iOS CoreImage 两处
+ * 共用；⛔ 别再加第三个消费端，尤其别加到本机 3D 画布上），改值域要同时看它。
  */
 @Serializable
 data class FrameMirrorState(

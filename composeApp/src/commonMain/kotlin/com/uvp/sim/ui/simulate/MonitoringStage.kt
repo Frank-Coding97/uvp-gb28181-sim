@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -99,25 +98,20 @@ internal fun MonitoringStage(
                     RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)
                 )
         ) {
-            // GB-2022 A.2.1.23 画面翻转 —— 只施加在 3D 视图这一层。
+            // GB-2022 A.2.1.23 画面镜像 —— **本画布不施加**（2026-09-20 用户明确）。
             //
-            // ⛔ 为什么只翻 3D 视图、不翻整个画布：本叠层里的遮挡块与前端 OSD 是"烧在画面上的
-            //    内容"，它们的位置由平台按画面坐标给定，跟着一起镜像会让设备显示的位置与
-            //    平台配置的坐标系统性错位（而且**看起来仍然正常**，最难排查）。
-            //
-            // ⚠️ 已知边界：Android 宿主是 `TextureView`，Compose 的 `graphicsLayer` 变换可靠；
-            //    iOS 走 CMP `UIKitView`（原生 Metal 视图），interop 视图的变换在部分版本上
-            //    可能不生效。所以「翻转」这一项的**判据请以 HUD 图像页的摘要行为准**，
-            //    画布效果算加分项。
+            // ⛔ 镜像是**真流**的事，它的唯一可见面是**平台播放器**：拉流那一路由
+            //    `CameraTexturePass.setFrameMirror`（Android）/ `IosFrameProcessor.applyFrameMirror`
+            //    （iOS）施加在**相机帧**上，且在 OSD / 遮挡**之前**。
+            //    本画布是本机 3D 预览，与真流链路**没有共享代码** —— 在这里再翻一次只是
+            //    "设备屏幕上也能看出方向"的示意，**不代表功能成立**：上一轮判成"半实现"
+            //    就是因为画布在翻、而平台上其实一动不动。
+            // ⛔ 状态回显也不在这里 —— 它在 HUD「图像」页的「画面镜像」四卡片
+            //    （`ImageTabContent.mirrorSectionState`）。别再往画布上角标。
             CameraGlbView(
                 state = state,
                 onPoseTick = onPoseTick,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer(
-                        scaleX = if (state.deviceConfig.frameMirror == 1 || state.deviceConfig.frameMirror == 3) -1f else 1f,
-                        scaleY = if (state.deviceConfig.frameMirror == 2 || state.deviceConfig.frameMirror == 3) -1f else 1f,
-                    )
+                modifier = Modifier.fillMaxSize()
             )
 
             // 磨砂玻璃质感叠层(在 3D 之上,GuardOverlay 之下)

@@ -50,13 +50,34 @@ internal class OsdRenderer(
     private val context: Context,
     private val configFlow: StateFlow<OsdConfig>,
     private val targetWidth: Int = 1280,
-    private val targetHeight: Int = 720
+    private val targetHeight: Int = 720,
+    /**
+     * 当前生效的**画面遮挡**（GB-2022 A.2.1.17）。每帧在 GL 线程读一次。
+     *
+     * ⭐ 用 `() -> VideoMaskOverlay` 而不是 `StateFlow`：它只是"逐帧读一个最新值"，
+     * 走 lambda 读 `StateFlow.value` 就够（两个上游 `StateFlow` 的读取本身线程安全），
+     * 不需要为它建一条 collect 协程 —— 少一条生命周期要管。
+     *
+     * 默认 [VideoMaskOverlay.EMPTY]：没装来源时行为与加本参数之前**逐帧一致**。
+     */
+    private val maskSupplier: () -> VideoMaskOverlay = { VideoMaskOverlay.EMPTY },
+    /**
+     * 当前生效的**画面翻转**（GB-2022 A.2.1.23）。每帧在 GL 线程读一次，形状同 [maskSupplier]。
+     *
+     * ⭐ 施加位置是 `CameraTexturePass`（相机画面那一层），**不是** blit —— 翻转只该作用于
+     * 相机帧；OSD 文字与遮挡块是"盖在画面上的内容"，位置由平台按画面坐标给定，
+     * 跟着翻会让设备显示的位置与平台配置的坐标系统性错位（而画面**看起来仍然正常**）。
+     *
+     * 默认 [FrameMirrorTransform.NONE]：没装来源时行为与加本参数之前**逐帧一致**。
+     */
+    private val frameMirrorSupplier: () -> FrameMirrorTransform = { FrameMirrorTransform.NONE },
 ) {
 
     private val tickerSource = OsdTickerSource(configFlow)
     private val atlas = OsdFontAtlas()
     private var cameraPass: CameraTexturePass? = null
     private var textPass: OsdTextPass? = null
+    private var maskPass: MaskPass? = null
 
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
@@ -93,7 +114,7 @@ internal class OsdRenderer(
     private var cameraBufferHeight: Int = targetHeight
     private var cameraFrameWidth: Int = targetWidth
     private var cameraFrameHeight: Int = targetHeight
-    private var cameraTextureCoordinates: FloatArray = DEFAULT_TEXTURE_COORDINATES.copyOf()
+    private var cameraTextureCoordinates: FloatArray = DEFAULT_CAMERA_QUAD_UV.copyOf()
 
     val cameraInputSurface: Surface? get() = _cameraInputSurface
 
@@ -126,6 +147,7 @@ internal class OsdRenderer(
                 if (!atlas.load(context)) throw RuntimeException("OsdFontAtlas.load failed")
                 cameraPass = CameraTexturePass().apply { init() }
                 textPass = OsdTextPass(atlas).apply { init() }
+                maskPass = MaskPass().apply { init() }
 
                 createFbo(targetWidth, targetHeight)
                 createBlitProgram()
@@ -234,11 +256,11 @@ internal class OsdRenderer(
         bufferHeight: Int,
         frameWidth: Int = bufferWidth,
         frameHeight: Int = bufferHeight,
-        textureCoordinates: FloatArray = DEFAULT_TEXTURE_COORDINATES,
+        textureCoordinates: FloatArray = DEFAULT_CAMERA_QUAD_UV,
         transformationDetail: String? = null,
     ) {
         if (bufferWidth <= 0 || bufferHeight <= 0 || frameWidth <= 0 || frameHeight <= 0 ||
-            textureCoordinates.size != TEXTURE_COORDINATE_COUNT
+            textureCoordinates.size != CAMERA_QUAD_UV_COUNT
         ) return
         val h = handler
         if (h == null) {
@@ -304,8 +326,14 @@ internal class OsdRenderer(
 
             // 绑 fbo,渲染相机 + OSD
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fboId)
+            // 画面翻转（GB-2022 A.2.1.23）先于相机绘制设定：它改的是本 pass 的顶点，
+            // 后面的 OSD 文字与遮挡块随后画在同一 fbo 上，因此**不跟着翻**。
+            cam.setFrameMirror(frameMirrorSupplier())
             cam.draw(transformMatrix, fboWidth, fboHeight)
             drawOsdLayers(text)
+            // 画面遮挡(GB-2022 A.2.1.17)最后画:它是"盖在画面上的内容",
+            // 必须压在 OSD 文字之上(平台配的遮挡挡住的也包括 OSD 那块区域)。
+            drawMaskLayers()
             GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
 
             // === Step 2: 将 fbo blit 到所有消费者 ===
@@ -378,6 +406,7 @@ internal class OsdRenderer(
         eglCore = null
         cameraPass = null
         textPass = null
+        maskPass = null
         surfaceTexture = null
         _cameraInputSurface = null
         fboId = 0
@@ -397,6 +426,7 @@ internal class OsdRenderer(
             if (!atlas.load(context)) throw RuntimeException("OsdFontAtlas.load failed in recreate")
             cameraPass = CameraTexturePass().apply { init() }
             textPass = OsdTextPass(atlas).apply { init() }
+            maskPass = MaskPass().apply { init() }
             createFbo(fboWidth, fboHeight)
             createBlitProgram()
             cameraPass!!.setFrameSize(
@@ -459,6 +489,21 @@ internal class OsdRenderer(
                 fboWidth, fboHeight,
                 parseColor(cfg.watermark.fillColor), parseColor(cfg.watermark.outlineColor))
         }
+    }
+
+    /**
+     * 把平台下发的画面遮挡烧进当前 fbo。
+     *
+     * ⛔ 只在**非空**时进 GL：`On=0` / 平台没配过 / 矩形退化成零面积时，
+     * 这一帧的 GL 调用序列与"没有本功能"完全一致（一次状态切换都不多做）。
+     * 坐标已是归一化 0~1（`VideoMaskOverlay.of` 用协议参考帧换算过一次），
+     * 这里只做 [0,1]→NDC —— **不要**再乘一次 fbo 尺寸（见 [MaskPass] 类注释）。
+     */
+    private fun drawMaskLayers() {
+        val pass = maskPass ?: return
+        val overlay = maskSupplier()
+        if (overlay.isEmpty) return
+        pass.draw(overlay.rects)
     }
 
     private fun blitToConsumer(core: EglCore, consumer: Consumer, srcTex: Int, presentationNs: Long) {
@@ -627,6 +672,7 @@ void main() {
             surfaceTexture?.release()
             textPass?.release()
             cameraPass?.release()
+            maskPass?.release()
             atlas.release()
             if (fboId != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(fboId), 0)
             if (fboTexId != 0) GLES30.glDeleteTextures(1, intArrayOf(fboTexId), 0)
@@ -644,6 +690,7 @@ void main() {
             surfaceTexture = null
             textPass = null
             cameraPass = null
+            maskPass = null
             encoderConsumers.clear()
             screenConsumer = null
             fboId = 0
@@ -655,14 +702,6 @@ void main() {
     }
 
     companion object {
-        private const val TEXTURE_COORDINATE_COUNT = 8
-        private val DEFAULT_TEXTURE_COORDINATES = floatArrayOf(
-            0f, 1f,
-            1f, 1f,
-            0f, 0f,
-            1f, 0f,
-        )
-
         /** 单帧渲染预算 — 30fps 下每帧 33.3ms,留 33ms 给 OSD pipeline 整体处理。 */
         const val FRAME_BUDGET_MS = 33L
 

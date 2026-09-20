@@ -203,6 +203,45 @@ class DeviceConfigFamilyTest {
 
     private fun maskReason(body: String) = rejected(PictureMaskConfig.parse(maskCommand(body)))
 
+    /**
+     * 零面积条目 = **删除这一槽**，不是"一条看不见的区域"。
+     *
+     * ⭐ 真机实证（2026-09-20，海康 DS-2DC2C040MY-DE）：平台为"被删掉的槽位"显式发
+     * `<Point>0,0,0,0</Point>`，设备执行后**该条消失、且不回显**（发 3 真 + 1 零 ⇒ 回读
+     * `SumNum=3`）。本仓跟着真机口径收 —— 收下就会把平台的一次"删除"变成"多出一条 0×0
+     * 的幽灵区域"（回读 `Num` 变大、UI 列出一行 0×0），而平台侧会据此判对账不一致。
+     *
+     * ⛔ 反向锚点：有面积的条目一条都不能少（别写成"整块 regions 一律清空"）。
+     */
+    @Test fun pictureMask_treatsBlankRegionAsDeletion() {
+        val state = accepted(
+            PictureMaskConfig.parse(
+                maskCommand(
+                    "<On>1</On><SumNum>4</SumNum><RegionList Num=\"4\">" +
+                        "<Item><Seq>1</Seq><Point>10,20,30,40</Point></Item>" +
+                        "<Item><Seq>2</Seq><Point>0,0,0,0</Point></Item>" +
+                        "<Item><Seq>3</Seq><Point>50,60,70,80</Point></Item>" +
+                        "<Item><Seq>4</Seq><Point>100,100,200,200</Point></Item>" +
+                        "</RegionList>"
+                )
+            )
+        )
+        assertEquals(listOf(1, 3, 4), state.regions.map { it.seq }, "零面积的槽位要被当成删除，不能留下来")
+        assertEquals(3, state.sumNum, "sumNum 恒等于实际条数")
+        // 抹平（右下角与左上角重合）与全零同义，都算删除。
+        val flattened = accepted(
+            PictureMaskConfig.parse(
+                maskCommand(
+                    "<On>1</On><SumNum>1</SumNum><RegionList Num=\"1\">" +
+                        "<Item><Seq>2</Seq><Point>100,100,100,100</Point></Item>" +
+                        "</RegionList>"
+                )
+            )
+        )
+        assertEquals(emptyList<Int>(), flattened.regions.map { it.seq }, "抹平的条目同样算删除")
+        assertEquals(0, flattened.sumNum)
+    }
+
     @Test fun pictureMask_acceptsTwoCornerPointNotXYWH() {
         // ⛔ Point 是「左上角 + 右下角」（lx,ly,rx,ry），不是 [x,y,w,h]。
         //    照海康 ISP 口径按 w/h 解，会画出**偏移一整个宽高**的假遮挡。

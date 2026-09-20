@@ -23,6 +23,10 @@ import java.nio.FloatBuffer
  * ```
  *
  * 这是 OSD 渲染管线的 Pass 1,后接 [OsdTextPass]。
+ *
+ * ⭐ 画面翻转（GB-2022 A.2.1.23）也施加在这一层（[setFrameMirror]）：改的是本 pass 的
+ * 顶点，所以翻转只作用于**相机画面**，后面画上去的 OSD 文字与遮挡块仍在屏幕坐标里 ——
+ * 与真机行为一致（镜像翻的是画面内容，不挪 OSD/遮挡的位置）。
  */
 internal class CameraTexturePass {
 
@@ -39,8 +43,16 @@ internal class CameraTexturePass {
     private val texMatrix = FloatArray(16)
     private var frameScaleX = 1f
     private var frameScaleY = 1f
-    private var textureCoordinates = DEFAULT_TEXTURE_COORDINATES.copyOf()
+    private var textureCoordinates = DEFAULT_CAMERA_QUAD_UV.copyOf()
     private var initialized = false
+
+    /**
+     * 画面翻转（GB-2022 A.2.1.23）—— 逐帧从 [setFrameMirror] 更新，值不变时不重传 VBO。
+     *
+     * 这里只存布尔；顶点怎么由布尔算出来在 commonMain 的 [cameraQuadVertices]（可单测）。
+     */
+    private var mirrorX = false
+    private var mirrorY = false
 
     fun init() {
         if (initialized) return
@@ -112,8 +124,22 @@ internal class CameraTexturePass {
     }
 
     fun setTextureCoordinates(coordinates: FloatArray) {
-        if (!initialized || vbo == 0 || coordinates.size != TEXTURE_COORDINATE_COUNT) return
+        if (!initialized || vbo == 0 || coordinates.size != CAMERA_QUAD_UV_COUNT) return
         textureCoordinates = coordinates.copyOf()
+        uploadCurrentVertices(update = true)
+    }
+
+    /**
+     * 设置画面翻转（GB-2022 A.2.1.23）。**每帧调**，值没变时是一次比较、零 GL 调用。
+     *
+     * ⚠️ 必须在 **GL 线程**上调（内部可能重传 VBO）—— 调用点是
+     * `OsdRenderer.onFrameAvailable`，已经在 GL 线程且已 makeCurrent。
+     */
+    fun setFrameMirror(transform: FrameMirrorTransform) {
+        if (!initialized || vbo == 0) return
+        if (transform.mirrorX == mirrorX && transform.mirrorY == mirrorY) return
+        mirrorX = transform.mirrorX
+        mirrorY = transform.mirrorY
         uploadCurrentVertices(update = true)
     }
 
@@ -182,22 +208,21 @@ internal class CameraTexturePass {
     }
 
     private fun uploadCurrentVertices(update: Boolean = false) {
-        val uvs = textureCoordinates
-        uploadVerts(floatArrayOf(
-            -frameScaleX, -frameScaleY, uvs[0], uvs[1],
-             frameScaleX, -frameScaleY, uvs[2], uvs[3],
-            -frameScaleX,  frameScaleY, uvs[4], uvs[5],
-             frameScaleX,  frameScaleY, uvs[6], uvs[7],
-        ), update)
-    }
-
-    private companion object {
-        const val TEXTURE_COORDINATE_COUNT = 8
-        val DEFAULT_TEXTURE_COORDINATES = floatArrayOf(
-            0f, 1f,
-            1f, 1f,
-            0f, 0f,
-            1f, 0f,
+        // 顶点算在 commonMain 的 cameraQuadVertices 里（可单测）：它同时承担
+        // center-crop 的 frameScale 与画面翻转（A.2.1.23）—— 翻转乘在**位置**上、不乘 uv，
+        // 理由见该函数注释（与 SurfaceTexture 的 uTexMatrix 打架）。
+        uploadVerts(
+            cameraQuadVertices(
+                frameScaleX = frameScaleX,
+                frameScaleY = frameScaleY,
+                textureCoordinates = textureCoordinates,
+                mirrorX = mirrorX,
+                mirrorY = mirrorY,
+            ),
+            update,
         )
     }
+
+    // ⛔ uv 的默认值与计数都在 commonMain（`DEFAULT_CAMERA_QUAD_UV` / `CAMERA_QUAD_UV_COUNT`），
+    // 不在这里再定义一份 —— 两份定义必然有一天不一致，而症状是"某些角度的画面被拉伸"。
 }

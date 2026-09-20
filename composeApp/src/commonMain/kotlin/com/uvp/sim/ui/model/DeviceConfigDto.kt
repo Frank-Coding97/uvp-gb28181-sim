@@ -3,23 +3,25 @@ package com.uvp.sim.ui.model
 import com.uvp.sim.gb28181.FrontOsdState
 
 /**
- * 画布上的一块遮挡矩形（GB/T 28181-2022 A.2.1.17 `PictureMask` 的 `RegionList/Item/Point`）。
+ * 一块画面遮挡（GB/T 28181-2022 A.2.1.17 `PictureMask` 的 `RegionList/Item`）。
  *
- * 坐标**已归一化到 0~1**（除以视频帧的像素宽高），渲染层直接乘画布尺寸即可：
- * ```kotlin
- * val x = left * canvasWidthPx
- * val w = (right - left) * canvasWidthPx
- * ```
- *
- * ⛔ 千万别在 UI 层再从原始像素换算一次 —— 归一化只做一次，位置在 Mapper
- * （`DeviceConfigMapper`）。两处各换算一次，改一处就会静默错位。
+ * ⭐ **保留协议原始像素**（不是归一化值）。
+ * 2026-09-19 起遮挡不再画在 Compose 画布上（改为烧进真实视频流），而设备屏幕上要回答的
+ * 问题变成了「平台把哪几块挡上了、坐标是多少」—— 那必须是**协议里的那几个数**。
+ * 归一化过一次的值既不是平台发的数、又不是画布坐标，是最没用的一种中间态。
+ * （画布要归一化的话在渲染端自己除 —— 但现在没有画布消费者了。）
  */
 data class MaskRectDto(
-    val left: Float,
-    val top: Float,
-    val right: Float,
-    val bottom: Float,
-)
+    /** `Seq`，区域编号 1~4。 */
+    val seq: Int,
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+) {
+    /** 人读串：`左x,左y → 右x,右y`。 */
+    val displayLabel: String get() = "$left,$top → $right,$bottom"
+}
 
 /** 画布上的一行「前端 OSD」文本（A.2.1.12 `OSDCfgType/Item`），坐标同样已归一化。 */
 data class OsdTextLineDto(
@@ -32,9 +34,9 @@ data class OsdTextLineDto(
  * 「设备配置族」的只读视图态（GB/T 28181-2022 A.2.3.2）。
  *
  * ⭐ **只承载"平台真的下发过"的那部分**，不回退出厂默认。理由：
- *   - 出厂默认的 OSD（时间戳 + 通道名）在画布上**已经由本机三层 OSD 画了一遍**，
- *     再叠一份就是同一行字重合显示两遍；
- *   - 遮挡的出厂默认是"无区域"，回退出来也是空的，没有意义。
+ *   - 出厂默认的 OSD（时间戳 + 通道名）**已经由本机三层 OSD 烧进视频流**了，
+ *     画布上再叠一份就是同一行字重合显示两遍；
+ *   - 遮挡的出厂默认是"无区域"，回退出来也是空的，没有意义；
  *   - 而"平台推送过什么"是**新增信息**，画出来不会与本机叠加重复。
  *   ⇒ 协议侧「回读永远有值」是**平台判据**的要求；画布上「只画平台推送的」是**展示**的选择。
  *   两者不矛盾，但也不能互相套用。
@@ -45,10 +47,17 @@ data class DeviceConfigDto(
     /** 前端 OSD 文本行（仅平台下发过时非空）。 */
     val osdLines: List<OsdTextLineDto> = emptyList(),
     /**
-     * 画面翻转 `FrameMirror` 的整数取值 0~3。**只有平台下发过才非 0**，
-     * 渲染层直接拿它做镜像（0 = 不动，其余按位理解：1 水平 / 2 上下 / 3 中心）。
+     * 画面翻转 `FrameMirror` 的整数取值 0~3；**`null` = 平台一次都没配过**。
+     *
+     * ⛔ 保留 `null` 而不是兜成 0：`null`（平台没配过）与 `0`（平台配了"不启用"）
+     * 在画面上确实一样，但设备屏幕上该说不同的话 —— 「平台没配过」和「平台把它关掉了」
+     * 对操作员是两条信息（前者不用管，后者要去平台确认是不是有意为之）。
+     * 这与 [PictureMaskViewDto.configured] 是同一条规矩。
+     *
+     * 渲染层不直接消费这个整数：码值 → 方向的换算走 `FrameMirrorTransform.of()`
+     * （唯一映射，Android GL 与 iOS CoreImage 共用），这里只负责把"配过没有"带出来。
      */
-    val frameMirror: Int = 0,
+    val frameMirror: Int? = null,
     /**
      * 平台下发过的**原始**「前端 OSD」（A.2.1.12）。`null` = 平台一次都没配过。
      *
@@ -59,40 +68,37 @@ data class DeviceConfigDto(
      * 坐标已经除过、且只保留平台配过的那部分 —— 从它反推不出一份可回读的 `OSDConfig`。
      */
     val frontOsd: FrontOsdState? = null,
-    /** HUD「图像」页的只读摘要行。 */
-    val rows: List<DeviceConfigRowDto> = emptyList(),
 ) {
-    /** 有没有任何"平台下发的配置"要在画布上体现。渲染层用它决定整层是否挂载。 */
+    /**
+     * 有没有"要画在画布上的画面内容"。渲染层用它决定整层是否挂载。
+     *
+     * ⛔ **2026-09-19 起不再包含遮挡**（详见 [PictureMaskViewDto]）。
+     * 也**不含 `frameMirror`** —— 镜像是**真流**的变换（`com.uvp.sim.osd.FrameMirrorTransform`
+     * 走采集链路，2026-09-20 补齐），**画布一侧明确不参与**，本叠层更不该有它。
+     */
     val hasCanvasContent: Boolean
-        get() = pictureMask.rects.isNotEmpty() || osdLines.isNotEmpty() || frameMirror != 0
+        get() = osdLines.isNotEmpty()
 }
 
-/** 画面遮挡的视图态。 */
+/**
+ * 画面遮挡的视图态（GB-2022 A.2.1.17）。
+ *
+ * ⛔ **2026-09-19 起不再画在画布上**：遮挡改为**烧进真实视频流**
+ * （Android = `OsdRenderer` 的 GL FBO 段 `MaskPass`；iOS = `IosFrameProcessor` 的 CoreImage 组合）。
+ * 理由：模拟器推给平台的是**手机真实摄像头**画面，而「模拟中心」那块 3D 画布是**另一条链路** ——
+ * 黑块画在画布上，平台点播到的画面一点遮挡都没有，等于"遮挡做在了唯一不上传的那条链路上"。
+ *
+ * 本类型现在的用途是 **HUD「图像」页的遮挡区域列表**：设备屏幕上要能回答
+ * 「平台把哪几块挡上了、坐标是多少、现在是开还是关」。
+ */
 data class PictureMaskViewDto(
     val on: Boolean = false,
     val rects: List<MaskRectDto> = emptyList(),
-)
-
-/**
- * 摘要行。[fromPlatform] == true 表示这项是**平台下发过**的，false = 设备出厂默认。
- *
- * ⭐ 这一位是给操作员看的：面板上"这条值是平台配的"还是"设备本来就这样"，
- * 决定了他该去平台改还是该查设备。
- *
- * [alwaysVisible] 是**常驻位** —— 不论平台配没配过都占一个显示名额。
- *
- * ⛔ 别把它当成 `fromPlatform` 的别名。两者的区别是本族里**唯一一个"永远有值"的项**
- * （视频参数属性）造成的：
- *   - 其余 8 项在平台没下发时**没有值**，"未配置"是一个真实且正确的状态，
- *     所以它们的行在平台没配过时**不该出现**（显示了等于在编答案）；
- *   - `VideoParamAttribute` 的当前值是 `平台写入 ?: 出厂派生`，**永远存在** ——
- *     平台一次都没配过时，设备照样有一组生效的主/子码流参数。
- *     若让它跟着 `fromPlatform` 过滤，"设备现在主/子码流各是什么"这件事
- *     在设备屏幕上就**永远看不见**，而这恰恰是这一项存在的意义。
- */
-data class DeviceConfigRowDto(
-    val label: String,
-    val value: String,
-    val fromPlatform: Boolean,
-    val alwaysVisible: Boolean = false,
+    /**
+     * 平台**到底配过没有**。⛔ 与 [on] 是两个独立的事实，别合并：
+     * 「平台从没配过遮挡」与「平台配过、现在把遮挡关了」在设备屏幕上该说不同的话
+     * （前者＝设备出厂就是这样，后者＝有人刚把它关了），而两者的 [on] 都是 false。
+     * 这与本仓「没查过 / 查了但为空」必须分两态是同一条规矩。
+     */
+    val configured: Boolean = false,
 )

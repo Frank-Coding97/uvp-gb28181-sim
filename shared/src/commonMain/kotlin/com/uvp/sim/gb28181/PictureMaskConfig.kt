@@ -33,6 +33,14 @@ data class PictureMaskRegion(
 
     /** 人读串，只给 UI / 日志。 */
     val displayLabel: String get() = "$left,$top → $right,$bottom"
+
+    /**
+     * 这一条在画面上是否真的占了面积（`右>左 && 下>上`）。
+     *
+     * ⭐ 零面积**不是"一条看不见的区域"，而是"删除这一槽"的写法** —— 真机口径见
+     * [PictureMaskConfig.parse]。
+     */
+    val hasArea: Boolean get() = right > left && bottom > top
 }
 
 /**
@@ -123,6 +131,14 @@ object PictureMaskConfig {
                 ?: return ConfigParse.Rejected("第 ${index + 1} 个 Item 缺必选字段 Point")
             val region = parsePoint(seq, point)
                 ?: return ConfigParse.Rejected("第 ${index + 1} 个 Item 的 Point `$point` 非法（须为 `左x,左y,右x,右y`，且右下角不小于左上角）")
+            // ⭐ 零面积（`0,0,0,0` 之类）= **删除这一槽**，不是"一条看不见的区域"。
+            //    真机实证（2026-09-20，海康 DS-2DC2C040MY-DE）：平台为"被删掉的槽位"显式发
+            //    `<Point>0,0,0,0</Point>`，设备执行后**该条消失、且不回显**（发 3 真 + 1 零 ⇒
+            //    回读 `SumNum=3`）。本仓照真机口径收：收下就会多出一条 0×0 的幽灵区域
+            //    （回读 `Num` 跟着变大、UI 列出一个 0×0 的行），平台侧"删掉一条区域"就变成
+            //    "多出一条看不见的区域"。
+            //    ⛔ 放在重复编号检查**之前**：删掉的槽位与真实槽位并存不该算"编号重复"。
+            if (!region.hasArea) continue
             if (regions.any { it.seq == seq }) {
                 return ConfigParse.Rejected("区域编号 $seq 重复")
             }

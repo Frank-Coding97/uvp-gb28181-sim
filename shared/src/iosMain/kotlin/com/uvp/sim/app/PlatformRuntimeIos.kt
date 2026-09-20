@@ -10,6 +10,10 @@ import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.recording.IosRecordingFrameBridge
 import com.uvp.sim.recording.IosRecordingService
 import com.uvp.sim.recording.RecordingService
+import com.uvp.sim.osd.FrameMirrorTransform
+import com.uvp.sim.osd.IosFrameMirrorHolder
+import com.uvp.sim.osd.IosVideoMaskHolder
+import com.uvp.sim.osd.VideoMaskOverlay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 
@@ -81,6 +85,27 @@ class PlatformRuntimeIos : PlatformRuntime {
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {
         cameraCaptureRef?.applyConfig(captureConfig)
         audioCaptureRef?.applyConfig(audioConfig)
+    }
+
+    /**
+     * 画面遮挡（GB-2022 A.2.1.17）烧进视频流 —— 装到进程级 [IosVideoMaskHolder]。
+     *
+     * ⭐ 与 Android 侧 `OsdRendererHolder.installMaskSupplier` 同形状：装一次，
+     * `IosFrameProcessor`（直播 / 录像 / 预览共用的那条采集链）逐帧读它。
+     * 不逐层传参，是避免"直播有遮挡、录像没有"这类不一致。
+     */
+    override fun installVideoMaskSupplier(supplier: () -> VideoMaskOverlay) {
+        IosVideoMaskHolder.install(supplier)
+    }
+
+    /**
+     * 画面翻转（GB-2022 A.2.1.23）烧进视频流 —— 装到进程级 [IosFrameMirrorHolder]。
+     *
+     * 与 [installVideoMaskSupplier] 同形状、同理由。差别只在施加位置：
+     * 这个作用在 `IosFrameProcessor` 的**画面本身**（叠加层之前），遮挡是叠加绘制。
+     */
+    override fun installFrameMirrorSupplier(supplier: () -> FrameMirrorTransform) {
+        IosFrameMirrorHolder.install(supplier)
     }
 
     /**
