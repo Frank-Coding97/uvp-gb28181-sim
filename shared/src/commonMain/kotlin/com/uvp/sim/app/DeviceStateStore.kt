@@ -3,6 +3,7 @@ package com.uvp.sim.app
 import com.uvp.sim.domain.CruiseTrackState
 import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.domain.ScanGroupState
 import com.uvp.sim.gb28181.DeviceConfigState
 import com.uvp.sim.gb28181.VideoParamState
 import kotlinx.serialization.Serializable
@@ -49,14 +50,28 @@ internal const val DEVICE_STATE_SCHEMA_VERSION = 1
  * **刻意不存的字段**(不存的理由和存的同样重要):
  *   - `panSpeed` / `tiltSpeed` / `zoomSpeed` / `focusSpeed` / `irisSpeed`:语义是"此刻正在转"。
  *     冷启动后没有任何命令在驱动,恢复出非零速率会让镜头自己飘起来。
+ *     ⚠️ 扫描启动期间扫描节拍正是靠 `panSpeed` 驱动横扫 —— 这一条因此更硬:
+ *     存了它,冷启动会得到一台**自己转个不停**的设备(没有任何停止指令能停它,因为
+ *     平台上"当前在扫描"这件事根本不存在)。
  *   - `lastCommand`:那是"本次会话最近收到的一条命令"。恢复后 HUD 会显示一条**并不存在**的命令,
  *     更要命的是它同时是看守位的**活动信号**,拿陈旧时间戳起算会让空闲倒计时直接从中间开始。
  *   - `pendingEffect`:一次性动画触发器。存档它 = 每次冷启动重播一次闪白 / 重启动画。
  *   - `activeCruiseTrack`:巡航是"平台下发了启动**且设备正在跑节拍**"的会话内状态。进程重启后
  *     没有东西在驱动节拍,恢复它只能得到一个永远停在第一点的假巡航 —— 不如不巡,让操作员
  *     重新点一次(这也更接近真机行为:设备断电重启后不会自己接着巡)。
+ *   - `activeScanGroup`:同 `activeCruiseTrack` 一条理由(扫描节拍同样不在重启后继续跑)。
+ *     ⚠️ 但**边界与速度要存**(见 [scanGroups]) —— 那是设备侧的**配置**,
+ *     真机断电重启后边界仍在;不存的话平台那边看起来就是"边界白设了",
+ *     而标准里**没有任何查询命令**能把它们读回来对账(附录 A 无 `ScanQuery`)。
  *   - `isRecording` / `isAlarming` / `isRebooting` / `upgradeProgress` / `dragZoomRect` /
  *     `lastPreciseCtrl`:全是瞬时运行态。
+ *   - `targetTrack`:目标跟踪态(GB-2022 A.2.3.1.14)。**不存的理由比 `activeScanGroup` 更硬**:
+ *     那两条虽然"重启后没有节拍在驱动",但平台至少还能重新下发一次来纠正;而目标跟踪是
+ *     **无应答命令**(9.3.1 d),平台既收不到回执、附录 A 又**没有**任何查询命令能读回跟踪态
+ *     ⇒ 一旦恢复出一份**陈旧**的跟踪态,平台**没有任何手段**能发现设备上写着的是上一次会话的事。
+ *     真机侧同理:断电重启后跟踪算法进程重新起来,不会接着盯上一条指令的目标。
+ *     另:跟踪态里的 `startedAtMs` 和 `auxTimestamps` 是同一类"必须与本次进程同基准"的时间戳,
+ *     跨重启恢复会让屏幕显示"已跟踪 3 小时"而实际刚开机。
  *   - `auxTimestamps`:UI 用它显示"本开关已运行多久"。它必须跟**本次进程**同基准,跨重启恢复
  *     会让用户看到"雨刷已运行 3 小时"而实际刚开机。`auxStates`(开/关本身)则是设备状态,存。
  */
@@ -85,6 +100,18 @@ data class DeviceStateSnapshot(
     val cruiseTracks: Map<Int, CruiseTrackSnapshot> = emptyMap(),
 
     /**
+     * 平台设过的**扫描组**(GB/T 28181 表 A.10 自动扫描),key = 扫描组号。
+     *
+     * ⭐ **必须存**:左右边界与速度是设备侧的配置(真机断电重启后当然还在)。
+     * 不存的后果比巡航那次更难看 —— 巡航丢的是点位链(平台还能重新下发),
+     * 而扫描的边界**只能由平台"把当前位置设为边界"这一条指令写入**、**没有任何查询命令能回读**
+     * (附录 A 里没有 `ScanQuery`)。设备侧一丢,平台那边没有任何办法发现丢的是哪一段:
+     * 点「开始扫描」照样下发成功、设备也回 200 OK,但设备只会回一句"缺左右边界"——
+     * 现场看到的却是"扫描功能不好使"。
+     */
+    val scanGroups: Map<Int, ScanGroupSnapshot> = emptyMap(),
+
+    /**
      * 平台写入过的视频参数(GB-2022 A.2.1.13 `VideoParamAttribute`),key = 码流号。
      *
      * ⭐ **必须存**。这是"设备当前的编码配置",真机断电重启后当然还在。
@@ -109,7 +136,7 @@ data class DeviceStateSnapshot(
     val deviceConfigs: DeviceConfigState =
         DeviceConfigState(),
 
-    // ---- 辅助开关(雨刷 / 红外灯 / 加热 / 除雾 / 制冷):设备状态,重启后仍应在原状态 ----
+    // ---- 辅助开关(标准只定义编号 1 = 雨刷):设备状态,重启后仍应在原状态 ----
     val auxStates: Map<Int, Boolean> = emptyMap(),
 
     // ---- 状态灯里唯一"配置性"的一项:布防 ----
@@ -131,6 +158,19 @@ data class CruiseTrackSnapshot(
     val dwellTime: Int? = null,
 )
 
+/**
+ * 扫描组存档(与 domain [ScanGroupState] 1:1)。
+ *
+ * 三个字段都可空,且 `null` 的语义必须原样保留 = "平台从未下发过这一项":
+ * 恢复后设备屏幕上要能说出"右边界还没设",而不是拿 0° 冒充一个真边界。
+ */
+@Serializable
+data class ScanGroupSnapshot(
+    val leftBoundary: PoseSnapshot? = null,
+    val rightBoundary: PoseSnapshot? = null,
+    val speed: Int? = null,
+)
+
 /** 视频参数存档(与 [VideoParamState] 1:1)。取值全是字符串,存档不做任何归一。 */
 @Serializable
 data class VideoParamSnapshot(
@@ -147,6 +187,7 @@ data class VideoParamSnapshot(
 internal val DeviceStateSnapshot.hasContent: Boolean
     get() = presets.isNotEmpty() || cruiseTracks.isNotEmpty() || auxStates.isNotEmpty() ||
         videoParams.isNotEmpty() || deviceConfigs != DeviceConfigState() ||
+        scanGroups.isNotEmpty() ||
         homePositionPresetIndex != null || homePosition != null || currentPresetIndex != null ||
         isGuarded || panAngle != 0f || tiltAngle != 0f || zoomLevel != 1f ||
         irisLevel != 0.5f || focusLevel != 0.5f
@@ -155,6 +196,10 @@ internal val DeviceStateSnapshot.hasContent: Boolean
 internal fun DeviceStateSnapshot.summary(): String = buildString {
     append("预置位 ${presets.size} 个")
     append(" / 巡航轨迹 ${cruiseTracks.size} 条")
+    // 扫描组只报"设过几个组";边界值是真值,不在这里展开(日志要能一眼读完)。
+    // ⚠️ 这条存在的意义:扫描边界**没有任何查询命令能回读**,平台永远看不到设备侧到底存了什么,
+    //    所以"设备重启后边界还在不在"只能靠这条日志对。
+    if (scanGroups.isNotEmpty()) append(" / 扫描组 ${scanGroups.size} 个(平台设过边界)")
     append(" / 辅助开关 ${auxStates.size} 个")
     if (videoParams.isNotEmpty()) append(" / 视频参数 ${videoParams.size} 路(平台配过)")
     // 设备配置族:只列"平台真的下发过"的那几类(用 configuredBlocks 同一份判断,
@@ -183,6 +228,7 @@ internal fun DeviceControlModel.toDeviceStateSnapshot(): DeviceStateSnapshot =
         homePositionPresetIndex = homePositionPresetIndex,
         homePositionResetTime = homePositionResetTime,
         cruiseTracks = cruiseTracks.mapValues { it.value.toSnapshot() },
+        scanGroups = scanGroups.mapValues { it.value.toSnapshot() },
         videoParams = videoParams.mapValues { it.value.toSnapshot() },
         deviceConfigs = deviceConfigs,
         auxStates = auxStates,
@@ -207,6 +253,9 @@ internal fun DeviceStateSnapshot.restoreInto(model: DeviceControlModel): DeviceC
         homePositionPresetIndex = homePositionPresetIndex,
         homePositionResetTime = homePositionResetTime,
         cruiseTracks = cruiseTracks.mapValues { it.value.toState() },
+        // ⚠️ 刻意不动 `activeScanGroup`:存档里根本没有它(见 [DeviceStateSnapshot] 的说明),
+        //    `copy` 不写它 = 保持 Model 现值 = 全新设备启动时是 null。
+        scanGroups = scanGroups.mapValues { it.value.toState() },
         videoParams = videoParams.mapValues { it.value.toState() },
         deviceConfigs = deviceConfigs,
         auxStates = auxStates,
@@ -222,6 +271,20 @@ internal fun CruiseTrackState.toSnapshot(): CruiseTrackSnapshot =
 
 internal fun CruiseTrackSnapshot.toState(): CruiseTrackState =
     CruiseTrackState(points = points, speed = speed, dwellTime = dwellTime)
+
+internal fun ScanGroupState.toSnapshot(): ScanGroupSnapshot =
+    ScanGroupSnapshot(
+        leftBoundary = leftBoundary?.toSnapshot(),
+        rightBoundary = rightBoundary?.toSnapshot(),
+        speed = speed,
+    )
+
+internal fun ScanGroupSnapshot.toState(): ScanGroupState =
+    ScanGroupState(
+        leftBoundary = leftBoundary?.toPose(),
+        rightBoundary = rightBoundary?.toPose(),
+        speed = speed,
+    )
 
 internal fun VideoParamState.toSnapshot(): VideoParamSnapshot =
     VideoParamSnapshot(

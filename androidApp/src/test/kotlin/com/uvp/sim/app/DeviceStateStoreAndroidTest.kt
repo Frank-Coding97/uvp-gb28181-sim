@@ -47,6 +47,16 @@ class DeviceStateStoreAndroidTest {
             presets = mapOf(2 to PoseSnapshot(30f, 0f, 1f), 3 to PoseSnapshot(90f, 0f, 1.5f)),
             currentPresetIndex = 2,
             cruiseTracks = mapOf(1 to CruiseTrackSnapshot(listOf(2, 3), speed = 128, dwellTime = 5)),
+            // 扫描边界是设备侧**唯一没有任何查询命令能回读**的配置(附录 A 无 ScanQuery),
+            // 所以"能不能真的写进 DataStore 再原样读回来"必须在**真实序列化**这一层验一次 ——
+            // commonTest 那边的往返走的是内存对象,JSON 编码/默认值处理它一点都碰不到。
+            scanGroups = mapOf(
+                0 to ScanGroupSnapshot(
+                    leftBoundary = PoseSnapshot(-40f, 0f, 1f),
+                    rightBoundary = PoseSnapshot(50f, 0f, 1.2f),
+                    speed = 300,
+                ),
+            ),
             auxStates = mapOf(1 to true),
             isGuarded = true,
         )

@@ -5,6 +5,7 @@ import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.domain.ScanGroupState
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceTimeBy
@@ -40,6 +41,7 @@ class DeviceStateStoreTest {
         isAlarming = true,
         isRebooting = true,
         activeCruiseTrack = 1,
+        activeScanGroup = 0,
         lastCommand = LastDeviceCommand("PTZCmd", "A50F0101000100xx", 1_700_000_000_000L),
         pendingEffect = DeviceEffect.PresetRecall(3, PtzPose(90f, 0f, 1.5f)),
         // ↑↑↑

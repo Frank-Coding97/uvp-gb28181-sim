@@ -5,6 +5,7 @@ import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.DeviceEffect
+import com.uvp.sim.domain.PtzPose
 import com.uvp.sim.network.TransportType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -61,6 +62,15 @@ class DeviceStateRestoreTest {
         ),
         currentPresetIndex = 2,
         cruiseTracks = mapOf(1 to CruiseTrackSnapshot(points = listOf(2, 3, 4), speed = 128, dwellTime = 5)),
+        // 扫描边界:**平台设过就再也读不回来**的那类数据(标准无查询命令),
+        // 所以"重启后还在不在"是这组用例里最该被守住的一条。
+        scanGroups = mapOf(
+            0 to ScanGroupSnapshot(
+                leftBoundary = PoseSnapshot(-40f, 0f, 1f),
+                rightBoundary = PoseSnapshot(50f, 0f, 1.2f),
+                speed = 300,
+            ),
+        ),
         auxStates = mapOf(2 to true),
         isGuarded = true,
     )
