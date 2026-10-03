@@ -5,12 +5,14 @@ import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.osd.FrameMirrorTransform
+import com.uvp.sim.osd.IosDragZoomHolder
 import com.uvp.sim.osd.IosFrameMirrorHolder
 import com.uvp.sim.osd.IosOsdBitmapRenderer
 import com.uvp.sim.osd.IosOsdRenderResult
 import com.uvp.sim.osd.IosVideoMaskHolder
 import com.uvp.sim.osd.OsdSnapshot
 import com.uvp.sim.osd.OsdTickerSource
+import com.uvp.sim.osd.VideoDragZoomViewport
 import com.uvp.sim.osd.VideoMaskOverlay
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.cinterop.CValue
@@ -59,6 +61,13 @@ internal class IosFrameProcessor(
      * 测试可直接注一个固定变换进来。
      */
     private val mirrorSupplier: () -> FrameMirrorTransform = { IosFrameMirrorHolder.current() },
+    /**
+     * 当前生效的**拉框视窗**（GB-2022 A.2.3.1.8/.9）。默认读进程级 [IosDragZoomHolder] ——
+     * 形状同 [maskSupplier]：装一次、所有画面消费者共享，不逐层传参。
+     *
+     * 测试可直接注一个固定视窗进来。
+     */
+    private val dragZoomSupplier: () -> VideoDragZoomViewport = { IosDragZoomHolder.current() },
 ) {
     private val context: CIContext = CIContext.contextWithOptions(null)
     private val tickerSource = OsdTickerSource(osdConfigFlow)
@@ -99,8 +108,15 @@ internal class IosFrameProcessor(
         // 跟着一起翻会让设备显示的位置与平台配置的坐标系统性错位（而画面看起来仍正常）。
         // 与 Android 侧 `CameraTexturePass.setFrameMirror` 的位置对称。
         val mirrored = applyFrameMirror(positioned)
+        // 拉框放大/缩小（GB-2022 A.2.3.1.8/.9）—— **顺序必须在镜像之后**：
+        // 裁剪框是操作员在**平台上看到的画面**里框出来的，而平台上那幅画面已经是设备镜像后的结果
+        // ⇒ 先镜像再裁才是"框哪块放大哪块"。反过来（先裁后镜像）在单开其中一个功能时看不出来，
+        // 一叠加就会朝着镜像轴对称的另一侧放大（与 Android 侧 uv 按显示位置取是同一条规矩）。
+        // 同样在叠加层**之前**：OSD 文字/遮挡块是"盖在画面上的内容"，位置按输出画框给定，
+        // 不跟着裁剪一起被放大（与 Android 的 `drawOsdLayers` → `drawMaskLayers` 对称）。
+        val cropped = applyDragZoom(mirrored)
         val osdStartedAt = CACurrentMediaTime()
-        val composed = composeOverlays(mirrored, targetWidth, targetHeight)
+        val composed = composeOverlays(cropped, targetWidth, targetHeight)
 
         val output = memScoped {
             val out = alloc<CVPixelBufferRefVar>()
@@ -162,6 +178,38 @@ internal class IosFrameProcessor(
             .imageByApplyingTransform(CGAffineTransformMakeTranslation(-cx, -cy))
             .imageByApplyingTransform(CGAffineTransformMakeScale(sx, sy))
             .imageByApplyingTransform(CGAffineTransformMakeTranslation(cx, cy))
+    }
+
+    /**
+     * 把拉框视窗（GB-2022 A.2.3.1.8/.9）施加到**已经铺满画框**的帧上。
+     *
+     * 标准那句注就是实现口径：「拉框放大命令将播放窗口选定框内的图像**放大到整个播放窗口**」
+     * ⇒ 裁出视窗那一块，再拉满画框。
+     *
+     * ⛔ 坐标系：CoreImage 原点在**左下角**，而 [VideoDragZoomViewport] 原点在画面**左上角**，
+     * 所以纵向要 `(1 - bottom) * height` 换算一次（同 [applyMask]，漏了会上下镜像 ——
+     * 位置看着"差不多对"、其实错开一整块，是最难当场发现的一类错）。
+     *
+     * ⭐ 横纵**各自**缩放到画框（不是等比）是**故意的**，也正是标准要的"铺满整个播放窗口"：
+     * 平台播放器本身是 `stretch: true`（拉伸铺满、不留黑边），设备端只做等比会让
+     * 框选区域的形状与平台上框的形状对不上。
+     *
+     * [VideoDragZoomViewport.IDENTITY] 时**原样返回**，一帧都不多进 CoreImage 变换分支
+     * —— 与加本功能之前逐帧一致。
+     */
+    private fun applyDragZoom(image: CIImage): CIImage {
+        val view = dragZoomSupplier()
+        if (view.isIdentity) return image
+        val w = targetWidth.toDouble()
+        val h = targetHeight.toDouble()
+        val originX = view.left * w
+        val originY = (1.0 - view.bottom) * h
+        return image
+            .imageByCroppingToRect(CGRectMake(originX, originY, view.width * w, view.height * h))
+            .imageByApplyingTransform(CGAffineTransformMakeTranslation(-originX, -originY))
+            .imageByApplyingTransform(
+                CGAffineTransformMakeScale(1.0 / view.width.toDouble(), 1.0 / view.height.toDouble())
+            )
     }
 
     /**

@@ -185,11 +185,48 @@ internal fun GuardOverlay(isGuarded: Boolean, modifier: Modifier = Modifier) {
     }
 }
 
+/** 拉框线框在**画布像素**里的位置（供绘制与单测共用）。 */
+internal data class DragZoomWireRect(
+    val left: Float,
+    val top: Float,
+    val width: Float,
+    val height: Float,
+)
+
+/**
+ * 平台拉框 → 画布线框位置。
+ *
+ * ⛔⛔ 坐标口径是**播放窗口像素**，不是 0~1000 归一化。标准附录 A.2.3.1.8/.9 的注：
+ * 「命令中的坐标系以播放窗口的左上角原点，各坐标取值以像素单位」——
+ * 所以换算就是「除以报文里的 `Length` / `Width`」这一件事，分母**必须是报文里带来的那两把尺子**
+ * （平台即按自己的播放窗口算出它们）。2026-09-20 前这里按 `size.width / 1000f` 缩放，
+ * 等于把"播放窗口 1000px"当成永远成立：窗口宽 >1000px 时线框直接画到画布外面去，
+ * 而画得出来、不报错，肉眼只看到"框好像偏了"。
+ *
+ * @return null = 这份报文画不出框（缺 `Length`/`Width`，或框/画布尺寸退化）。
+ */
+internal fun dragZoomWireRect(
+    rect: DragZoomRectDto,
+    canvasWidth: Float,
+    canvasHeight: Float,
+    scale: Float = 1f,
+): DragZoomWireRect? {
+    if (rect.frameLength <= 0 || rect.frameWidth <= 0) return null
+    if (rect.lengthX <= 0 || rect.lengthY <= 0) return null
+    if (canvasWidth <= 0f || canvasHeight <= 0f) return null
+    val centerX = rect.midX.toFloat() / rect.frameLength * canvasWidth
+    val centerY = rect.midY.toFloat() / rect.frameWidth * canvasHeight
+    val width = rect.lengthX.toFloat() / rect.frameLength * canvasWidth * scale
+    val height = rect.lengthY.toFloat() / rect.frameWidth * canvasHeight * scale
+    return DragZoomWireRect(centerX - width / 2f, centerY - height / 2f, width, height)
+}
+
 /**
  * DragZoom 线框可视化 — `state.dragZoomRect` 写入时画青色矩形 → 缓动放大 1.4× → 淡出.
  *
- * GB28181 §F DragZoom 坐标系: midX/midY/lengthX/lengthY 在 0-1000 归一化空间.
- * 映射到 3D 区像素时按 size.width/1000 缩放.
+ * ⚠️ 这是**本机画布上的示意**，不是功能本身：拉框放大/缩小真正生效的地方是
+ * `deviceControlState.dragZoomViewport` → 真流裁剪（Android `CameraTexturePass` /
+ * iOS `IosFrameProcessor`）。画布与推流是两条互不相干的链路（同 `FrameMirror` 那次的结论）。
  */
 @Composable
 internal fun DragZoomOverlay(rect: DragZoomRectDto?, modifier: Modifier = Modifier) {
@@ -218,16 +255,11 @@ internal fun DragZoomOverlay(rect: DragZoomRectDto?, modifier: Modifier = Modifi
         }
     }
     Canvas(modifier = modifier) {
-        val sx = size.width / 1000f
-        val sy = size.height / 1000f
-        val w = (rect.lengthX * sx) * scale
-        val h = (rect.lengthY * sy) * scale
-        val cx = rect.midX * sx
-        val cy = rect.midY * sy
+        val wire = dragZoomWireRect(rect, size.width, size.height, scale) ?: return@Canvas
         drawRect(
             color = UvpColor.Info.copy(alpha = alpha),
-            topLeft = Offset(cx - w / 2f, cy - h / 2f),
-            size = Size(w, h),
+            topLeft = Offset(wire.left, wire.top),
+            size = Size(wire.width, wire.height),
             style = Stroke(width = 2.dp.toPx()),
         )
     }

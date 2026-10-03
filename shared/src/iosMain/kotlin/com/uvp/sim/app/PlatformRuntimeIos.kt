@@ -11,8 +11,10 @@ import com.uvp.sim.recording.IosRecordingFrameBridge
 import com.uvp.sim.recording.IosRecordingService
 import com.uvp.sim.recording.RecordingService
 import com.uvp.sim.osd.FrameMirrorTransform
+import com.uvp.sim.osd.IosDragZoomHolder
 import com.uvp.sim.osd.IosFrameMirrorHolder
 import com.uvp.sim.osd.IosVideoMaskHolder
+import com.uvp.sim.osd.VideoDragZoomViewport
 import com.uvp.sim.osd.VideoMaskOverlay
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
@@ -106,6 +108,17 @@ class PlatformRuntimeIos : PlatformRuntime {
      */
     override fun installFrameMirrorSupplier(supplier: () -> FrameMirrorTransform) {
         IosFrameMirrorHolder.install(supplier)
+    }
+
+    /**
+     * 拉框放大/缩小（GB-2022 A.2.3.1.8/.9）烧进视频流 —— 装到进程级 [IosDragZoomHolder]。
+     *
+     * 与 [installVideoMaskSupplier] 同形状、同理由。差别只在施加位置：
+     * 这个作用在 `IosFrameProcessor` 的**画面本身**（镜像之后、叠加层之前），
+     * 遮挡与 OSD 是叠加绘制。
+     */
+    override fun installVideoDragZoomSupplier(supplier: () -> VideoDragZoomViewport) {
+        IosDragZoomHolder.install(supplier)
     }
 
     /**

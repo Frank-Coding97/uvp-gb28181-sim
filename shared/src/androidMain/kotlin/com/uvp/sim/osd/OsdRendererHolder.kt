@@ -65,6 +65,19 @@ internal object OsdRendererHolder {
     }
 
     /**
+     * 拉框放大/缩小（GB-2022 A.2.3.1.8/.9）视窗的实时来源 —— 与 [maskSupplier] **同一形状、同一理由**：
+     * 它是同一条画面源上的属性，必须一次装好、直播/录像/屏幕预览共享，
+     * 否则会出现"直播放大了、录像没放大"这种不一致。
+     */
+    @Volatile
+    private var dragZoomSupplier: () -> VideoDragZoomViewport = { VideoDragZoomViewport.IDENTITY }
+
+    /** 装拉框视窗来源。重复装以最后一次为准。 */
+    fun installDragZoomSupplier(supplier: () -> VideoDragZoomViewport) {
+        dragZoomSupplier = supplier
+    }
+
+    /**
      * 获取当前 OsdRenderer。第一次调用懒启动 GL pipeline。
      *
      * 调用方负责后续 [release]([acquire] 配对)。
@@ -88,7 +101,8 @@ internal object OsdRendererHolder {
             targetWidth = targetWidth,
             targetHeight = targetHeight,
             maskSupplier = { maskSupplier() },
-            frameMirrorSupplier = { mirrorSupplier() }
+            frameMirrorSupplier = { mirrorSupplier() },
+            dragZoomSupplier = { dragZoomSupplier() }
         )
         return if (renderer.start()) {
             current = renderer

@@ -49,7 +49,7 @@ import com.uvp.sim.ui.model.ZoomDirectionDto
 fun PtzPose.toDto(): PtzPoseDto = PtzPoseDto(pan, tilt, zoom)
 
 fun DragZoomRect.toDto(): DragZoomRectDto =
-    DragZoomRectDto(midX, midY, lengthX, lengthY)
+    DragZoomRectDto(midX, midY, lengthX, lengthY, frameLength, frameWidth)
 
 fun CruiseTrackState.toDto(): CruiseTrackDto =
     CruiseTrackDto(points = points, speed = speed, dwellTime = dwellTime)

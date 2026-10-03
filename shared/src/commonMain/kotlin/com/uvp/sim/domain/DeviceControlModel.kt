@@ -3,6 +3,7 @@ package com.uvp.sim.domain
 import com.uvp.sim.gb28181.DeviceConfigState
 import com.uvp.sim.gb28181.PtzCommand
 import com.uvp.sim.gb28181.VideoParamState
+import com.uvp.sim.osd.VideoDragZoomViewport
 
 /**
  * Wave 3 PR-DC-DECOUPLE(2026-06-26):「业务 Model」+ 「UI RenderState」两层架构。
@@ -56,6 +57,20 @@ data class DeviceControlModel(
 
     // DragZoom 区域(平台拉框聚焦)
     val dragZoomRect: DragZoomRect? = null,
+
+    /**
+     * 设备**当前视窗**（拉框放大/缩小的累积结果，A.2.3.1.8/.9）。
+     *
+     * ⛔ 必须是**累积**的当前值，不是"最近一次的框"：标准把坐标系定义在**播放窗口**上，
+     * 而播放窗口显示的是**当前**画面 —— 第二次拉框放大是"在已放大的画面上接着裁"。
+     * 详见 [com.uvp.sim.osd.VideoDragZoomViewport]。
+     *
+     * ⭐ 这里是**真流**的输入：渲染端（Android `CameraTexturePass` / iOS `IosFrameProcessor`）
+     * 逐帧读它来裁相机画面。⛔ 别再加第三个消费端（尤其别加回「模拟中心」画布）——
+     * 画布与推流是两条互不相干的链路，画布上放大**不代表**平台点播到的画面会放大
+     * （同 `FrameMirror` 那次的结论，见 `MonitoringStage` 文件头）。
+     */
+    val dragZoomViewport: VideoDragZoomViewport = VideoDragZoomViewport.IDENTITY,
 
     // 预置位 (HomePosition)
     val presets: Map<Int, PtzPose> = emptyMap(),
@@ -354,11 +369,27 @@ enum class UpgradeResult { InProgress, Success, Failure }
 
 data class PtzPose(val pan: Float, val tilt: Float, val zoom: Float)
 
+/**
+ * 拉框放大/缩小（A.2.3.1.8/.9）报文里的**原始像素**。
+ *
+ * ⛔ 六个值必须整组收下：只拿到框、没拿到 [frameLength] / [frameWidth]（标准叫
+ * `Length` / `Width`，即**播放窗口**的长度/宽度像素值）就**做不了比例换算** ——
+ * 标准那句注写得很明确："命令中的坐标系以播放窗口的左上角原点，各坐标取值以像素单位"。
+ * 2026-09-20 之前本仓只解析了 4 个框字段，把这两把**尺子**丢在地上，
+ * 于是归一化无从谈起、画布上的框也只能靠一个错的口径（0~1000）画。
+ *
+ * 语义与 [com.uvp.sim.gb28181.TargetArea] 完全同源（元素名都一模一样），差别的只是
+ * 那条报文属于哪条命令 —— 所以解析必须**先取自己的块**再在块内找标签。
+ */
 data class DragZoomRect(
     val midX: Int,
     val midY: Int,
     val lengthX: Int,
     val lengthY: Int,
+    /** 标准 `Length` = 播放窗口**长度**像素值（横向尺子）。缺省 0 = 报文里没有。 */
+    val frameLength: Int = 0,
+    /** 标准 `Width` = 播放窗口**宽度**像素值（纵向尺子）。缺省 0 = 报文里没有。 */
+    val frameWidth: Int = 0,
 )
 
 data class LastDeviceCommand(

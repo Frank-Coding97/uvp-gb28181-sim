@@ -9,6 +9,7 @@ import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.domain.location.LocationProvider
 import com.uvp.sim.osd.FrameMirrorTransform
+import com.uvp.sim.osd.VideoDragZoomViewport
 import com.uvp.sim.osd.VideoMaskOverlay
 import com.uvp.sim.recording.RecordingService
 import kotlinx.coroutines.CoroutineScope
@@ -122,6 +123,18 @@ interface PlatformRuntime {
      * 而"没装来源 ⇒ 行为与加本功能之前逐帧一致"本来就是正确的默认。
      */
     fun installFrameMirrorSupplier(supplier: () -> FrameMirrorTransform) = Unit
+
+    /**
+     * 装「拉框视窗」来源（GB-2022 A.2.3.1.8/.9）—— 平台的拉框放大/缩小要**烧进真实视频流**。
+     *
+     * 与其他两个 supplier **同形状、同理由**：`AppEngine` 构造期装一次，渲染端逐帧读
+     * `deviceControlState.dragZoomViewport`。视窗的**累积**在 `PtzHandler.handleDragZoom`
+     * 里完成（"第二次放大是在已放大画面上再裁"），这里只做搬运。
+     *
+     * ⛔ 默认空实现，理由同 [installVideoMaskSupplier]：本接口有多个实现，
+     * 而"没装来源 ⇒ 逐帧与加本功能之前一致"（`cameraQuadVertices` 走恒等分支）本来就是正确的默认。
+     */
+    fun installVideoDragZoomSupplier(supplier: () -> VideoDragZoomViewport) = Unit
 
     /** App 前后台转换。平台实现用于立即释放/恢复受系统限制的采集资源。 */
     fun onAppBackground() = Unit

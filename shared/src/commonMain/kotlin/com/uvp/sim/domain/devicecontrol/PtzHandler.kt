@@ -22,6 +22,7 @@ import com.uvp.sim.gb28181.isFullStop
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.osd.DragZoomBox
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
@@ -240,16 +241,78 @@ internal class DefaultPtzHandler(
         }
     }
 
+    /**
+     * 拉框放大 / 缩小（A.2.3.1.8 / A.2.3.1.9）。
+     *
+     * 标准原文（附录 A 的注，印刷页 75~76）：「拉框放大命令将播放窗口选定框内的图像放大到
+     * 整个播放窗口；拉框缩小命令将整个播放窗口的图像缩小到播放窗口选定框内；
+     * **命令中的坐标系以播放窗口的左上角原点，各坐标取值以像素单位**。」
+     *
+     * ⛔ 三个容易做错、且**都不会报错**的点（2026-09-20 修）：
+     *  1. **六个字段整组收下**。`Length`/`Width` 是**播放窗口**的尺寸像素，即比例换算的两把尺子 ——
+     *     只收 4 个框字段就永远算不出归一化坐标（原实现正是如此，于是画布上只能按一个错的口径画）。
+     *  2. **必须先取 `<DragZoomIn>` / `<DragZoomOut>` 块**再在块内找标签：这 6 个元素名与
+     *     `TargetArea`（A.2.3.1.14 目标跟踪）**一字不差完全相同**，整篇 `tagValue` 在两条命令
+     *     并存时会静默串值（同 `TargetArea.kt` 记录的坑）。
+     *  3. **累积**：新视窗从**当前视窗**推出来（见 `VideoDragZoomViewport`），不是"每次回原始画面重裁" ——
+     *     后者会让平台连点两次放大的结果与用户框的区域系统性错开，而画面上完全看不出是错的。
+     */
     override fun handleDragZoom(xml: String) {
-        val midX = ManscdpParser.tagValue(xml, "MidPointX")?.toIntOrNull() ?: return
-        val midY = ManscdpParser.tagValue(xml, "MidPointY")?.toIntOrNull() ?: return
-        val lengthX = ManscdpParser.tagValue(xml, "LengthX")?.toIntOrNull() ?: 0
-        val lengthY = ManscdpParser.tagValue(xml, "LengthY")?.toIntOrNull() ?: 0
-        val type = if (xml.contains("<DragZoomIn>")) "DragZoomIn" else "DragZoomOut"
+        val zoomIn = xml.contains("<DragZoomIn>")
+        val type = if (zoomIn) "DragZoomIn" else "DragZoomOut"
+        val body = configBlockBody(xml, type) ?: return
+        fun int(tag: String): Int? = ManscdpParser.tagValue(body, tag)?.toIntOrNull()
+        val midX = int("MidPointX")
+        val midY = int("MidPointY")
+        val lengthX = int("LengthX")
+        val lengthY = int("LengthY")
+        val frameLength = int("Length")
+        val frameWidth = int("Width")
+        if (midX == null || midY == null || lengthX == null || lengthY == null ||
+            frameLength == null || frameWidth == null
+        ) {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "DRAG_ZOOM_REJECTED $type 报文缺字段")
+            return
+        }
+        val rect = DragZoomRect(midX, midY, lengthX, lengthY, frameLength, frameWidth)
+        val box = DragZoomBox.of(rect)
+        // 坐标不可用的两种情形（尺子非正 / 框退化或整块在画面外）都只留痕、**不动视窗**：
+        // 拿一个退化框去裁一次画面会把画面锁死在一个角上，而标准里没有任何复位命令能退回来。
+        val next = if (box == null) {
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Media,
+                "DRAG_ZOOM_REJECTED $type 坐标不可用(播放窗口尺寸非正或框退化)",
+            )
+            null
+        } else {
+            val current = state.value.dragZoomViewport
+            val applied = if (zoomIn) current.zoomIn(box) else current.zoomOut(box)
+            if (applied == null) {
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Media,
+                    "DRAG_ZOOM_REJECTED $type 已达最小视窗",
+                )
+            }
+            applied
+        }
+        // ⭐ **成功路径也必须留痕**：标准里没有任何回读手段（A.2.4 查询闭集 1~14 无此项、
+        //    A.2.6 无应答、A.3 全是指令）⇒ 平台只能显示「已下发」，现场看到的画面对不对
+        //    没法从平台侧反推。设备侧这条日志是**唯一**能确认"这次真裁了、裁到画面哪一块"的地方。
+        //    ⛔ 别以为是冗余日志删掉：删了之后"平台点了放大但画面没变"就只剩肉眼一条路。
+        next?.let {
+            SystemLogger.emit(
+                LogLevel.Info,
+                LogTag.Media,
+                "DRAG_ZOOM_APPLIED $type 视窗 x=${it.left} y=${it.top} w=${it.width} h=${it.height}",
+            )
+        }
         state.update {
             it.copy(
-                dragZoomRect = DragZoomRect(midX, midY, lengthX, lengthY),
-                lastCommand = LastDeviceCommand(type, "($midX,$midY) ${lengthX}x$lengthY", nowMs())
+                dragZoomRect = rect,
+                dragZoomViewport = next ?: it.dragZoomViewport,
+                lastCommand = LastDeviceCommand(type, "($midX,$midY) ${lengthX}x$lengthY", nowMs()),
             )
         }
     }

@@ -7,11 +7,19 @@ package com.uvp.sim.ui.model
 data class PtzPoseDto(val pan: Float, val tilt: Float, val zoom: Float)
 
 /** UI 层拖框变焦区域 DTO. 1:1 映射 com.uvp.sim.domain.DragZoomRect. */
+/**
+ * 平台拉框（A.2.3.1.8/.9）的**原始像素**，含 [frameLength] / [frameWidth] 两把尺子
+ * （标准 `Length` / `Width` = **播放窗口**的尺寸像素）。
+ *
+ * ⛔ 没有这两把尺子就算不出归一化坐标 —— 展示端画框、渲染端裁画面都依赖它们。
+ */
 data class DragZoomRectDto(
     val midX: Int,
     val midY: Int,
     val lengthX: Int,
     val lengthY: Int,
+    val frameLength: Int = 0,
+    val frameWidth: Int = 0,
 )
 
 /** PTZ 命令方向(plan §1.3 #2 补). 1:1 映射 com.uvp.sim.gb28181.PtzCommand 5 个方向 enum. */

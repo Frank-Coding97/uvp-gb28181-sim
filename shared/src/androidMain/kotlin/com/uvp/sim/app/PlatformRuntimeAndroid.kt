@@ -11,6 +11,7 @@ import com.uvp.sim.camera.CaptureConfig
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.osd.FrameMirrorTransform
 import com.uvp.sim.osd.OsdRendererHolder
+import com.uvp.sim.osd.VideoDragZoomViewport
 import com.uvp.sim.osd.VideoMaskOverlay
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.recording.AndroidRecordingService
@@ -167,6 +168,17 @@ class PlatformRuntimeAndroid(
      */
     override fun installFrameMirrorSupplier(supplier: () -> FrameMirrorTransform) {
         OsdRendererHolder.installMirrorSupplier(supplier)
+    }
+
+    /**
+     * 拉框放大/缩小（GB-2022 A.2.3.1.8/.9）烧进视频流 —— 装到 [OsdRendererHolder]。
+     *
+     * 与 [installVideoMaskSupplier] 同一形状、同一理由。差别只在施加位置：
+     * 这个是 `CameraTexturePass` 的 **uv**（只采样视窗那一块），
+     * 翻转改的是同一层的**顶点**，遮挡是 fbo 上的叠加绘制。
+     */
+    override fun installVideoDragZoomSupplier(supplier: () -> VideoDragZoomViewport) {
+        OsdRendererHolder.installDragZoomSupplier(supplier)
     }
 
     override suspend fun release() {

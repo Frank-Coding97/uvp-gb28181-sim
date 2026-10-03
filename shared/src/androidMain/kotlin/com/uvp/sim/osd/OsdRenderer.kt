@@ -71,6 +71,14 @@ internal class OsdRenderer(
      * 默认 [FrameMirrorTransform.NONE]：没装来源时行为与加本参数之前**逐帧一致**。
      */
     private val frameMirrorSupplier: () -> FrameMirrorTransform = { FrameMirrorTransform.NONE },
+    /**
+     * 当前生效的**拉框视窗**（GB-2022 A.2.3.1.8/.9）。每帧在 GL 线程读一次，形状同 [maskSupplier]。
+     *
+     * 施加位置是 `CameraTexturePass` 的 **uv**（"只采样视窗那一块" = 把框内放大到整个输出）。
+     * 默认 [VideoDragZoomViewport.IDENTITY]：没装来源时逐帧行为与加本参数之前**完全一致**
+     * （`cameraQuadVertices` 走恒等分支，顶点与 uv 原样）。
+     */
+    private val dragZoomSupplier: () -> VideoDragZoomViewport = { VideoDragZoomViewport.IDENTITY },
 ) {
 
     private val tickerSource = OsdTickerSource(configFlow)
@@ -329,6 +337,8 @@ internal class OsdRenderer(
             // 画面翻转（GB-2022 A.2.1.23）先于相机绘制设定：它改的是本 pass 的顶点，
             // 后面的 OSD 文字与遮挡块随后画在同一 fbo 上，因此**不跟着翻**。
             cam.setFrameMirror(frameMirrorSupplier())
+            // 拉框视窗（GB-2022 A.2.3.1.8/.9）与翻转同层、正交：翻转改位置、视窗改 uv。
+            cam.setFrameCrop(dragZoomSupplier())
             cam.draw(transformMatrix, fboWidth, fboHeight)
             drawOsdLayers(text)
             // 画面遮挡(GB-2022 A.2.1.17)最后画:它是"盖在画面上的内容",

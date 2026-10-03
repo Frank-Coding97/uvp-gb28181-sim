@@ -54,6 +54,12 @@ internal class CameraTexturePass {
     private var mirrorX = false
     private var mirrorY = false
 
+    /**
+     * 拉框放大/缩小（GB-2022 A.2.3.1.8/.9）的当前视窗 —— 逐帧从 [setFrameCrop] 更新，
+     * 值不变时不重传 VBO。[VideoDragZoomViewport.IDENTITY] = 没放大过。
+     */
+    private var crop = VideoDragZoomViewport.IDENTITY
+
     fun init() {
         if (initialized) return
 
@@ -144,6 +150,23 @@ internal class CameraTexturePass {
     }
 
     /**
+     * 设置拉框放大/缩小（GB-2022 A.2.3.1.8/.9）的**当前视窗**。**每帧调**，
+     * 值没变时只做 4 个 float 的比较、零 GL 调用。
+     *
+     * ⛔ 语义是"只采样视窗那一块"（标准：把选定框内的图像放大到整个输出画面），
+     * 所以它改的是 **uv**、不是位置；与 `setFrameMirror`（改位置）正交，
+     * 两者叠加的顺序在 [cameraQuadVertices] 里一次处理完（按显示位置取 uv）。
+     *
+     * ⚠️ 必须在 **GL 线程**上调（内部可能重传 VBO）—— 调用点同 [setFrameMirror]。
+     */
+    fun setFrameCrop(viewport: VideoDragZoomViewport) {
+        if (!initialized || vbo == 0) return
+        if (viewport == crop) return
+        crop = viewport
+        uploadCurrentVertices(update = true)
+    }
+
+    /**
      * 渲染一帧到当前 framebuffer(可以是 fbo 也可以是 default framebuffer)。
      *
      * @param transformMatrix SurfaceTexture.getTransformMatrix() 拿到的矩阵
@@ -209,18 +232,18 @@ internal class CameraTexturePass {
 
     private fun uploadCurrentVertices(update: Boolean = false) {
         // 顶点算在 commonMain 的 cameraQuadVertices 里（可单测）：它同时承担
-        // center-crop 的 frameScale 与画面翻转（A.2.1.23）—— 翻转乘在**位置**上、不乘 uv，
-        // 理由见该函数注释（与 SurfaceTexture 的 uTexMatrix 打架）。
-        uploadVerts(
-            cameraQuadVertices(
-                frameScaleX = frameScaleX,
-                frameScaleY = frameScaleY,
-                textureCoordinates = textureCoordinates,
-                mirrorX = mirrorX,
-                mirrorY = mirrorY,
-            ),
-            update,
+        // center-crop 的 frameScale、画面翻转（A.2.1.23）与拉框视窗（A.2.3.1.8/.9）——
+        // 翻转乘在**位置**上、不乘 uv（理由见该函数注释，与 SurfaceTexture 的 uTexMatrix 打架）；
+        // 拉框改的正是 uv（只采样视窗那一块），两者按"显示位置"组合，见该函数头。
+        val verts = cameraQuadVertices(
+            frameScaleX = frameScaleX,
+            frameScaleY = frameScaleY,
+            textureCoordinates = textureCoordinates,
+            mirrorX = mirrorX,
+            mirrorY = mirrorY,
+            crop = crop,
         )
+        uploadVerts(verts, update)
     }
 
     // ⛔ uv 的默认值与计数都在 commonMain（`DEFAULT_CAMERA_QUAD_UV` / `CAMERA_QUAD_UV_COUNT`），
