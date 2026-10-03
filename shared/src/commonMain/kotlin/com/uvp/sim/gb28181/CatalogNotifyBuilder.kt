@@ -5,6 +5,8 @@ import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.config.ChannelProfile
 import com.uvp.sim.config.GbVersion
+import kotlin.math.abs
+import kotlin.math.roundToLong
 
 /**
  * 构造 GB/T 28181 Catalog NOTIFY body(MANSCDP+xml)。
@@ -37,6 +39,12 @@ import com.uvp.sim.config.GbVersion
  * - 其它字段从 `CatalogNode.fields` 取,缺失给保守默认
  */
 object CatalogNotifyBuilder {
+
+    /** 坐标输出精度标度 —— 6 位小数(≈0.1m),见 [formatCoordinate]。 */
+    private const val COORDINATE_SCALE: Double = 1_000_000.0
+
+    /** [formatCoordinate] 输出的"零" —— 用来判"本次到底声明没声明安装位置"。 */
+    private const val ZERO_TEXT: String = "0"
 
     /**
      * @param version **无默认值,必须显式传** —— 传有效国标版本(`min(本机声明, 平台声明)`),
@@ -391,6 +399,12 @@ object CatalogNotifyBuilder {
             sb.append("<Port>").append(escapeXmlText(port)).append("</Port>\n")
         }
         sb.append("<Status>").append(escapeXmlText(f["Status"] ?: "ON")).append("</Status>")
+        // 安装位置:`<Status>` 之后、`BusinessGroupID`/`<Info>` 之前 —— 两版标准的位置相同
+        // (2016 附录 A 目录项类型与 2022 A.2.1.9 都排在 Status 之后)。
+        // ⛔ 只对设备类节点输出:标准里这个字段限"当为设备时",系统/业务分组/虚拟组织/
+        //    行政区划/报警通道都没有安装位置可言。
+        // ⛔ 0 不输出 —— 平台侧把 0 判成"未声明",发了 0 等于没发,还会污染严格 XSD 校验。
+        appendInstallPosition(sb, node, channel)
         // ⭐ 位置差异:2022 的 BusinessGroupID 在 Item 层(见类 KDoc);
         // 2016 的仍在 <Info> 内,由 buildInfoBlock 负责输出。
         if (version == GbVersion.V2022 && businessGroupId != null) {
@@ -402,6 +416,62 @@ object CatalogNotifyBuilder {
         }
         sb.append("\n</Item>")
         return sb.toString()
+    }
+
+    /**
+     * 追加通道/设备的**安装位置** `<Longitude>` + `<Latitude>`(§9.3.1 目录项)。
+     *
+     * 取值优先级:节点级显式字段 → [ChannelProfile](仅视频通道) → 不输出。
+     * 跟本文件其它字段同一套"节点优先、channel 兜底"的约定。
+     *
+     * ⛔ 三个约束:
+     *  1. **只对设备类节点输出**([CatalogNodeType.Device] / [CatalogNodeType.VideoChannel])。
+     *     标准原文是「当为设备时,经度」——系统 / 业务分组 / 虚拟组织 / 行政区划 / 报警通道
+     *     都没有安装位置可言,给它们发坐标是报文层面的越界。
+     *  2. **成对输出**。只发经度不发纬度会让平台收到一个分量是上轮残留值的"半对坐标"
+     *     (平台侧 `UpdateChannel` 把这种情况判成非法入参;目录解析层是整体覆盖,同样解释不通)。
+     *     所以这里按"纬度是否可解析"统一判决,不做单元素输出。
+     *  3. **0 一律不输出**。0 在本仓全链路表示"未声明"(平台 `hasUsableCoordinate` 的判据),
+     *     发 0 的后果是平台把它当"设备没报"而根本不落库,白白多两个元素。
+     */
+    private fun appendInstallPosition(
+        sb: StringBuilder,
+        node: CatalogNode,
+        channel: ChannelProfile?,
+    ) {
+        if (node.type != CatalogNodeType.Device && node.type != CatalogNodeType.VideoChannel) return
+        // 安装位置是"通道级"属性,所以 channel 兜底只对视频通道生效;
+        // Device 节点只能靠 CatalogNode.fields 显式声明(设备与通道各有各的位置)。
+        val fallback = if (node.type == CatalogNodeType.VideoChannel) channel else null
+        val longitude = node.fields["Longitude"]?.trim()?.toDoubleOrNull() ?: fallback?.longitude ?: 0.0
+        val latitude = node.fields["Latitude"]?.trim()?.toDoubleOrNull() ?: fallback?.latitude ?: 0.0
+        // 先按报文精度定死再判零 —— 让"判据"与"实际发出去的值"用同一个数,
+        // 否则 1e-7 这类值能过零值判据、却会以 "0" 的形式发出去(平台收到 0 = 未声明)。
+        val longitudeText = formatCoordinate(longitude)
+        val latitudeText = formatCoordinate(latitude)
+        if (longitudeText == ZERO_TEXT || latitudeText == ZERO_TEXT) return
+        sb.append("\n<Longitude>").append(longitudeText).append("</Longitude>")
+        sb.append("\n<Latitude>").append(latitudeText).append("</Latitude>")
+    }
+
+    /**
+     * 坐标的报文写法 —— **定点小数,最多 6 位,去掉尾部 0**(如 `116.404` / `39.915`)。
+     *
+     * ⛔ 不用 `Double.toString()`:它对 `|v| < 1e-3` 会给出 `"1.0E-4"` 这种科学计数法。
+     * 实测的坐标值虽然都在 1e-3 以上,但"输入来自用户可编辑的字段",不该给下游留一个
+     * 取决于取值大小的输出形态。手工拼装整数/小数两段则形态恒定。
+     *
+     * 6 位小数 ≈ 0.1m 精度,远超监控点位需要的分辨率;多出来的位数只会拉长报文。
+     */
+    private fun formatCoordinate(value: Double): String {
+        val scaled = (value * COORDINATE_SCALE).roundToLong()
+        val sign = if (scaled < 0) "-" else ""
+        val magnitude = abs(scaled)
+        val integerPart = magnitude / COORDINATE_SCALE.toLong()
+        val fractionPart = magnitude % COORDINATE_SCALE.toLong()
+        if (fractionPart == 0L) return "$sign$integerPart"
+        val fraction = fractionPart.toString().padStart(6, '0').trimEnd('0')
+        return "$sign$integerPart.$fraction"
     }
 
     /**

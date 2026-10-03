@@ -11,9 +11,19 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 data class GeoPoint(
-    val longitude: Double = 116.404,
-    val latitude: Double = 39.915
-)
+    val longitude: Double = DEFAULT_LONGITUDE,
+    val latitude: Double = DEFAULT_LATITUDE
+) {
+    companion object {
+        /**
+         * 默认点位(WGS-84)。`ChannelProfile` 的**安装位置**默认值也指向这两个常量 ——
+         * 新设备的"装在哪"与"漫游起点"默认是同一个点,这是最自然的场景;
+         * 两处共用常量是为了**不可漂移**:改一处就同时改,不会变成两个不一致的默认值。
+         */
+        const val DEFAULT_LONGITUDE: Double = 116.404
+        const val DEFAULT_LATITUDE: Double = 39.915
+    }
+}
 
 /** 逻辑协议时钟配置。NTP 默认关闭；关闭或不可用时使用注册 200 OK 的 SIP Date。 */
 @Serializable
@@ -341,6 +351,24 @@ data class ChannelProfile(
     val streamNumberList: String = "0/1",
     /** 字符串如 "1280*720/1920*1080",多分辨率以 / 分隔 */
     val resolution: String = "1280*720",
+    /**
+     * 通道**安装位置**(§9.3.1 目录项 `<Longitude>` / `<Latitude>`,WGS-84 坐标系)。
+     *
+     * ⛔ 这跟 `SimConfig.mockPosition` 是**两回事**,别混:
+     * - 本字段 = 摄像机装在哪 —— 走 **Catalog** 应答,一次声明长期不变;
+     * - `mockPosition` = 设备此刻在哪 —— 走 **MobilePosition** 订阅 NOTIFY,持续变化。
+     *   两者进平台落的是同一对 `gb_channel.longitude/latitude` 列,但来源标记不同
+     *   (`catalog` vs `mobile`),所以"装在哪"和"在哪"才能各自说清楚。
+     *
+     * 默认值刻意与 `GeoPoint()` 的默认点一致 —— 设备装在它漫游的起点上,这是最自然的场景;
+     * 改成别的值也不算错,只是"报的安装位置"与"漫游中心"分离了。
+     *
+     * ⛔ **0 表示"本端不声明安装位置"**(与平台侧 `hasUsableCoordinate` 的判据一致) ——
+     * 此时 `<Longitude>`/`<Latitude>` **两个元素都不输出**。标准里这两个是可选元素
+     * (`minOccurs=0`),不发就是不发,不能发 0;平台上 0 会被判成"无坐标"而根本不落库。
+     */
+    val longitude: Double = GeoPoint.DEFAULT_LONGITUDE,
+    val latitude: Double = GeoPoint.DEFAULT_LATITUDE,
     /** 业务分组 ID,默认空字符串(平台一般可空) */
     val businessGroupId: String = ""
 )
