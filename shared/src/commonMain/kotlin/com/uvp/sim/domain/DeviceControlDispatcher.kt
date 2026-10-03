@@ -47,14 +47,14 @@ data class DeviceControlAck(
 )
 
 /**
- * GB/T 28181-2022 §F.3 DeviceControl 命令分发器(router).
+ * GB/T 28181-2022 附录 A.3 DeviceControl 命令分发器(router).
  *
  * **PR-E3 后**:本类退化为按命令类别路由,所有真正的命令逻辑放在
  * [com.uvp.sim.domain.devicecontrol] 子包的 4 个 handler:
  *
  *  - [PtzHandler]    — PTZCmd motion / cruise + PTZPreciseCtrl + DragZoom
  *  - [PresetHandler] — preset CRUD + HomePosition
- *  - [AuxHandler]    — Aux 雨刷 / 红外灯 / 加热等
+ *  - [AuxHandler]    — Aux 辅助开关(标准只定义编号 1 = 雨刷)
  *  - [SystemHandler] — Reboot / IFrame / Record / Guard / Alarm / DeviceConfig /
  *                      DeviceUpgrade / FormatSDCard / TargetTrack / SnapShot
  *

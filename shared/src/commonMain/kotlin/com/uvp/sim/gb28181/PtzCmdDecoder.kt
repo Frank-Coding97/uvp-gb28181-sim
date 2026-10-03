@@ -20,13 +20,14 @@ package com.uvp.sim.gb28181
  * | 7    | 组合码2:高 4 位 = 数据3(变倍速度),低 4 位 = 地址高 4 位        |
  * | 8    | 校验码 = (字节1..7 之和) mod 256                              |
  *
- * **字节4 是整个解码的分叉点,共四个子族**,必须按子族分别解,不能混:
+ * **字节4 是整个解码的分叉点,共六个子族**,必须按子族分别解,不能混:
  *
  * ```
  * 族          字节4 取值              识别方式            节
  * 预置位      0x81 / 0x82 / 0x83      整字节              表 A.7
  * 巡航        0x84 ~ 0x88             整字节              表 A.8
- * 扫描/辅助   0x89 / 0x8A             整字节              ——
+ * 扫描        0x89 / 0x8A             整字节              表 A.10
+ * 辅助开关    0x8C / 0x8D             整字节              表 A.11
  * FI(聚焦/光圈) 0x40 ~ 0x4F            bit7=0 且 bit6=1    表 A.6
  * PTZ(方向/变倍) 0x00 ~ 0x3F           bit7=0 且 bit6=0    表 A.5
  * ```
@@ -51,13 +52,20 @@ package com.uvp.sim.gb28181
  * 两条独立的位轴解,`0x46`(光圈放大+聚焦近)是完全合法的报文。整字节查表法会把它判成未知。
  * 同一轴内的两位「不应同时为 1」(既开又关),那种字节按非法拒绝。
  *
- * ⭐ **整字节三族的参数位置不一样,别套用**(2026-09-16 真机联调踩到):
+ * ⭐ **整字节四族的参数位置不一样,别套用**(2026-09-16 真机联调踩到):
  *
  * | 族 | 字节4 | 字节5(数据1) | 字节6(数据2) | 字节7 高4位 |
  * |---|---|---|---|---|
  * | 预置位 | 0x81/0x82/0x83 | **固定 0x00** | **预置位编号** | 0 |
  * | 巡航 | 0x84~0x88 | 巡航组号 | 预置位号 / 速度·时长的低 8 位 | 速度·时长的高 4 位 |
- * | 扫描/辅助 | 0x89/0x8A | 扫描组号 | 指令字节(00 开始/01 左边界/02 右边界) | 速度高 4 位 |
+ * | 扫描 | 0x89 | 扫描组号 | **子动作**(00 开始/01 左边界/02 右边界) | 未用 |
+ * | 扫描 | 0x8A | 扫描组号 | 速度低 8 位 | 速度高 4 位 |
+ * | 辅助开关 | 0x8C/0x8D | **辅助开关编号** | 未用 | 未用 |
+ *
+ * ⛔⛔ **扫描(表 A.10)与辅助开关(表 A.11)是两族,绝不能并成一行** —— 本仓真并错过一次:
+ * 扫描是 `0x89`/`0x8A`,辅助开关是 `0x8C`/`0x8D`。并写的那一版把 `0x89/0x8A` 当成了辅助开关,
+ * 于是平台下发的「开始扫描」在设备侧变成**开雨刷**、「设扫描速度」变成**关雨刷** ——
+ * SIP 收发全正常、设备回 200 OK,只有画面纹丝不动(2026-09-20 真机对不上时挖出来)。
  *
  * 平台侧 `BuildExtendedPTZControlWithProfile` 也是这么写的(预置位写 `parameter2`)。
  * 标准样例 `A50F018100010037` = 新增 1 号预置点,可直接当回归锚点。
@@ -96,7 +104,13 @@ object PtzCmdDecoder {
             // 整字节子族:这三个族用**整个字节取值**寻址,不按位拆解,所以必须先判掉。
             opCode == 0x81 || opCode == 0x82 || opCode == 0x83 -> decodePreset(bytes, opCode)
             opCode in 0x84..0x88 -> decodeCruise(bytes, opCode)
-            opCode == 0x89 || opCode == 0x8A -> decodeAux(bytes, opCode)
+            // 表 A.10 自动扫描:`0x89` 一个码管三件事(开始/设左边界/设右边界,子动作在字节6)、
+            // `0x8A` 设速度(12 位)。
+            opCode == 0x89 || opCode == 0x8A -> decodeScan(bytes, opCode)
+            // 表 A.11 辅助开关:开 0x8C / 关 0x8D。
+            // ⛔ **不是 `0x89`/`0x8A`** —— 那两个是扫描。本仓曾把两族并成一行写在这里,
+            //    结果平台点「开始扫描」设备去开了雨刷(见类头那张表的警告)。
+            opCode == 0x8C || opCode == 0x8D -> decodeAux(bytes, opCode)
 
             // FI 族(表 A.6):bit7=0 且 bit6=1。
             // ⚠️ 必须排在 PTZ 族之前判 —— 这族字节的 bit3/bit2 看起来像 PTZ 的「上/下」、
@@ -107,7 +121,7 @@ object PtzCmdDecoder {
             // PTZ 族(表 A.5):bit7=0 且 bit6=0。
             (opCode and 0xC0) == 0x00 -> PtzInstruction.Motion(decodeMotion(bytes, opCode))
 
-            // bit7=1 但不在 0x81~0x8A 之间:标准未定义该字节的语义。
+            // bit7=1 但不在 0x81~0x8D 之间:标准未定义该字节的语义。
             // 返回 null(dispatcher 走 200 OK 的 ack 兜底),不猜成某个动作。
             else -> null
         }
@@ -133,10 +147,47 @@ object PtzCmdDecoder {
         return PtzInstruction.Preset(op, idx)
     }
 
+    /**
+     * 辅助开关(表 A.11):`0x8C` 开 / `0x8D` 关,字节5 = 辅助开关编号(注:取值 1 表示雨刷)。
+     *
+     * ⛔⛔ 指令码是 **`0x8C`/`0x8D`**,不是 `0x89`/`0x8A`(那是扫描)。两族的参数位置也不同:
+     * 辅助开关**没有子动作字节** —— 开/关由指令码本身表达,字节6 不参与。
+     */
     private fun decodeAux(bytes: ByteArray, opCode: Int): PtzInstruction.Aux {
-        val on = opCode == 0x89  // 0x89=on / 0x8A=off
+        val on = opCode == 0x8C  // 0x8C=开 / 0x8D=关
         val auxIndex = bytes[4].toInt() and 0xFF
         return PtzInstruction.Aux(on, auxIndex)
+    }
+
+    /**
+     * 扫描族(表 A.10 自动扫描)。
+     *
+     * ```
+     *   0x89 + 字节5=扫描组号 + 字节6=子动作(00H 开始 / 01H 设左边界 / 02H 设右边界)
+     *   0x8A + 字节5=扫描组号 + 字节6(低 8 位) + 字节7 高 4 位 = 速度(12 位,注2)
+     * ```
+     *
+     * ⛔⛔ **`0x89` 一个指令码管三件事,子动作在字节6 而不是指令码里** —— 与预置位/巡航那种
+     * "一个动作一个码"的直觉正好相反。字节6 出现 `00/01/02` 以外的值时,标准没有定义该语义,
+     * 返回 null(不猜成"开始扫描"——猜错会让球机自己转起来)。
+     *
+     * ⭐ 组号取值 `00H~FFH`(注1),**0 是合法组号**:别照巡航族"组号 0 = 停止"的约定处理 ——
+     * 扫描**没有**"组号 0 表示停"这一说(标准只给了注3 的全零帧),而平台默认用的就是 0 号组。
+     */
+    private fun decodeScan(bytes: ByteArray, opCode: Int): PtzInstruction.Scan? {
+        val groupNum = bytes[4].toInt() and 0xFF
+        if (opCode == 0x8A) {
+            // 12 位重组:低 8 位在字节6、高 4 位在字节7 的高半字节(注2)。与巡航 0x86/0x87 同形。
+            val speed = (bytes[5].toInt() and 0xFF) or (((bytes[6].toInt() and 0xF0) shr 4) shl 8)
+            return PtzInstruction.Scan(ScanOp.SET_SPEED, groupNum, speed)
+        }
+        val op = when (bytes[5].toInt() and 0xFF) {
+            0x00 -> ScanOp.START
+            0x01 -> ScanOp.SET_LEFT_BOUNDARY
+            0x02 -> ScanOp.SET_RIGHT_BOUNDARY
+            else -> return null
+        }
+        return PtzInstruction.Scan(op, groupNum, 0)
     }
 
     /**
@@ -303,11 +354,20 @@ sealed class PtzInstruction {
     /** 预置位 CRUD (字节4 = 0x81/0x82/0x83) */
     data class Preset(val op: PresetOp, val index: Int) : PtzInstruction()
 
-    /** 辅助开关 (字节4 = 0x89/0x8A,字节5 = aux 编号) — 雨刷/红外灯/加热/除雾/制冷. */
+    /** 辅助开关 (字节4 = 0x8C/0x8D,字节5 = 辅助开关编号) — 标准只定义编号 1 = 雨刷. */
     data class Aux(val on: Boolean, val index: Int) : PtzInstruction()
 
     /** 巡航 (字节4 = 0x84-0x88,字节5 = 巡航号,字节6 = 参数). */
     data class Cruise(val op: CruiseOp, val trackNum: Int, val param: Int) : PtzInstruction()
+
+    /**
+     * 扫描 (表 A.10:`0x89` 开始/设边界、`0x8A` 设速度;字节5 = 扫描组号)。
+     *
+     * [param] 的含义随 [op] 变(沿用巡航族"一个字段承载载荷"的做法):
+     * `SET_SPEED` 时是 12 位速度;其余三个子动作**没有参数** —— 设边界是"把当前位置记为边界"、
+     * 开始扫描只认组号,所以恒为 0。
+     */
+    data class Scan(val op: ScanOp, val groupNum: Int, val param: Int) : PtzInstruction()
 
     /**
      * FI 族(表 A.6):聚焦 + 光圈。
@@ -346,13 +406,33 @@ enum class PresetOp { SET, CALL, DEL }
 /** 巡航子操作. */
 enum class CruiseOp { SET_POINT, DEL_POINT, SET_SPEED, SET_DWELL_TIME, START }
 
-/** 辅助控制编号映射(海康/大华行业事实标准). */
+/**
+ * 扫描子操作(表 A.10 自动扫描)。
+ *
+ * ⛔ 前三个都挂在**同一个指令码 `0x89`** 上,子动作在**字节6**:`00H` 开始 / `01H` 设左边界 /
+ * `02H` 设右边界。只有设速度是独立指令码 `0x8A` —— 别按"一个动作一个码"去推断。
+ */
+enum class ScanOp { START, SET_LEFT_BOUNDARY, SET_RIGHT_BOUNDARY, SET_SPEED }
+
+/**
+ * 辅助开关编号映射 —— **只做国标钉住的那一个**。
+ *
+ * GB/T 28181-2022 A.3.7(表 A.11)的全节唯一一条语义注是:
+ * 「字节5为辅助开关编号,取值为"1"表示雨刷控制。」(2016 版同节同表、措辞逐字一致)
+ *
+ * ⛔ 所以编号 **2~5 在标准里没有任何语义**。它们既不是"国标里的辅助开关",
+ * 也不是任何可查证的事实标准 —— 海康 SDK 的云台控制编号(`2=LIGHT_PWRON` /
+ * `3=WIPER_PWRON` / `4=FAN_PWRON` / `5=HEATER_PWRON` / `6,7=AUX_PWRON1,2`)是
+ * **另一套、顺序也不同**,不能拿来当 GB28181 的字节5 口径。
+ * 本枚举原先还列了 红外灯/加热/除雾/制冷 四项并按 2~5 落状态,现已移除(2026-09-21):
+ * 平台不下发它们,保留只会让「设备支持什么」看起来比标准允许的更宽。
+ *
+ * ⚠️ 编号域是 `00H~FFH` 的开放值,用 2~5 并不违反报文格式;但"标准没禁止"不等于
+ * "标准定义了" —— 未映射编号走 [com.uvp.sim.domain.devicecontrol.AuxHandler] 的
+ * 未映射分支:记 lastCommand,但**不落 auxStates**(界面上不出现假的状态灯)。
+ */
 enum class AuxFunction(val index: Int, val displayName: String) {
-    Wiper(1, "雨刷"),
-    InfraredLight(2, "红外灯"),
-    Heater(3, "加热"),
-    Defog(4, "除雾"),
-    Cooler(5, "制冷");
+    Wiper(1, "雨刷");
 
     companion object {
         fun fromIndex(idx: Int): AuxFunction? = entries.firstOrNull { it.index == idx }

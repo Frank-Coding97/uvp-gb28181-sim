@@ -328,6 +328,93 @@ class SimulatorEngine internal constructor(
         }
     }
 
+    /**
+     * 自动扫描执行 —— `0x89 开始扫描`(GB/T 28181 表 A.10)之后的**设备自主行为**。
+     *
+     * 跟 [cruiseExecutionJob] 同构(秒级/拍级轮询 + 纯函数判定 + 起步·停止边沿),但有两处
+     * **不能照抄**:
+     *
+     *  1. **写的是速率,不是姿态**。巡航每拍是"跳到一个预置位"(ease 到某个坐标);扫描是
+     *     **连续横扫**,没有目标点。所以这一拍只判定"往哪边、多快"([scanStepAt]),
+     *     然后把速率写进 `Model.panSpeed` —— 渲染端本来就在逐帧按「速率 × 时间」积分姿态
+     *     (Android `CameraGlbView` / iOS native),于是两侧画面都是平滑横扫而不是逐拍跳格。
+     *  2. **节拍更快**:150ms(巡航是 1 秒)。巡航每拍一次跳转,扫描每拍只确认一次"到边界了没",
+     *     节拍太慢会让掉头滞后得肉眼可见。
+     *
+     * 起步方向取**向右**:表 A.10 注4「自动扫描开始时,整体画面从右向左移动」——
+     * 画面里的景物往左走,说明云台在往右转(`panAngle` 增大)。
+     */
+    private val scanExecutionJob: Job = scope.launch {
+        var runningGroup: Int? = null
+        var direction = ScanSweepDirection.TO_RIGHT
+        while (true) {
+            delay(SCAN_TICK_MS)
+            val model = holders.deviceControlState.value
+            val groupNum = model.activeScanGroup
+            if (groupNum == null) {
+                // 停了(全零停止帧 / 被开始巡航顶替)。清干净,下次启动重新按注4 从向右开始。
+                if (runningGroup != null) {
+                    runningGroup = null
+                    direction = ScanSweepDirection.TO_RIGHT
+                    clearScanPanRate()
+                }
+                continue
+            }
+            val plan = scanStepAt(model, direction)
+            if (plan == null) {
+                if (runningGroup != groupNum) {
+                    // 启动了但一步都扫不了:左右边界没设全(或跨度不足)。
+                    // 只在起步这一刻报一次(下一拍起走 `plan == null` 分支不再刷日志)。
+                    runningGroup = groupNum
+                    clearScanPanRate()
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Media,
+                        "扫描 #$groupNum 启动但本机缺左右边界(或跨度不足),停在原地——" +
+                            "平台需要先设左/右边界再开始扫描",
+                    )
+                }
+                continue
+            }
+            if (runningGroup != groupNum) {
+                runningGroup = groupNum
+                SystemLogger.emit(
+                    LogLevel.Info,
+                    LogTag.Media,
+                    "扫描 #$groupNum 启动:${scanGroupText(model, groupNum)}(注4:画面自右向左移动)",
+                )
+            }
+            if (plan.turnedAround) {
+                SystemLogger.emit(
+                    LogLevel.Info,
+                    LogTag.Media,
+                    "扫描 #$groupNum 到达${if (plan.direction == ScanSweepDirection.TO_RIGHT) "左" else "右"}边界,掉头",
+                )
+            }
+            direction = plan.direction
+            applyScanPanRate(plan.panRateDegPerSec)
+        }
+    }
+
+    /**
+     * 把横扫速率写进 Model。只在**值真的变了**时才 `copy` —— `MutableStateFlow` 对相等值
+     * 本来就不发射,这里显式挡一道是为了不每 150ms 造一个新对象喂给 UI 层。
+     */
+    private fun applyScanPanRate(rate: Float) {
+        holders.deviceControlState.update { if (it.panSpeed == rate) it else it.copy(panSpeed = rate) }
+    }
+
+    /**
+     * 收尾时把扫描占着的水平速率清掉。
+     *
+     * ⛔ 不能只清 `activeScanGroup` 就完事:速率留在 Model 里,渲染端会**一直按它积分下去** ——
+     * 表现为"扫描停了、镜头却还在往一侧转"。扫描被开始巡航顶替时尤其明显(巡航 ease 完
+     * 又被这个残留速率带跑)。
+     */
+    private fun clearScanPanRate() {
+        holders.deviceControlState.update { if (it.panSpeed == 0f) it else it.copy(panSpeed = 0f) }
+    }
+
     /** Initiate registration. Returns immediately; observe [state] for completion. */
     suspend fun register() {
         startInboundIfNeeded()
@@ -404,6 +491,7 @@ class SimulatorEngine internal constructor(
         registrationStateBridge.cancel(); registrationEventBridge.cancel(); registrationClockBridge.cancel()
         homePositionAutoReturnJob.cancel()
         cruiseExecutionJob.cancel()
+        scanExecutionJob.cancel()
         // 显式 stop 而不是只靠下面的 scope.cancel():stop() 会把 holder 上的"正在重连"
         // 清成 null。只 cancel scope 的话那个标记会留在 UI 上,而 engine 重建后**没人会清它**
         // (新的监管器只在自己的 recover 流程里写),横幅就一直挂着"正在重连"。
@@ -583,6 +671,32 @@ private const val HOME_POSITION_TICK_MS = 1_000L
  * 更密（比如 100ms）只是白跑协程：整条链的节拍由 `dwellTime` 决定，设备不会因为查得勤就动得快。
  */
 private const val CRUISE_TICK_MS = 1_000L
+
+/**
+ * 自动扫描的节拍间隔。
+ *
+ * 150ms 的理由与巡航不同:巡航每拍是"跳到一个点位"(画面由 ease 动画演),扫描每拍只是
+ * **重新确认方向**(姿态由渲染端按 `panSpeed` 逐帧积分)。拍子太慢,"到边界掉头"会滞后得
+ * 肉眼可见(掉头点明显越过边界);太快只是白跑协程 —— 渲染端回写姿态是 ~166ms 一次的节流,
+ * 比它更密也读不到更新的位置。
+ */
+private const val SCAN_TICK_MS = 150L
+
+/**
+ * 扫描组的"左右边界 + 速度"一行文案,只用于**设备自主行为**的日志。
+ *
+ * ⚠️ 与巡航/看守位那两条日志同一个取舍:扫描在 SIP 上只有平台那一条"开始"指令,之后设备扫成
+ * 什么样平台一无所知,而且附录 A 里**没有任何查询命令能回读边界**(没有 `ScanQuery`)——
+ * 不看日志就完全无法判断设备侧到底有没有那对边界。"未设"两个字是刻意留的:
+ * 它把"边界没设全"与"边界设了但跨度不足"这两种都会让扫描原地不动的原因区分开。
+ */
+private fun scanGroupText(model: DeviceControlModel, groupNum: Int): String {
+    val group = model.scanGroups[groupNum]
+    fun angle(value: Float?): String =
+        value?.let { "${kotlin.math.round(it).toInt()}°" } ?: "未设"
+    return "左 ${angle(group?.leftBoundary?.pan)} ↔ 右 ${angle(group?.rightBoundary?.pan)}" +
+        " · 速度 ${group?.speed ?: "未下发"}"
+}
 
 /**
  * 云台"活动信号" —— 用来给看守位倒计时复位。

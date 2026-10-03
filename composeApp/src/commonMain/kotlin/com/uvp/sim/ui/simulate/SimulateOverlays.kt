@@ -6,7 +6,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -38,52 +37,19 @@ import com.uvp.sim.ui.model.DragZoomRectDto
 import kotlinx.coroutines.delay
 
 /**
- * 辅助控制 3D 视觉反馈:
- * - 雨刷(Wiper):屏幕边缘画一道半透明 wiper 弧线,2s 来回扫一次
- * - 红外灯(InfraredLight):整画面叠暗绿色滤镜 + 右上角 IR 标识
- * - 加热(Heater):右上角小图标 + 暖色微调
- * - 除雾(Defog):画面四角"清晰"指示
- * - 制冷(Cooler):右上角冷蓝指示
+ * 辅助控制视觉反馈 —— 只有雨刷一项。
  *
- * 多个 Aux 同时 ON 不冲突,叠加显示.
+ * - 雨刷(Wiper):屏幕边缘画一道半透明 wiper 弧线,2s 来回扫一次
+ *
+ * ⛔ 红外灯 / 加热 / 除雾 / 制冷的叠加已移除(2026-09-21):它们对应的辅助开关编号
+ * (2~5)在 GB/T 28181 A.3.7(表 A.11)里没有语义,标准只钉了编号 1 = 雨刷。
+ * 保留叠加等于替标准"发明"了四种开关,与本仓只做标准的定位冲突。
  */
 @Composable
 internal fun AuxFeedbackOverlay(state: DeviceControlDto, modifier: Modifier = Modifier) {
     val wiperOn = state.auxStates[AuxFunction.Wiper.index] == true
-    val irOn = state.auxStates[AuxFunction.InfraredLight.index] == true
 
     Box(modifier = modifier) {
-        // 红外灯滤镜:整画面叠暗绿色 0.18 alpha + 中心十字
-        if (irOn) {
-            val alpha by animateFloatAsState(
-                targetValue = if (irOn) 1f else 0f,
-                animationSpec = tween(400),
-                label = "ir-filter"
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0xFF0BAA50).copy(alpha = 0.18f * alpha))
-            )
-            // 右上角 IR 角标
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(10.dp),
-                shape = RoundedCornerShape(4.dp),
-                color = Color(0xFF0BAA50).copy(alpha = 0.9f * alpha),
-                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.4f))
-            ) {
-                Text(
-                    "IR 夜视",
-                    color = Color.White,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
-                )
-            }
-        }
-
         // 雨刷:Canvas 画一道弧线 wiper,2s 来回扫
         if (wiperOn) {
             val infinite = rememberInfiniteTransition(label = "wiper")

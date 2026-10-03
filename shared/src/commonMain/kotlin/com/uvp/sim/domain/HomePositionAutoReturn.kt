@@ -52,6 +52,13 @@ internal fun decideHomePositionReturn(
     // 直到他停掉巡航、或 ResetTime 从**巡航停止之后**重新计时。
     if (model.activeCruiseTrack != null) return null
 
+    // ⛔ 扫描进行中**同样不做**自动归位 —— 同一条理由,而且扫描比巡航更需要这道闸:
+    //    扫描是**匀速往复**,它一路占着 `Model.panSpeed`(渲染端逐帧积分),速率恒定 ⇒
+    //    `CameraActivity` 的二元组 `(lastCommand 时间戳, 是否正在转)` 在整段扫描期间**不再变化**,
+    //    空闲倒计时会照常累加。没有这道闸,`ResetTime` 一到看守位就会把镜头从扫描中途拽走,
+    //    下一拍扫描又把速率写回来 —— 两个自主行为抢同一个 panSpeed,画面来回抽搐。
+    if (model.activeScanGroup != null) return null
+
     if (!model.homePositionEnabled) return null
 
     // ResetTime 是"等多久",0 在这套语义里没有可用含义 —— 平台侧也只在 >= 10 时才允许

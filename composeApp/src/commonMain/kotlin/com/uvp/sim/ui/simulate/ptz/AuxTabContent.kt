@@ -10,12 +10,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.AcUnit
-import androidx.compose.material.icons.outlined.CleaningServices
-import androidx.compose.material.icons.outlined.LocalFireDepartment
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.WaterDrop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -33,24 +30,36 @@ import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.simulate.useTickingNow
 
 /**
- * 辅助 Tab — 5 个开关图标(雨刷 / 红外灯 / 加热 / 除雾 / 制冷).
+ * 辅助 Tab —— **只有雨刷一个开关**。
+ *
+ * ⛔ 不是"漏了"红外灯/加热/除雾/制冷:GB/T 28181-2022 A.3.7(表 A.11)全节唯一的语义注
+ * 只钉了「取值为"1"表示雨刷控制」,编号 2~5 在标准里没有定义(2026-09-21 收敛)。
+ * 底部那行小字就是这条边界的界面化 —— 免得下次又有人问"辅助页怎么只剩一个"。
  */
 @Composable
 internal fun AuxTabContent(state: DeviceControlDto) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        for (func in AuxFunction.entries) {
-            val on = state.auxStates[func.index] == true
-            val sinceMs = state.auxTimestamps[func.index]
+    val wiper = AuxFunction.Wiper
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             AuxToggle(
-                func = func,
-                on = on,
-                sinceMs = sinceMs,
-                modifier = Modifier.weight(1f),
+                func = wiper,
+                on = state.auxStates[wiper.index] == true,
+                sinceMs = state.auxTimestamps[wiper.index],
+                // 单卡不占满整行 —— 铺满会把一个 20dp 的图标撑成一条"横幅",
+                // 与「辅助开关」这种点一下的小动作不成比例。
+                modifier = Modifier.width(96.dp),
             )
         }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "GB/T 28181 A.3.7(表 A.11)只定义编号 1 = 雨刷;其余辅助开关编号不在标准内",
+            fontSize = 9.sp,
+            color = UvpColor.TextHint,
+            lineHeight = 13.sp,
+        )
     }
 }
 
@@ -121,8 +130,4 @@ private fun formatDuration(ms: Long): String {
 
 private fun auxIcon(func: AuxFunction): ImageVector = when (func) {
     AuxFunction.Wiper -> Icons.Outlined.WaterDrop
-    AuxFunction.InfraredLight -> Icons.Outlined.Visibility
-    AuxFunction.Heater -> Icons.Outlined.LocalFireDepartment
-    AuxFunction.Defog -> Icons.Outlined.CleaningServices
-    AuxFunction.Cooler -> Icons.Outlined.AcUnit
 }

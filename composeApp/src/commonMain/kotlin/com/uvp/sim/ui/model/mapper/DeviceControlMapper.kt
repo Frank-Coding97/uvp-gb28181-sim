@@ -8,6 +8,7 @@ import com.uvp.sim.domain.DeviceControlRenderState
 import com.uvp.sim.domain.DragZoomRect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.domain.ScanGroupState
 import com.uvp.sim.domain.StorageCard
 import com.uvp.sim.domain.StorageCardReading
 import com.uvp.sim.domain.StorageCardStatus
@@ -30,6 +31,7 @@ import com.uvp.sim.ui.model.LastDeviceCommandDto
 import com.uvp.sim.ui.model.PanDirectionDto
 import com.uvp.sim.ui.model.PtzCommandDto
 import com.uvp.sim.ui.model.PtzPoseDto
+import com.uvp.sim.ui.model.ScanGroupDto
 import com.uvp.sim.ui.model.TiltDirectionDto
 import com.uvp.sim.ui.model.StorageCardDto
 import com.uvp.sim.ui.model.StorageCardReadingDto
@@ -53,6 +55,13 @@ fun DragZoomRect.toDto(): DragZoomRectDto =
 
 fun CruiseTrackState.toDto(): CruiseTrackDto =
     CruiseTrackDto(points = points, speed = speed, dwellTime = dwellTime)
+
+fun ScanGroupState.toDto(): ScanGroupDto =
+    ScanGroupDto(
+        leftBoundary = leftBoundary?.toDto(),
+        rightBoundary = rightBoundary?.toDto(),
+        speed = speed,
+    )
 
 fun StorageCardStatus.toDto(): StorageCardStatusDto = StorageCardStatusDto.valueOf(name)
 
@@ -146,6 +155,8 @@ fun toDeviceControlDto(
     homePositionResetTime = model.homePositionResetTime,
     cruiseTracks = model.cruiseTracks.mapValues { it.value.toDto() },
     activeCruiseTrack = model.activeCruiseTrack,
+    scanGroups = model.scanGroups.mapValues { it.value.toDto() },
+    activeScanGroup = model.activeScanGroup,
     auxStates = model.auxStates,
     auxTimestamps = model.auxTimestamps,
     lastCommand = model.lastCommand?.toDto(),

@@ -28,7 +28,7 @@ import kotlinx.coroutines.flow.StateFlow
 internal interface ManscdpRouter : Coordinator {
     val events: SharedFlow<ManscdpEvent>
 
-    /** 5.13 / M2 §F.3 设备控制运行时状态(UI 3D 渲染层订阅)。 */
+    /** 5.13 / M2 附录 A.3 设备控制运行时状态(UI 3D 渲染层订阅)。 */
     val deviceControlState: StateFlow<DeviceControlModel>
 
     /** 主动发起 — 报警上报。 */

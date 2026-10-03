@@ -11,8 +11,8 @@ import kotlin.test.assertFalse
  *
  * 8 字节布局:
  *   B0=0xA5  B1=0x0F  B2=0x01(地址)
- *   B3=指令码,分四个子族:
- *     0x81/0x82/0x83 预置位 · 0x84~0x88 巡航 · 0x89/0x8A 扫描·辅助  → 整字节取值
+ *   B3=指令码,分五个子族:
+ *     0x81/0x82/0x83 预置位 · 0x84~0x88 巡航 · 0x89/0x8A 扫描 · 0x8C/0x8D 辅助开关 → 整字节取值
  *     bit7=0 bit6=0 → PTZ 族(表 A.5): bit0=右 bit1=左 bit2=下 bit3=上 bit4=放大 bit5=缩小
  *     bit7=0 bit6=1 → FI 族(表 A.6):  bit3/bit2=光圈缩小/放大 · bit1/bit0=聚焦近/远
  *   B4=数据1: PTZ 族 = 水平速度 / FI 族 = **聚焦**速度
@@ -131,7 +131,7 @@ class PtzCmdDecoderTest {
         assertNull(PtzCmdDecoder.decode("A50F01023200ZZ00"))
     }
 
-    // ---------- 预置位 (GB-2022 §F.3 byte3 高 4 位 = 0x8) ----------
+    // ---------- 预置位 (GB-2022 附录 A.3.4,字节4(bytes[3]) = 0x81/0x82/0x83) ----------
 
     @Test
     fun `预置位 SetPreset 编号 3`() {
@@ -285,19 +285,25 @@ class PtzCmdDecoderTest {
 
     @Test
     fun `decodeInstruction 对标准未定义的字节4返回 null 而不是猜成某个动作`() {
-        // 0x91:bit7=1 且不属于 0x81~0x8A(预置位/巡航/扫描·辅助),掉在标准没定义的空隙里;
+        // 0x91:bit7=1 且不属于 0x81~0x8D(预置位/巡航/扫描/辅助开关),掉在标准没定义的空隙里;
         // 也不可能是 FI 族(表 A.6 把该族高 4 位钉死在 0100B,0x91 的 bit6=0)。
         // 原实现让这类字节落进 PTZ 按位拆解,凭空造出「右转 + 放大 + 聚焦近」三个动作。
         val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x91, 0x32, 0x00, 0x80)
         assertNull(PtzCmdDecoder.decodeInstruction(hex))
     }
 
-    // ---------- 辅助控制 (GB-2022 §F.3 byte3 = 0x89 / 0x8A) ----------
+    // ---------- 辅助开关(GB/T 28181-2022 表 A.11:0x8C 开 / 0x8D 关)----------
+    //
+    // ⛔ 帧是**硬编码**的,不用 helper 现算 —— helper 和解码器一起错会互相印证(本仓
+    //    `presetHex`/`cruiseHex` 都踩过)。下面四帧按表 A.11 手算:
+    //    字节4=0x8C/0x8D、字节5=开关编号(标准注:1=雨刷),校验和 = 前 7 字节和 mod 256。
+    //
+    // ⛔⛔ 这一族曾经**被写成 0x89/0x8A**(扫描的码),于是平台点「开始扫描」设备去开了雨刷。
+    //     下面三条用例就是那个回归的锚点:帧里的 0x8C/0x8D 一旦被改回 0x89/0x8A,它们必红。
 
     @Test
-    fun `Aux On 雨刷 byte4 eq 1`() {
-        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x89, 0x01, 0x00, 0x00)
-        val ins = PtzCmdDecoder.decodeInstruction(hex)
+    fun `辅助开关 开雨刷 — 表A11 0x8C 字节5=1`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018C01000042")
         assertTrue(ins is PtzInstruction.Aux, "expected Aux, got $ins")
         ins as PtzInstruction.Aux
         assertTrue(ins.on)
@@ -306,24 +312,123 @@ class PtzCmdDecoderTest {
     }
 
     @Test
-    fun `Aux Off 加热 byte4 eq 3`() {
-        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x8A, 0x03, 0x00, 0x00)
-        val ins = PtzCmdDecoder.decodeInstruction(hex)
+    fun `辅助开关 关雨刷 — 表A11 0x8D 字节5=1`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018D01000043")
         assertTrue(ins is PtzInstruction.Aux)
         ins as PtzInstruction.Aux
         assertFalse(ins.on)
-        assertEquals(3, ins.index)
-        assertEquals(AuxFunction.Heater, AuxFunction.fromIndex(ins.index))
+        assertEquals(1, ins.index)
+        assertEquals(AuxFunction.Wiper, AuxFunction.fromIndex(ins.index))
     }
 
     @Test
-    fun `Aux 未知 index 仍解码成功 由 dispatcher 决定语义`() {
-        val hex = hex7ChecksumHex(0xA5, 0x0F, 0x01, 0x89, 0xEE, 0x00, 0x00)
-        val ins = PtzCmdDecoder.decodeInstruction(hex)
+    fun `辅助开关 编号 2~5 不属国标 — 帧能解,但没有标准语义`() {
+        // 字节5 是 `00H~FFH` 的**开放编号** ⇒ 帧本身合法,解码器仍要返回 Aux(不能拒收)。
+        // 但 GB/T 28181 A.3.7(表 A.11)全节唯一一条语义注只写「取值为"1"表示雨刷控制」,
+        // 编号 2~5 在标准里没有定义 ⇒ fromIndex 必须为 null。
+        // ⛔ 不允许再把它们映射成"红外灯 / 加热 / 除雾 / 制冷"——那是厂商私有编号,
+        //   2026-09-21 已从 AuxFunction 移除(见该枚举的 KDoc)。
+        val frames = listOf(
+            2 to "A50F018C02000043",
+            3 to "A50F018C03000044",
+            4 to "A50F018C04000045",
+            5 to "A50F018C05000046",
+        )
+        for ((index, hex) in frames) {
+            val ins = PtzCmdDecoder.decodeInstruction(hex)
+            assertTrue(ins is PtzInstruction.Aux, "编号 $index 的帧应当仍被解成 Aux")
+            ins as PtzInstruction.Aux
+            assertEquals(index, ins.index)
+            assertNull(AuxFunction.fromIndex(index), "编号 $index 在标准里没有语义")
+        }
+    }
+
+    @Test
+    fun `辅助开关 未知编号仍解码成功 由 dispatcher 决定语义`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018C630000A4")
         assertTrue(ins is PtzInstruction.Aux)
         ins as PtzInstruction.Aux
-        assertEquals(0xEE, ins.index)
-        assertNull(AuxFunction.fromIndex(0xEE))  // 没有映射
+        assertEquals(0x63, ins.index)
+        assertNull(AuxFunction.fromIndex(0x63))  // 没有映射
+    }
+
+    // ---------- 自动扫描(GB/T 28181-2022 表 A.10:0x89 / 0x8A)----------
+    //
+    // ⛔ 前四帧是**平台真实下发的字节**,2026-09-20 从 `gb_sip_trace_message` 解密取得
+    //    (平台 `PTZActionScan*` → `BuildExtendedPTZControlWithProfile`),不是按解码器的
+    //    假设现算的 —— 这样"平台写出来的"和"设备读出来的"才是两件独立的事。
+    //
+    // ⛔⛔ `0x89` **一个指令码管三件事**,子动作在**字节6**(00 开始/01 左边界/02 右边界)。
+    //     按"一个动作一个码"的直觉去写,会让三种动作全被解成同一种。
+
+    @Test
+    fun `扫描 开始 — 平台真实帧 0x89 字节6=00`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F01890000003E")
+        // ⛔ 断言必须写在 `as` smart cast **之前**:一旦 `ins` 被缩窄成 Scan,`ins is Aux` 就是
+        //    编译器能静态判定为 false 的恒假式(会报 "Check for instance is always 'false'"),
+        //    断言看着绿,其实一个字节都没守。
+        assertFalse(ins is PtzInstruction.Aux, "扫描帧不得被解成辅助开关")
+        assertTrue(ins is PtzInstruction.Scan, "expected Scan, got $ins")
+        ins as PtzInstruction.Scan
+        assertEquals(ScanOp.START, ins.op)
+        // ⭐ 组号 0 是**合法组号**(表 A.10 注1:00H~FFH),别照巡航族"组号 0 = 停止"去处理:
+        //    平台默认就用 0 号组,把 0 当停止会让默认路径上的开始扫描永远不生效。
+        assertEquals(0, ins.groupNum)
+    }
+
+    @Test
+    fun `扫描 开始 带非零组号`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F01890100003F")
+        assertTrue(ins is PtzInstruction.Scan)
+        ins as PtzInstruction.Scan
+        assertEquals(ScanOp.START, ins.op)
+        assertEquals(1, ins.groupNum)
+    }
+
+    @Test
+    fun `扫描 设左边界 — 0x89 字节6=01`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F01890001003F")
+        assertTrue(ins is PtzInstruction.Scan)
+        ins as PtzInstruction.Scan
+        assertEquals(ScanOp.SET_LEFT_BOUNDARY, ins.op)
+        assertEquals(0, ins.groupNum)
+    }
+
+    @Test
+    fun `扫描 设右边界 — 0x89 字节6=02`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018900020040")
+        assertTrue(ins is PtzInstruction.Scan)
+        ins as PtzInstruction.Scan
+        assertEquals(ScanOp.SET_RIGHT_BOUNDARY, ins.op)
+        assertEquals(0, ins.groupNum)
+    }
+
+    @Test
+    fun `扫描 设速度 — 平台真实帧 0x8A 12位载荷`() {
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018A007800B7")
+        assertTrue(ins is PtzInstruction.Scan)
+        ins as PtzInstruction.Scan
+        assertEquals(ScanOp.SET_SPEED, ins.op)
+        assertEquals(0, ins.groupNum)
+        assertEquals(120, ins.param)
+    }
+
+    @Test
+    fun `扫描 速度高4位从字节7拼回 — 300 不能读成 44`() {
+        // 与巡航 0x86 那个锚点(`A50F0186012C1078` → 300)同形:低 8 位在字节6(0x2C)、
+        // 高 4 位在字节7 高半字节(0x1)。只取 bytes[5] 的实现在这里会读成 44。
+        val ins = PtzCmdDecoder.decodeInstruction("A50F018A002C107B")
+        assertTrue(ins is PtzInstruction.Scan)
+        ins as PtzInstruction.Scan
+        assertEquals(ScanOp.SET_SPEED, ins.op)
+        assertEquals(300, ins.param)
+    }
+
+    @Test
+    fun `扫描 未定义的子动作返回 null 而不是猜成开始扫描`() {
+        // 字节6=03H 在表 A.10 里没有定义。猜成"开始扫描"是最坏的一种猜法 ——
+        // 球机会真的自己转起来,而且平台侧看起来一切正常。
+        assertNull(PtzCmdDecoder.decodeInstruction("A50F018900030041"))
     }
 
     // ---------- FI 族(GB/T 28181-2022 表 A.6:聚焦 / 光圈)----------

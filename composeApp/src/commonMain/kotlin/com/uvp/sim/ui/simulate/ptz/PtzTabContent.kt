@@ -48,6 +48,7 @@ import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.model.CruiseTrackDto
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.PtzPoseDto
+import com.uvp.sim.ui.model.ScanGroupDto
 import kotlinx.coroutines.delay
 
 /**
@@ -63,9 +64,12 @@ import kotlinx.coroutines.delay
  *     └──────┘   └─────────┘   │ [近][远] │
  *  ③ 预置位  [P1]…[P8]
  *  ④ 看守位  ● 已启用 · 指向 P3 · 归位 30s        平台下发
- *  ⑤ 巡航    [#1 ▶ 1→3→5] [#2 · 2→4] [+3]        平台下发(可对账,超出上限只报数)
+ *  ⑤ 自主    [#1 ▶ 1→3→5] [扫描#0 ▶ -20°↔40°·120]  平台下发(可对账,超出上限只报数)
  *            #1 运行中 · 每点停留 30s · 速度 128
  * ```
+ *
+ * ⑤ 这一行同时装**巡航**与**扫描**(两者互斥:扫描启动清巡航、巡航启动清扫描)。扫描那枚
+ * chip 是**唯一**能对账扫描边界的地方 —— 附录 A 里没有 `ScanQuery`,平台上永远只有"指令已下发"。
  *
  * **可交互 vs 只读**:方向盘(水平/俯仰)、变焦 −/+、光圈 −/+、聚焦 近/远 都是本机可操作的;
  * 读数、预置位、看守位仍是平台侧状态的**只读回显**(spec AC2)。设备端不提供预置位/看守位的
@@ -228,13 +232,26 @@ internal fun PtzTabContent(
         // ④ 看守位(GB/T 28181-2016 控制 / 2022 才补查询)
         HomePositionCard(state)
 
-        // ⑤ 巡航轨迹(平台设过才有)
+        // ⑤ 自主行为:巡航轨迹 / 自动扫描(平台设过才有)
         //
-        // 这一块存在的意义是**对账**:平台点完"开始巡航",操作员在设备屏幕上核对
-        // 「#几在跑 / 点位链是不是我排的那个顺序 / 停留与速度有没有真的落下来」。
+        // 这一块存在的意义是**对账**:平台点完"开始巡航 / 开始扫描",操作员在设备屏幕上核对
+        // 「#几在跑 / 点位链是不是我排的那个顺序 / 边界与速度有没有真的落下来」。
         // 所以 chip 直接铺出自控层追出来的点位链(`#1 · 1→3→5`)—— 原来写的是 `T1·3`,
         // 只能看出"有几条、每条几个点",看不出**是哪几个点、什么顺序**,等于没回显。
-        if (state.cruiseTracks.isNotEmpty()) {
+        //
+        // ⛔⛔ 扫描**必须与巡航挤在同一行**(2026-09-20 真机实测后改):它原先是独立的第 ⑥ 块,
+        //    自带 label 行 + 6dp 间隔,实测把内容从 271dp 顶到约 297dp —— 而这一块的高度是
+        //    **定高 284dp、不滚动**的硬预算,超出部分被直接裁掉,裁掉的正是**扫描那整行**:
+        //    界面上完全看不到它(语义树里也没有),而它恰恰是"唯一能对账扫描边界"的一行
+        //    (理由见 [ScanGroupChip])。并成同一行后**总行数不变** ⇒ 零高度增长,
+        //    HUD 与画布的高度分配不用动(⛔ `PtzHudPanel` 那边写着"再加高就得重新分配画布高度")。
+        // ⛔ 并行的前提是**横向也算得过来**:巡航 chip 最坏(链取满 [CRUISE_HUD_CHAIN_HEAD] 个
+        //    编号)约 357px、扫描 chip 约 378px、label 58px —— 两枚巡航 chip 加扫描会到
+        //    ~1135px,而内容区宽只有 ~1030px,FlowRow 一换行就等于又长出一行。
+        //    这正是 [CRUISE_HUD_MAX_CHIPS] 从 2 降到 1 的原因:巡航的完整信息在**平台上**
+        //    看得到,HUD 只负责"设备这边到底是什么样";而扫描**平台读不回来**,不能让。
+        val scanGroupNum = state.activeScanGroup ?: state.scanGroups.keys.minOrNull()
+        if (state.cruiseTracks.isNotEmpty() || scanGroupNum != null) {
             Spacer(Modifier.height(6.dp))
             val tracks = state.cruiseTracks.entries.sortedBy { it.key }
             // 运行中的那条**排最前** —— HUD 这一块是给对账用的,而"哪条在跑"才是对账对象;
@@ -243,12 +260,15 @@ internal fun PtzTabContent(
             val shown = ordered.take(CRUISE_HUD_MAX_CHIPS)
             val hidden = ordered.size - shown.size
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("巡航")
+                // label 是「自主」而不是「巡航」:这一行现在同时承载巡航与扫描两类**设备自主行为**
+                // (两者互斥 —— 扫描启动清巡航、巡航启动清扫描,见 `PtzHandler`)。
+                SectionLabel("自主")
                 Spacer(Modifier.width(8.dp))
                 // ⛔ 必须**限量**(见 CRUISE_HUD_MAX_CHIPS),不能把全部轨迹都铺出来。
-                //    HUD 是**定高 Box、不滚动**(284dp,余量约 13dp),多出来的行会被直接裁掉 ——
-                //    被裁的偏偏是下面那行"运行中 · 停留/速度",也就是这块最该被看到的东西。
-                //    加 FlowRow 只是第二道保险(横向放不下时换行而不是把 chip 顶出可视区)。
+                //    HUD 是**定高 Box、不滚动**,多出来的行会被直接裁掉,而且被裁的偏偏是
+                //    下面那行"运行中 · 停留/速度",也就是这块最该被看到的东西。
+                //    FlowRow 是第二道保险(横向放不下时换行而不是把 chip 顶出可视区),
+                //    但**换行 = 多一行 = 又超预算**,所以横向也必须是算得过来的(见块首注释)。
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -264,10 +284,18 @@ internal fun PtzTabContent(
                         // 只说"还有几条想看就得进平台",不放按钮 —— HUD 是只读回显面,不是编辑器。
                         CruiseOverflowChip(hidden)
                     }
+                    if (scanGroupNum != null) {
+                        ScanGroupChip(
+                            groupNum = scanGroupNum,
+                            group = state.scanGroups[scanGroupNum],
+                            scanning = state.activeScanGroup == scanGroupNum,
+                        )
+                    }
                 }
             }
             // 运行中那条的组级参数单独一行。速度/停留时间是**组级**的(见 CruiseTrackDto),
             // 所以这里只说一次,不逐点标 —— 免得看起来像"每个点都能单独设"。
+            // ⚠️ 只有**巡航**需要这一行:扫描的速度已经写在它的 chip 里了,再单列一行会超预算。
             val runningNum = state.activeCruiseTrack
             val running = runningNum?.let { num -> tracks.firstOrNull { it.key == num }?.value }
             if (running != null) {
@@ -285,17 +313,79 @@ internal fun PtzTabContent(
     }
 }
 
-/** 一块分区(预置位 / 巡航 / 看守位)在 HUD 里能占的高度是**硬预算** —— HUD 是定高
+/**
+ * 扫描组 chip(GB/T 28181 表 A.10)。
+ *
+ * ⭐ 它比巡航 chip 更**必须**出现在设备屏幕上:附录 A 里**没有任何查询命令**能回读扫描的
+ * 边界与速度(没有 `ScanQuery`;`A.2.6.15` 的 PTZ 精准状态查询只回 Pan/Tilt/Zoom/视场角),
+ * 平台上永远只有"指令已下发"。这一枚 chip 是**唯一**能确认"边界真的存下来了、而且是这一段"
+ * 的地方 —— 所以边界缺席时**如实写"未设"**,不回落成 0°:0° 是个合法边界值,拿它兜底会让人
+ * 以为设过了,而扫描仍会因"跨度不足"原地不动,现象与"边界没设"完全一样却更难查
+ * (见 `ScanExecution.scanStepAt` 的四种不动情形)。
+ *
+ * 文案刻意压到最短(`扫描#0 ▶ -105°↔40°·120`,约 378px):它是与巡航 chip 挤在同一行的第三枚,
+ * 宽度直接决定会不会换行、而换行就等于超 HUD 预算(见调用处注释)。所以省掉了"左/右/速度"
+ * 这些字 —— `↔` 左边是左边界,直觉可读。缺边界时只报"缺边界",不铺半截数据。
+ */
+@Composable
+private fun ScanGroupChip(groupNum: Int, group: ScanGroupDto?, scanning: Boolean) {
+    val sweepable = group?.leftBoundary != null && group?.rightBoundary != null
+    val text = when {
+        // 「扫描中」与「已启动」必须分开:标准里"开始扫描"只是一条指令,缺边界时设备**停在原地**
+        // (见 SimulatorEngine 的告警日志),这时写"扫描中"就是设备替自己编一句没发生的事。
+        scanning && !sweepable -> "扫描#$groupNum ▶ 缺边界"
+        else -> buildString {
+            append("扫描#$groupNum")
+            if (scanning) append(" ▶")
+            append(" ").append(scanBoundaryText(group?.leftBoundary))
+            append("↔").append(scanBoundaryText(group?.rightBoundary))
+            append("·").append(group?.speed?.toString() ?: "速度未下发")
+        }
+    }
+    val bg = if (scanning) UvpColor.Primary else UvpColor.BorderLight
+    val fg = if (scanning) Color.White else UvpColor.TextSecondary
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(99.dp))
+            .background(bg)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text,
+            color = fg,
+            fontSize = 9.sp,
+            lineHeight = 12.sp,
+            maxLines = 1,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+/**
+ * 扫描边界角的显示文案。`null` = 平台没设过这一侧 —— 如实写"未设",**不回落成 0°**:
+ * 0° 是个合法边界值,拿它兜底会让人以为边界已经设过,而扫描仍会因"跨度不足"原地不动 ——
+ * 现象与"边界没设"完全一样,却更难查(见 `ScanExecution.scanStepAt` 的四种不动情形)。
+ */
+private fun scanBoundaryText(pose: PtzPoseDto?): String =
+    pose?.let { formatPose(it.pan, "°") + "°" } ?: "未设"
+
+/** 一块分区(预置位 / 自主行为)在 HUD 里能占的高度是**硬预算** —— HUD 是定高
  *  `Box`(284dp)、**不滚动**,超出来的行被直接裁掉,而且被裁的往往是最后那行
  *  (巡航的"运行中 · 停留/速度")。所以巡航这块**限量显示**:
  *
  *  - [CRUISE_HUD_MAX_CHIPS] 条轨迹 chip(运行中的永远排第一,截掉的只会是旁观项);
  *  - 每条 chip 里的点位链最多 [CRUISE_HUD_CHAIN_HEAD] 个编号,多出来的用 `…`。
  *
- *  两道限制都是为了让这一块**高度可预测**:最坏情况 ≈ label(34) + 2 chip(94×2) +
- *  overflow(40) + 间距 ≈ 270dp 以内,横向放得下就不会换行。
- *  完整信息在平台上能看到,HUD 只负责"设备这边到底是什么样"的对账。 */
-private const val CRUISE_HUD_MAX_CHIPS = 2
+ *  两道限制都是为了让这一块**高度可预测**:横向放得下就不会换行,
+ *  而**一换行就多一行、直接超预算**。完整信息在平台上能看到,
+ *  HUD 只负责"设备这边到底是什么样"的对账。
+ *
+ * ⛔ 2026-09-20 `2 → 1`。原因不是高度而是**宽度** —— 扫描 chip(约 378px)必须与巡航 chip
+ *    挤在同一行(理由见调用处),而「两枚满链巡航 chip + 扫描 + label」约 1135px,超过
+ *    内容区宽 ~1030px,FlowRow 一换行就等于又长出一行,等于把扫描那行重新裁掉。
+ *    取舍依据:巡航信息在**平台上看得到**,而扫描**平台读不回来**(附录 A 无 `ScanQuery`),
+ *    所以让的是巡航的旁观项,不是扫描。 */
+private const val CRUISE_HUD_MAX_CHIPS = 1
 
 /** chip 内点位链最多显示几个编号。链条长到 8 个以上时 chip 会横跨大半屏,挤掉别的 chip。 */
 private const val CRUISE_HUD_CHAIN_HEAD = 6

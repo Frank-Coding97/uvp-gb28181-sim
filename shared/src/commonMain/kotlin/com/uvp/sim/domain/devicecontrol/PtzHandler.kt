@@ -6,6 +6,7 @@ import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.DragZoomRect
 import com.uvp.sim.domain.LastDeviceCommand
 import com.uvp.sim.domain.PtzPose
+import com.uvp.sim.domain.ScanGroupState
 import com.uvp.sim.gb28181.CruiseOp
 import com.uvp.sim.gb28181.FocusDirection
 import com.uvp.sim.gb28181.IrisDirection
@@ -15,6 +16,7 @@ import com.uvp.sim.gb28181.PtzCmdDecoder
 import com.uvp.sim.gb28181.PtzCommand
 import com.uvp.sim.gb28181.PtzInstruction
 import com.uvp.sim.gb28181.PtzPreciseCtrlParser
+import com.uvp.sim.gb28181.ScanOp
 import com.uvp.sim.gb28181.TiltDirection
 import com.uvp.sim.gb28181.ZoomDirection
 import com.uvp.sim.gb28181.configBlockBody
@@ -66,6 +68,7 @@ internal class DefaultPtzHandler(
             is PtzInstruction.Preset -> presetHandler.handlePtzPreset(ins, hex, presetName)
             is PtzInstruction.Aux -> auxHandler.handlePtzAux(ins, hex)
             is PtzInstruction.Cruise -> handlePtzCruise(ins, hex, cruiseTrackName)
+            is PtzInstruction.Scan -> handlePtzScan(ins, hex)
             // 校验失败 / 标准未定义该字节4(null)→ 不猜语义,200 OK 由 ack 兜底
             null -> Unit
         }
@@ -85,17 +88,25 @@ internal class DefaultPtzHandler(
         //    不在这里清 `activeCruiseTrack` 的话，云台会被这条帧停住、但设备仍然标着"运行中"，
         //    而且巡航执行协程下一拍会接着往下一个点转过去 —— 现场表现是**"停不掉"**。
         val stoppedCruise = ptz.isFullStop && state.value.activeCruiseTrack != null
+        // 扫描与巡航共用同一条停止帧(标准里两者都没有专用停止码,见 `isFullStop`)。
+        val stoppedScan = ptz.isFullStop && state.value.activeScanGroup != null
         state.update {
             it.copy(
                 panSpeed = mapPanSpeed(ptz),
                 tiltSpeed = mapTiltSpeed(ptz),
                 zoomSpeed = mapZoomSpeed(ptz),
                 activeCruiseTrack = if (stoppedCruise) null else it.activeCruiseTrack,
+                activeScanGroup = if (stoppedScan) null else it.activeScanGroup,
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), ptz)
             )
         }
         if (stoppedCruise) {
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "巡航停止：收到全零停止指令")
+        }
+        if (stoppedScan) {
+            // 这条同时是对账线索:扫描是个**设备自主行为**,平台侧只能看到自己发过停止帧,
+            // 没有这条日志就无从判断设备到底停没停(与巡航停止同一取舍)。
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "扫描停止：收到全零停止指令")
         }
     }
 
@@ -130,7 +141,7 @@ internal class DefaultPtzHandler(
         }
     }
 
-    /** 巡航 CRUD (GB-2022 §F.3 byte3=0x84-0x88). */
+    /** 巡航 CRUD (GB-2022 附录 A.3.5,字节4(bytes[3])=0x84-0x88). */
     private fun handlePtzCruise(p: PtzInstruction.Cruise, hex: String, cruiseTrackName: String?) {
         val now = nowMs()
         when (p.op) {
@@ -194,6 +205,9 @@ internal class DefaultPtzHandler(
                 state.update {
                     it.copy(
                         activeCruiseTrack = if (p.trackNum == 0) null else p.trackNum,
+                        // ⛔ 与扫描互斥(反向的那一半在 handlePtzScan):一台设备的云台只有一套,
+                        //    巡航和扫描同时驱动会互相抢 panSpeed / 姿态。开始巡航即停掉扫描。
+                        activeScanGroup = null,
                         lastCommand = LastDeviceCommand(
                             "PTZCmd",
                             if (p.trackNum == 0) "巡航停止" else "巡航 #${p.trackNum} 启动",
@@ -201,6 +215,64 @@ internal class DefaultPtzHandler(
                         )
                     )
                 }
+            }
+        }
+    }
+
+    /**
+     * 自动扫描 (GB/T 28181 表 A.10) —— 四个子动作。
+     *
+     * 4 个子动作里**只有"开始"会让球机动起来**,而且真正让它动的不是这里 —— 是
+     * [com.uvp.sim.domain.SimulatorEngine] 的扫描节拍(设备自主行为,标准没有任何执行进度上报)。
+     * 这里只落状态:设边界 = 把此刻姿态记下来(本身不动镜头)、设速度 = 存 12 位原值。
+     *
+     * ⛔ 设边界**必须用设备自己的 `panAngle`**:标准的设边界指令没有数值入参(表 A.10 序号 2/3
+     * 的字节6 只是子动作码 01H/02H),设备只能快照自己当前朝向 —— 平台也没法从外面写一个角度进来。
+     */
+    private fun handlePtzScan(scan: PtzInstruction.Scan, hex: String) {
+        val now = nowMs()
+        when (scan.op) {
+            ScanOp.SET_LEFT_BOUNDARY -> state.update { s ->
+                val group = s.scanGroups[scan.groupNum] ?: ScanGroupState()
+                val pose = PtzPose(s.panAngle, s.tiltAngle, s.zoomLevel)
+                s.copy(
+                    scanGroups = s.scanGroups + (scan.groupNum to group.copy(leftBoundary = pose)),
+                    // 只记边界,不发 pendingEffect —— 设边界不该让镜头动一下(真机也不动)。
+                    lastCommand = LastDeviceCommand(
+                        "PTZCmd",
+                        "扫描 #${scan.groupNum} 设左边界 pan=${pose.pan}",
+                        now,
+                    ),
+                )
+            }
+            ScanOp.SET_RIGHT_BOUNDARY -> state.update { s ->
+                val group = s.scanGroups[scan.groupNum] ?: ScanGroupState()
+                val pose = PtzPose(s.panAngle, s.tiltAngle, s.zoomLevel)
+                s.copy(
+                    scanGroups = s.scanGroups + (scan.groupNum to group.copy(rightBoundary = pose)),
+                    lastCommand = LastDeviceCommand(
+                        "PTZCmd",
+                        "扫描 #${scan.groupNum} 设右边界 pan=${pose.pan}",
+                        now,
+                    ),
+                )
+            }
+            ScanOp.SET_SPEED -> state.update { s ->
+                val group = s.scanGroups[scan.groupNum] ?: ScanGroupState()
+                s.copy(
+                    scanGroups = s.scanGroups + (scan.groupNum to group.copy(speed = scan.param)),
+                    lastCommand = LastDeviceCommand("PTZCmd", "扫描 #${scan.groupNum} 速度=${scan.param}", now),
+                )
+            }
+            ScanOp.START -> state.update { s ->
+                s.copy(
+                    // ⛔ 扫描与巡航互斥:云台只有一套机械。两个"设备自主行为"同时驱动会互相抢
+                    //    panSpeed / 姿态(巡航每步 ease 到预置位、扫描逐帧积分水平速度),
+                    //    画面变成抽搐。开始扫描即停掉巡航;反方向在 handlePtzCruise 的 START 里。
+                    activeScanGroup = scan.groupNum,
+                    activeCruiseTrack = null,
+                    lastCommand = LastDeviceCommand("PTZCmd", "扫描 #${scan.groupNum} 启动", now),
+                )
             }
         }
     }

@@ -103,8 +103,25 @@ data class DeviceControlModel(
     /** 当前正在执行的巡航轨迹号(null 表示未巡航) */
     val activeCruiseTrack: Int? = null,
 
-    // 辅助控制状态(GB-2022 §F.3 byte3=0x89/0x8A Aux On/Off)
-    // key = AuxFunction.index(1=雨刷 / 2=红外灯 / 3=加热 / 4=除雾 / 5=制冷)
+    /**
+     * GB/T 28181 表 A.10 自动扫描 —— 每个扫描组号的**边界与速度**。
+     * key = 扫描组号(wire 上字节5,`00H~FFH`,标准明确写了是"扫描组号"⇒ 支持多个组)。
+     *
+     * ⛔ 只在设备侧存,**没有任何查询命令能回读它**:附录 A 的查询族里没有 `ScanQuery`
+     * (只有表 A.10 的控制指令),所以平台永远读不回边界值。别在这里为"回读"留钩子。
+     */
+    val scanGroups: Map<Int, ScanGroupState> = emptyMap(),
+
+    /**
+     * 当前正在执行的扫描组号(null = 未扫描)。
+     *
+     * ⚠️ 与 [activeCruiseTrack] 一样**不进存档**:扫描是"平台下发启动**且设备在跑节拍**"
+     * 的会话内状态,冷启动后没有节拍在驱动,恢复它只能得到一条停在原地却标着"扫描中"的假运行态。
+     */
+    val activeScanGroup: Int? = null,
+
+    // 辅助开关状态(GB/T 28181 A.3.7 表 A.11,byte4=0x8C 开 / 0x8D 关,byte5=编号)
+    // key = AuxFunction.index —— **标准只定义了 1 = 雨刷**,其余编号没有语义,不会出现在这里
     // value = true=ON / false=OFF
     val auxStates: Map<Int, Boolean> = emptyMap(),
     /** 辅助开关最近一次状态变更的时间戳(ms),供 UI 显示运行时长. */
@@ -263,7 +280,37 @@ data class CruiseTrackState(
 )
 
 /**
- * 平台控制命令的语义分类(GB-2022 §9.3.4 / §F.3 业务大类)。
+ * 一个扫描组在**设备侧**的配置(GB/T 28181-2022 表 A.10 自动扫描)。
+ *
+ * 三个字段都刻意留 `null` = "平台从未下发过这一项",与"下发过但是这个值"分开 ——
+ * 与 [CruiseTrackState] / 看守位同一口径。设备屏幕上要能说出"右边界还没设",
+ * 而不是拿一个自己编的默认角度冒充。
+ *
+ * ⛔ **边界存的是"当时那个点"的完整位姿**(`PtzPose`),因为标准的设边界指令只说
+ * 「把当前位置设为左/右边界」,没有数值入参 —— 设备只能快照自己此刻的姿态。
+ * 但**横扫只驱动水平轴**:表 A.10 注4 写的是"自动扫描开始时,整体画面从右向左移动",
+ * 即水平线扫;俯仰/倍率留在原地不动(真机的线扫也是这个形态)。
+ *
+ * ⛔ 边界值一律取自设备自己的 `panAngle`,平台**无法**直接写数值进来,也没有任何查询命令
+ * 能把它们读回去(附录 A 没有 `ScanQuery`)。所以这一份数据只服务于"设备此刻在扫哪一段"。
+ */
+data class ScanGroupState(
+    /** 左边界快照(表 A.10 序号2,`0x89` 字节6=01H)。null = 平台没设过。 */
+    val leftBoundary: PtzPose? = null,
+    /** 右边界快照(表 A.10 序号3,`0x89` 字节6=02H)。null = 平台没设过。 */
+    val rightBoundary: PtzPose? = null,
+    /**
+     * 扫描速度,wire 上是 `0x8A` 的 12 位参数(1-4095)。
+     *
+     * ⚠️ **标准只给了"低 8 位 + 高 4 位"的位置,没给单位** —— 它不是 °/s、也不是档位,
+     * 量纲由厂商自定。设备侧如实存原值(查询/回显都报原值),换算成实际转速的地方
+     * 只有一处:[com.uvp.sim.domain.scanRateDegPerSec]。null = 平台从未下发过速度。
+     */
+    val speed: Int? = null,
+)
+
+/**
+ * 平台控制命令的语义分类(GB-2022 §9.3.4 / 附录 A.3 业务大类)。
  *
  * UI 用它派 Tab,不再 parse [LastDeviceCommand.rawHex] 字符串(轨 ④ PR-UI-PROTOCOL-FIX)。
  * 派生逻辑集中在 [deriveCommandCategory],输入 [LastDeviceCommand.type]/[LastDeviceCommand.rawHex],
@@ -276,7 +323,7 @@ enum class DeviceCommandCategory {
     Status,
     /** 强制 I 帧 / 抓拍 / 拉框聚焦 / 设备配置 / 在线升级 / 格式化 SD / 目标跟踪 */
     Image,
-    /** 辅助开关(GB-2022 §F.3 byte3=0x89/0x8A):雨刷 / 红外灯 / 加热 / 除雾 / 制冷 */
+    /** 辅助开关(GB-2022 附录 A.3.7 表 A.11,字节4=0x8C/0x8D):标准只定义编号 1 = 雨刷 */
     Aux,
 }
 
@@ -333,7 +380,7 @@ fun deriveRenderState(model: DeviceControlModel): DeviceControlRenderState =
  * UI 只读语义枚举。
  *
  * 规则(同原 HudTab.fromCommand 行为):
- *   - PTZCmd:rawHex 以"雨刷/红外灯/加热/除雾/制冷/Aux"开头 → [DeviceCommandCategory.Aux];其余 → [Ptz]
+ *   - PTZCmd:rawHex 以"雨刷"开头(已映射)或以"Aux"开头(未映射编号)→ [DeviceCommandCategory.Aux];其余 → [Ptz]
  *   - PTZPreciseCtrl → [Ptz]
  *   - RecordCmd / GuardCmd / AlarmCmd / TeleBoot → [Status]
  *   - IFameCmd / IFrameCmd / SnapShotCmd / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack → [Image]
@@ -343,9 +390,10 @@ fun deriveRenderState(model: DeviceControlModel): DeviceControlRenderState =
 fun deriveCommandCategory(cmd: LastDeviceCommand): DeviceCommandCategory? = when (cmd.type) {
     "PTZCmd" -> {
         val raw = cmd.rawHex
-        val isAux = raw.startsWith("雨刷") || raw.startsWith("红外灯") ||
-            raw.startsWith("加热") || raw.startsWith("除雾") ||
-            raw.startsWith("制冷") || raw.startsWith("Aux")
+        // ⛔ 只认标准命名的「雨刷」+ 未映射编号统一打的「Aux」前缀(见 AuxHandler)。
+        //    红外灯/加热/除雾/制冷 已随 AuxFunction 收敛移除(GB/T 28181 A.3.7 只定义编号 1),
+        //    不再作为类别判据 —— 判据跟着协议走,不能跟着"曾经写过的厂商标号"走。
+        val isAux = raw.startsWith("雨刷") || raw.startsWith("Aux")
         if (isAux) DeviceCommandCategory.Aux else DeviceCommandCategory.Ptz
     }
     "PTZPreciseCtrl", "HomePosition" -> DeviceCommandCategory.Ptz

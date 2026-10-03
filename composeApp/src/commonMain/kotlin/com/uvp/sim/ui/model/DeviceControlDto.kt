@@ -80,6 +80,21 @@ data class CruiseTrackDto(
     val dwellTime: Int? = null,
 )
 
+/**
+ * UI 层 扫描组 DTO. 1:1 映射 com.uvp.sim.domain.ScanGroupState.
+ *
+ * ⚠️ 两个边界是**设备当时那个点的完整姿态快照** —— 标准的设边界指令没有数值入参
+ * (表 A.10 序号 2/3 的字节6 只是子动作码),设备只能记下自己此刻的朝向。
+ * 但横扫只驱动水平轴(注4:画面自右向左移动),所以 HUD 只读它们的 `pan`。
+ *
+ * `null` = 平台没设过这一侧(不要回落成 0° —— 那会显示成一个"真边界")。
+ */
+data class ScanGroupDto(
+    val leftBoundary: PtzPoseDto? = null,
+    val rightBoundary: PtzPoseDto? = null,
+    val speed: Int? = null,
+)
+
 /** UI 层 存储卡状态. 1:1 映射 com.uvp.sim.domain.StorageCardStatus(A.2.6.16 的五个小写取值)。 */
 enum class StorageCardStatusDto { Ok, Formatting, Unformatted, Idle, Error }
 
@@ -134,6 +149,15 @@ data class DeviceControlDto(
     val homePositionResetTime: Int? = null,
     val cruiseTracks: Map<Int, CruiseTrackDto> = emptyMap(),
     val activeCruiseTrack: Int? = null,
+    /**
+     * 平台设过边界的**扫描组**(GB/T 28181 表 A.10 自动扫描),key = 扫描组号。
+     *
+     * 空 = 平台从未设过。三个字段各自可空,语义与 `ScanGroupState` 一致 ——
+     * 设备屏幕上要能说出"右边界还没设",而不是拿一个默认角度冒充。
+     */
+    val scanGroups: Map<Int, ScanGroupDto> = emptyMap(),
+    /** 当前正在执行的扫描组号(null = 未扫描)。设备自主行为的运行态,不进存档。 */
+    val activeScanGroup: Int? = null,
     val auxStates: Map<Int, Boolean> = emptyMap(),
     val auxTimestamps: Map<Int, Long> = emptyMap(),
     val lastCommand: LastDeviceCommandDto? = null,

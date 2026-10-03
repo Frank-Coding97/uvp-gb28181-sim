@@ -52,7 +52,7 @@ import com.uvp.sim.ui.simulate.ptz.StatusTabContent
  *   云台: PTZCmd(Motion+Preset) / PTZPreciseCtrl / HomePosition
  *   状态: RecordCmd / GuardCmd / AlarmCmd / TeleBoot
  *   图像: IFameCmd / IFrameCmd / SnapShotCmd / DragZoomIn-Out / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack
- *   辅助: PTZCmd(Aux on/off,byte3=0x89/0x8A)
+ *   辅助: PTZCmd(Aux on/off, byte4=0x8C/0x8D, 编号只在标准里定义 "1" = 雨刷)
  *
  * 2026-06-26 PR-F T1:4 Tab 内容拆到 [ptz] 子包,本文件只保留主入口编排.
  * 2026-06-27 轨 ④ PR-UI-PROTOCOL-FIX:HudTab.fromCommand 不再 parse rawHex,改读
