@@ -224,7 +224,13 @@ internal class RegistrationCoordinatorImpl(
 
     override suspend fun unregister() {
         val completion = mutex.withLock {
-            if (_state.value == RegistrationState.Disconnected) return@withLock null
+            // ⛔ Failed 也要早退(2026-10-03):它是"重试配额用尽"的终态,平台侧从没有过一条
+            // 活着的注册会话 —— 发 Expires=0 只会落到死链上,让调用方空等
+            // UNREGISTER_TIMEOUT_MS(3s)才拿到 false。Disconnected 同理。
+            // 与 `com.uvp.sim.sip.hasActiveRegistration()` 是同一口径。
+            if (_state.value == RegistrationState.Disconnected ||
+                _state.value == RegistrationState.Failed
+            ) return@withLock null
             cancelRegisterTimeoutLocked()
             retryJob?.cancel()
             retryJob = null

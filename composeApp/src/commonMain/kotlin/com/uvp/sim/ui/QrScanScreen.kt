@@ -52,6 +52,7 @@ import com.uvp.sim.config.QrProvisionPayload
 import com.uvp.sim.config.QrTokenParser
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.ui.model.SipStateDto
+import com.uvp.sim.ui.model.hasActiveRegistration
 import kotlinx.coroutines.launch
 
 /** 扫到的码不是本平台的接入码(plan §5.9)。 */
@@ -64,13 +65,20 @@ private const val QR_STATE_BLOCKED = "请先断开连接再扫码配置"
  *
  * 返回 null 表示可进;否则返回拦截提示文案。
  *
- * **只有 `Disconnected` 放行**,`Failed` 也拦:`AppEngine.updateConfig` 在
- * `engine != null` 时会 `disconnect(); connect()`,而 `Failed` 表示"曾连接后失败",
- * engine 可能仍存活 → 回填会触发意外重连。让用户先手动断开,比新增一条 shared
- * 公共 API 更简单,也不影响别的调用方。
+ * **只有"没有活跃注册会话"的态放行** —— 即 `Disconnected` 与 `Failed`
+ * (判据见 [SipStateDto.hasActiveRegistration])。
+ *
+ * 2026-10-03 修复:这里原先只放行 `Disconnected`,把 `Failed` 也拦了。但 `Failed` 态下
+ * 主屏按钮(ConnectButton / StatusCta)显示的是「注册」—— 提示让用户"先断开连接",
+ * UI 上却根本没有这个动作可点,用户于是卡在"点注册 → 再失败 → 扫码被拦"的循环里。
+ * 放行 `Failed` 是安全的:
+ * - `Failed` 是**稳定终态**(重试配额用尽后 `registerRetryCount` 归零、不再调度 retryJob、
+ *   无心跳),不会自己跳回 `Registering`,不存在"扫码期间状态变了"的竞态窗口;
+ * - 回填落盘后由 `AppEngine.updateConfig` 重建会话,它在无活跃会话时走 `cancelConnect()`
+ *   (静默清场),不会给一个打不通的平台白发 Expires=0 再空等 3s。
  */
 fun qrEntryBlockReason(sip: SipStateDto): String? =
-    if (sip == SipStateDto.Disconnected) null else QR_STATE_BLOCKED
+    if (sip.hasActiveRegistration()) QR_STATE_BLOCKED else null
 
 /** [QrFetchResult] → 用户可读文案(plan §5.9)。 */
 fun qrErrorMessage(result: QrFetchResult): String = when (result) {
@@ -137,8 +145,10 @@ fun QrScanScreen(
     PlatformBackHandler(enabled = true, onBack = onClose)
 
     // 进页后状态若变化(例如其它入口触发了连接),直接退出,避免走到落盘阶段才发现。
+    // ⛔ 判据必须与入口 [qrEntryBlockReason] 一致 —— 早先这里写的是 `!= Disconnected`,
+    // 与入口同源,改一处漏一处就会"能进页但一确认就被弹回"。
     LaunchedEffect(state.sip) {
-        if (state.sip != SipStateDto.Disconnected && stage is QrScanStage.Scanning) {
+        if (state.sip.hasActiveRegistration() && stage is QrScanStage.Scanning) {
             toast.warning(QR_STATE_BLOCKED)
             onClose()
         }
@@ -201,7 +211,8 @@ fun QrScanScreen(
                     onConfirm = {
                         val payload = confirming.payload
                         // 确认页停留期间状态可能变了(用例 9.10)—— 再查一次才落盘。
-                        if (state.sip != SipStateDto.Disconnected) {
+                        // 判据同上,三处必须同源。
+                        if (state.sip.hasActiveRegistration()) {
                             toast.warning(QR_STATE_BLOCKED)
                             onClose()
                             return@QrConfirmSheet

@@ -24,7 +24,7 @@ class QrProvisionUiTest {
     // ---- 入口态拦截(用例 9.1-9.5) ----
 
     @Test
-    fun disconnected_is_the_only_state_that_may_scan() {
+    fun disconnected_may_scan() {
         assertNull(qrEntryBlockReason(SipStateDto.Disconnected))
     }
 
@@ -44,12 +44,31 @@ class QrProvisionUiTest {
     }
 
     /**
-     * Failed 也必须拦 —— AppEngine.updateConfig 在 engine != null 时会
-     * disconnect(); connect(),而 Failed 态 engine 可能仍存活(plan §5.2)。
+     * Failed 必须**放行**(2026-10-03 修复)。
+     *
+     * 它曾经也被拦,而 Failed 态下主屏按钮(ConnectButton / StatusCta)显示的是「注册」——
+     * 提示让用户"先断开连接",UI 上却没有这个动作可点,用户于是卡在
+     * "点注册 → 再失败 → 扫码被拦"的死循环里。Failed 是稳定终态
+     * (重试配额用尽后 registerRetryCount 归零、不再调度 retryJob、无心跳),放行不存在竞态。
      */
     @Test
-    fun failed_is_blocked_too() {
-        assertNotNull(qrEntryBlockReason(SipStateDto.Failed))
+    fun failed_may_scan_too() {
+        assertNull(qrEntryBlockReason(SipStateDto.Failed))
+    }
+
+    /**
+     * 全态真值表:放行集合必须**恰好**是 {Disconnected, Failed}。
+     * 与 `SipStateDto.hasActiveRegistration()` 同源 —— 若将来有人退回 `== Disconnected`
+     * 的单值判断,这条会红。
+     */
+    @Test
+    fun only_states_without_active_registration_may_scan() {
+        val mayScan = SipStateDto.entries.filter { qrEntryBlockReason(it) == null }
+        assertEquals(
+            listOf(SipStateDto.Disconnected, SipStateDto.Failed),
+            mayScan,
+            "放行集合必须恰好是 {Disconnected, Failed}",
+        )
     }
 
     @Test
@@ -58,7 +77,6 @@ class QrProvisionUiTest {
             SipStateDto.Registering,
             SipStateDto.Registered,
             SipStateDto.InCall,
-            SipStateDto.Failed,
         ).map { qrEntryBlockReason(it) }
         assertEquals(1, texts.distinct().size)
         assertEquals("请先断开连接再扫码配置", texts.first())

@@ -42,6 +42,7 @@ import com.uvp.sim.sip.GbVersionNegotiation
 import com.uvp.sim.sip.RportObservation
 import com.uvp.sim.sip.SipOutboxImpl
 import com.uvp.sim.sip.SipState
+import com.uvp.sim.sip.hasActiveRegistration
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -185,6 +186,16 @@ class AppEngine(
             com.uvp.sim.osd.FrameMirrorTransform.of(
                 holders.deviceControlState.value.deviceConfigs.frameMirror?.value,
             )
+        }
+
+        // 拉框放大/缩小（GB-2022 A.2.3.1.8/.9）同理：平台拉框要真的改变**推给平台的那路画面**
+        // （标准：把选定框内的图像放大到整个输出画面），而不是只在本机 3D 画布上闪一个框。
+        //
+        // ⭐ 只搬"当前视窗"这一个值：**累积**（第二次放大是在已放大画面上接着裁）已经在
+        // `PtzHandler.handleDragZoom` 里做完，**归一化**只在 `DragZoomBox.of` 一处发生
+        // （与遮挡、镜像同一条规矩：换算各写一份必然有一天不一致，而画面照样出得来）。
+        runtime.installVideoDragZoomSupplier {
+            holders.deviceControlState.value.dragZoomViewport
         }
     }
 
@@ -648,7 +659,18 @@ class AppEngine(
                 holders.events.emit(com.uvp.sim.domain.transportErrorOf("保存配置", e))
             }
         if (engine != null) {
-            disconnect()
+            // 2026-10-03:按「有没有活跃注册会话」分流清理路径。
+            // - 有会话(Registering/Registered/InCall)→ disconnect():发 Expires=0 让平台立刻
+            //   清掉旧 deviceId 的在线状态,不留僵尸(改 deviceId 时尤其重要)。
+            // - 无会话(Disconnected/Failed)→ cancelConnect():静默清场。这两种态在平台侧从没有过
+            //   一条活着的注册会话;Failed 更是"重试配额用尽 + 平台本来就打不通",发注销报文只会
+            //   落到死链上、让本机空等 UNREGISTER_TIMEOUT_MS(3s)。
+            //   扫码回填走的正是这条 —— 用户在 Failed 态扫码换平台时不该被卡 3 秒。
+            if (holders.state.value.hasActiveRegistration()) {
+                disconnect()
+            } else {
+                cancelConnect()
+            }
             connect()
         }
     }

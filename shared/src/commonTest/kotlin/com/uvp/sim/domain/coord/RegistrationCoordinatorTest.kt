@@ -294,6 +294,35 @@ class RegistrationCoordinatorTest {
         )
     }
 
+    /**
+     * 2026-10-03:Failed 是"重试配额用尽"的终态 —— 平台侧从没有过一条活着的注册会话。
+     * `unregister()` 若照发 `Expires=0`,只会落到死链上、让调用方空等
+     * `UNREGISTER_TIMEOUT_MS`(3s)才拿到 false。这条钉住"一个字节都不发"。
+     */
+    @Test
+    fun unregister_from_failed_state_sends_nothing() = runTest {
+        // 故意不 connect:首条 REGISTER 的 send 即失败 ⇒ register() 直接落 Failed(不经退避重试)
+        val transport = MockSipTransport()
+        val coord = newCoord(this, transport)
+
+        coord.register()
+        assertEquals(
+            RegistrationState.Failed, coord.state.value,
+            "发送失败时注册应立刻落 Failed",
+        )
+
+        val sentBefore = transport.sent.size
+        coord.unregister()
+        runCurrent()
+
+        assertEquals(
+            sentBefore, transport.sent.size,
+            "Failed 态无会话可注销,不该发出任何报文(否则必空等 3s 超时)",
+        )
+        assertEquals(RegistrationState.Failed, coord.state.value, "早退不应顺手改状态")
+        coord.shutdown()
+    }
+
     @Test
     fun unregister_401_retries_same_request_with_digest_and_expires_0_then_completes_on_200() = runTest {
         val transport = MockSipTransport()
