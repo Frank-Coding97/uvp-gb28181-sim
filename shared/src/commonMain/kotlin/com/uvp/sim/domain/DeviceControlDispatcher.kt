@@ -30,6 +30,18 @@ interface DeviceControlActions {
     suspend fun triggerSnapshotConfig(cfg: com.uvp.sim.gb28181.SnapShotConfig)
     /** GB-2022 §9.13 DeviceUpgrade 在线升级 — 启动假进度协程,5s 内推 4 条 NOTIFY (0/30/60/100). */
     fun startUpgrade(sessionId: String, firmware: String, fileUrl: String)
+    /**
+     * A.2.3.1.13 FormatSDCard — 执行存储卡格式化。
+     *
+     * ⛔ **不是"提示一下"而是真的改设备侧状态**:实现要落到
+     * [VirtualStorageCards.format],让随后那次 `SDCardStatus` 应答能报出
+     * `formatting` / `FormatProgress` / 完成后的空盘。只弹个 snackbar 的话,
+     * 平台侧观察窗里什么都看不到 —— 而"看不到"和"没生效"在那边长得一模一样。
+     *
+     * ⛔ [cardIndex] 是**卡号**(标准:`FormatSDCard` 的元素值,从 1 开始;**0 = 全部卡**),
+     * 不是布尔开关。越界时实现**必须拒绝**,不得就近降级成"格式化某一张"。
+     */
+    fun formatStorageCard(cardIndex: Int)
 }
 
 /**

@@ -35,6 +35,7 @@ class DeviceControlSubRouterTest {
         override fun requestKeyFrame() {}
         override suspend fun triggerSnapshotConfig(cfg: SnapShotConfig) {}
         override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {}
+        override fun formatStorageCard(cardIndex: Int) {}
     }
 
     @Test
@@ -137,6 +138,64 @@ class DeviceControlSubRouterTest {
         assertEquals("30", p.frameRate)
         assertEquals("2", p.bitRateType)
         assertNull(p.videoBitRate, "VBR 时码率元素必须缺席,不能被补成 0")
+    }
+
+    /**
+     * ⛔⛔ **目标跟踪（A.2.3.1.14）是「无应答命令」—— 设备侧不得回 MANSCDP 应答。**
+     *
+     * 标准 9.3.1 d) 原文：
+     * > 源设备向目标设备发送摄像机云台控制、远程启动、强制关键帧、拉框放大、拉框缩小、PTZ 精准控制、
+     * > 存储卡格式化、**目标跟踪**命令后，**目标设备不发送应答命令**……
+     *
+     * 表 1 序号 13 的"对应应答命令章节"栏写的是 **（无）**。命令流程是 9.3.2.1 的
+     * 无应答流程：MESSAGE → 200 OK，**仅此而已**。
+     *
+     * 所以本用例钉两件相反的事：
+     *   - 设备**确实**处理了这条命令（跟踪态落进 Model —— 这是它在设备侧唯一的可见面）；
+     *   - 设备**没有**多发一个 `<Response><CmdType>DeviceControl</CmdType>…`。
+     *
+     * ⛔ 后者不是"少发一条也没关系"：平台按 9.3.1 e) 的**有应答**清单去等应答的命令是
+     * 录像控制 / 布防撤防 / 报警复位 / 看守位 / 软件升级 / 设备配置 —— 目标跟踪**不在其中**。
+     * 多发一条会让设备变成"不合规的实现"，而这类偏差恰恰是靠对端兼容性测试才暴露的
+     * （本机两侧都是自己写的，很容易互相包庇）。
+     *
+     * ⚠️ 实现路径上的守卫点：`handleDeviceControl` 在 `dispatcher.dispatch` 之后取
+     * `<RecordCmd>`，取不到就 `?: return` —— 目标跟踪报文里没有这个元素，于是天然不发应答。
+     * 本用例把这条"顺带成立的正确"变成**显式契约**，免得以后有人为了别的命令把那个
+     * 提前 return 挪掉（那会给所有无应答命令都补上一条应答）。
+     */
+    @Test
+    fun targetTrack_landsState_butEmitsNoManscdpResponse() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val dispatcher = DeviceControlDispatcher(f.deviceControlState, f.ctx.config, NoopActions, this)
+        val r = DeviceControlSubRouter(f.ctx, NoopRecordingService, dispatcher) {}
+
+        val xml = "<?xml version=\"1.0\"?><Control><CmdType>DeviceControl</CmdType><SN>88</SN>" +
+            "<DeviceID>34020000001320000001</DeviceID>" +
+            "<TargetTrack>Manual</TargetTrack>" +
+            "<TargetArea><Length>1920</Length><Width>1080</Width>" +
+            "<MidPointX>960</MidPointX><MidPointY>540</MidPointY>" +
+            "<LengthX>200</LengthX><LengthY>100</LengthY></TargetArea></Control>"
+
+        assertTrue(r.accepts("DeviceControl"))
+        assertTrue(r.handle("DeviceControl", xml, fromUri = "sip:34020000002000000002@3402000000"))
+        runCurrent()
+
+        // ① 设备真的处理了 —— 跟踪态落进 Model（设备屏幕上那个框就是读它画的）。
+        val track = assertNotNull(
+            f.deviceControlState.value.targetTrack,
+            "目标跟踪没落状态 = 平台点完两侧都毫无动静（无回执、无查询）",
+        )
+        assertEquals("TargetTrack", f.deviceControlState.value.lastCommand?.type)
+        assertNotNull(track.box, "报文带了完整 TargetArea，设备手上必须有可画的框")
+
+        // ② 但**一个字节的 MANSCDP 应答都不该发**（9.3.1 d) 无应答命令）。
+        // ⚠️ 断言写成"没有 DeviceControl 应答"而不是"sent 为空"：将来若在 handle 里
+        //    追加了与本命令无关的推送（比如订阅 NOTIFY），这条例才不会无谓地红。
+        assertFalse(
+            f.transport.sent.any { it.body.decodeToString().contains("<CmdType>DeviceControl</CmdType>") },
+            "目标跟踪是无应答命令(9.3.1 d),设备不得回 DeviceControl Response",
+        )
     }
 
     @Test

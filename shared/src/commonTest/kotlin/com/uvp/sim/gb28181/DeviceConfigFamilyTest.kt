@@ -83,6 +83,7 @@ class DeviceConfigFamilyTest {
         override fun requestKeyFrame() = Unit
         override suspend fun triggerSnapshotConfig(cfg: SnapShotConfig) = Unit
         override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) = Unit
+        override fun formatStorageCard(cardIndex: Int) = Unit
     })
 
     // ===================== A. 块表（唯一真源） =====================

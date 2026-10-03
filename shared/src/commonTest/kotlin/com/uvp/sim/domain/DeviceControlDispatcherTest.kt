@@ -4,7 +4,10 @@ import com.uvp.sim.config.DeviceConfig
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.gb28181.PanDirection
+import com.uvp.sim.observability.SystemLogger
+import com.uvp.sim.osd.VideoDragZoomViewport
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -16,7 +19,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertSame
 
 /**
- * 14 个 case 覆盖 GB28181 §F.3 DeviceControl 全部 10 项子命令(plan §2.1.2).
+ * 14 个 case 覆盖 GB28181 附录 A.3 DeviceControl 全部 10 项子命令(plan §2.1.2).
  */
 class DeviceControlDispatcherTest {
 
@@ -39,6 +42,8 @@ class DeviceControlDispatcherTest {
         var keyFrameCalled = 0
         val snapshotConfigsTriggered = mutableListOf<com.uvp.sim.gb28181.SnapShotConfig>()
         val upgradesStarted = mutableListOf<Triple<String, String, String>>()
+        /** A.2.3.1.13 每次下发记一条卡号 —— 断言"真的把执行发出去了",而不只是改了 state。 */
+        val storageCardFormats = mutableListOf<Int>()
         override suspend fun reboot() { rebootCalled++ }
         override suspend fun snapshot() { snapshotCalled++ }
         override fun requestKeyFrame() { keyFrameCalled++ }
@@ -47,6 +52,9 @@ class DeviceControlDispatcherTest {
         }
         override fun startUpgrade(sessionId: String, firmware: String, fileUrl: String) {
             upgradesStarted.add(Triple(sessionId, firmware, fileUrl))
+        }
+        override fun formatStorageCard(cardIndex: Int) {
+            storageCardFormats.add(cardIndex)
         }
     }
 
@@ -261,7 +269,7 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
-    fun `case 10 — DragZoomIn 解析 4 元组矩形`() {
+    fun `case 10 — DragZoomIn 解析 4 元组矩形 + 播放窗口尺子`() {
         val state = newState()
         val d = newDispatcher(state)
         val xml = "<C><DragZoomIn><Length>100</Length><Width>80</Width>" +
@@ -274,6 +282,126 @@ class DeviceControlDispatcherTest {
         assertEquals(240, r.midY)
         assertEquals(120, r.lengthX)
         assertEquals(90, r.lengthY)
+        // ⛔ 这两把尺子（标准 `Length`/`Width` = 播放窗口像素）2026-09-20 前被丢在地上，
+        // 于是永远算不出归一化坐标 —— 一并钉住。
+        assertEquals(100, r.frameLength)
+        assertEquals(80, r.frameWidth)
+    }
+
+    // ---- 2026-09-20 拉框放大/缩小真正落到真流（A.2.3.1.8/.9）----
+
+    /**
+     * 视窗必须是**累积**的：标准把坐标系定义在**播放窗口**上，而播放窗口显示的是**当前**画面
+     * ⇒ 第二次放大是"在已放大的画面上接着裁"。
+     */
+    @Test
+    fun `case 10b — 连续两次 DragZoomIn 在已放大画面上继续裁`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        // 窗口 1000x1000，第一次取中央 200x200（归一化 0.2）
+        d.dispatch(dragZoom("DragZoomIn", 500, 500, 200, 200))
+        assertEquals(0.4f, state.value.dragZoomViewport.left, 0.0001f)
+        assertEquals(0.2f, state.value.dragZoomViewport.width, 0.0001f)
+        // 第二次取"当前画面"左上四分之一 ⇒ 相对原始画面只在 0.4~0.6 里再取左上 1/4
+        d.dispatch(dragZoom("DragZoomIn", 250, 250, 500, 500))
+        assertEquals(0.4f, state.value.dragZoomViewport.left, 0.0001f)
+        assertEquals(0.4f, state.value.dragZoomViewport.top, 0.0001f)
+        assertEquals(0.1f, state.value.dragZoomViewport.width, 0.0001f)
+    }
+
+    /** 拉框缩小：把当前整幅缩到框内 ⇒ 视窗变大，且当前画面正好落在框的位置上。 */
+    @Test
+    fun `case 10c — DragZoomOut 把当前画面缩到框内`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch(dragZoom("DragZoomIn", 500, 500, 100, 100)) // 视窗 = 中央 0.1
+        // 框在显示左侧偏下：归一化 (0.25, 0.5, 0.25, 0.25)
+        d.dispatch(dragZoom("DragZoomOut", 375, 625, 250, 250))
+        val v = state.value.dragZoomViewport
+        assertEquals(0.4f, v.width, 0.0001f) // 0.1 / 0.25
+        assertEquals(0.4f, v.height, 0.0001f)
+        // 缩小后，"原画面"必须正好落在框上（不是中心对齐 —— 框偏在角上时中心对齐会把画面挪走）
+        assertEquals(0.25f, (0.45f - v.left) / v.width, 0.0001f)
+        assertEquals(0.5f, (0.45f - v.top) / v.height, 0.0001f)
+    }
+
+    /**
+     * ⛔ 缺播放窗口尺寸（标准里这两个字段是必选，但畸形报文/私有实现可能漏）⇒
+     * **视窗不动**、也不落 `dragZoomRect`，只打一条 warn 留痕。
+     * 拿一个算不出归一化的框去裁画面会把画面锁死在一个角上，
+     * 而标准里没有任何复位命令能退回来。
+     */
+    @Test
+    fun `case 10d — 缺播放窗口尺寸时不动视窗`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        val xml = "<C><DragZoomIn><MidPointX>320</MidPointX><MidPointY>240</MidPointY>" +
+            "<LengthX>120</LengthX><LengthY>90</LengthY></DragZoomIn></C>"
+        d.dispatch(xml)
+        assertEquals(VideoDragZoomViewport.IDENTITY, state.value.dragZoomViewport)
+        assertNull(state.value.dragZoomRect)
+    }
+
+    /**
+     * ⛔ `DragZoom*` 的六个元素名与 `TargetArea`（A.2.3.1.14 目标跟踪）**一字不差相同** ——
+     * 必须先取自己的块再在块内找标签，否则两条命令并存时会静默串值。
+     */
+    @Test
+    fun `case 10e — TargetArea 在场时不串值到 DragZoom`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        val xml = "<C><TargetArea><Length>1920</Length><Width>1080</Width>" +
+            "<MidPointX>960</MidPointX><MidPointY>540</MidPointY>" +
+            "<LengthX>200</LengthX><LengthY>100</LengthY></TargetArea>" +
+            "<DragZoomIn><Length>1000</Length><Width>500</Width>" +
+            "<MidPointX>250</MidPointX><MidPointY>125</MidPointY>" +
+            "<LengthX>200</LengthX><LengthY>100</LengthY></DragZoomIn></C>"
+        d.dispatch(xml)
+        val r = assertNotNull(state.value.dragZoomRect)
+        assertEquals(1000, r.frameLength)
+        assertEquals(250, r.midX)
+        // 归一化结果必须是 DragZoom 那一块算出来的（0.15 / 0.2），不是 TargetArea 的
+        assertEquals(0.15f, state.value.dragZoomViewport.left, 0.0001f)
+        assertEquals(0.2f, state.value.dragZoomViewport.width, 0.0001f)
+    }
+
+    private fun dragZoom(
+        type: String,
+        midX: Int,
+        midY: Int,
+        lengthX: Int,
+        lengthY: Int,
+        frameLength: Int = 1000,
+        frameWidth: Int = 1000,
+    ): String = "<C><$type><Length>$frameLength</Length><Width>$frameWidth</Width>" +
+        "<MidPointX>$midX</MidPointX><MidPointY>$midY</MidPointY>" +
+        "<LengthX>$lengthX</LengthX><LengthY>$lengthY</LengthY></$type></C>"
+
+    /**
+     * ⭐ 成功路径也留痕：`DRAG_ZOOM_APPLIED` 是**唯一**能确认"这次真裁了、裁到画面哪一块"
+     * 的地方 —— 标准里没有任何回读手段（A.2.4 查询闭集无此项 / A.2.6 无应答 / A.3 全是指令），
+     * 平台侧永远只显示「已下发」。删了它，"平台点了放大但画面没变"就只剩肉眼一条路。
+     *
+     * ⛔ 日志里必须带**归一化后的视窗**，不是回显报文的原始像素：原始像素大小取决于平台
+     * 播放窗口多大，同一个框在 1000px 与 2000px 窗口下数值不同，拿它当"裁到哪"的判据会误判。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `case 10f — 拉框成功后留下归一化视窗日志`() = runTest {
+        SystemLogger.resetForTest()
+        SystemLogger.bindScope(this)
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch(dragZoom("DragZoomIn", 500, 500, 200, 200))
+        testScheduler.advanceUntilIdle()
+        val applied = SystemLogger.snapshot.map { it.message }
+            .firstOrNull { it.startsWith("DRAG_ZOOM_APPLIED") }
+        assertNotNull(applied, "成功路径必须留痕：" + SystemLogger.snapshot.map { it.message })
+        assertTrue("DragZoomIn" in applied, applied)
+        // 视窗 = 中央 0.2（报文是像素 500,500 / 200x200、窗口 1000x1000）
+        assertTrue("x=0.4" in applied, applied)
+        assertTrue("w=0.2" in applied, applied)
+        SystemLogger.shutdownForTest()
     }
 
     @Test
@@ -697,28 +825,45 @@ class DeviceControlDispatcherTest {
     @Test
     fun `T5d_2 — FormatSDCard emit FormatSDCardRequested`() {
         val state = newState()
-        val d = newDispatcher(state)
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions)
         val xml = "<C><FormatSDCard>0</FormatSDCard></C>"
         d.dispatch(xml)
         val s = state.value
         assertEquals(DeviceEffect.FormatSDCardRequested(0), s.pendingEffect)
         assertEquals("FormatSDCard", s.lastCommand?.type)
+        // ⛔ 只改 state 不够:格式化必须真的发到执行侧(VirtualStorageCards),
+        //    否则平台随后查 SDCardStatus 时看不到任何变化。
+        assertEquals(listOf(0), actions.storageCardFormats, "0 = 格式化全部卡,要原样传下去")
     }
 
-    // M5 batch3 §4.13 FormatSDCard DiskNum 字段补全(T3)
+    // M5 batch3 §4.13 FormatSDCard（T3）—— ⛔ 2026-09-20 按标准改正语义,见 SystemHandler.handleFormatSDCard
 
+    /**
+     * ⛔⛔ **这条用例原来是反的**,2026-09-20 改正。
+     *
+     * 原断言:「优先取 `DiskNum`」,理由写的是"GB-2022 标准是
+     * `<FormatSDCard>1</FormatSDCard><DiskNum>2</DiskNum>`"。**标准里没有 `DiskNum`** ——
+     * 2022 全文 / 2022 附录 A / 2016 附录 A 三处都是 0 命中;A.2.3.1.13 只有
+     * `<FormatSDCard>N</FormatSDCard>`,**元素值本身就是卡号**。
+     *
+     * 现在钉住的是相反的事实:同时出现时,**`DiskNum` 被忽略**。
+     */
     @Test
-    fun `batch3 T3-1 — FormatSDCard 优先取 DiskNum`() {
-        // GB-2022 标准:<FormatSDCard>1</FormatSDCard><DiskNum>2</DiskNum>
-        // 卡号应取 DiskNum=2,而不是 FormatSDCard 的 "1"(动作触发标志)
+    fun `batch3 T3-1 — FormatSDCard 只认元素值,自造名 DiskNum 被忽略`() {
         val state = newState()
-        val d = newDispatcher(state)
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions)
         d.dispatch("<C><FormatSDCard>1</FormatSDCard><DiskNum>2</DiskNum></C>")
-        assertEquals(DeviceEffect.FormatSDCardRequested(2), state.value.pendingEffect)
+        assertEquals(
+            DeviceEffect.FormatSDCardRequested(1), state.value.pendingEffect,
+            "A.2.3.1.13 的元素值才是卡号;DiskNum 是自造名(三份标准文本 0 命中),不得有优先级",
+        )
+        assertEquals(listOf(1), actions.storageCardFormats)
     }
 
     @Test
-    fun `batch3 T3-2 — FormatSDCard 缺 DiskNum fallback FormatSDCard 整数 老格式`() {
+    fun `batch3 T3-2 — FormatSDCard 元素值即卡号`() {
         val state = newState()
         val d = newDispatcher(state)
         d.dispatch("<C><FormatSDCard>3</FormatSDCard></C>")
@@ -726,21 +871,44 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
-    fun `batch3 T3-3 — FormatSDCard DiskNum 非数字降级 0`() {
+    fun `batch3 T3-3 — FormatSDCard 带非数字 DiskNum 不影响取值`() {
         val state = newState()
         val d = newDispatcher(state)
         d.dispatch("<C><FormatSDCard>1</FormatSDCard><DiskNum>abc</DiskNum></C>")
-        // DiskNum 解析失败 → fallback FormatSDCard=1
         assertEquals(DeviceEffect.FormatSDCardRequested(1), state.value.pendingEffect)
     }
 
+    /**
+     * ⛔⛔ **这条用例原来断言的正是本轮要修掉的缺陷**,2026-09-20 改正。
+     *
+     * 原来:`<FormatSDCard>x</FormatSDCard>` → 回落 `cardIndex=0`。
+     * 而 `0` 在 A.2.3.1.13 里的语义是**「对所有存储卡进行格式化」** ——
+     * 于是"收到一条读不懂的报文"被静默升级成**破坏性最大的一种操作**。
+     *
+     * 现在:解析不出整数 → 不下发(不产生 effect、不调执行侧),只留 `lastCommand` 供排障。
+     */
     @Test
-    fun `batch3 T3-4 — FormatSDCard 全部缺失 → cardIndex=0`() {
+    fun `batch3 T3-4 — FormatSDCard 卡号解析失败绝不下发,更不回落成 0`() {
         val state = newState()
-        val d = newDispatcher(state)
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions)
         d.dispatch("<C><FormatSDCard>x</FormatSDCard></C>")
-        // 都解析不到数字 → 0
-        assertEquals(DeviceEffect.FormatSDCardRequested(0), state.value.pendingEffect)
+        kotlin.test.assertNull(
+            state.value.pendingEffect,
+            "读不懂的卡号不得触发格式化 —— 0 的语义是「全部卡」,回落过去等于最重的破坏性操作",
+        )
+        assertEquals(emptyList(), actions.storageCardFormats, "执行侧一次都不该被调用")
+        assertEquals("FormatSDCard", state.value.lastCommand?.type, "命令本身仍要留痕")
+    }
+
+    @Test
+    fun `batch3 T3-5 — FormatSDCard 元素缺失同样不下发`() {
+        val state = newState()
+        val actions = FakeEngineActions()
+        val d = newDispatcher(state, actions)
+        d.dispatch("<C><CmdType>DeviceControl</CmdType></C>")
+        kotlin.test.assertNull(state.value.pendingEffect)
+        assertEquals(emptyList(), actions.storageCardFormats)
     }
 
     @Test
@@ -848,20 +1016,116 @@ class DeviceControlDispatcherTest {
         kotlin.test.assertFalse(detail.contains("speed"), "Speed 不得出现在 detail: $detail")
     }
 
-    // ---------- 辅助控制 (Aux On/Off, byte3=0x89/0x8A) ----------
+    // ---------- 目标跟踪的设备侧「屏幕可见状态」(2026-09-21) ----------
+    //
+    // ⛔ 为什么必须落一份**持续态**、而不是只有 lastCommand：
+    //    9.3.1 d) 把目标跟踪列为**无应答命令**（表 1 序号 13 的应答栏是"（无）"）——
+    //    平台收不到任何回执；附录 A 也**没有**查询命令能把跟踪态读回去。
+    //    ⇒ 设备屏幕上"看得到自己在跟踪"是这条命令**唯一**的可见面。
+    //    只写 lastCommand 的话（UI 只认 3 秒内的时间戳），平台点完「手动跟踪」之后
+    //    两侧都没有任何东西能证明它到过设备：现象与"平台根本没发"完全一样。
 
-    private fun auxHex(on: Boolean, auxIndex: Int): String {
-        val opCode = if (on) 0x89 else 0x8A
-        val sum = (0xA5 + 0x0F + 0x01 + opCode + auxIndex + 0 + 0) and 0xFF
-        return listOf(0xA5, 0x0F, 0x01, opCode, auxIndex, 0, 0, sum)
-            .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
+    @Test
+    fun `T4-7 — TargetTrack Manual 落跟踪态且框按报文换算`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch(
+            "<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode>" +
+                "<DeviceID2>34020000001320000009</DeviceID2>$targetAreaXml</C>"
+        )
+        val track = assertNotNull(state.value.targetTrack, "手动跟踪必须落持续态,否则设备屏幕上什么都不亮")
+        assertEquals(TargetTrackMode.Manual, track.mode)
+        val box = assertNotNull(track.box, "报文带了完整 TargetArea,框必须算得出来")
+        // 1920×1080 窗口、正中 200×100 ⇒ 中心 (0.5, 0.5)，宽 200/1920、高 100/1080。
+        assertTrue(kotlin.math.abs(box.centerX - 0.5f) < 1e-4f, "centerX=${box.centerX}")
+        assertTrue(kotlin.math.abs(box.centerY - 0.5f) < 1e-4f, "centerY=${box.centerY}")
+        assertTrue(kotlin.math.abs(box.width - 200f / 1920f) < 1e-4f, "width=${box.width}")
+        assertTrue(kotlin.math.abs(box.height - 100f / 1080f) < 1e-4f, "height=${box.height}")
+        assertEquals("34020000001320000009", track.deviceId2)
+        // 跟踪态与命令留痕是同一个事实的两个面 ⇒ 时间戳必须同源（同一次 nowMs）。
+        assertEquals(state.value.lastCommand?.timestampMs, track.startedAtMs)
+        // 目标跟踪**不产生**一次性动画效果（它不是"闪一下"的动作）。
+        assertNull(state.value.pendingEffect)
     }
+
+    @Test
+    fun `T4-8 — TargetTrack Auto 用声明的模拟目标框`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>Auto</TargetTrack></C>")
+        val track = assertNotNull(state.value.targetTrack)
+        assertTrue(track.isAuto)
+        // ⛔ 这个框是模拟器编的（设备 AI 没接真源），必须是**确定性常量**：
+        //    掷骰子的话同一条命令两次演示画出来的框不一样，回归测试与截图都没法用。
+        assertEquals(TargetTrackState.SIMULATED_AUTO_BOX, track.box)
+    }
+
+    @Test
+    fun `T4-9 — TargetTrack Stop 清掉跟踪态`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode>$targetAreaXml</C>")
+        assertNotNull(state.value.targetTrack, "先确认真的跟起来了")
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Stop</Mode></C>")
+        // ⛔ `Stop` 的语义是"没有跟踪态"，不是"一个 mode=Stop 的跟踪态"——
+        //    后者会让画布上永远挂着一个框、屏幕上永远写着"停止中"。
+        assertNull(state.value.targetTrack, "Stop 必须把跟踪态整个清掉")
+        assertEquals("TargetTrack", state.value.lastCommand?.type, "命令本身仍要留痕(平台侧无回执,这是唯一记录)")
+    }
+
+    @Test
+    fun `T4-10 — TargetTrack Manual 无框选：落态但 box 为 null，不回落成模拟框`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        // 标准里 <TargetArea> 是 minOccurs=0，缺它是**合法**报文。
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode></C>")
+        val track = assertNotNull(state.value.targetTrack, "缺框选仍然是一次有效的手动跟踪指令")
+        assertEquals(TargetTrackMode.Manual, track.mode)
+        // ⛔ 回落成 SIMULATED_AUTO_BOX 会把"平台没框选"在设备屏幕上画成"框选成功"，
+        //    而这条命令双方都没有回执可对 —— 没人能发现那个框是编的。
+        assertNull(track.box, "手动跟踪没有可用框时必须为空,不能借用 Auto 的模拟框")
+    }
+
+    @Test
+    fun `T4-11 — TargetTrack 未知 mode 连跟踪态也不动`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode>$targetAreaXml</C>")
+        val before = state.value.targetTrack
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Foo</Mode></C>")
+        // 白名单外的 mode 一律整条忽略（外层已回 200 OK，不让平台重试）。
+        // ⛔ 这里**不能**顺手把跟踪态清掉：那等于把一条无法识别的报文当成 Stop 执行。
+        assertSame(before, state.value.targetTrack, "不认识的 mode 不得改动设备侧跟踪态")
+    }
+
+    @Test
+    fun `T4-12 — Auto → Manual → Stop 的先后顺序都落在状态上`() {
+        val state = newState()
+        val d = newDispatcher(state)
+
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Auto</Mode></C>")
+        assertEquals(TargetTrackMode.Auto, state.value.targetTrack?.mode)
+
+        // 平台改用框选接手 ⇒ 状态必须**换掉**，不是两个并存。
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Manual</Mode>$targetAreaXml</C>")
+        val manual = assertNotNull(state.value.targetTrack)
+        assertEquals(TargetTrackMode.Manual, manual.mode)
+        assertTrue(manual.box != TargetTrackState.SIMULATED_AUTO_BOX, "手动跟踪必须换上平台自己的框")
+
+        d.dispatch("<C><TargetTrack>1</TargetTrack><Mode>Stop</Mode></C>")
+        assertNull(state.value.targetTrack)
+    }
+
+    // ---------- 辅助开关(表 A.11,byte3=0x8C/0x8D)----------
+    //
+    // ⛔ 帧硬编码,不用 helper 现算 —— helper 与实现一起错会互相印证。三帧按表 A.11 手算
+    //    (字节5 = 开关编号,标准注 1=雨刷)。这一族**曾经写成 0x89/0x8A**(扫描的码)。
 
     @Test
     fun `Aux_1 — 雨刷 ON 写 auxStates 1=true`() {
         val state = newState()
         val d = newDispatcher(state)
-        d.dispatch("<C><PTZCmd>${auxHex(true, 1)}</PTZCmd></C>")
+        d.dispatch("<C><PTZCmd>A50F018C01000042</PTZCmd></C>")
         val s = state.value
         assertEquals(true, s.auxStates[1])
         assertEquals("PTZCmd", s.lastCommand?.type)
@@ -869,23 +1133,102 @@ class DeviceControlDispatcherTest {
     }
 
     @Test
-    fun `Aux_2 — 加热 OFF 写 auxStates 3=false`() {
-        val state = MutableStateFlow(DeviceControlModel(auxStates = mapOf(3 to true)))
+    fun `Aux_2 — 关雨刷 写 auxStates 1=false`() {
+        val state = MutableStateFlow(DeviceControlModel(auxStates = mapOf(1 to true)))
         val d = newDispatcher(state)
-        d.dispatch("<C><PTZCmd>${auxHex(false, 3)}</PTZCmd></C>")
+        d.dispatch("<C><PTZCmd>A50F018D01000043</PTZCmd></C>")
         val s = state.value
-        assertEquals(false, s.auxStates[3])
-        assertEquals("加热 OFF", s.lastCommand?.rawHex)
+        assertEquals(false, s.auxStates[1])
+        assertEquals("雨刷 OFF", s.lastCommand?.rawHex)
     }
 
     @Test
-    fun `Aux_3 — 未知 index 不动 auxStates 仅记 unmapped lastCommand`() {
+    fun `Aux_3 — 编号 3 不再映射成加热,只记 unmapped lastCommand`() {
+        // 回归锚点:编号 3 曾经被映射成「加热」并写 auxStates[3]。
+        // GB/T 28181 A.3.7 全节只钉了编号 1 = 雨刷 ⇒ 编号 3 没有任何标准语义,
+        // 收到这种帧时设备侧不该点亮任何状态灯(2026-09-21 收敛)。
         val state = newState()
         val d = newDispatcher(state)
-        d.dispatch("<C><PTZCmd>${auxHex(true, 99)}</PTZCmd></C>")
+        d.dispatch("<C><PTZCmd>A50F018D03000045</PTZCmd></C>")
         val s = state.value
         assertTrue(s.auxStates.isEmpty())
         assertTrue(s.lastCommand?.rawHex?.contains("unmapped") == true)
+    }
+
+    @Test
+    fun `Aux_4 — 未知编号不动 auxStates 仅记 unmapped lastCommand`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>A50F018C630000A4</PTZCmd></C>")
+        val s = state.value
+        assertTrue(s.auxStates.isEmpty())
+        assertTrue(s.lastCommand?.rawHex?.contains("unmapped") == true)
+    }
+
+    // ---------- 自动扫描(表 A.10,byte3=0x89/0x8A)----------
+    //
+    // 全部用**平台真实下发的帧**(2026-09-20 从 `gb_sip_trace_message` 解密取得)。
+
+    @Test
+    fun `Scan_1 — 开始扫描 置 activeScanGroup 且不带边界也能启动`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>A50F01890000003E</PTZCmd></C>")
+        val s = state.value
+        // ⭐ 组号 0 是合法组号:平台默认就用 0 号组,不能被当成"停止"。
+        assertEquals(0, s.activeScanGroup)
+        assertEquals("扫描 #0 启动", s.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `Scan_2 — 设左右边界 快照设备当前姿态`() {
+        val state = MutableStateFlow(DeviceControlModel(panAngle = -30f, tiltAngle = 5f, zoomLevel = 2f))
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>A50F01890001003F</PTZCmd></C>")
+        state.value = state.value.copy(panAngle = 45f)
+        d.dispatch("<C><PTZCmd>A50F018900020040</PTZCmd></C>")
+        val group = state.value.scanGroups[0]
+        // 边界是"设的那一刻设备朝向"的快照 —— 标准里设边界指令没有数值入参。
+        assertEquals(-30f, group?.leftBoundary?.pan)
+        assertEquals(45f, group?.rightBoundary?.pan)
+        // 设边界**不该动镜头**(真机也不动):姿态保持最后一次调用预置位/方向命令留下的值。
+        assertEquals(45f, state.value.panAngle)
+    }
+
+    @Test
+    fun `Scan_3 — 设速度 落 12 位原值`() {
+        val state = newState()
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>A50F018A007800B7</PTZCmd></C>")
+        assertEquals(120, state.value.scanGroups[0]?.speed)
+        assertEquals("扫描 #0 速度=120", state.value.lastCommand?.rawHex)
+    }
+
+    @Test
+    fun `Scan_4 — 全零停止帧同时清掉扫描`() {
+        val state = MutableStateFlow(DeviceControlModel(activeScanGroup = 0))
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>A50F0100000000B5</PTZCmd></C>")
+        assertNull(state.value.activeScanGroup)
+    }
+
+    @Test
+    fun `Scan_5 — 开始巡航顶掉扫描(云台只有一套)`() {
+        val state = MutableStateFlow(DeviceControlModel(activeScanGroup = 0))
+        val d = newDispatcher(state)
+        // 巡航 #1 启动:A5 0F 01 88 01 00 3E
+        d.dispatch("<C><PTZCmd>A50F01880100003E</PTZCmd></C>")
+        assertEquals(1, state.value.activeCruiseTrack)
+        assertNull(state.value.activeScanGroup)
+    }
+
+    @Test
+    fun `Scan_6 — 开始扫描顶掉巡航(反向那一半)`() {
+        val state = MutableStateFlow(DeviceControlModel(activeCruiseTrack = 1))
+        val d = newDispatcher(state)
+        d.dispatch("<C><PTZCmd>A50F01890000003E</PTZCmd></C>")
+        assertEquals(0, state.value.activeScanGroup)
+        assertNull(state.value.activeCruiseTrack)
     }
 
     // ---------- FI 族(表 A.6:聚焦 / 光圈)----------

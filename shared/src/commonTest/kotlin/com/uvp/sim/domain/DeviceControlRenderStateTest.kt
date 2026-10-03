@@ -107,8 +107,8 @@ class DeviceControlRenderStateTest {
             deriveCommandCategory(LastDeviceCommand("HomePosition", "Recall#1", 300L))
         )
 
-        // PTZCmd 辅助(rawHex 中文开头):雨刷 / 红外灯 / 加热 / 除雾 / 制冷 / Aux → Aux
-        listOf("雨刷 ON", "红外灯 OFF", "加热 ON", "除雾 OFF", "制冷 ON", "Aux#7 ON (unmapped)").forEach { raw ->
+        // PTZCmd 辅助(已映射的中文名 / 未映射编号的 Aux 前缀)→ Aux
+        listOf("雨刷 ON", "雨刷 OFF", "Aux#3 ON (unmapped)", "Aux#7 ON (unmapped)").forEach { raw ->
             assertEquals(
                 DeviceCommandCategory.Aux,
                 deriveCommandCategory(LastDeviceCommand("PTZCmd", raw, 100L)),
@@ -166,7 +166,7 @@ class DeviceControlRenderStateTest {
             m.panAngle, m.tiltAngle, m.zoomLevel, m.irisLevel, m.focusLevel,
             m.panSpeed, m.tiltSpeed, m.zoomSpeed, m.focusSpeed, m.irisSpeed,
             m.isRecording, m.isGuarded, m.isAlarming, m.isRebooting,
-            m.dragZoomRect,
+            m.dragZoomRect, m.dragZoomViewport,
             m.presets, m.currentPresetIndex,
             m.homePosition, m.homePositionEnabled,
             m.homePositionPresetIndex, m.homePositionResetTime,
@@ -175,9 +175,11 @@ class DeviceControlRenderStateTest {
             m.lastCommand, m.lastPreciseCtrl,
             m.upgradeProgress, m.pendingEffect,
         )
-        // 29 字段(同 plan §a 列表 + 25 个原 DeviceControlState 字段一一对应;
+        // 30 字段(同 plan §a 列表 + 25 个原 DeviceControlState 字段一一对应;
         // 2026-09-16 新增 homePositionPresetIndex / homePositionResetTime 两个看守位配置字段,
-        // 以及 focusSpeed / irisSpeed 两个 FI 族速率字段)
-        assertEquals(29, _all.size)
+        // 以及 focusSpeed / irisSpeed 两个 FI 族速率字段;
+        // 2026-09-20 新增 dragZoomViewport —— 真流裁剪视窗,是**命令累计后的状态**而非显示派生字段,
+        // 故按同一标准登记在此,唯一消费者是真流管线(见 VideoDragZoom 的 KDoc 约束))
+        assertEquals(30, _all.size)
     }
 }

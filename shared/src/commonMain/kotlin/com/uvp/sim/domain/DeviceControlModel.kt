@@ -478,6 +478,15 @@ sealed class DeviceEffect {
     data class ConfigChanged(val changedFields: List<String>) : DeviceEffect()
     /** GB-2022 §9.3.4 DeviceUpgrade — UI snackbar 提示,不真 OTA */
     data class DeviceUpgradeRequested(val firmware: String) : DeviceEffect()
-    /** GB-2022 §9.3.4 FormatSDCard — UI snackbar 提示,不真格式化 */
+    /**
+     * GB-2022 A.2.3.1.13 FormatSDCard — 设备侧**真的**开始格式化(见
+     * [VirtualStorageCards.format]),这里这个 effect 只负责让 UI 弹一条提示。
+     *
+     * [cardIndex] 是**卡号**(标准:元素值即卡号,从 1 开始;**0 = 全部卡**)。
+     *
+     * ⛔ 2026-09-20 改正:原 KDoc 写的是「UI snackbar 提示,**不真格式化**」——
+     *    那就意味着平台下发之后设备侧读数毫无变化,平台观察窗里 `formatting` /
+     *    `FormatProgress` / 剩余空间一条都看不到,整条闭环在设备侧断掉。
+     */
     data class FormatSDCardRequested(val cardIndex: Int) : DeviceEffect()
 }

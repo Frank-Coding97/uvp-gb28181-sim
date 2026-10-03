@@ -383,20 +383,55 @@ internal class DefaultSystemHandler(
         actions.startUpgrade(sessionId, firmware, fileUrl)
     }
 
-    /** A.2.3.1.13 FormatSDCard — 格式化 SD 卡(选做最小集). 手机无 SD 卡概念,只为协议合规.
+    /** A.2.3.1.13 存储卡格式化控制命令 —— 平台点「格式化」时下发。
      *
-     *  M5 batch3 §4.13 字段补全:GB-2022 标准是 `<FormatSDCard>1</FormatSDCard><DiskNum>N</DiskNum>`,
-     *  优先读 `<DiskNum>`(真实卡号),fallback 读 `<FormatSDCard>` 的整数(老格式兼容)。
+     * ⛔⛔ **2026-09-20 按标准改正两处语义**(此前两处都是错的):
+     *
+     * **① 元素值本身就是卡号,标准里没有 `DiskNum`。**
+     * A.2.3.1.13 只有这一个元素:
+     * ```
+     * <FormatSDCard>N</FormatSDCard>   SD 卡编号,从1开始编号。该值 0 时,对所有存储卡进行格式化
+     * ```
+     * 类型是 `simpleType / restriction base="integer"` + `<minInclusive value="0"/>`。
+     * 这里原先写的是「优先读 `<DiskNum>`(真实卡号),fallback 读 `<FormatSDCard>` 的整数」——
+     * 而 **`DiskNum` 在 2022 全文 / 2022 附录 A / 2016 附录 A 三处都是 0 命中**,是自造元素名。
+     * 之前"看起来能跑对",只是因为平台发的就是 `<FormatSDCard>N</FormatSDCard>`,`DiskNum`
+     * 恒解析成 null 后由 fallback 命中 —— 但优先级是反的:真有客户端带上 `DiskNum` 时卡号会取错。
+     *
+     * **② 解析失败一律不下发,决不回落成 0。**
+     * `0` 在本命令里的语义是**格式化全部卡**(标准注释原文)。"读不懂 → 用 0 兜底"等于
+     * **把一条读不懂的报文升级成破坏性最大的一种操作**。现在解析不出整数只记 Warning 返回,
+     * `lastCommand` 仍照记(设备确实收到了这条命令)。
+     *
+     * ⛔ 这是**无应答命令**(§9.3.1 d:设备不回 Response)。设备侧做没做、平台怎么确认,
+     *    只能靠平台事后再查一次 `SDCardStatus` —— 所以本函数把执行落到
+     *    [DeviceControlActions.formatStorageCard](真的改设备侧读数),而不是只更新 UI 提示。
      */
     override fun handleFormatSDCard(xml: String) {
-        val diskNum = ManscdpParser.tagValue(xml, "DiskNum")?.toIntOrNull()
-        val card = diskNum ?: ManscdpParser.tagValue(xml, "FormatSDCard")?.toIntOrNull() ?: 0
+        val raw = ManscdpParser.tagValue(xml, "FormatSDCard")
+        val card = raw?.trim()?.toIntOrNull()
+        if (card == null) {
+            SystemLogger.emit(
+                LogLevel.Warning, LogTag.Network,
+                "FormatSDCard 未携带可解析的卡号(原始值=${raw ?: "(缺失)"}),按不下发处理 —— " +
+                    "⛔ 不回落成 0:0 的语义是「格式化全部卡」,读不懂的报文不该触发最重的破坏性操作"
+            )
+            state.update {
+                it.copy(
+                    lastCommand = LastDeviceCommand(
+                        "FormatSDCard", "ignored(raw=${raw ?: "-"})", nowMs()
+                    )
+                )
+            }
+            return
+        }
         state.update {
             it.copy(
                 pendingEffect = DeviceEffect.FormatSDCardRequested(card),
                 lastCommand = LastDeviceCommand("FormatSDCard", "card $card", nowMs())
             )
         }
+        actions.formatStorageCard(card)
     }
 
     /**

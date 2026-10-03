@@ -19,6 +19,7 @@ import com.uvp.sim.domain.SubscriptionRegistry
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
 import com.uvp.sim.domain.toPtzPositionSnapshot
+import com.uvp.sim.domain.StorageCardFormatOutcome
 import com.uvp.sim.domain.VirtualStorageCards
 import com.uvp.sim.domain.coord.manscdp.AlarmSubRouter
 import com.uvp.sim.domain.coord.manscdp.BroadcastSubRouter
@@ -176,6 +177,23 @@ internal class ManscdpRouterImpl(
                     )
                     upgradeJob?.cancel()
                     upgradeJob = scope.launch { runUpgradeProgressFlow(sessionId, firmware) }
+                }
+                override fun formatStorageCard(cardIndex: Int) {
+                    // ⛔ 真的改设备侧读数(见 VirtualStorageCards.format),不是"提示一下":
+                    //    随后那次 SDCardStatus 应答要能报出 formatting / FormatProgress /
+                    //    完成后的空盘,否则平台侧观察窗里什么都看不到。
+                    when (val outcome = virtualStorageCards.format(cardIndex)) {
+                        is StorageCardFormatOutcome.Accepted -> SystemLogger.emit(
+                            LogLevel.Info, LogTag.Media,
+                            "FormatSDCard → 已开始格式化 cardIndex=$cardIndex " +
+                                "实际目标卡=${outcome.cardIds}(耗时约 ${VirtualStorageCards.FORMAT_DURATION_MS / 1000}s);" +
+                                "本命令无应答(§9.3.1 d),平台需再查 SDCardStatus 才能看到进度"
+                        )
+                        is StorageCardFormatOutcome.Rejected -> SystemLogger.emit(
+                            LogLevel.Warning, LogTag.Media,
+                            "FormatSDCard cardIndex=$cardIndex 未执行:${outcome.reason}"
+                        )
+                    }
                 }
             },
             scope = scope
