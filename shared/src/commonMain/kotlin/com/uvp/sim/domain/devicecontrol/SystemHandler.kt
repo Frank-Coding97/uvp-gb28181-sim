@@ -5,6 +5,8 @@ import com.uvp.sim.domain.DeviceControlAck
 import com.uvp.sim.domain.DeviceControlModel
 import com.uvp.sim.domain.DeviceEffect
 import com.uvp.sim.domain.LastDeviceCommand
+import com.uvp.sim.domain.TargetTrackMode
+import com.uvp.sim.domain.TargetTrackState
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
 import com.uvp.sim.domain.withDeviceConfig
@@ -413,6 +415,17 @@ internal class DefaultSystemHandler(
      * 误读成了"对象标识"）。于是平台按标准下发的**框选坐标全部被丢弃**。
      *
      * mode 不在白名单 → warn 不写 lastCommand(平台仍收 200 由外层路由保证)。
+     *
+     * ⭐ **2026-09-21 起同时写"设备屏幕可见的跟踪态"**（[DeviceControlModel.targetTrack]）。
+     * 在此之前本函数只写一条 `lastCommand` —— 而 `lastCommand` 的语义是"最近一条命令"
+     * （UI 只认 3 秒内），于是平台点下「手动跟踪」之后：平台**收不到回执**（9.3.1 d)
+     * 把它列为无应答命令，表 1 序号 13 应答栏为"（无）"）、附录 A 又**没有**任何查询命令
+     * 能把跟踪态读回去 ⇒ 这条命令在设备侧**查无实据**，屏幕上什么都不亮。
+     * 现在落一份持续态，`Stop` 置 `null`（"没有停止中的跟踪态"）。
+     *
+     * ⛔ 白名单校验刻意**区分大小写**（与标准给的 `Auto`/`Manual`/`Stop` 原样比对），
+     * 所以下面的模式映射也按这三个字面量走，不再 lower-case —— 两处口径必须一致，
+     * 否则会出现"过了白名单却映射不出模式"的空档。
      */
     override fun handleTargetTrack(xml: String) {
         val mode = ManscdpParser.tagValue(xml, "Mode")
@@ -437,8 +450,21 @@ internal class DefaultSystemHandler(
             deviceId2?.let { append(" pano=").append(it) }
             area?.let { append(" area=").append(it.describe()) }
         }
+        // `Stop` ⇒ null；`Auto` / `Manual` ⇒ 一份新的跟踪态。`nowMs()` 只取一次：
+        // 跟踪态与命令留痕是**同一个事实**的两个面，分别取时会让 `startedAtMs` 与
+        // `lastCommand.timestampMs` 差出几毫秒，UI 上"已跟踪时长"与"刚收到命令"的
+        // 计时起点对不上。
+        val atMs = nowMs()
+        val trackState = when (mode) {
+            "Auto" -> TargetTrackState.of(TargetTrackMode.Auto, area, deviceId2, atMs)
+            "Manual" -> TargetTrackState.of(TargetTrackMode.Manual, area, deviceId2, atMs)
+            else -> null
+        }
         state.update {
-            it.copy(lastCommand = LastDeviceCommand("TargetTrack", detail, nowMs()))
+            it.copy(
+                targetTrack = trackState,
+                lastCommand = LastDeviceCommand("TargetTrack", detail, atMs),
+            )
         }
     }
 

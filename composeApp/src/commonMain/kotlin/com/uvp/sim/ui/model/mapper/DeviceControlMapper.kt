@@ -12,6 +12,9 @@ import com.uvp.sim.domain.ScanGroupState
 import com.uvp.sim.domain.StorageCard
 import com.uvp.sim.domain.StorageCardReading
 import com.uvp.sim.domain.StorageCardStatus
+import com.uvp.sim.domain.TargetTrackBox
+import com.uvp.sim.domain.TargetTrackMode
+import com.uvp.sim.domain.TargetTrackState
 import com.uvp.sim.domain.UpgradeProgress
 import com.uvp.sim.domain.UpgradeResult
 import com.uvp.sim.domain.deriveRenderState
@@ -36,6 +39,9 @@ import com.uvp.sim.ui.model.TiltDirectionDto
 import com.uvp.sim.ui.model.StorageCardDto
 import com.uvp.sim.ui.model.StorageCardReadingDto
 import com.uvp.sim.ui.model.StorageCardStatusDto
+import com.uvp.sim.ui.model.TargetTrackBoxDto
+import com.uvp.sim.ui.model.TargetTrackDto
+import com.uvp.sim.ui.model.TargetTrackModeDto
 import com.uvp.sim.ui.model.UpgradeProgressDto
 import com.uvp.sim.ui.model.UpgradeResultDto
 import com.uvp.sim.ui.model.ZoomDirectionDto
@@ -61,6 +67,19 @@ fun ScanGroupState.toDto(): ScanGroupDto =
         leftBoundary = leftBoundary?.toDto(),
         rightBoundary = rightBoundary?.toDto(),
         speed = speed,
+    )
+
+fun TargetTrackMode.toDto(): TargetTrackModeDto = TargetTrackModeDto.valueOf(name)
+
+fun TargetTrackBox.toDto(): TargetTrackBoxDto =
+    TargetTrackBoxDto(left = left, top = top, width = width, height = height)
+
+fun TargetTrackState.toDto(): TargetTrackDto =
+    TargetTrackDto(
+        mode = mode.toDto(),
+        box = box?.toDto(),
+        deviceId2 = deviceId2,
+        startedAtMs = startedAtMs,
     )
 
 fun StorageCardStatus.toDto(): StorageCardStatusDto = StorageCardStatusDto.valueOf(name)
@@ -169,6 +188,7 @@ fun toDeviceControlDto(
     storageCardQueriedAtMs = model.storageCardQueriedAtMs,
     storageCardQueryCount = model.storageCardQueryCount,
     deviceConfig = model.toDeviceConfigDto(config),
+    targetTrack = model.targetTrack?.toDto(),
 )
 
 /**

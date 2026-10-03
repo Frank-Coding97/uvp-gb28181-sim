@@ -120,6 +120,23 @@ data class DeviceControlModel(
      */
     val activeScanGroup: Int? = null,
 
+    /**
+     * GB/T 28181-2022 A.2.3.1.14 **目标跟踪** —— 设备**当前**的跟踪态。`null` = 没在跟踪。
+     *
+     * ⛔ **必需**，不是"锦上添花的显示字段"：9.3.1 d) 把目标跟踪列为**无应答命令**
+     * （表 1 序号 13 的应答栏是"（无）"），平台收不到任何回执；附录 A 也**没有**任何查询命令
+     * 能把跟踪态读回去 ⇒ "平台点过什么"在设备屏幕上是唯一可见面。只写 [lastCommand]
+     * 等于把这条命令的痕迹绑在一个 3 秒就过期的时间戳上。
+     *
+     * `Stop` 的语义是**置 null**：没有"停止中的跟踪态"这种东西（同 [activeCruiseTrack] /
+     * [activeScanGroup] 的"运行态为空即停止"口径）。
+     *
+     * ⚠️ **不进存档**：真机断电重启后跟踪算法进程重新起来，不会接着盯上一条指令的目标；
+     * 更要紧的是**平台没有任何手段能发现自己看到的是重启前的旧状态**（无回执、无查询）。
+     * 见 `DeviceStateSnapshot` 的"刻意不存的字段"。
+     */
+    val targetTrack: TargetTrackState? = null,
+
     // 辅助开关状态(GB/T 28181 A.3.7 表 A.11,byte4=0x8C 开 / 0x8D 关,byte5=编号)
     // key = AuxFunction.index —— **标准只定义了 1 = 雨刷**,其余编号没有语义,不会出现在这里
     // value = true=ON / false=OFF

@@ -184,4 +184,39 @@ data class DeviceControlDto(
     //      报警上报 / 基本参数 / 图像抓拍)----
     /** 平台下发过的配置的只读视图态(画布叠层 + HUD 图像页摘要共用)。 */
     val deviceConfig: DeviceConfigDto = DeviceConfigDto(),
+
+    // ---- GB-2022 A.2.3.1.14 目标跟踪 ----
+    /**
+     * 设备**当前**的跟踪态。`null` = 没在跟踪（含收到 `Stop` 之后）。
+     *
+     * ⛔ 这是目标跟踪在设备侧**唯一**的可见面：9.3.1 d) 把它列为无应答命令（表 1 序号 13
+     * 应答栏"（无）"），平台收不到回执；附录 A 也没有任何查询命令能读回跟踪态。
+     */
+    val targetTrack: TargetTrackDto? = null,
+)
+
+/**
+ * UI 层 目标跟踪态. 1:1 映射 com.uvp.sim.domain.TargetTrackState.
+ *
+ * ⛔ 没有 `Stop` 这一档：停止 = [DeviceControlDto.targetTrack] 为 `null`，
+ * 不存在"正在停止的跟踪"。
+ */
+data class TargetTrackDto(
+    val mode: TargetTrackModeDto,
+    /** 设备手上**可画**的框（已归一化 0~1）。`null` = 报文没带框 / 框算不出来 / 整框在画面外。 */
+    val box: TargetTrackBoxDto?,
+    /** A.2.3.1.14 的 `<DeviceID2>`（全景通道 ID）。`null` = 平台没带这个元素。 */
+    val deviceId2: String?,
+    val startedAtMs: Long,
+)
+
+/** UI 层 跟踪模式. 1:1 映射 com.uvp.sim.domain.TargetTrackMode. */
+enum class TargetTrackModeDto { Auto, Manual }
+
+/** UI 层 归一化跟踪框(0~1,原点 = 画面左上角). 1:1 映射 com.uvp.sim.domain.TargetTrackBox. */
+data class TargetTrackBoxDto(
+    val left: Float,
+    val top: Float,
+    val width: Float,
+    val height: Float,
 )

@@ -34,6 +34,8 @@ import com.uvp.sim.gb28181.AuxFunction
 import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.DragZoomRectDto
+import com.uvp.sim.ui.model.TargetTrackDto
+import com.uvp.sim.ui.model.TargetTrackModeDto
 import kotlinx.coroutines.delay
 
 /**
@@ -284,5 +286,108 @@ internal fun FrostedGlassOverlay(modifier: Modifier = Modifier) {
                     )
                 )
         )
+    }
+}
+
+// ===== GB/T 28181-2022 A.2.3.1.14 目标跟踪 =====
+
+/**
+ * 角标文案 —— 抽成纯函数以便直接单测（范式同 `ptz/` 下的 `*StateTest`）。
+ *
+ * ⛔⛔ **两种模式的文案必须不同，这是本函数存在的唯一理由。**
+ * `Manual` 的框是**平台报文里的真值**（按 `Length`/`Width` 两把尺子做的比值换算，
+ * 与平台面板上框的位置一一对应）；`Auto` 的框是模拟器**编的**（设备 AI 没接真源，
+ * 见 `TargetTrackState.SIMULATED_AUTO_BOX`）。把后者写成"目标跟踪 · 自动"，
+ * 演示时就会被当成"设备真的自己找到目标了"—— 而这条命令恰恰是**无应答命令**
+ * （9.3.1 d)，表 1 序号 13 应答栏"（无）"），平台上没有任何东西能证伪它。
+ *
+ * ⛔ `Manual` 且没有框（报文没带 / 半份坐标 / 整框在画面外）时说"无框选区域"，
+ * **不回落成"框选成功"**：那会让"平台框选没生效"在设备屏幕上看起来是生效的。
+ */
+internal fun targetTrackOverlayLabel(track: TargetTrackDto): String = when (track.mode) {
+    TargetTrackModeDto.Manual ->
+        if (track.box == null) "目标跟踪 · 手动 · 无框选区域" else "目标跟踪 · 手动"
+    TargetTrackModeDto.Auto -> "目标跟踪 · 自动（模拟目标）"
+}
+
+/**
+ * 目标跟踪的可视化 —— 跟踪框 + 左上角模式角标。
+ *
+ * ## 与 [DragZoomOverlay] 的两处关键差别（别照着那个改）
+ *
+ * 1. **持续显示，不淡出**。拉框放大是一次性动作（效果在真流视窗里，画布的线框只是"收到过"的
+ *    提示，所以 200ms 入 / 1.4× 放大 / 600ms 淡出）；而跟踪是一个**持续状态**：
+ *    标准里 `Stop` 才是终点（A.2.3.1.14 的 `TargetTrack` 元素取值 `Auto|Manual|Stop`）。
+ *    跟着一起淡出的话，设备屏幕上"正在跟踪"会在 2 秒后自己消失 —— 而平台侧既没回执
+ *    也没有任何查询命令能读回跟踪态（9.3.1 d) + 附录 A 无此项），现场只能看到
+ *    "平台点了没反应"。
+ * 2. **颜色用 [UvpColor.Warning]（橙）而不是拉框用的 [UvpColor.Info]（紫）**：
+ *    两个框同时存在是可能的（平台先拉框放大、再手动跟踪），同色会让操作员分不清
+ *    哪个是"放大区域"哪个是"跟踪目标"。
+ *
+ * ## 线框形状
+ * 矩形描边 + 四角加粗的"取景框"角标 —— 与拉框的纯矩形一眼可分，语义也更贴"锁定一个目标"。
+ *
+ * ⚠️ 坐标口径：`track.box` 已经是**归一化 0~1** 的（见 `TargetTrackBox`），
+ * 这里只做「[0,1] → 画布像素」一次线性映射。⛔ 别在这里再除一次 `Length`/`Width`：
+ * 归一化只做一次、只在自己的那一层做（同 `VideoMaskOverlay.of` 的规矩）——
+ * 做两遍不会报错，只会让框整体缩小且位置偏向画面左上角。
+ */
+@Composable
+internal fun TargetTrackOverlay(track: TargetTrackDto?, modifier: Modifier = Modifier) {
+    if (track == null) return
+    Box(modifier = modifier) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val box = track.box ?: return@Canvas
+            val left = box.left * size.width
+            val top = box.top * size.height
+            val right = (box.left + box.width) * size.width
+            val bottom = (box.top + box.height) * size.height
+
+            drawRect(
+                color = UvpColor.Warning.copy(alpha = 0.9f),
+                topLeft = Offset(left, top),
+                size = Size(right - left, bottom - top),
+                style = Stroke(width = 2.dp.toPx()),
+            )
+            // 四角取景框角标：每角两条短线，长度随框尺寸收缩（小框上别把角标画得比框还大）。
+            val tick = minOf(12.dp.toPx(), (right - left) / 3f, (bottom - top) / 3f)
+            val w = 3.dp.toPx()
+            val corners = listOf(
+                // 左上
+                Offset(left, top) to Offset(left + tick, top),
+                Offset(left, top) to Offset(left, top + tick),
+                // 右上
+                Offset(right, top) to Offset(right - tick, top),
+                Offset(right, top) to Offset(right, top + tick),
+                // 左下
+                Offset(left, bottom) to Offset(left + tick, bottom),
+                Offset(left, bottom) to Offset(left, bottom - tick),
+                // 右下
+                Offset(right, bottom) to Offset(right - tick, bottom),
+                Offset(right, bottom) to Offset(right, bottom - tick),
+            )
+            for ((start, end) in corners) {
+                drawLine(color = UvpColor.Warning, start = start, end = end, strokeWidth = w)
+            }
+        }
+
+        // 角标贴在**右下角**：左上角那一列已经被 Aux 的 IR / 雨刷角标占着
+        // （见 [AuxFeedbackOverlay]，两个都按 TopStart 起排）。
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(10.dp),
+            shape = RoundedCornerShape(4.dp),
+            color = UvpColor.Warning.copy(alpha = 0.92f),
+        ) {
+            Text(
+                targetTrackOverlayLabel(track),
+                color = Color.White,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+        }
     }
 }
