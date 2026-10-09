@@ -548,6 +548,7 @@ class AppEngine(
         if (cameraCapture == null) {
             cameraCapture = runtime.buildCameraCapture(captureCfg)
         }
+        resources.snapshotCapture?.let(runtime::attachSnapshotCapture)
         if (audioCapture == null) {
             audioCapture = runtime.buildAudioCapture(audioCfg)
         }

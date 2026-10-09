@@ -75,6 +75,7 @@ object DeviceStatusResponse {
         sn: String,
         snapshot: DeviceStatusSnapshot,
         gbVersion: GbVersion = config.gbVersion,
+        requestedDeviceId: String = config.device.deviceId,
     ): String {
         val device = config.device
         val onlineToken = if (snapshot.online) "ONLINE" else "OFFLINE"
@@ -83,7 +84,7 @@ object DeviceStatusResponse {
 <Response>
 <CmdType>DeviceStatus</CmdType>
 <SN>$sn</SN>
-<DeviceID>${device.deviceId}</DeviceID>
+<DeviceID>$requestedDeviceId</DeviceID>
 <Result>OK</Result>
 <Online>$onlineToken</Online>
 <Status>OK</Status>

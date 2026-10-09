@@ -8,7 +8,7 @@ package com.uvp.sim.snapshot
  *   - SnapshotCapture 服务单帧抓取(ImageCapture UseCase)
  *   两者在 Android 同 lifecycle 共存,但抽象不耦合。
  *
- * iOS / JVM 走 stub(返 null + log warn),M5+ 再补 iOS 真实现。
+ * Android 走 CameraX ImageCapture；iOS / JVM 保留平台 stub。
  */
 expect class SnapshotCapture() {
     /** 抓一帧 JPEG。返回 null 表示失败(未注册 / 平台不支持 / 相机异常),原因走 SystemLogger。 */

@@ -199,6 +199,46 @@ class DeviceControlSubRouterTest {
     }
 
     @Test
+    fun guardCmd_updatesGuardState_andEmitsDeviceControlResponse() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val dispatcher = DeviceControlDispatcher(f.deviceControlState, f.ctx.config, NoopActions, this)
+        val r = DeviceControlSubRouter(f.ctx, NoopRecordingService, dispatcher) {}
+        val xml = "<?xml version=\"1.0\"?><Control><CmdType>DeviceControl</CmdType>" +
+            "<SN>10709</SN><DeviceID>34020000001340000001</DeviceID>" +
+            "<GuardCmd>SetGuard</GuardCmd></Control>"
+
+        assertTrue(r.handle("DeviceControl", xml, fromUri = "sip:34020000002000000001@3402000000"))
+        runCurrent()
+
+        assertTrue(f.deviceControlState.value.isGuarded, "SetGuard 必须先落设备布防状态")
+        val body = f.transport.sent.single { it.body.decodeToString().contains("<CmdType>DeviceControl</CmdType>") }
+            .body.decodeToString()
+        assertTrue(body.contains("<SN>10709</SN>"))
+        assertTrue(body.contains("<DeviceID>34020000001340000001</DeviceID>"))
+        assertTrue(body.contains("<Result>OK</Result>"))
+        assertFalse(body.contains("<GuardCmd>"), "Response 不能把请求命令块原样带回")
+    }
+
+    @Test
+    fun alarmReset_emitsDeviceControlResponse() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val dispatcher = DeviceControlDispatcher(f.deviceControlState, f.ctx.config, NoopActions, this)
+        val r = DeviceControlSubRouter(f.ctx, NoopRecordingService, dispatcher) {}
+        val xml = "<?xml version=\"1.0\"?><Control><CmdType>DeviceControl</CmdType>" +
+            "<SN>10733</SN><DeviceID>34020000001340000001</DeviceID>" +
+            "<AlarmCmd>ResetAlarm</AlarmCmd></Control>"
+
+        assertTrue(r.handle("DeviceControl", xml, fromUri = "sip:34020000002000000001@3402000000"))
+        runCurrent()
+
+        val body = f.transport.sent.single { it.body.decodeToString().contains("<CmdType>DeviceControl</CmdType>") }
+            .body.decodeToString()
+        assertTrue(body.contains("<SN>10733</SN>"))
+        assertTrue(body.contains("<DeviceID>34020000001340000001</DeviceID>"))
+        assertTrue(body.contains("<Result>OK</Result>"))
+    }
+
+    @Test
     fun preset_query_emits_preset_response() = runTest {
         val f = SubRouterTestFixtures.newFixture(this)
         val dispatcher = DeviceControlDispatcher(f.deviceControlState, f.ctx.config, NoopActions, this)

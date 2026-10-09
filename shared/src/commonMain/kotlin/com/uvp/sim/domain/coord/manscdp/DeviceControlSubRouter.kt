@@ -151,9 +151,18 @@ internal class DeviceControlSubRouter(
             )
             alarmResetCallback(ack.by)
         }
-        val recordCmd = ManscdpParser.recordCmd(xml) ?: return
+        // 有应答的 DeviceControl 命令不能因为没有 RecordCmd 就提前返回；布防、看守位等
+        // 命令需要独立发送应用层 Response。云台/目标跟踪等标准无应答命令仍保留返回路径。
         val sn = ManscdpParser.sn(xml) ?: "0"
         val deviceId = ManscdpParser.deviceId(xml) ?: ctx.config.device.deviceId
+        val recordCmd = ManscdpParser.recordCmd(xml)
+        if (recordCmd == null) {
+            val hasGuardCmd = ManscdpParser.tagValue(xml, "GuardCmd") != null
+            val hasAlarmCmd = ManscdpParser.tagValue(xml, "AlarmCmd") != null
+            if (!hasGuardCmd && !hasAlarmCmd && !xml.contains("<HomePosition>") && !xml.contains("<PresetCmd>")) return
+            sendDeviceControlResponse(sn = sn, deviceId = deviceId, result = "OK")
+            return
+        }
         // ⭐ A.2.3.1.4 `StreamNumber`（**2022 新增**）：平台可以点名录哪一路码流
         //    （0-主码流 / 1-子码流1 / 2-子码流2…）。`null` = 平台没带这个元素 →
         //    按标准缺省 0。⛔ 原先完全不解析，平台"录子码流"的意图被静默丢弃，

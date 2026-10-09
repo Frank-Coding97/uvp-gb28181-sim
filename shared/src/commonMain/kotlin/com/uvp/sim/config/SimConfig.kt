@@ -492,3 +492,14 @@ enum class DirectionType(val gbCode: Int, val label: String) {
 data class SnapshotConfig(
     val uploadAllowList: List<String> = emptyList()
 )
+
+/**
+ * 抓拍上传的有效主机白名单。
+ *
+ * 未单独配置抓拍白名单时，抓拍地址默认只能回连当前 SIP 平台主机；
+ * 一旦显式配置，仍完全按用户给出的白名单校验。
+ */
+fun SimConfig.effectiveSnapshotUploadAllowList(): List<String> =
+    snapshot.uploadAllowList.ifEmpty {
+        listOfNotNull(server.ip.trim().takeIf { it.isNotEmpty() })
+    }

@@ -161,6 +161,15 @@ class SnapshotUploadEngine(
         while (true) {
             val result = uploader.put(uploadUrl, jpeg, snapShotId)
             if (result is UploadResult.Success) return true
+            val failure = result as UploadResult.Failure
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Network,
+                "抓拍 JPEG 上传失败: file=$snapShotId " +
+                    "attempt=${attempt + 1}/${retryDelaysMs.size + 1} " +
+                    "status=${failure.statusCode ?: "network"} cause=${failure.cause}",
+                category = ErrorCategory.Transient,
+            )
             if (attempt >= retryDelaysMs.size) return false
             delay(retryDelaysMs[attempt])
             attempt += 1

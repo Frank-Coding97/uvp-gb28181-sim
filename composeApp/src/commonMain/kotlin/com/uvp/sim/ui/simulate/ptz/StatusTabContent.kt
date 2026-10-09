@@ -31,7 +31,6 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.LastDeviceCommandDto
-import com.uvp.sim.ui.simulate.useTickingNow
 
 /** 「请求关键帧」指示灯的保持时长 —— 平台的一次性命令，亮这么久就自动灭。 */
 internal const val KEY_FRAME_FEEDBACK_MS = 2_000L
@@ -46,30 +45,7 @@ internal fun isKeyFrameRequestActive(command: LastDeviceCommandDto?, nowMs: Long
     return nowMs - command.timestampMs in 0..KEY_FRAME_FEEDBACK_MS
 }
 
-/**
- * 状态 Tab — 录像 / 布防 / 报警 / 重启 4 盏大状态灯 + 「请求关键帧」一次性指示灯。
- *
- * ## 2026-09-19：「请求关键帧」从「图像」页搬到这里
- * 它虽然属于"图像类命令"，但语义是**设备此刻在做什么**（一次性、2 秒自动灭的指示灯），
- * 与这四盏灯同类；放在「图像」页里和"配置/坐标"那些**有持续状态的东西**混在一起，
- * 反而让人以为它是一条可配置项。用户的整理要求正是「放到状态下面，做成四四方方的卡片」。
- *
- * ## 高度预算（HUD 内容区**定高 284dp、不滚动**）
- * ```
- *   两行状态灯 2 × 68 = 136dp   （BigStatusLamp 的两行文字各按 24dp 行框记账，见下方警示）
- *   行间距      3 × 8  =  24dp
- *   关键帧卡片          56dp
- *   存储卡区块          59dp   （2 张卡的最坏情况，加法见 [StorageCardSection]）
- *   ─────────────────────────
- *   合计 ≈ 275dp  →  余 9dp ✓
- * ```
- * ⛔ **这一页已经塞满了**：往后再加任何一块，都得先腾地方（把某块压矮或搬去别的 Tab），
- * 否则被挤出去的正好是最后一行 —— 而 HUD 内容区不滚动，它不会"滑出来"。
- * ⚠️ **`BigStatusLamp` 里的两个 `Text` 没有显式给 `lineHeight`**，所以它们按 Material3
- * `bodyLarge` 的 **24sp** 行框记账（11.sp 的字也是 24dp 高）—— 一盏灯因此是 68dp 而不是
- * 直觉上的 ~44dp。上面的 136dp 是**固定开销**，往本页再加内容前先把它算进去。
- * （本文件新增的卡片本身给了 `lineHeight`，所以它是 56dp 而不是 68dp。）
- */
+/** 设备页：持续状态、存储卡及设备维护反馈。 */
 @Composable
 internal fun StatusTabContent(state: DeviceControlDto) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -95,20 +71,20 @@ internal fun StatusTabContent(state: DeviceControlDto) {
                 modifier = Modifier.weight(1f),
             )
             BigStatusLamp(
-                label = "重启",
-                active = state.isRebooting,
+                label = "雨刷",
+                active = state.auxStates[1] == true,
                 activeColor = UvpColor.Info,
                 modifier = Modifier.weight(1f),
             )
         }
-        // 平台请求关键帧（GB-2022 A.2.3.1.5）—— 2 秒后自动灭的一次性指示灯。
-        KeyFrameRequestCard(
-            active = isKeyFrameRequestActive(state.lastCommand, useTickingNow(intervalMs = 250L)),
-        )
-        // 「存储卡」区块（GB-2022 A.2.4.14 查询 / A.2.6.16 应答）。
-        // 2026-09-19 从 3D 画面右上角的悬浮卡片**收进本页**：跟上面四盏灯同类
-        // （"设备现在处于什么状态"的回显），摆在画布上只会糊住画面。
         StorageCardSection(state = state)
+        ImageEventRow("重启", if (state.isRebooting) "正在重启" else "暂无重启任务", state.isRebooting)
+        state.upgradeProgress?.let { UpgradeProgressRow(it) }
+        val cmd = state.lastCommand
+        if (cmd?.type == "FormatSDCard") ImageEventRow("格式化请求", cmd.rawHex, true)
+        if (cmd?.type == "DeviceUpgrade" && state.upgradeProgress == null) {
+            ImageEventRow("升级请求", cmd.rawHex, true)
+        }
     }
 }
 
@@ -119,7 +95,7 @@ internal fun StatusTabContent(state: DeviceControlDto) {
  * 而那是个持续 2 秒的**瞬时事件** —— 细行在扫视时太容易被漏掉。
  */
 @Composable
-private fun KeyFrameRequestCard(active: Boolean) {
+internal fun KeyFrameRequestCard(active: Boolean) {
     val background = if (active) UvpColor.Primary else UvpColor.Bg
     val foreground = if (active) Color.White else UvpColor.TextSecondary
     val border = if (active) UvpColor.Primary else UvpColor.BorderLight
@@ -200,12 +176,14 @@ private fun BigStatusLamp(
             Text(
                 label,
                 fontSize = 11.sp,
+                lineHeight = 16.sp,
                 color = if (active) activeColor else UvpColor.TextSecondary,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
                 if (active) "已开启" else "未开启",
                 fontSize = 9.sp,
+                lineHeight = 14.sp,
                 color = if (active) activeColor.copy(alpha = 0.85f) else UvpColor.TextHint,
                 fontWeight = FontWeight.Medium,
             )

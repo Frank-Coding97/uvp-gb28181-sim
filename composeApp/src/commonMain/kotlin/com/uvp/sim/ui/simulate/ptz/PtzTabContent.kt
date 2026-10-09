@@ -1,15 +1,14 @@
 package com.uvp.sim.ui.simulate.ptz
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -27,7 +26,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,53 +47,8 @@ import com.uvp.sim.ui.model.CruiseTrackDto
 import com.uvp.sim.ui.model.DeviceControlDto
 import com.uvp.sim.ui.model.PtzPoseDto
 import com.uvp.sim.ui.model.ScanGroupDto
-import kotlinx.coroutines.delay
 
-/**
- * 云台 Tab — 一个**云台控制台**:中央方向盘 + 四周参数 + 底部预置位/看守位。
- *
- * 版面(自上而下):
- * ```
- *  ① 水平 +120°        │        俯仰 -5°          读数条
- *  ② ┌──────┐   ┌─────────┐   ┌──────────┐
- *     │ 变焦  │   │  ↑ ↑ ↑  │   │ 光圈 50% │       变焦/光圈/聚焦
- *     │ 1.0× │   │ ← ● →  │   │ [−][+]   │       围绕方向盘
- *     │ −  + │   │  ↓ ↓ ↓  │   │ 聚焦 50% │
- *     └──────┘   └─────────┘   │ [近][远] │
- *  ③ 预置位  [P1]…[P8]
- *  ④ 看守位  ● 已启用 · 指向 P3 · 归位 30s        平台下发
- *  ⑤ 自主    [#1 ▶ 1→3→5] [扫描#0 ▶ -20°↔40°·120]  平台下发(可对账,超出上限只报数)
- *            #1 运行中 · 每点停留 30s · 速度 128
- * ```
- *
- * ⑤ 这一行同时装**巡航**与**扫描**(两者互斥:扫描启动清巡航、巡航启动清扫描)。扫描那枚
- * chip 是**唯一**能对账扫描边界的地方 —— 附录 A 里没有 `ScanQuery`,平台上永远只有"指令已下发"。
- *
- * **可交互 vs 只读**:方向盘(水平/俯仰)、变焦 −/+、光圈 −/+、聚焦 近/远 都是本机可操作的;
- * 读数、预置位、看守位仍是平台侧状态的**只读回显**(spec AC2)。设备端不提供预置位/看守位的
- * 配置入口 —— 两者都只由平台写入,设备被动接受(2026-09-16 决议)。
- *
- * **操作方式**(2026-09-16 按用户反馈重做,见 [PtzConsolePad.rememberRepeatPress]):
- * 按一下走一步 / **按住连续走 / 松手即停**。原来是纯点击式(点一下动一格),
- * 不符合云台操控的通用认知 —— 实体球机和各家客户端都是按住转、松手停。
- * 本机操作期间读数条会同步高亮,跟「平台正在推」共用同一套视觉。
- *
- * **两条驱动路径,汇到同一个 Model**:
- * ```
- *   平台按住 → FI 命令(带速度) → Model.focusSpeed/irisSpeed  ← 速率
- *                                    ↓ 本页 60ms 积分节拍
- *   本机按住 → 长按重复增量 ─────────→ onLocalLensAdjust → Model.focusLevel/irisLevel
- * ```
- * 平台侧只发**一条**带速度的 FI 命令、松手补一条 0x40 停止(标准里 FI 与方向命令同形,
- * 都是"带速度的开始动作",见 `gb28181/PtzCommand` 表 A.6),所以镜头位置得由本页按
- * 「速率 × 时间」自己推 —— 这就是下面那段积分节拍存在的原因。两条路径都写回 Model,
- * 于是切 Tab 再回来位置不丢。方向/变焦的速率积分在 3D 画布那一侧(见 `CameraGlbView`)。
- *
- * 位置演进:本机手操原先是贴在本页底部的一张横条,2026-09-16 上午迁到 3D 画布下方以
- * 避免与只读 HUD 混淆,下午发现会盖住画布右下角的缩略图、改到画布下方独立占一行,
- * 最终收进本页做成方盘 —— 位置固定、不再和画布内任何元素抢空间。
- */
-@OptIn(ExperimentalLayoutApi::class)
+/** 云台页只保留本机方向、变焦和镜头操作；平台定位信息见 PositionTabContent。 */
 @Composable
 internal fun PtzTabContent(
     state: DeviceControlDto,
@@ -106,25 +59,6 @@ internal fun PtzTabContent(
     // 演示时能一眼分清这次转动是人在推还是平台在推。
     var localPtzPushing by remember { mutableStateOf(false) }
     var localZoomPushing by remember { mutableStateOf(false) }
-
-    // 平台 FI 速率的积分节拍。
-    //
-    // 平台按住聚焦/光圈时只下发**一条**带速度的 FI 命令(标准表 A.6:字节5/6 是速度,
-    // 低 4 位清零即停),它表达的是"以这个速度开始走";松开时平台补一条 0x40 把速率归零。
-    // 所以设备侧的位置只能自己按「速率 × 时间」推出来 —— 就是这一拍。
-    //
-    // 60ms 与 [rememberRepeatPress] 的长按重复间隔同源,观感一致。
-    // LaunchedEffect 以两个速率为 key:速率一变立刻用新速度重开;归零则条件分支直接返回,
-    // 循环结束。不要在循环体里读 `state.xxx` —— 那样捕获的是启动时的旧值。
-    LaunchedEffect(state.focusSpeed, state.irisSpeed) {
-        if (state.focusSpeed == 0f && state.irisSpeed == 0f) return@LaunchedEffect
-        val focusRate = state.focusSpeed
-        val irisRate = state.irisSpeed
-        while (true) {
-            delay(LENS_TICK_MS)
-            onLocalLensAdjust(focusRate * LENS_TICK_SECONDS, irisRate * LENS_TICK_SECONDS)
-        }
-    }
 
     Column {
         // ① 宣读条:水平 / 俯仰(平台速率非 0 或本机正在推时高亮)
@@ -210,105 +144,61 @@ internal fun PtzTabContent(
                 )
             }
         }
-        Spacer(Modifier.height(8.dp))
+    }
+}
 
-        // ③ 预置位(平台下发后设备侧只读回显,不允许在设备上编辑)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+/** 紧凑定位总览：常用配置一屏展示，大量配置仍允许滚动查看。 */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun PositionTabContent(state: DeviceControlDto) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("预置位")
             Spacer(Modifier.width(8.dp))
-            PresetChipRow(
-                presets = state.presets,
-                currentIndex = state.currentPresetIndex,
-                // 用 weight 而不是靠子项自己 fillMaxWidth:Row 内非 weight 子项拿到的是
-                // 「剩余宽度」约束,实测在真机上不会被撑满,chip 只占半行(2026-09-16 真机发现)
+            FlowRow(
                 modifier = Modifier.weight(1f),
-            )
-        }
-        Spacer(Modifier.height(6.dp))
-
-        // ④ 看守位(GB/T 28181-2016 控制 / 2022 才补查询)
-        HomePositionCard(state)
-
-        // ⑤ 自主行为:巡航轨迹 / 自动扫描(平台设过才有)
-        //
-        // 这一块存在的意义是**对账**:平台点完"开始巡航 / 开始扫描",操作员在设备屏幕上核对
-        // 「#几在跑 / 点位链是不是我排的那个顺序 / 边界与速度有没有真的落下来」。
-        // 所以 chip 直接铺出自控层追出来的点位链(`#1 · 1→3→5`)—— 原来写的是 `T1·3`,
-        // 只能看出"有几条、每条几个点",看不出**是哪几个点、什么顺序**,等于没回显。
-        //
-        // ⛔⛔ 扫描**必须与巡航挤在同一行**(2026-09-20 真机实测后改):它原先是独立的第 ⑥ 块,
-        //    自带 label 行 + 6dp 间隔,实测把内容从 271dp 顶到约 297dp —— 而这一块的高度是
-        //    **定高 284dp、不滚动**的硬预算,超出部分被直接裁掉,裁掉的正是**扫描那整行**:
-        //    界面上完全看不到它(语义树里也没有),而它恰恰是"唯一能对账扫描边界"的一行
-        //    (理由见 [ScanGroupChip])。并成同一行后**总行数不变** ⇒ 零高度增长,
-        //    HUD 与画布的高度分配不用动(⛔ `PtzHudPanel` 那边写着"再加高就得重新分配画布高度")。
-        // ⛔ 并行的前提是**横向也算得过来**:巡航 chip 最坏(链取满 [CRUISE_HUD_CHAIN_HEAD] 个
-        //    编号)约 357px、扫描 chip 约 378px、label 58px —— 两枚巡航 chip 加扫描会到
-        //    ~1135px,而内容区宽只有 ~1030px,FlowRow 一换行就等于又长出一行。
-        //    这正是 [CRUISE_HUD_MAX_CHIPS] 从 2 降到 1 的原因:巡航的完整信息在**平台上**
-        //    看得到,HUD 只负责"设备这边到底是什么样";而扫描**平台读不回来**,不能让。
-        val scanGroupNum = state.activeScanGroup ?: state.scanGroups.keys.minOrNull()
-        if (state.cruiseTracks.isNotEmpty() || scanGroupNum != null) {
-            Spacer(Modifier.height(6.dp))
-            val tracks = state.cruiseTracks.entries.sortedBy { it.key }
-            // 运行中的那条**排最前** —— HUD 这一块是给对账用的,而"哪条在跑"才是对账对象;
-            // 条数多到截断时,截掉的必须是旁观项,不能把正在跑的那条挤出去。
-            val ordered = tracks.sortedByDescending { it.key == state.activeCruiseTrack }
-            val shown = ordered.take(CRUISE_HUD_MAX_CHIPS)
-            val hidden = ordered.size - shown.size
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // label 是「自主」而不是「巡航」:这一行现在同时承载巡航与扫描两类**设备自主行为**
-                // (两者互斥 —— 扫描启动清巡航、巡航启动清扫描,见 `PtzHandler`)。
-                SectionLabel("自主")
-                Spacer(Modifier.width(8.dp))
-                // ⛔ 必须**限量**(见 CRUISE_HUD_MAX_CHIPS),不能把全部轨迹都铺出来。
-                //    HUD 是**定高 Box、不滚动**,多出来的行会被直接裁掉,而且被裁的偏偏是
-                //    下面那行"运行中 · 停留/速度",也就是这块最该被看到的东西。
-                //    FlowRow 是第二道保险(横向放不下时换行而不是把 chip 顶出可视区),
-                //    但**换行 = 多一行 = 又超预算**,所以横向也必须是算得过来的(见块首注释)。
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    shown.forEach { (trackNum, track) ->
-                        CruiseTrackChip(
-                            trackNum = trackNum,
-                            track = track,
-                            active = state.activeCruiseTrack == trackNum,
-                        )
-                    }
-                    if (hidden > 0) {
-                        // 只说"还有几条想看就得进平台",不放按钮 —— HUD 是只读回显面,不是编辑器。
-                        CruiseOverflowChip(hidden)
-                    }
-                    if (scanGroupNum != null) {
-                        ScanGroupChip(
-                            groupNum = scanGroupNum,
-                            group = state.scanGroups[scanGroupNum],
-                            scanning = state.activeScanGroup == scanGroupNum,
-                        )
-                    }
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (state.presets.isEmpty()) SectionLabel("未配置 · 等待平台下发")
+                state.presets.keys.sorted().forEach { index ->
+                    val current = index == state.currentPresetIndex
+                    Text(
+                        "P$index",
+                        modifier = Modifier.background(
+                            if (current) UvpColor.Primary else UvpColor.PrimaryLight,
+                            RoundedCornerShape(6.dp),
+                        ).padding(horizontal = 8.dp, vertical = 5.dp),
+                        color = if (current) Color.White else UvpColor.Primary,
+                        fontSize = 11.sp, lineHeight = 14.sp, fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
-            // 运行中那条的组级参数单独一行。速度/停留时间是**组级**的(见 CruiseTrackDto),
-            // 所以这里只说一次,不逐点标 —— 免得看起来像"每个点都能单独设"。
-            // ⚠️ 只有**巡航**需要这一行:扫描的速度已经写在它的 chip 里了,再单列一行会超预算。
-            val runningNum = state.activeCruiseTrack
-            val running = runningNum?.let { num -> tracks.firstOrNull { it.key == num }?.value }
-            if (running != null) {
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    "#$runningNum 运行中 · ${cruiseGroupParams(running)}",
-                    fontSize = 9.sp,
-                    lineHeight = 12.sp,
-                    maxLines = 1,
-                    color = UvpColor.Primary,
-                    fontWeight = FontWeight.Medium,
-                )
+        }
+        HomePositionCard(state)
+        SectionLabel("巡航轨迹")
+        if (state.cruiseTracks.isEmpty()) SectionLabel("未配置 · 等待平台下发")
+        state.cruiseTracks.entries.sortedBy { it.key }.forEach { (num, track) ->
+            Row(
+                Modifier.fillMaxWidth().background(UvpColor.Bg, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("#$num${if (state.activeCruiseTrack == num) " ▶" else ""}",
+                    color = UvpColor.Primary, fontSize = 11.sp, lineHeight = 14.sp)
+                Spacer(Modifier.width(8.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(track.points.joinToString(" → ") { "P$it" }.ifEmpty { "暂无点位" },
+                        color = UvpColor.Text, fontSize = 10.sp, lineHeight = 12.sp)
+                    Text(cruiseGroupParams(track), color = UvpColor.TextSecondary,
+                        fontSize = 9.sp, lineHeight = 12.sp)
+                }
             }
+        }
+        SectionLabel("自动扫描")
+        if (state.scanGroups.isEmpty()) SectionLabel("未配置 · 等待平台下发")
+        state.scanGroups.entries.sortedBy { it.key }.forEach { (num, group) ->
+            ScanGroupChip(num, group, state.activeScanGroup == num)
         }
     }
 }
@@ -369,84 +259,6 @@ private fun ScanGroupChip(groupNum: Int, group: ScanGroupDto?, scanning: Boolean
 private fun scanBoundaryText(pose: PtzPoseDto?): String =
     pose?.let { formatPose(it.pan, "°") + "°" } ?: "未设"
 
-/** 一块分区(预置位 / 自主行为)在 HUD 里能占的高度是**硬预算** —— HUD 是定高
- *  `Box`(284dp)、**不滚动**,超出来的行被直接裁掉,而且被裁的往往是最后那行
- *  (巡航的"运行中 · 停留/速度")。所以巡航这块**限量显示**:
- *
- *  - [CRUISE_HUD_MAX_CHIPS] 条轨迹 chip(运行中的永远排第一,截掉的只会是旁观项);
- *  - 每条 chip 里的点位链最多 [CRUISE_HUD_CHAIN_HEAD] 个编号,多出来的用 `…`。
- *
- *  两道限制都是为了让这一块**高度可预测**:横向放得下就不会换行,
- *  而**一换行就多一行、直接超预算**。完整信息在平台上能看到,
- *  HUD 只负责"设备这边到底是什么样"的对账。
- *
- * ⛔ 2026-09-20 `2 → 1`。原因不是高度而是**宽度** —— 扫描 chip(约 378px)必须与巡航 chip
- *    挤在同一行(理由见调用处),而「两枚满链巡航 chip + 扫描 + label」约 1135px,超过
- *    内容区宽 ~1030px,FlowRow 一换行就等于又长出一行,等于把扫描那行重新裁掉。
- *    取舍依据:巡航信息在**平台上看得到**,而扫描**平台读不回来**(附录 A 无 `ScanQuery`),
- *    所以让的是巡航的旁观项,不是扫描。 */
-private const val CRUISE_HUD_MAX_CHIPS = 1
-
-/** chip 内点位链最多显示几个编号。链条长到 8 个以上时 chip 会横跨大半屏,挤掉别的 chip。 */
-private const val CRUISE_HUD_CHAIN_HEAD = 6
-
-/**
- * 一条巡航轨迹的 chip:`#编号 · 点位链`。运行中填主题色,一眼能定位。
- *
- * ⛔ `lineHeight` 必须显式给。`Text(fontSize = 9.sp)` **只改字号**,行高仍继承
- *    `bodyLarge` 的 24sp —— chip 会白白高出一倍,而 HUD 是定高的,省下来的这 12dp
- *    正是"运行中参数行"能加进来的余量(2026-09-17 实测,见技能 uvp-gb28181-sim-app)。
- */
-@Composable
-private fun CruiseTrackChip(trackNum: Int, track: CruiseTrackDto, active: Boolean) {
-    val bg = if (active) UvpColor.Primary else UvpColor.BorderLight
-    val fg = if (active) Color.White else UvpColor.TextSecondary
-    val chain = if (track.points.isEmpty()) {
-        "空"
-    } else if (track.points.size <= CRUISE_HUD_CHAIN_HEAD) {
-        track.points.joinToString("→")
-    } else {
-        // 截断必须留个尾巴,不然后面还有点位这件事就看不出来了
-        track.points.take(CRUISE_HUD_CHAIN_HEAD).joinToString("→") + "…"
-    }
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(99.dp))
-            .background(bg)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-    ) {
-        Text(
-            if (active) "#$trackNum ▶ $chain" else "#$trackNum · $chain",
-            color = fg,
-            fontSize = 9.sp,
-            lineHeight = 12.sp,
-            maxLines = 1,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-/** 轨迹条数超出 HUD 显示上限时补的 `+N` chip。只报数、不做交互 ——
- *  HUD 是设备侧回显面,不是轨迹管理器(增删改都在平台)。 */
-@Composable
-private fun CruiseOverflowChip(hidden: Int) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(99.dp))
-            .background(UvpColor.BorderLight)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-    ) {
-        Text(
-            "+$hidden",
-            color = UvpColor.TextSecondary,
-            fontSize = 9.sp,
-            lineHeight = 12.sp,
-            maxLines = 1,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
 /**
  * 组级参数的读法(速度 / 停留时间)。
  *
@@ -465,12 +277,7 @@ private fun cruiseGroupParams(track: CruiseTrackDto): String {
     return if (parts.isEmpty()) "平台未下发速度与停留时间" else parts.joinToString(" · ")
 }
 
-/** 分区小标题(预置位 / 巡航 / 看守位),统一字号与颜色。
- *
- *  ⛔ `lineHeight` 同样必须显式给,理由与 [CruiseTrackChip] 一致 —— 不写就是 24sp 行框。
- *  这里尤其要紧:标题是各分区 `Row` 里**最高**的子项,它白吃 10dp 会直接抬高
- *  每一个分区的高度(预置位行、看守位行都跟着变高),而 HUD 是硬预算的定高容器。
- *  (2026-09-17:巡航 chip 已经降到 18dp,结果 Row 高度还是被这个 24dp 的标题顶住。) */
+/** 分区标题使用显式行高，避免继承正文的大行框。 */
 @Composable
 private fun SectionLabel(text: String) {
     Text(
@@ -754,12 +561,6 @@ private const val LENS_STEP = 0.05f
  */
 private const val LENS_CONT_STEP = 0.02f
 
-/** 平台 FI 速率的积分节拍。与 [rememberRepeatPress] 的长按重复间隔同源(60ms),观感一致。 */
-private const val LENS_TICK_MS = 60L
-
-/** [LENS_TICK_MS] 的秒表示 —— 积分是「速率(每秒) × 时间(秒)」。 */
-private const val LENS_TICK_SECONDS = 0.06f
-
 /**
  * 光圈/聚焦卡里**所有**文字的行高 —— 必须显式给,只给 `fontSize` 是不够的。
  *
@@ -802,7 +603,7 @@ private fun HomePositionCard(state: DeviceControlDto) {
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(UvpColor.Bg)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+            .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         SectionLabel("看守位")
@@ -937,69 +738,5 @@ internal fun formatPose(value: Float, unit: String): String {
     } else {
         val rounded = kotlin.math.round(value).toInt()
         if (rounded > 0) "+$rounded" else "$rounded"
-    }
-}
-
-@Composable
-private fun PresetChipRow(
-    presets: Map<Int, PtzPoseDto>,
-    currentIndex: Int?,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        for (idx in 1..8) {
-            PresetChip(
-                idx = idx,
-                isSet = presets.containsKey(idx),
-                isCurrent = currentIndex == idx,
-            )
-        }
-    }
-}
-
-@Composable
-private fun RowScope.PresetChip(
-    idx: Int,
-    isSet: Boolean,
-    isCurrent: Boolean,
-) {
-    val bg = when {
-        isCurrent -> UvpColor.Primary
-        isSet -> UvpColor.PrimaryLight
-        else -> UvpColor.BorderLight
-    }
-    val fg = when {
-        isCurrent -> Color.White
-        isSet -> UvpColor.Primary
-        else -> UvpColor.TextHint
-    }
-    val targetScale = if (isCurrent) 1.05f else 1f
-    val scale by animateFloatAsState(
-        targetScale,
-        animationSpec = tween(durationMillis = if (isCurrent) 200 else 300),
-        label = "preset-scale-$idx"
-    )
-    Box(
-        modifier = Modifier
-            .weight(1f)
-            .height(26.dp)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .clip(RoundedCornerShape(6.dp))
-            .background(bg)
-            .let { m ->
-                if (isCurrent) m.border(1.dp, UvpColor.Primary, RoundedCornerShape(6.dp))
-                else m
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            "P$idx",
-            color = fg,
-            fontSize = 11.sp,
-            fontWeight = if (isCurrent || isSet) FontWeight.SemiBold else FontWeight.Normal,
-        )
     }
 }

@@ -55,7 +55,7 @@ data class LastDeviceCommandDto(
  * UI 层 平台控制命令的语义分类. 1:1 映射 com.uvp.sim.domain.DeviceCommandCategory.
  * **轨 ④ PR-UI-PROTOCOL-FIX**:UI 用它派 Tab,不再 parse rawHex.
  */
-enum class DeviceCommandCategoryDto { Ptz, Status, Image, Aux }
+enum class DeviceCommandCategoryDto { Ptz, Position, Status, Image, Aux }
 
 /** 升级结果. 1:1 映射 com.uvp.sim.domain.UpgradeResult. */
 enum class UpgradeResultDto { InProgress, Success, Failure }

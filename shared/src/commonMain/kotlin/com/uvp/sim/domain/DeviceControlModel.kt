@@ -334,11 +334,13 @@ data class ScanGroupState(
  * 输出语义枚举;协议字符串泄露被压缩到这一个函数,不再散落到 Compose 视图里。
  */
 enum class DeviceCommandCategory {
-    /** PTZ 运动 / 预置位 / 巡航 / 看守位 / 精确定位 / 三维拉框 */
+    /** 预置位 / 看守位 / 巡航 / 扫描 */
+    Position,
+    /** PTZ 运动 / 镜头 / 精确定位 */
     Ptz,
-    /** 录像 / 布防 / 报警 / 远程重启 */
+    /** 录像 / 布防 / 报警 / 远程重启 / 升级 / 格式化 */
     Status,
-    /** 强制 I 帧 / 抓拍 / 拉框聚焦 / 设备配置 / 在线升级 / 格式化 SD / 目标跟踪 */
+    /** 强制 I 帧 / 抓拍 / 拉框聚焦 / 设备配置 / 目标跟踪 */
     Image,
     /** 辅助开关(GB-2022 附录 A.3.7 表 A.11,字节4=0x8C/0x8D):标准只定义编号 1 = 雨刷 */
     Aux,
@@ -396,13 +398,8 @@ fun deriveRenderState(model: DeviceControlModel): DeviceControlRenderState =
  * 匹配判 Tab,导致协议层 dispatcher 写啥 UI 必须知道。轨 ④ PR-UI-PROTOCOL-FIX 把这段判别压到这里,
  * UI 只读语义枚举。
  *
- * 规则(同原 HudTab.fromCommand 行为):
- *   - PTZCmd:rawHex 以"雨刷"开头(已映射)或以"Aux"开头(未映射编号)→ [DeviceCommandCategory.Aux];其余 → [Ptz]
- *   - PTZPreciseCtrl → [Ptz]
- *   - RecordCmd / GuardCmd / AlarmCmd / TeleBoot → [Status]
- *   - IFameCmd / IFrameCmd / SnapShotCmd / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack → [Image]
- *   - HomePosition → [Ptz](原 HudTab.fromCommand 未列,但 HomePosition 属云台范畴)
- *   - 其他未知 type → null
+ * 运动与镜头归 Ptz；预置位、看守位、巡航、扫描归 Position。
+ * 录像、布防、报警和维护归 Status；画面相关配置/事件归 Image；辅助开关归 Aux。
  */
 fun deriveCommandCategory(cmd: LastDeviceCommand): DeviceCommandCategory? = when (cmd.type) {
     "PTZCmd" -> {
@@ -411,12 +408,17 @@ fun deriveCommandCategory(cmd: LastDeviceCommand): DeviceCommandCategory? = when
         //    红外灯/加热/除雾/制冷 已随 AuxFunction 收敛移除(GB/T 28181 A.3.7 只定义编号 1),
         //    不再作为类别判据 —— 判据跟着协议走,不能跟着"曾经写过的厂商标号"走。
         val isAux = raw.startsWith("雨刷") || raw.startsWith("Aux")
-        if (isAux) DeviceCommandCategory.Aux else DeviceCommandCategory.Ptz
+        when {
+            isAux -> DeviceCommandCategory.Aux
+            listOf("SetPreset#", "CallPreset#", "DelPreset#", "SET#", "CALL#", "DEL#", "巡航", "扫描").any(raw::startsWith) -> DeviceCommandCategory.Position
+            else -> DeviceCommandCategory.Ptz
+        }
     }
-    "PTZPreciseCtrl", "HomePosition" -> DeviceCommandCategory.Ptz
-    "RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot" -> DeviceCommandCategory.Status
+    "PTZPreciseCtrl" -> DeviceCommandCategory.Ptz
+    "HomePosition" -> DeviceCommandCategory.Position
+    "RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot", "DeviceUpgrade", "FormatSDCard" -> DeviceCommandCategory.Status
     "IFameCmd", "IFrameCmd", "SnapShotCmd", "DeviceConfig",
-    "DeviceUpgrade", "FormatSDCard", "TargetTrack" -> DeviceCommandCategory.Image
+    "TargetTrack" -> DeviceCommandCategory.Image
     else -> null
 }
 

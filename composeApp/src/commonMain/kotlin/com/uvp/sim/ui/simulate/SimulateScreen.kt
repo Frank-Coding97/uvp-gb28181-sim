@@ -68,7 +68,7 @@ fun SimulateScreen(state: AppUiState, actions: AppActions, modifier: Modifier = 
                 // ⛔ 措辞纪律:这是**无应答命令**(§9.3.1 d),只能说"收到请求/已开始格式化",
                 //    不能说"格式化完成" —— 完成与否要平台再查一次 SDCardStatus 才知道。
                 val target = if (e.cardIndex == 0) "全部存储卡" else "卡 ${e.cardIndex}"
-                snackbarHostState.showSnackbar("收到存储卡格式化请求:$target(进度见「状态」页)")
+                snackbarHostState.showSnackbar("收到存储卡格式化请求:$target(进度见「设备」页)")
             }
             else -> { /* 余下交给 CameraGlbView 处理 */ }
         }

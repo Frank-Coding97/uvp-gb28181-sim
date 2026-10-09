@@ -1,6 +1,8 @@
 package com.uvp.sim.camera
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -9,9 +11,14 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -28,6 +35,7 @@ import com.uvp.sim.osd.OsdRendererHolder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
@@ -35,6 +43,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executor
+import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -117,6 +126,7 @@ class AndroidCameraStreamer(
     @Volatile private var screenPreview: Preview? = null  // 老 PreviewView 路径已弃用,字段保留过渡期
     @Volatile private var encoderPreview: Preview? = null  // OSD 关时直连 encoder surface 的 fallback Preview UseCase
     @Volatile private var cameraToOsdPreview: Preview? = null  // 持续输出到 OsdRenderer.cameraInputSurface 的 Preview UseCase
+    @Volatile private var snapshotImageCapture: ImageCapture? = null
 
     /**
      * 当前已挂载的屏幕 SurfaceView + 其 Callback 引用对(P2-1,2026-06-28)。
@@ -220,6 +230,137 @@ class AndroidCameraStreamer(
             removeAttachedCallback()
             attachedPreviewView = null
             persistentOsdRenderer?.setScreenSurface(null, 0, 0)
+        }
+    }
+
+    /** 启用单帧 JPEG 抓拍，并与直播/预览共用同一个 CameraX lifecycle。 */
+    fun attachSnapshotCapture() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "抓拍失败: 尚未获得 CAMERA 权限")
+            return
+        }
+        if (snapshotImageCapture == null) {
+            snapshotImageCapture = ImageCapture.Builder()
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                // Some Xiaomi Camera2 implementations ignore target resolution and
+                // fail their JPEG pipeline for the requested 16:9 surface. Let
+                // CameraX choose a supported still size; the upload contract only
+                // requires a valid JPEG.
+                .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                .build()
+        }
+        cameraProviderScope.launch {
+            try {
+                val cameraProvider = provider ?: awaitCameraProvider(context).also { provider = it }
+                runOnMain {
+                    provider = cameraProvider
+                    rebind()
+                }
+            } catch (t: Throwable) {
+                SystemLogger.emit(
+                    LogLevel.Warning,
+                    LogTag.Media,
+                    "抓拍 CameraX 初始化失败: ${t::class.simpleName}: ${t.message}"
+                )
+            }
+        }
+    }
+
+    /** 在 CameraX 主线程执行一次拍照并复制 JPEG 数据。 */
+    suspend fun takeSnapshotJpeg(): ByteArray? {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "抓拍失败: 尚未获得 CAMERA 权限")
+            return null
+        }
+        val capture = snapshotImageCapture
+        if (capture == null) {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "抓拍失败: ImageCapture 未绑定")
+            return null
+        }
+        val cameraProvider = provider ?: runCatching {
+            withContext(Dispatchers.IO) { awaitCameraProvider(context) }
+        }.getOrElse { error ->
+            SystemLogger.emit(
+                LogLevel.Warning,
+                LogTag.Media,
+                "抓拍失败: CameraProvider 未初始化: ${error::class.simpleName}: ${error.message}"
+            )
+            return null
+        }
+        val bound = suspendCancellableCoroutine { continuation ->
+            runOnMain {
+                try {
+                    provider = cameraProvider
+                    rebind()
+                    continuation.resume(boundCases.contains(capture))
+                } catch (t: Throwable) {
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Media,
+                        "抓拍失败: ImageCapture 绑定异常: ${t::class.simpleName}: ${t.message}"
+                    )
+                    continuation.resume(false)
+                }
+            }
+        }
+        if (!bound) {
+            SystemLogger.emit(LogLevel.Warning, LogTag.Media, "抓拍失败: ImageCapture 未成功绑定到摄像头")
+            return null
+        }
+        return suspendCancellableCoroutine { continuation ->
+            val outputFile = File.createTempFile("uvp-snapshot-", ".jpg", context.cacheDir)
+            runOnMain {
+                if (!continuation.isActive) return@runOnMain
+                try {
+                    capture.takePicture(
+                        ImageCapture.OutputFileOptions.Builder(outputFile).build(),
+                        mainExecutor,
+                        object : ImageCapture.OnImageSavedCallback {
+                            override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                                SystemLogger.emit(LogLevel.Info, LogTag.Media, "CameraX 抓拍文件回调: ${outputFile.length()} bytes")
+                                try {
+                                    val bytes = outputFile.readBytes()
+                                    if (bytes.isEmpty()) {
+                                        SystemLogger.emit(LogLevel.Warning, LogTag.Media, "抓拍失败: CameraX 输出 JPEG 为空")
+                                        if (continuation.isActive) continuation.resume(null)
+                                    } else if (continuation.isActive) {
+                                        continuation.resume(bytes)
+                                    }
+                                } catch (t: Throwable) {
+                                    SystemLogger.emit(
+                                        LogLevel.Warning,
+                                        LogTag.Media,
+                                        "抓拍 JPEG 文件读取失败: ${t::class.simpleName}: ${t.message}"
+                                    )
+                                    if (continuation.isActive) continuation.resume(null)
+                                } finally {
+                                    outputFile.delete()
+                                }
+                            }
+
+                            override fun onError(exception: ImageCaptureException) {
+                                SystemLogger.emit(LogLevel.Warning, LogTag.Media, "CameraX 文件抓拍回调失败: ${exception.imageCaptureError}: ${exception.message}")
+                                SystemLogger.emit(
+                                    LogLevel.Warning,
+                                    LogTag.Media,
+                                    "CameraX 抓拍失败: ${exception.imageCaptureError}: ${exception.message}"
+                                )
+                                if (continuation.isActive) continuation.resume(null)
+                                outputFile.delete()
+                            }
+                        }
+                    )
+                } catch (t: Throwable) {
+                    SystemLogger.emit(
+                        LogLevel.Warning,
+                        LogTag.Media,
+                        "CameraX 抓拍调用失败: ${t::class.simpleName}: ${t.message}"
+                    )
+                    if (continuation.isActive) continuation.resume(null)
+                    outputFile.delete()
+                }
+            }
+            continuation.invokeOnCancellation { outputFile.delete() }
         }
     }
 
@@ -588,6 +729,7 @@ class AndroidCameraStreamer(
         val nextCases = mutableListOf<UseCase>()
         cameraToOsdPreview?.let { nextCases += it }
         encoderPreview?.let { nextCases += it }
+        snapshotImageCapture?.let { nextCases += it }
         // R1 #9:CameraX unbind 失败通常无害(用例本来就不在 provider 上),
         // bind 失败才会让 encoder UseCase 没有 camera producer,导致黑屏 / 无帧但流仍在跑。
         // 把两路错误分开:unbind 日志降到 Info,bind 失败 Error + 显式落库,
@@ -688,6 +830,8 @@ class AndroidCameraStreamer(
                 persistentOsdHeld = false
             }
             cameraToOsdPreview = null
+            snapshotImageCapture = null
+            cameraProviderScope.cancel()
             lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         }
     }

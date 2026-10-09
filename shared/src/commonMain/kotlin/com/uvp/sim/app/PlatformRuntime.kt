@@ -12,6 +12,7 @@ import com.uvp.sim.osd.FrameMirrorTransform
 import com.uvp.sim.osd.VideoDragZoomViewport
 import com.uvp.sim.osd.VideoMaskOverlay
 import com.uvp.sim.recording.RecordingService
+import com.uvp.sim.snapshot.SnapshotCapture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 
@@ -42,6 +43,9 @@ import kotlinx.coroutines.flow.StateFlow
  * 不必为 KMP target 各写一份 actual stub。Android/iOS/JVM 各持自己的 concrete impl。
  */
 interface PlatformRuntime {
+
+    /** 把平台抓拍资源接到真实摄像头运行时。默认实现供 JVM/iOS stub 使用。 */
+    fun attachSnapshotCapture(capture: SnapshotCapture) = Unit
 
     /**
      * 装配跨平台 [CameraCapture] facade。

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,48 +32,29 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.UvpColor
 import com.uvp.sim.ui.model.DeviceCommandCategoryDto
 import com.uvp.sim.ui.model.DeviceControlDto
-import com.uvp.sim.ui.simulate.ptz.AuxTabContent
+import com.uvp.sim.ui.simulate.ptz.PositionTabContent
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import com.uvp.sim.ui.simulate.ptz.HudTabRow
 import com.uvp.sim.ui.simulate.ptz.ImageTabContent
 import com.uvp.sim.ui.simulate.ptz.PtzTabContent
 import com.uvp.sim.ui.simulate.ptz.StatusTabContent
 
-/**
- * 平台控制 HUD — 4 Tab 分组(2026-06-18 PM 重设计):
- *   云台 / 状态 / 图像 / 辅助
- *
- * - 平台命令到达时自动切到对应 Tab(老板看屏幕就知道平台在做什么)
- * - 全中文化(REC → 录像 / GUARD → 布防 / Pan → 水平 ...)
- * - 设备侧状态回显严格只读(spec AC2):所有 chip / 灯 / 进度条都只是平台下发的状态
- * - **例外**:云台页内嵌一个本机方盘 + 光圈/聚焦长按键,那是模拟器自己的输入
- *   (演示"设备本地也能推镜头"),不表示收到平台命令 —— 分别由 [onLocalPtzAdjust] /
- *   [onLocalLensAdjust] 回调直接交给硬件层
- *
- * 命令到 Tab 映射:
- *   云台: PTZCmd(Motion+Preset) / PTZPreciseCtrl / HomePosition
- *   状态: RecordCmd / GuardCmd / AlarmCmd / TeleBoot
- *   图像: IFameCmd / IFrameCmd / SnapShotCmd / DragZoomIn-Out / DeviceConfig / DeviceUpgrade / FormatSDCard / TargetTrack
- *   辅助: PTZCmd(Aux on/off, byte4=0x8C/0x8D, 编号只在标准里定义 "1" = 雨刷)
- *
- * 2026-06-26 PR-F T1:4 Tab 内容拆到 [ptz] 子包,本文件只保留主入口编排.
- * 2026-06-27 轨 ④ PR-UI-PROTOCOL-FIX:HudTab.fromCommand 不再 parse rawHex,改读
- * `lastCommandCategory`(语义枚举,派生在 commonMain `deriveCommandCategory`).
- * 2026-09-16 本机手操几经搬迁(画布底部横条 → 画布下方独立行),最终收进本面板的
- * 云台页做成方盘控制台;其余三页仍是纯「平台指令回放」.
- */
+/** 四类控制回显：云台操作、定位运行、图像配置、设备状态。 */
 enum class HudTab(val title: String) {
     Ptz("云台"),
-    Status("状态"),
+    Position("定位"),
     Image("图像"),
-    Aux("辅助");
+    Device("设备");
 
     companion object {
         /** 把 UI DTO 的语义分类映成 HudTab,null 表示不切. */
         fun fromCategory(category: DeviceCommandCategoryDto?): HudTab? = when (category) {
             DeviceCommandCategoryDto.Ptz -> Ptz
-            DeviceCommandCategoryDto.Status -> Status
+            DeviceCommandCategoryDto.Position -> Position
+            DeviceCommandCategoryDto.Status -> Device
             DeviceCommandCategoryDto.Image -> Image
-            DeviceCommandCategoryDto.Aux -> Aux
+            DeviceCommandCategoryDto.Aux -> Device
             null -> null
         }
     }
@@ -85,6 +67,16 @@ fun PtzHudPanel(
     onLocalLensAdjust: (Float, Float) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
+    // 镜头速率积分属于面板生命周期，切到定位/设备页时仍持续执行。
+    LaunchedEffect(state.focusSpeed, state.irisSpeed) {
+        if (state.focusSpeed == 0f && state.irisSpeed == 0f) return@LaunchedEffect
+        val focusRate = state.focusSpeed
+        val irisRate = state.irisSpeed
+        while (true) {
+            delay(60L)
+            onLocalLensAdjust(focusRate * 0.06f, irisRate * 0.06f)
+        }
+    }
     var selectedTab by remember { mutableStateOf(HudTab.Ptz) }
 
     // 各 Tab 是否有"未读"红点提示(收到命令但当前没在该 Tab)
@@ -137,17 +129,11 @@ fun PtzHudPanel(
             badges = tabBadges.value,
         )
         Spacer(Modifier.height(10.dp))
-        // 固定高度避免 tab 切换时面板抖动.
-        // 2026-09-16 云台页重做成「云台控制台」(方盘 + 四周参数 + 预置位/看守位)后,
-        // 需求高从 200dp 抬到 260dp;多出来的这块来自画布下方那条本机调试条被收进本页,
-        // 画布高度基本维持调整后的值.
-        // 2026-09-16 下午:方盘按键 28→36dp、方盘边长 98→128dp(+30dp),按用户反馈
-        // 「卡片再大一点」,这里跟着抬到 284dp。云台页最高态(有巡航轨迹)实测约 271dp,
-        // 余量 13dp。再加高就得重新分配画布高度了。
+        // 统一视口保持模型和标签稳定；每页独立滚动，内容不再裁切。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(284.dp),
+                .height(220.dp),
             contentAlignment = Alignment.TopStart,
         ) {
             AnimatedContent(
@@ -158,11 +144,13 @@ fun PtzHudPanel(
                 },
                 label = "hud-tab-content"
             ) { tab ->
-                when (tab) {
-                    HudTab.Ptz -> PtzTabContent(state, onLocalPtzAdjust, onLocalLensAdjust)
-                    HudTab.Status -> StatusTabContent(state)
-                    HudTab.Image -> ImageTabContent(state)
-                    HudTab.Aux -> AuxTabContent(state)
+                Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                    when (tab) {
+                        HudTab.Ptz -> PtzTabContent(state, onLocalPtzAdjust, onLocalLensAdjust)
+                        HudTab.Device -> StatusTabContent(state)
+                        HudTab.Image -> ImageTabContent(state)
+                        HudTab.Position -> PositionTabContent(state)
+                    }
                 }
             }
         }

@@ -52,7 +52,12 @@ internal class CatalogSubRouter(
                 true
             }
             "DeviceInfo" -> { sendDeviceInfoResponse(sn); true }
-            "DeviceStatus" -> { sendDeviceStatusResponse(sn); true }
+            "DeviceStatus" -> {
+                // DeviceStatus 的顶层 DeviceID 必须回显查询请求中的目标。
+                // 平台可能按通道编码查询，固定回设备编码会导致 SN+DeviceID 对账失败。
+                sendDeviceStatusResponse(sn, ManscdpParser.deviceId(xml) ?: ctx.config.device.deviceId)
+                true
+            }
             "ConfigDownload" -> {
                 val types = ConfigDownloadResponse.parseConfigTypes(xml)
                 // ⭐ 应答的顶层 <DeviceID> 必须回**请求里的那个**：平台面板是按通道编码
@@ -137,7 +142,7 @@ internal class CatalogSubRouter(
         if (ok) SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 DeviceInfo → 已应答 sn=$sn")
     }
 
-    private suspend fun sendDeviceStatusResponse(sn: String) {
+    private suspend fun sendDeviceStatusResponse(sn: String, requestedDeviceId: String) {
         val ctrl = ctx.deviceControlState.value
         val snapshot = DeviceStatusSnapshot(
             online = ctx.stateRegisteredOrInCall(),
@@ -146,7 +151,13 @@ internal class CatalogSubRouter(
             alarming = ctrl.isAlarming,
             guarded = ctrl.isGuarded,
         )
-        val xmlBody = DeviceStatusResponse.build(ctx.config, sn, snapshot, ctx.effectiveGbVersion)
+        val xmlBody = DeviceStatusResponse.build(
+            ctx.config,
+            sn,
+            snapshot,
+            ctx.effectiveGbVersion,
+            requestedDeviceId = requestedDeviceId,
+        )
         val ok = ManscdpInternals.sendMansMessage(
             config = ctx.config, outbox = ctx.outbox, identityService = ctx.identityService,
             localIp = ctx.localIp, localPort = ctx.localPort,

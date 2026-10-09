@@ -16,6 +16,7 @@ import com.uvp.sim.osd.VideoMaskOverlay
 import com.uvp.sim.config.RecordingProfile
 import com.uvp.sim.recording.AndroidRecordingService
 import com.uvp.sim.recording.RecordingService
+import com.uvp.sim.snapshot.SnapshotCapture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -59,6 +60,12 @@ class PlatformRuntimeAndroid(
 
     /** 当前 capture config 缓存 — applyVideoConfig 用于 diff 是否需要真重建。 */
     @Volatile private var currentCaptureConfig: CaptureConfig? = null
+
+    override fun attachSnapshotCapture(capture: SnapshotCapture) {
+        val s = streamer ?: currentCaptureConfig?.let(::ensureStreamer) ?: return
+        s.attachSnapshotCapture()
+        capture.setStreamer(s)
+    }
 
     override fun buildCameraCapture(config: CaptureConfig): CameraCapture {
         val cam = cameraCaptureRef ?: CameraCapture(config).also { cameraCaptureRef = it }

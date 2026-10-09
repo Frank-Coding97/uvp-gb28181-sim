@@ -162,6 +162,7 @@ class CatalogSubRouterTest {
 
         val responseBody = f.transport.sent.first().body.decodeToString()
         assertTrue(responseBody.contains("<CmdType>DeviceStatus</CmdType>"))
+        assertTrue(responseBody.contains("<DeviceID>34020000001110000001</DeviceID>"))
         // DeviceStatusResponse 用 "ON"/"OFF"
         assertTrue(responseBody.contains("ON"), "录像状态应为 ON: actual=$responseBody")
     }

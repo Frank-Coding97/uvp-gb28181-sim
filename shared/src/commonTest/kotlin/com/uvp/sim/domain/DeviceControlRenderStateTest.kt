@@ -103,7 +103,7 @@ class DeviceControlRenderStateTest {
             deriveCommandCategory(LastDeviceCommand("PTZPreciseCtrl", "set45", 200L))
         )
         assertEquals(
-            DeviceCommandCategory.Ptz,
+            DeviceCommandCategory.Position,
             deriveCommandCategory(LastDeviceCommand("HomePosition", "Recall#1", 300L))
         )
 
@@ -117,7 +117,7 @@ class DeviceControlRenderStateTest {
         }
 
         // 状态类:录像 / 布防 / 报警 / 远程重启 → Status
-        listOf("RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot").forEach { type ->
+        listOf("RecordCmd", "GuardCmd", "AlarmCmd", "TeleBoot", "DeviceUpgrade", "FormatSDCard").forEach { type ->
             assertEquals(
                 DeviceCommandCategory.Status,
                 deriveCommandCategory(LastDeviceCommand(type, "v", 100L)),
@@ -126,12 +126,17 @@ class DeviceControlRenderStateTest {
         }
 
         // 图像类 → Image
-        listOf("IFameCmd", "IFrameCmd", "SnapShotCmd", "DeviceConfig", "DeviceUpgrade", "FormatSDCard", "TargetTrack").forEach { type ->
+        listOf("IFameCmd", "IFrameCmd", "SnapShotCmd", "DeviceConfig", "TargetTrack").forEach { type ->
             assertEquals(
                 DeviceCommandCategory.Image,
                 deriveCommandCategory(LastDeviceCommand(type, "v", 100L)),
                 "type=$type 必须归为 Image",
             )
+        }
+
+        listOf("SetPreset#1", "CallPreset#2", "DelPreset#3", "巡航 #1 启动", "扫描 #0 启动").forEach { raw ->
+            assertEquals(DeviceCommandCategory.Position,
+                deriveCommandCategory(LastDeviceCommand("PTZCmd", raw, 100L)))
         }
 
         // 未知 type → null

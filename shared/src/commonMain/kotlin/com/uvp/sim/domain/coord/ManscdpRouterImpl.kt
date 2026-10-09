@@ -4,6 +4,7 @@ import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
+import com.uvp.sim.config.effectiveSnapshotUploadAllowList
 import com.uvp.sim.domain.AlarmHistoryStore
 import com.uvp.sim.domain.AlarmRecord
 import com.uvp.sim.domain.CatalogTreeStore
@@ -544,7 +545,7 @@ internal class ManscdpRouterImpl(
                 snapshotProtocolSn += 1
                 snapshotProtocolSn.toString()
             },
-            uploadAllowList = config.snapshot.uploadAllowList,
+            uploadAllowList = config.effectiveSnapshotUploadAllowList(),
             onProgress = { progress ->
                 scope.launch {
                     when (progress) {
