@@ -155,7 +155,7 @@ class SipMessageRouterTest {
         override suspend fun resyncLocationLifecycle() {}
     }
 
-    private fun request(method: SipMethod, callId: String = "abc@host"): SipRequest = SipRequest(
+    private fun request(method: SipMethod, callId: String = "abc@host", cseqValue: Int = 1): SipRequest = SipRequest(
         method = method,
         requestUri = "sip:device@host",
         headers = listOf(
@@ -163,7 +163,7 @@ class SipMessageRouterTest {
             SipMessage.Header(SipHeader.FROM, "<sip:from@host>;tag=ft"),
             SipMessage.Header(SipHeader.TO, "<sip:to@host>"),
             SipMessage.Header(SipHeader.CALL_ID, callId),
-            SipMessage.Header(SipHeader.CSEQ, "1 ${method.name}"),
+            SipMessage.Header(SipHeader.CSEQ, "$cseqValue ${method.name}"),
         ),
     )
 
@@ -205,6 +205,52 @@ class SipMessageRouterTest {
         router.route(env(request(SipMethod.MESSAGE)))
         runCurrent()
         assertEquals(1, mans.calls.size)
+    }
+
+    // ==================== 2026-10-20 UDP 重发去重(客户现场实锚) ====================
+
+    /**
+     * 平台因设备应答慢重发同一 MESSAGE(同 Call-ID 同 CSeq,现场实测 3 次)——
+     * 业务层只许收到一次。不去重的后果:SnapShotConfig 每重发一次就起一个抓拍任务,
+     * 重复任务 0 张成功 → 空清单完成通知 → 一次正常抓拍被污染成"整批失败"。
+     */
+    @Test
+    fun message_request_udp_retransmit_delivered_only_once() = runTest {
+        val mans = RecordingManscdp()
+        val router = SipMessageRouterImpl(RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans)
+
+        val retransmitted = request(SipMethod.MESSAGE) // 同 Call-ID + 同 CSeq(构造助手固定 1 MESSAGE)
+        router.route(env(retransmitted))
+        router.route(env(retransmitted))
+        router.route(env(retransmitted))
+        runCurrent()
+        assertEquals(1, mans.calls.size, "UDP 重发的同一事务只能送达业务层一次")
+    }
+
+    /** 反向锚点:平台**新指令**的 CSeq 必然递增,不得被去重误吞。 */
+    @Test
+    fun message_request_new_cseq_is_not_deduplicated() = runTest {
+        val mans = RecordingManscdp()
+        val router = SipMessageRouterImpl(RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans)
+
+        router.route(env(request(SipMethod.MESSAGE, callId = "txn-a", cseqValue = 1)))
+        router.route(env(request(SipMethod.MESSAGE, callId = "txn-a", cseqValue = 2)))
+        runCurrent()
+        assertEquals(2, mans.calls.size, "不同 CSeq 的新事务必须放行")
+    }
+
+    /** SUBSCRIBE 同样受保护;并钉住去重器**不**跨 Call-ID 误伤(不同对话的同号指令)。 */
+    @Test
+    fun subscribe_retransmit_deduped_but_cross_callid_not() = runTest {
+        val mans = RecordingManscdp()
+        val router = SipMessageRouterImpl(RecordingRegistration(), RecordingInvite(), RecordingBroadcast(), RecordingPlayback(), mans)
+
+        val first = request(SipMethod.SUBSCRIBE, callId = "sub-1", cseqValue = 7)
+        router.route(env(first))
+        router.route(env(first)) // 重发:吞
+        router.route(env(request(SipMethod.SUBSCRIBE, callId = "sub-2", cseqValue = 7))) // 新对话:放
+        runCurrent()
+        assertEquals(2, mans.calls.size)
     }
 
     @Test

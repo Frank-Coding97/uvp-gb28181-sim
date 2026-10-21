@@ -69,6 +69,21 @@ internal class SipMessageRouterImpl(
      * router 直接拿 holders.events 写,污染 SipMessageRouter 单一职责。
      */
     private val onMessage2xxAck: suspend () -> Unit = {},
+    /**
+     * MESSAGE / SUBSCRIBE **请求**的 UDP 重发去重器。
+     *
+     * ⭐ 2026-10-20 客户现场实锤:平台因设备应答慢(忙于抓图)按 UDP 事务超时**重发同一
+     * DeviceConfig**(同 Call-ID 同 CSeq,现场发了 3 次)。不去重的后果:业务层
+     * (如 [com.uvp.sim.snapshot.SnapshotUploadEngine])每收到一次就起一个新任务,
+     * 重复任务抢不到摄像头 → 0 张成功 → 按标准发**空清单**完成通知,把一次正常抓拍
+     * 污染成"整批失败"。
+     *
+     * 键 = `Call-ID + "\u0000" + CSeq 原文`,对"同一事务的重复发送"按 RFC 3261 §17.1.1.1
+     * 是同键;不同事务(平台新指令)的 CSeq 必然递增,不会误伤。
+     * 只去重 MESSAGE / SUBSCRIBE 请求:INVITE/BYE/INFO 有自己的会话状态机兜底,
+     * 且 BYE 重发若被吞会打断正常的拆链重试,不去动。
+     */
+    private val requestDedup: SipRequestDeduper = SipRequestDeduper(),
 ) : SipMessageRouter {
 
     override suspend fun route(envelope: SipEnvelope): RoutingResult = when (envelope.message) {
@@ -90,7 +105,14 @@ internal class SipMessageRouterImpl(
                 }
             }
             SipMethod.INFO -> if (playback.onIncoming(envelope) == skip) manscdp.onIncoming(envelope)
-            SipMethod.MESSAGE, SipMethod.SUBSCRIBE -> manscdp.onIncoming(envelope)
+            SipMethod.MESSAGE, SipMethod.SUBSCRIBE -> {
+                // ⛔ 去重必须在路由**之前**:让业务层(ManscdpRouter)完全感知不到重发,
+                // 而不是"收到了自己再判一次"——各业务(SnapShotConfig / DeviceUpgrade /
+                // 订阅刷新…)各自去判等于把同一份事务知识复制 N 份,必有漏网的。
+                // 重复报文按已处理吞掉(仍返回 Handled:method 已知,Engine 无需再问)。
+                if (requestDedup.isDuplicate(req)) return RoutingResult.Handled
+                manscdp.onIncoming(envelope)
+            }
             SipMethod.OPTIONS -> registration.onIncoming(envelope)
             else -> Unit
         }
@@ -116,5 +138,44 @@ internal class SipMessageRouterImpl(
             else -> Unit
         }
         return RoutingResult.Handled
+    }
+}
+
+/**
+ * SIP **请求**重发去重器(2026-10-20 客户现场实锚,背景见 [SipMessageRouterImpl.requestDedup])。
+ *
+ * 键 = `Call-ID \u0000 CSeq 原文`;只记 MESSAGE / SUBSCRIBE(调用方保证)。
+ *
+ * ⛔ 不是通用 LRU 缓存,容量语义是"**最近 64 个已见事务键**":
+ *   - 平台并发在途的事务数远小于 64,正常指令绝不会被误吞;
+ *   - 上限只是防泄漏兜底(万一遇到用 CSeq 不递增的破平台,键会单调增长)。
+ *
+ * ⛔ 没有按"事务超时就过期":UDP 重发窗口是平台的 Timer F(默认 ~16s 量级)与若干重传,
+ * 指令级业务(SnapShotConfig / DeviceUpgrade / 订阅)在分钟级不可能出现"同键的新语义"——
+ * 平台要重发同一事务,恰恰说明它在等设备的应答,吞掉重复正是设备侧该做的事。
+ */
+internal class SipRequestDeduper(
+    private val capacity: Int = 64,
+) {
+    private val seen = object : LinkedHashMap<String, Boolean>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Boolean>): Boolean =
+            size > capacity
+    }
+
+    /** 首见返回 false 并记账;重复见返回 true(调用方应吞掉)。 */
+    fun isDuplicate(request: SipRequest): Boolean {
+        val key = buildString {
+            append(request.callId() ?: "")
+            append('\u0000')
+            append(request.cseqRaw() ?: "")
+        }
+        synchronized(seen) {
+            if (seen.remove(key) != null) {
+                seen[key] = true // 重新插入以维持"最近使用"淘汰顺序
+                return true
+            }
+            seen[key] = true
+            return false
+        }
     }
 }
