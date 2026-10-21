@@ -42,6 +42,8 @@ Thumbs.db
 
 # Claude Code worktree
 .claude/
+# 本地 AI 协作记录(memory 等),与 .claude / CLAUDE.md 同口径,不进公共仓库
+.workbuddy/
 
 # AI 协作约定 — 仅本地保留,不进公共仓库(避免暴露私人 Atlas 路径等)
 CLAUDE.md
