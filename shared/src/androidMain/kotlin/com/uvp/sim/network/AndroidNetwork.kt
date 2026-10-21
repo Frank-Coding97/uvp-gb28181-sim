@@ -4,6 +4,11 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.LinkAddress
 import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.DatagramSocket
+import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Android-specific helpers for resolving the local IPv4 address used in SIP
@@ -20,6 +25,22 @@ import java.net.Inet4Address
  * VPN / cellular connections.
  */
 object AndroidNetwork {
+
+    /** UDP connect 只查询系统选路，不向对端发送数据。遵循 VPN 路由及进程网络绑定。 */
+    suspend fun routeIpv4(remoteHost: String, remotePort: Int = 5060): String? = withContext(Dispatchers.IO) {
+        try {
+            val remote = InetAddress.getAllByName(remoteHost).filterIsInstance<Inet4Address>().firstOrNull()
+                ?: return@withContext null
+            DatagramSocket().use { socket ->
+                socket.connect(remote, remotePort)
+                (socket.localAddress as? Inet4Address)
+                    ?.takeUnless { it.isAnyLocalAddress }
+                    ?.hostAddress
+            }
+        } catch (_: IOException) {
+            null
+        }
+    }
 
     /**
      * Returns the IPv4 address of the device on its currently active default

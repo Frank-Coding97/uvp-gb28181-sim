@@ -66,6 +66,7 @@ internal class BroadcastCoordinatorImpl(
     callIdSetter: ((String) -> Unit)? = null,
     fromTagProvider: (() -> String?)? = null,
     fromTagSetter: ((String) -> Unit)? = null,
+    private val mediaLocalIpProvider: () -> String = localIpProvider,
 ) : BroadcastCoordinator {
 
     private val _state = MutableStateFlow(BroadcastDialogState.Inviting)
@@ -239,7 +240,8 @@ internal class BroadcastCoordinatorImpl(
         val sdpSetup = if (mode == RtpMode.TCP_ACTIVE) com.uvp.sim.sip.SdpTcpSetup.ACTIVE else com.uvp.sim.sip.SdpTcpSetup.PASSIVE
         val sdp = com.uvp.sim.sip.SdpAnswer.buildBroadcastOffer(
             deviceId = targetId,
-            localIp = localIp,
+            // 反向 INVITE 尚无媒体对端，保留原媒体选址；SIP Contact 独立使用信令地址。
+            localIp = mediaLocalIpProvider(),
             localAudioPort = boundPort,
             deviceSsrc = deviceSsrc,
             transport = sdpTransport,

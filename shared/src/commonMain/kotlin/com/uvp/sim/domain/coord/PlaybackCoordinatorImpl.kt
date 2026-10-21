@@ -47,6 +47,7 @@ internal class PlaybackCoordinatorImpl(
     callIdSetter: ((String) -> Unit)? = null,
     fromTagProvider: (() -> String?)? = null,
     fromTagSetter: ((String) -> Unit)? = null,
+    private val localIpFor: suspend (String) -> String = { localIpProvider() },
 ) : PlaybackCoordinator {
 
     private val _state = MutableStateFlow(PlaybackState.Idle)
@@ -268,6 +269,8 @@ internal class PlaybackCoordinatorImpl(
             sequence = (cseq + 1) and 0x0FFF,
         )
 
+        val signalingIp = localIpFor(envelope.sourceIp)
+        val mediaIp = localIpFor(offer.remoteIp)
         val playback = builder.build(offer, segments, ssrc) ?: run {
             sendNotFoundResponse(invite, "PLAYBACK 构造失败")
             return
@@ -277,13 +280,13 @@ internal class PlaybackCoordinatorImpl(
         val sessionName = if (offer.isDownload) "Download" else "Playback"
         val sdpAnswer = com.uvp.sim.sip.SdpAnswer.buildPlayAnswer(
             deviceId = config.device.deviceId,
-            localIp = localIp,
+            localIp = mediaIp,
             localRtpPort = playback.localRtpPort,
             ssrc = ssrc,
             sessionName = sessionName,
             mediaSpec = SipHeaderHelpers.buildSdpMediaSpec(config),
         )
-        val deviceContact = "<sip:${config.device.deviceId}@$localIp:${localPortProvider()}>"
+        val deviceContact = "<sip:${config.device.deviceId}@$signalingIp:${localPortProvider()}>"
         val pbInviteFromUser = SipHeaderHelpers.parseUriUser(
             SipHeaderHelpers.parseUri(invite.fromHeader() ?: ""),
             fallback = config.server.serverId,

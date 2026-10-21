@@ -58,6 +58,7 @@ internal class InviteAcceptHandler(
     private val rtpSenderFactory: (host: String, port: Int, mode: RtpMode, expectedClientHost: String?) -> RtpSender,
     private val cseqProvider: () -> Int,
     private val localPortProvider: () -> Int,
+    private val localIpFor: suspend (String) -> String = { shared.localIp },
 ) {
 
     /**
@@ -112,6 +113,8 @@ internal class InviteAcceptHandler(
         val expectedClientHost = if (rtpMode == RtpMode.TCP_PASSIVE) offer.remoteIp else null
 
         // 2. RTP bind(失败 500)
+        val signalingIp = localIpFor(envelope.sourceIp)
+        val mediaIp = localIpFor(offer.remoteIp)
         val rtp = rtpSenderFactory(offer.remoteIp, offer.remotePort, rtpMode, expectedClientHost)
         val localRtpPort = try {
             rtp.bindLocalPort()
@@ -126,7 +129,7 @@ internal class InviteAcceptHandler(
         // 3. 构建 + 发送 200 OK
         val sdpAnswer = com.uvp.sim.sip.SdpAnswer.buildPlayAnswer(
             deviceId = shared.config.device.deviceId,
-            localIp = shared.localIp,
+            localIp = mediaIp,
             localRtpPort = localRtpPort,
             ssrc = ssrc,
             sessionName = "Play",
@@ -134,7 +137,7 @@ internal class InviteAcceptHandler(
             tcpSetup = offer.tcpSetup,
             mediaSpec = SipHeaderHelpers.buildSdpMediaSpec(shared.config),
         )
-        val deviceContact = "<sip:${shared.config.device.deviceId}@${shared.localIp}:${localPortProvider()}>"
+        val deviceContact = "<sip:${shared.config.device.deviceId}@$signalingIp:${localPortProvider()}>"
         val localToTag = SipBuilders.randomTag()
         val inviteFromUser = SipHeaderHelpers.parseUriUser(
             SipHeaderHelpers.parseUri(invite.fromHeader() ?: ""),

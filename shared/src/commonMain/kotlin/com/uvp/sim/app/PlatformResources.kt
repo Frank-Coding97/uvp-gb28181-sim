@@ -44,6 +44,9 @@ interface PlatformResources {
     /** 本机 IP 提供器。 */
     val localIpProvider: () -> String
 
+    /** 按对端路由选择本机地址；信令与媒体可以经过不同网络。 */
+    suspend fun localIpFor(remoteHost: String): String = localIpProvider()
+
     /** 抓拍三件套(iOS 全 null,无 NOTIFY StoragePath)。 */
     val snapshotCapture: SnapshotCapture?
     val snapshotCache: JpegLocalCache?

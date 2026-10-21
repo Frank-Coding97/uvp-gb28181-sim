@@ -86,6 +86,7 @@ internal class InviteCoordinatorImpl(
      * 持未启动,camera 的失败 exception 不会打断测试。
      */
     private val autoStartMediaJobs: Boolean = true,
+    private val localIpFor: suspend (String) -> String = { localIpProvider() },
 ) : InviteCoordinator {
 
     // ---- 公开 state / events ----
@@ -156,6 +157,7 @@ internal class InviteCoordinatorImpl(
             rtpSenderFactory = factory,
             cseqProvider = cseqRead,
             localPortProvider = localPortProvider,
+            localIpFor = localIpFor,
         )
     }
 

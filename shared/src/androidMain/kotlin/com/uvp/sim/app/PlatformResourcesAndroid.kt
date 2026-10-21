@@ -7,6 +7,9 @@ import com.uvp.sim.network.AndroidNetwork
 import com.uvp.sim.network.BroadcastRxSource
 import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.RtpSender
+import com.uvp.sim.observability.LogLevel
+import com.uvp.sim.observability.LogTag
+import com.uvp.sim.observability.SystemLogger
 import com.uvp.sim.snapshot.JpegLocalCache
 import com.uvp.sim.snapshot.SnapshotCapture
 import io.ktor.client.engine.HttpClientEngine
@@ -47,6 +50,17 @@ class PlatformResourcesAndroid(
 
     override val localIpProvider: () -> String = {
         networkLocalIp() ?: AndroidNetwork.activeIpv4(context) ?: "0.0.0.0"
+    }
+
+    override suspend fun localIpFor(remoteHost: String): String {
+        val localIp = networkLocalIp() ?: AndroidNetwork.routeIpv4(remoteHost)
+        if (localIp != null) {
+            SystemLogger.emit(LogLevel.Info, LogTag.Network, "本机 IPv4 选路 remote=$remoteHost local=$localIp")
+            return localIp
+        }
+        val fallback = localIpProvider()
+        SystemLogger.emit(LogLevel.Warning, LogTag.Network, "本机 IPv4 选路失败 remote=$remoteHost fallback=$fallback")
+        return fallback
     }
 
     override val snapshotCapture: SnapshotCapture? = SnapshotCapture()

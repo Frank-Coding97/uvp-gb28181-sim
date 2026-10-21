@@ -84,6 +84,7 @@ class PlaybackDialogIdentityTest {
     private fun newPb(
         scope: CoroutineScope,
         transport: MockSipTransport,
+        localIpFor: suspend (String) -> String = { "192.168.10.112" },
     ): PlaybackCoordinatorImpl {
         val recordingFile = RecordingFile(
             id = "a", startTimeMs = 1_700_000_000_000L, endTimeMs = 1_700_001_000_000L,
@@ -110,7 +111,36 @@ class PlaybackDialogIdentityTest {
             localPortProvider = { 5060 },
             playbackBuilder = builder,
             recordingService = FakeRecordingService(listOf(recordingFile)),
+            localIpFor = localIpFor,
         )
+    }
+
+    @Test fun playback_contact_and_sdp_follow_separate_routes() = runTest {
+        val transport = MockSipTransport(config())
+        transport.connect()
+        val destinations = mutableListOf<String>()
+        val pb = newPb(backgroundScope, transport) { host ->
+            destinations += host
+            when (host) {
+                platformIp -> "192.168.124.4"
+                "192.168.10.220" -> "10.8.0.4"
+                else -> error("unexpected destination $host")
+            }
+        }
+        try {
+            val invite = playbackInvite().let {
+                it.copy(body = it.body.decodeToString().replace("c=IN IP4 $platformIp", "c=IN IP4 192.168.10.220").encodeToByteArray())
+            }
+            pb.onIncoming(invite.asEnvelope(sourceIp = platformIp))
+            runCurrent()
+            val response = transport.sent.filterIsInstance<SipResponse>().single { it.statusCode == 200 }
+            assertEquals("<sip:${config().device.deviceId}@192.168.124.4:5060>", response.firstHeader(SipHeader.CONTACT))
+            assertTrue(response.body.decodeToString().contains("c=IN IP4 10.8.0.4\r\n"))
+            assertEquals(setOf(platformIp, "192.168.10.220"), destinations.toSet())
+        } finally {
+            pb.shutdown()
+            transport.close()
+        }
     }
 
     private fun playbackInvite(

@@ -92,6 +92,8 @@ class AppEngine(
     private var transport: SipTransport? = null
     private var engine: SimulatorEngine? = null
     private var snapshotHttp: HttpClient? = null
+    private var signalingLocalIp: String? = null
+    private val signalingLocalIpProvider: () -> String = { signalingLocalIp ?: resources.localIpProvider() }
     // R2 #3:每次 connect() 会 launch 3 个桥接 collector(currentChannelName / currentBroadcast /
     // broadcastSpeakerOn),disconnect 不取消时会泄漏。
     private val bridgeJobs = mutableListOf<kotlinx.coroutines.Job>()
@@ -135,7 +137,7 @@ class AppEngine(
         alarmHistoryStore = AlarmHistoryStore(),
         subscriptionRegistry = SubscriptionRegistry(engineScope),
         mockGps = runtime.buildLocationProvider(initialConfig.mockPosition),
-        identityService = newDefaultIdentityService(localIpProvider = resources.localIpProvider),
+        identityService = newDefaultIdentityService(localIpProvider = signalingLocalIpProvider),
     )
 
     /**
@@ -303,6 +305,7 @@ class AppEngine(
      *   reuseExistingEngine → buildTransportSession → wireSessionAndBridges → startRegistration
      */
     suspend fun connect() {
+        signalingLocalIp = resources.localIpFor(_config.value.server.ip)
         if (reuseExistingEngine()) return
         val cfg = _config.value
         val tx = buildTransportSession(cfg)
@@ -456,14 +459,15 @@ class AppEngine(
 
         val registration = RegistrationCoordinatorImpl(
             config = cfg, transport = tx, scope = engineScope, outbox = outbox,
-            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            localIpProvider = signalingLocalIpProvider, localPortProvider = localPortProvider,
             cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
             callIdProvider = callIdProvider, callIdSetter = callIdSetter,
             fromTagProvider = fromTagProvider, fromTagSetter = fromTagSetter,
         )
         val broadcast = BroadcastCoordinatorImpl(
             config = cfg, transport = tx, scope = engineScope, outbox = outbox,
-            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            localIpProvider = signalingLocalIpProvider, localPortProvider = localPortProvider,
+            mediaLocalIpProvider = resources.localIpProvider,
             rtpReceiverFactory = resources.rtpReceiverFactory, audioSinkFactory = resources.audioSinkFactory,
             simEventEmit = { ev -> holders.events.emit(ev) },
             cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
@@ -472,7 +476,8 @@ class AppEngine(
         )
         val playback = PlaybackCoordinatorImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
-            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            localIpProvider = signalingLocalIpProvider, localPortProvider = localPortProvider,
+            localIpFor = resources::localIpFor,
             playbackBuilder = playbackBuilder, recordingService = recordingService ?: com.uvp.sim.recording.NoopRecordingService,
             simEventEmit = { ev -> holders.events.emit(ev) },
             cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
@@ -481,7 +486,8 @@ class AppEngine(
         )
         val invite = InviteCoordinatorImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
-            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            localIpProvider = signalingLocalIpProvider, localPortProvider = localPortProvider,
+            localIpFor = resources::localIpFor,
             cameraCapture = cameraCapture, audioCapture = audioCapture,
             rtpSenderFactory = rtpFactory,
             catalogTree = holders.catalogTree, clockOffsetProvider = { holders.clockOffset.value },
@@ -492,7 +498,7 @@ class AppEngine(
         )
         val manscdp = ManscdpRouterImpl(
             config = cfg, transport = tx, outbox = outbox, scope = engineScope,
-            localIpProvider = resources.localIpProvider, localPortProvider = localPortProvider,
+            localIpProvider = signalingLocalIpProvider, localPortProvider = localPortProvider,
             subscriptionRegistry = holders.subscriptionRegistry,
             catalogTree = holders.catalogTree,
             alarmHistoryStore = holders.alarmHistoryStore,
@@ -636,7 +642,16 @@ class AppEngine(
      *
      * Wave 4 PR-PLATFORM-RUNTIME:video 子配置变更 → runtime.applyVideoConfig 接管真重建。
      */
-    suspend fun updateConfig(new: SimConfig) {
+    suspend fun updateConfig(new: SimConfig) = updateConfigInternal(new, alreadyPersisted = false)
+
+    /**
+     * 应用调用方已经成功持久化的配置，并按普通配置更新流程处理运行态。
+     * 用于需要先保证多字段配置原子落盘、再切换 SIP 注册身份的场景。
+     */
+    suspend fun applyPersistedConfig(new: SimConfig) =
+        updateConfigInternal(new, alreadyPersisted = true)
+
+    private suspend fun updateConfigInternal(new: SimConfig, alreadyPersisted: Boolean) {
         val prev = _config.value
         _config.value = new
         rehydrateHolders(new)
@@ -655,10 +670,12 @@ class AppEngine(
         // keystore/DataStore 写失败时引擎继续用未落盘的 config 跑,冷启动后改动丢失且用户无感知。
         // 现在把失败上报为 TransportError,UI 能提示;运行期仍沿用新 config(用户可见即所得),
         // 但至少不再假装持久化成功。
-        runCatching { resources.configStore.save(new) }
-            .onFailure { e ->
-                holders.events.emit(com.uvp.sim.domain.transportErrorOf("保存配置", e))
-            }
+        if (!alreadyPersisted) {
+            runCatching { resources.configStore.save(new) }
+                .onFailure { e ->
+                    holders.events.emit(com.uvp.sim.domain.transportErrorOf("保存配置", e))
+                }
+        }
         if (engine != null) {
             // 2026-10-03:按「有没有活跃注册会话」分流清理路径。
             // - 有会话(Registering/Registered/InCall)→ disconnect():发 Expires=0 让平台立刻

@@ -28,6 +28,27 @@ import kotlin.test.assertTrue
 @OptIn(ExperimentalCoroutinesApi::class)
 class BroadcastInviteSequenceTest {
 
+    @Test fun broadcast_keeps_media_address_separate_from_sip_contact() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val bc = BroadcastCoordinatorImpl(
+            config = config(), transport = transport, scope = backgroundScope,
+            outbox = com.uvp.sim.sip.SipOutboxImpl(transport) {},
+            localIpProvider = { "192.168.124.4" }, localPortProvider = { 5060 },
+            mediaLocalIpProvider = { "10.8.0.4" },
+            rtpReceiverFactory = { FakeRx() }, audioSinkFactory = { _, _ -> FakeAudioSink() },
+        )
+        try {
+            bc.fireBroadcastInvite(platformId, "sip:$platformId@$platformDomain", deviceId)
+            val invite = transport.sent.filterIsInstance<SipRequest>().single { it.method == SipMethod.INVITE }
+            assertTrue(invite.firstHeader(com.uvp.sim.sip.SipHeader.CONTACT)!!.contains("@192.168.124.4:5060"))
+            assertTrue(invite.body.decodeToString().contains("c=IN IP4 10.8.0.4\r\n"))
+        } finally {
+            bc.shutdown()
+            transport.close()
+        }
+    }
+
     private val deviceId = "35020000001310000001"
     private val platformId = "35020000002000000001"
     private val platformDomain = "3502000000"
