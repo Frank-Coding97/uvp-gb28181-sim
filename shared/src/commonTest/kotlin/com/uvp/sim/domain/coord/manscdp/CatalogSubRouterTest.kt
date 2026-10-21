@@ -118,6 +118,76 @@ class CatalogSubRouterTest {
     }
 
     @Test
+    fun catalog_query_follows_appendix_j_business_group_relations() = runTest {
+        val systemId = "34020000002000000001"
+        val groupId = "34020000002150000001"
+        val firstOrgId = "34020000002160000001"
+        val nestedOrgId = "34020000002160000002"
+        val firstChannelId = "34020000001320000001"
+        val nestedChannelId = "34020000001320000002"
+        val tree = listOf(
+            CatalogNode(systemId, CatalogNodeType.System, "下级平台", systemId),
+            CatalogNode(groupId, CatalogNodeType.BusinessGroup, "校园安防", systemId),
+            CatalogNode(
+                firstOrgId,
+                CatalogNodeType.VirtualOrg,
+                "出入口",
+                "",
+                fields = mapOf("BusinessGroupID" to groupId),
+            ),
+            CatalogNode(
+                nestedOrgId,
+                CatalogNodeType.VirtualOrg,
+                "教学区域",
+                firstOrgId,
+                fields = mapOf("BusinessGroupID" to groupId),
+            ),
+            CatalogNode(firstChannelId, CatalogNodeType.VideoChannel, "东门", "$systemId/$firstOrgId"),
+            CatalogNode(nestedChannelId, CatalogNodeType.VideoChannel, "教室", "$systemId/$nestedOrgId"),
+        )
+
+        suspend fun query(targetId: String): Set<String> {
+            val cfg = SubRouterTestFixtures.config().copy(catalogTree = tree)
+            val f = SubRouterTestFixtures.newFixture(this, cfg)
+            val router = CatalogSubRouter(f.ctx, NoopRecordingService)
+            assertTrue(router.handle(
+                "Catalog",
+                "<Query><CmdType>Catalog</CmdType><SN>20</SN><DeviceID>$targetId</DeviceID></Query>",
+                fromUri = null,
+            ))
+            runCurrent()
+
+            val body = f.transport.sent.single().body.decodeToString()
+            return """<Item>\s*<DeviceID>(.+?)</DeviceID>"""
+                .toRegex()
+                .findAll(body)
+                .map { it.groupValues[1] }
+                .toSet()
+        }
+
+        assertEquals(
+            tree.map { it.id }.toSet(),
+            query(systemId),
+            "系统查询必须包含系统、业务分组、虚拟组织和通道",
+        )
+        assertEquals(
+            setOf(groupId, firstOrgId, nestedOrgId, firstChannelId, nestedChannelId),
+            query(groupId),
+            "首层216通过 BusinessGroupID 归属业务分组，设备 ParentID 可同时含系统和虚拟组织",
+        )
+        assertEquals(
+            setOf(firstOrgId, nestedOrgId, firstChannelId, nestedChannelId),
+            query(firstOrgId),
+            "虚拟组织查询应沿 216 ParentID 和设备多父 ParentID 返回子树",
+        )
+        assertEquals(
+            setOf(nestedOrgId, nestedChannelId),
+            query(nestedOrgId),
+            "嵌套虚拟组织查询应只包含其后代",
+        )
+    }
+
+    @Test
     fun catalog_query_unknown_target_returns_empty_result() = runTest {
         val f = SubRouterTestFixtures.newFixture(this)
         val r = CatalogSubRouter(f.ctx, NoopRecordingService)

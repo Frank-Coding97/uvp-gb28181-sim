@@ -406,7 +406,6 @@ class SipViewModel @JvmOverloads constructor(
     fun saveCatalogTree(tree: List<CatalogNode>): com.uvp.sim.domain.ValidationResult {
         val result = com.uvp.sim.domain.CatalogTreeStore.validate(tree)
         if (result is com.uvp.sim.domain.ValidationResult.Invalid) return result
-        val newCfg = appEngine.config.value.copy(catalogTree = tree)
         viewModelScope.launch {
             // cross-review R1 #4 (+ verify-1/2 补强):commit-on-success + 串行化。
             // 过去先 applyConfigPartial + 同步标记时间戳,再 runCatching{save} 吞失败 →
@@ -415,6 +414,23 @@ class SipViewModel @JvmOverloads constructor(
             //       覆盖新树(verify-2 指出的竞态);先持久化,成功才把新树应用到本地/运行态 +
             //       标记时间戳 + 推平台;失败只发 TransportError,运行态 catalog 保持不变(硬停止)。
             catalogSaveMutex.withLock {
+                val current = appEngine.config.value
+                val root = tree.singleOrNull {
+                    (it.type == com.uvp.sim.config.CatalogNodeType.Device ||
+                        it.type == com.uvp.sim.config.CatalogNodeType.System) && it.parentId == it.id
+                }
+                // 注册身份必须与目录根保持一致：标准业务分组模板用 System(200)，普通设备树用 Device。
+                // 只有 DeviceID 确实改变时才重置 Digest username；普通目录保存保留用户自定义账号。
+                val registrationId = root?.id ?: current.device.deviceId
+                val registrationChanged = current.device.deviceId != registrationId
+                val newCfg = current.copy(
+                    device = if (registrationChanged) {
+                        current.device.copy(deviceId = registrationId, username = registrationId)
+                    } else {
+                        current.device
+                    },
+                    catalogTree = tree,
+                )
                 val saved = runCatching { resources.configStore.save(newCfg) }
                 saved.onFailure { e ->
                     _events.update { current ->
@@ -422,13 +438,16 @@ class SipViewModel @JvmOverloads constructor(
                     }
                     return@withLock
                 }
-                // P1-1(2026-06-28):走局部应用 — 只刷 catalogTree 数据快照,
-                // 不清 clockOffset / 不 cancelAll 订阅 / 不 reset mockGps。
-                // updateCatalogTree 才是真正把新树推给 Coord(平台 NOTIFY)。
-                appEngine.applyConfigPartial(newCfg)
                 _lastCatalogSavedAt.value = System.currentTimeMillis()
                 try {
-                    appEngine.updateCatalogTree(tree)
+                    if (registrationChanged) {
+                        // 已先成功落盘，切换配置时由 AppEngine 注销旧身份、重建连接并以新身份注册。
+                        appEngine.applyPersistedConfig(newCfg)
+                    } else {
+                        // 目录快照单独变化时保留当前注册会话与运行期订阅。
+                        appEngine.applyConfigPartial(newCfg)
+                        appEngine.updateCatalogTree(tree)
+                    }
                 } catch (e: Throwable) {
                     _events.update { current ->
                         (listOf(com.uvp.sim.domain.simTransportErrorOf("save catalog", e)) + current).take(MAX_EVENT_LOG)

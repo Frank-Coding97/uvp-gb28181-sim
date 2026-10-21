@@ -46,6 +46,14 @@ class SipViewModelCatalogSaveTest {
         }
     }
 
+    private class RecordingSaveConfigStore : ConfigStore {
+        var lastSaved: SimConfig? = null
+        override suspend fun loadOnce(fallback: SimConfig): SimConfig = fallback
+        override suspend fun save(config: SimConfig) {
+            lastSaved = config
+        }
+    }
+
     @Before
     fun setupMainDispatcher() {
         Dispatchers.setMain(testDispatcher)
@@ -95,5 +103,82 @@ class SipViewModelCatalogSaveTest {
             baselineTree,
             vm.catalogTree.value,
         )
+    }
+
+    @Test
+    fun saveCatalogTree_switches_registration_identity_with_system_root_and_back() = runTest(testDispatcher) {
+        val store = RecordingSaveConfigStore()
+        val vm = SipViewModel(
+            ApplicationProvider.getApplicationContext<Application>(),
+            configStoreOverride = store,
+        )
+        advanceUntilIdle()
+
+        val oldDeviceId = "35020000001110000001"
+        val oldVideoId = "35020000001320000001"
+        val config = vm.config.value.copy(
+            gbVersion = com.uvp.sim.config.GbVersion.V2022,
+            device = vm.config.value.device.copy(
+                deviceId = oldDeviceId,
+                username = oldDeviceId,
+                videoChannelId = oldVideoId,
+                frontChannelId = "35020000001320000002",
+            ),
+        )
+        vm.updateConfig(config)
+        advanceUntilIdle()
+
+        val businessTree = com.uvp.sim.domain.CatalogTreeStore.standardBusinessGroupTemplate(config)
+        val systemId = businessTree.first().id
+        val result = vm.saveCatalogTree(businessTree)
+        advanceUntilIdle()
+
+        assertTrue("业务分组模板树必须合法: $result", result is com.uvp.sim.domain.ValidationResult.Ok)
+        assertEquals(systemId, store.lastSaved?.device?.deviceId)
+        assertEquals(systemId, store.lastSaved?.device?.username)
+        assertEquals(businessTree, store.lastSaved?.catalogTree)
+        assertEquals(systemId, vm.config.value.device.deviceId)
+        assertEquals(systemId, vm.config.value.device.username)
+
+        val defaultTree = com.uvp.sim.domain.CatalogTreeStore.templates(vm.config.value)
+            .first { it.id == "single" }.nodes
+        vm.saveCatalogTree(defaultTree)
+        advanceUntilIdle()
+
+        val defaultDeviceId = defaultTree.first { it.type == com.uvp.sim.config.CatalogNodeType.Device }.id
+        assertEquals(oldDeviceId, defaultDeviceId)
+        assertEquals(defaultDeviceId, store.lastSaved?.device?.deviceId)
+        assertEquals(defaultDeviceId, store.lastSaved?.device?.username)
+        assertEquals(defaultDeviceId, vm.config.value.device.deviceId)
+    }
+
+    @Test
+    fun saveCatalogTree_keeps_custom_username_when_registration_identity_is_unchanged() = runTest(testDispatcher) {
+        val store = RecordingSaveConfigStore()
+        val vm = SipViewModel(
+            ApplicationProvider.getApplicationContext<Application>(),
+            configStoreOverride = store,
+        )
+        advanceUntilIdle()
+
+        val deviceId = "35020000001110000001"
+        val config = vm.config.value.copy(
+            device = vm.config.value.device.copy(
+                deviceId = deviceId,
+                username = "custom-auth-user",
+                videoChannelId = "35020000001320000001",
+                frontChannelId = "35020000001320000002",
+            ),
+        )
+        vm.updateConfig(config)
+        advanceUntilIdle()
+        val tree = com.uvp.sim.domain.CatalogTreeStore.defaultTree(config)
+
+        val result = vm.saveCatalogTree(tree)
+        advanceUntilIdle()
+
+        assertTrue("普通目录树必须合法: $result", result is com.uvp.sim.domain.ValidationResult.Ok)
+        assertEquals("custom-auth-user", store.lastSaved?.device?.username)
+        assertEquals(deviceId, store.lastSaved?.device?.deviceId)
     }
 }

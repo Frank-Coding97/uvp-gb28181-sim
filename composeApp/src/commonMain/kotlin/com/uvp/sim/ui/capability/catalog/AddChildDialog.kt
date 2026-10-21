@@ -48,22 +48,23 @@ internal fun AddChildDialog(
     domain: String,
     existingIds: Set<String>,
     parentNode: CatalogNode?,
+    tree: List<CatalogNode>,
     onCancel: () -> Unit,
     onConfirm: (List<CatalogNode>) -> Unit
 ) {
-    var selectedType by remember { mutableStateOf(CatalogNodeType.VideoChannel) }
+    val typeOptions = when (parentNode?.type) {
+        CatalogNodeType.System -> listOf(CatalogNodeType.BusinessGroup, CatalogNodeType.VideoChannel, CatalogNodeType.AlarmChannel)
+        CatalogNodeType.BusinessGroup -> listOf(CatalogNodeType.VirtualOrg)
+        CatalogNodeType.VirtualOrg -> listOf(CatalogNodeType.VirtualOrg, CatalogNodeType.VideoChannel, CatalogNodeType.AlarmChannel)
+        else -> listOf(CatalogNodeType.VideoChannel, CatalogNodeType.AlarmChannel)
+    }
+    var selectedType by remember(parentNode) { mutableStateOf(typeOptions.first()) }
     var name by remember { mutableStateOf("新节点") }
     var batchCountText by remember { mutableStateOf("1") }
-    val typeOptions = listOf(
-        CatalogNodeType.BusinessGroup,
-        CatalogNodeType.VirtualOrg,
-        CatalogNodeType.VideoChannel,
-        CatalogNodeType.AlarmChannel
-    )
     // 只有视频/报警通道支持批量,组织类型只能单个
     val supportsBatch = selectedType == CatalogNodeType.VideoChannel ||
         selectedType == CatalogNodeType.AlarmChannel
-    val batchCount = batchCountText.toIntOrNull()?.coerceIn(1, 50) ?: 1
+    val batchCount = if (supportsBatch) batchCountText.toIntOrNull()?.coerceIn(1, 50) ?: 1 else 1
 
     AlertDialog(
         onDismissRequest = onCancel,
@@ -133,12 +134,13 @@ internal fun AddChildDialog(
                     val itemName = if (batchCount > 1) {
                         "$baseName-${(i + 1).toString().padStart(3, '0')}"
                     } else baseName
-                    nodes += CatalogNode(
+                    val node = CatalogNode(
                         id = newId,
                         type = selectedType,
                         name = itemName,
                         parentId = parentId.ifBlank { newId }  // 没父节点 → 自指(根节点场景)
                     )
+                    nodes += if (parentNode != null) attachCatalogNode(node, parentNode, tree) else node
                 }
                 onConfirm(nodes)
             }) {

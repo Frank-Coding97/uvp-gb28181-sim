@@ -64,16 +64,16 @@ class CatalogNotifyBuilderTest {
     }
 
     @Test
-    fun `build emits Parental 1 for Device BusinessGroup VirtualOrg`() {
+    fun `build omits Parental from business group and virtual organization items`() {
         val tree = listOf(
             root(),
             CatalogNode("g1", CatalogNodeType.BusinessGroup, "G", rootId),
             CatalogNode("v1", CatalogNodeType.VirtualOrg, "V", rootId)
         )
         val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
-        // 三个 Item 都是 Parental=1
+        // 附录 J 的业务分组/虚拟组织 Item 不输出 Parental；Device 根保留其设备目录字段。
         val parentalCount = "<Parental>1</Parental>".toRegex().findAll(xml).count()
-        assertEquals(3, parentalCount)
+        assertEquals(1, parentalCount)
     }
 
     @Test
@@ -193,6 +193,73 @@ class CatalogNotifyBuilderTest {
             .find(xml)?.value.orEmpty()
         assertTrue(channelItem.contains("<ParentID>$rootId</ParentID>"))
         assertTrue(channelItem.contains("<BusinessGroupID>$groupId</BusinessGroupID>"))
+    }
+
+    @Test
+    fun `build follows appendix J for first level virtual org and multi parent channel`() {
+        val systemId = "34020000002000000001"
+        val groupId = "34020000002150000001"
+        val orgId = "34020000002160000001"
+        val channelId = "34020000001320000001"
+        val tree = listOf(
+            CatalogNode(systemId, CatalogNodeType.System, "下级平台", systemId),
+            CatalogNode(groupId, CatalogNodeType.BusinessGroup, "校园安防", systemId),
+            CatalogNode(
+                orgId,
+                CatalogNodeType.VirtualOrg,
+                "出入口",
+                "",
+                fields = mapOf("BusinessGroupID" to groupId),
+            ),
+            CatalogNode(channelId, CatalogNodeType.VideoChannel, "东门摄像头", "$systemId/$orgId"),
+        )
+
+        val xml = CatalogNotifyBuilder.build(systemId, 1, tree, version = GbVersion.V2022)
+        val items = """<Item>.*?</Item>""".toRegex(RegexOption.DOT_MATCHES_ALL)
+            .findAll(xml).map { it.value }.toList()
+        fun item(id: String) = items.firstOrNull { it.contains("<DeviceID>$id</DeviceID>") }.orEmpty()
+        val orgItem = item(orgId)
+        val channelItem = item(channelId)
+
+        assertTrue(orgItem.contains("<BusinessGroupID>$groupId</BusinessGroupID>"))
+        assertEquals(
+            1,
+            "<BusinessGroupID>$groupId</BusinessGroupID>".toRegex().findAll(orgItem).count(),
+            "每个 216 目录项只能输出一个 BusinessGroupID",
+        )
+        assertTrue(!orgItem.contains("<ParentID>"), "首层216不应伪造 ParentID")
+        assertTrue(channelItem.contains("<ParentID>$systemId/$orgId</ParentID>"))
+        assertTrue(xml.indexOf("<DeviceID>$groupId</DeviceID>") < xml.indexOf("<DeviceID>$orgId</DeviceID>"))
+        assertTrue(xml.indexOf("<DeviceID>$orgId</DeviceID>") < xml.indexOf("<DeviceID>$channelId</DeviceID>"))
+    }
+
+    @Test
+    fun `appendix J system business group and virtual org only emit item type fields`() {
+        val systemId = "34020000002000000001"
+        val groupId = "34020000002150000001"
+        val orgId = "34020000002160000001"
+        val tree = listOf(
+            CatalogNode(systemId, CatalogNodeType.System, "下级平台", systemId),
+            CatalogNode(groupId, CatalogNodeType.BusinessGroup, "校园安防", systemId),
+            CatalogNode(orgId, CatalogNodeType.VirtualOrg, "出入口", "", mapOf("BusinessGroupID" to groupId)),
+        )
+
+        val xml = CatalogNotifyBuilder.build(systemId, 1, tree, version = GbVersion.V2022)
+        val items = """<Item>.*?</Item>""".toRegex(RegexOption.DOT_MATCHES_ALL)
+            .findAll(xml).map { it.value }.toList()
+        fun item(id: String) = items.firstOrNull { it.contains("<DeviceID>$id</DeviceID>") }.orEmpty()
+        val system = item(systemId)
+        val group = item(groupId)
+        val org = item(orgId)
+
+        assertTrue(!system.contains("<ParentID>"))
+        assertTrue(!system.contains("<Parental>"))
+        assertTrue(group.contains("<ParentID>$systemId</ParentID>"))
+        assertTrue(!group.contains("<Parental>") && !group.contains("<Status>"))
+        assertTrue(!group.contains("<Manufacturer>") && !group.contains("<Owner>"))
+        assertTrue(org.contains("<BusinessGroupID>$groupId</BusinessGroupID>"))
+        assertTrue(!org.contains("<ParentID>") && !org.contains("<Parental>"))
+        assertTrue(!org.contains("<Status>") && !org.contains("<Info>"))
     }
 
     @Test

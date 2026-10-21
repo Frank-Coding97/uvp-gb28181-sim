@@ -44,10 +44,10 @@ internal fun CatalogOnboardingHint(onDismiss: () -> Unit) {
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "• 默认 3 节点从设备配置生成,可点 ⋮ 加分组、克隆、移动\n" +
+                    "• 默认目录使用设备配置中的真实通道\n" +
                     "• 工具栏 ⋮ 菜单可应用模板 / 导入导出 JSON / 复位\n" +
-                    "• 编辑后点保存生效;若 WVP 已订阅会立刻推送\n" +
-                    "• 注意:WVP 后台可能扁平展示树结构,这是平台限制",
+                    "• 标准业务场景：系统 → 分组 → 虚拟组织 → 通道\n" +
+                    "• 编辑后保存生效；切换下级平台模板将更新注册身份",
                     color = UvpColor.Text,
                     fontSize = 11.sp
                 )
@@ -106,7 +106,7 @@ internal fun filterTreeByQuery(tree: List<CatalogNode>, query: String): List<Cat
         while (cur != null && cur.id !in visible) {
             visible += cur.id
             if (cur.parentId == cur.id) break
-            cur = byId[cur.parentId] ?: break
+            cur = byId[displayParent(cur, tree)] ?: break
         }
     }
     return tree.filter { it.id in visible }

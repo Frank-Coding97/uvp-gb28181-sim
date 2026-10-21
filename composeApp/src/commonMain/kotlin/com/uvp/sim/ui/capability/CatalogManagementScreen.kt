@@ -45,6 +45,7 @@ import com.uvp.sim.ui.capability.catalog.exportTreeAsJson
 import com.uvp.sim.ui.capability.catalog.filterTreeByQuery
 import com.uvp.sim.ui.capability.catalog.humanizedAgo
 import com.uvp.sim.ui.capability.catalog.nextSeqId
+import com.uvp.sim.ui.capability.catalog.moveCatalogNode
 
 /**
  * 目录管理详情页(M2,A 方案 — 主屏树 + 底部 Sheet 编辑)。
@@ -105,7 +106,7 @@ fun CatalogManagementScreen(
             isDirty = isDirty,
             onBack = tryLeave,
             onAddRoot = {
-                val rootId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
+                val rootId = draft.firstOrNull { it.type == CatalogNodeType.Device || it.type == CatalogNodeType.System }?.id
                 showAdd = rootId
             },
             onPreview = { showPreview = true },
@@ -168,7 +169,9 @@ fun CatalogManagementScreen(
     if (showTemplate) {
         ApplyTemplateDialog(
             templates = remember(state.config) {
-                com.uvp.sim.domain.CatalogTreeStore.templates(state.config)
+                com.uvp.sim.domain.CatalogTreeStore.templates(state.config).filter {
+                    it.id == "single" || it.id == "standard-business-group"
+                }
             },
             onCancel = { showTemplate = false },
             onConfirm = { tpl ->
@@ -180,7 +183,7 @@ fun CatalogManagementScreen(
     }
 
     if (showExport) {
-        val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
+        val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device || it.type == CatalogNodeType.System }?.id
             ?: state.config.device.deviceId
         val json = exportTreeAsJson(draft)
         ExportJsonDialog(
@@ -281,7 +284,14 @@ fun CatalogManagementScreen(
             businessGroupEnabled = state.config.gbVersion == GbVersion.V2022,
             onDismiss = { editingId = null },
             onChange = { updated ->
-                draft = draft.map { if (it.id == updated.id) updated else it }
+                val newGroup = updated.fields["BusinessGroupID"]
+                if (updated.type == CatalogNodeType.VirtualOrg &&
+                    newGroup != editingNode.fields["BusinessGroupID"] && newGroup != null) {
+                    val group = draft.firstOrNull { it.id == newGroup }
+                    if (group != null) draft = moveCatalogNode(updated, group, draft)
+                } else {
+                    draft = draft.map { if (it.id == updated.id) updated else it }
+                }
             }
         )
     }
@@ -294,6 +304,7 @@ fun CatalogManagementScreen(
             domain = state.config.server.domain,
             existingIds = draft.map { it.id }.toSet(),
             parentNode = parentNode,
+            tree = draft,
             onCancel = { showAdd = null },
             onConfirm = { newNodes ->
                 draft = draft + newNodes
@@ -311,16 +322,15 @@ fun CatalogManagementScreen(
             tree = draft,
             onCancel = { movingId = null },
             onConfirm = { newParentId ->
-                draft = draft.map {
-                    if (it.id == movingNode.id) it.copy(parentId = newParentId) else it
-                }
+                val parent = draft.first { it.id == newParentId }
+                draft = moveCatalogNode(movingNode, parent, draft)
                 movingId = null
             }
         )
     }
 
     if (showPreview) {
-        val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device }?.id
+        val deviceId = draft.firstOrNull { it.type == CatalogNodeType.Device || it.type == CatalogNodeType.System }?.id
             ?: state.config.device.deviceId
         // 预览按**有效国标版本**渲染 —— 注册成功后本机声明会被平台档位压到低者,
         // 出站报文形态跟着有效版本走(与字符集、实际出站路径同一套口径)。

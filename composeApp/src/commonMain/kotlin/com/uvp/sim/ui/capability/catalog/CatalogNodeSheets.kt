@@ -104,14 +104,14 @@ internal fun NodeActionsSheet(
                 )
             }
             // 只有 Device / BusinessGroup / VirtualOrg 能加子节点
-            if (node.type == CatalogNodeType.Device ||
+            if (node.type == CatalogNodeType.System || node.type == CatalogNodeType.Device ||
                 node.type == CatalogNodeType.BusinessGroup ||
                 node.type == CatalogNodeType.VirtualOrg
             ) {
                 ActionRow(Icons.Outlined.Add, "新增子节点", UvpColor.Primary, onAddChild)
             }
             // Device 不能克隆/移动
-            if (node.type != CatalogNodeType.Device) {
+            if (node.type != CatalogNodeType.Device && node.type != CatalogNodeType.System) {
                 ActionRow(Icons.Outlined.ContentCopy, "克隆节点", UvpColor.Primary, onClone)
                 ActionRow(Icons.Outlined.DriveFileMove, "移到其它父节点", UvpColor.Info, onMove)
                 ActionRow(Icons.Outlined.Delete, "删除(连同子节点)", UvpColor.Danger, onDelete)
@@ -180,7 +180,7 @@ internal fun NodeEditorSheet(
             )
             if (node.type == CatalogNodeType.VideoChannel ||
                 node.type == CatalogNodeType.AlarmChannel ||
-                node.type == CatalogNodeType.Device
+                node.type == CatalogNodeType.Device || node.type == CatalogNodeType.System
             ) {
                 FieldInput("Manufacturer", node.fields["Manufacturer"] ?: "") {
                     onChange(node.copy(fields = node.fields + ("Manufacturer" to it)))
@@ -192,7 +192,7 @@ internal fun NodeEditorSheet(
                     onChange(node.copy(fields = node.fields + ("Status" to it)))
                 }
             }
-            if (node.type == CatalogNodeType.VirtualOrg) {
+            if (node.type == CatalogNodeType.BusinessGroup || node.type == CatalogNodeType.System) {
                 FieldInput(
                     label = "CivilCode",
                     value = node.fields["CivilCode"] ?: "",
@@ -201,13 +201,7 @@ internal fun NodeEditorSheet(
                     onChange(node.copy(fields = node.fields + ("CivilCode" to it)))
                 }
             }
-            if (businessGroupEnabled && (
-                    node.type == CatalogNodeType.VideoChannel ||
-                        node.type == CatalogNodeType.AlarmChannel ||
-                        node.type == CatalogNodeType.Device ||
-                        node.type == CatalogNodeType.VirtualOrg
-                    )
-            ) {
+            if (businessGroupEnabled && node.type == CatalogNodeType.VirtualOrg) {
                 BusinessGroupSelector(
                     selectedId = node.fields["BusinessGroupID"],
                     groups = businessGroups,
@@ -271,7 +265,7 @@ private fun BusinessGroupSelector(
         }
         Text(
             if (groups.isEmpty()) "当前目录还没有 215 业务分组，请先新增业务分组。"
-            else "独立于 ParentID，用于模拟 2022 业务归属。",
+            else "首层虚拟组织通过此字段归组；嵌套组织须与上级同组。",
             color = UvpColor.TextHint,
             fontSize = 10.sp
         )

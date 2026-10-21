@@ -69,7 +69,7 @@ class CatalogTreeValidationTest {
         )
         val r = CatalogTreeStore.validate(tree)
         assertIs<ValidationResult.Invalid>(r)
-        assertTrue(r.errors.any { "应该只有 1 个" in it })
+        assertTrue(r.errors.any { "只能有一个 Device 或 System 根节点" in it })
     }
 
     @Test
@@ -91,7 +91,7 @@ class CatalogTreeValidationTest {
         )
         val r = CatalogTreeStore.validate(tree)
         assertIs<ValidationResult.Invalid>(r)
-        assertTrue(r.errors.any { "parentId=ghost-parent 不存在" in it })
+        assertTrue(r.errors.any { "父节点=ghost-parent 不存在" in it })
     }
 
     @Test
@@ -132,13 +132,43 @@ class CatalogTreeValidationTest {
 
     @Test
     fun complexValidTreeIsOk() {
+        val systemId = "34020000002000000001"
+        val businessGroupId = "34020000002150000001"
+        val firstOrgId = "34020000002160000001"
+        val nestedOrgId = "34020000002160000002"
+        val firstChannelId = "34020000001320000001"
+        val nestedChannelId = "34020000001320000002"
         val tree = listOf(
-            root(),
-            CatalogNode("g1", CatalogNodeType.BusinessGroup, "G1", rootId),
-            CatalogNode("g2", CatalogNodeType.VirtualOrg, "区", rootId),
-            CatalogNode("v1", CatalogNodeType.VideoChannel, "V1", "g1"),
-            CatalogNode("v2", CatalogNodeType.VideoChannel, "V2", "g1"),
-            CatalogNode("a1", CatalogNodeType.AlarmChannel, "A1", "g2")
+            CatalogNode(systemId, CatalogNodeType.System, "下级平台", systemId),
+            CatalogNode(businessGroupId, CatalogNodeType.BusinessGroup, "校园安防", systemId),
+            CatalogNode(
+                firstOrgId,
+                CatalogNodeType.VirtualOrg,
+                "出入口",
+                "",
+                mapOf("BusinessGroupID" to businessGroupId),
+            ),
+            CatalogNode(
+                nestedOrgId,
+                CatalogNodeType.VirtualOrg,
+                "东门",
+                firstOrgId,
+                mapOf("BusinessGroupID" to businessGroupId),
+            ),
+            CatalogNode(
+                firstChannelId,
+                CatalogNodeType.VideoChannel,
+                "北门",
+                "$systemId/$firstOrgId",
+                mapOf("BusinessGroupID" to businessGroupId),
+            ),
+            CatalogNode(
+                nestedChannelId,
+                CatalogNodeType.VideoChannel,
+                "东门通道",
+                "$systemId/$nestedOrgId",
+                mapOf("BusinessGroupID" to businessGroupId),
+            ),
         )
         assertEquals(ValidationResult.Ok, CatalogTreeStore.validate(tree))
     }

@@ -33,7 +33,7 @@ internal fun canMove(
     targetId: String,
     tree: List<CatalogNode>
 ): Boolean {
-    if (dragged.type == CatalogNodeType.Device) return false
+    if (dragged.type == CatalogNodeType.Device || dragged.type == CatalogNodeType.System) return false
     val target = tree.firstOrNull { it.id == targetId } ?: return false
     if (target.type == CatalogNodeType.VideoChannel ||
         target.type == CatalogNodeType.AlarmChannel
@@ -41,14 +41,24 @@ internal fun canMove(
     if (targetId == dragged.id) return false
     val descendants = collectDescendants(dragged.id, tree)
     if (targetId in descendants) return false
-    return true
+    return when (dragged.type) {
+        CatalogNodeType.BusinessGroup -> target.type == CatalogNodeType.System
+        CatalogNodeType.VirtualOrg -> target.type == CatalogNodeType.BusinessGroup || target.type == CatalogNodeType.VirtualOrg
+        CatalogNodeType.VideoChannel, CatalogNodeType.AlarmChannel -> target.type in setOf(CatalogNodeType.System, CatalogNodeType.Device, CatalogNodeType.VirtualOrg)
+        else -> true
+    }
 }
 
 /** 递归收集 [id] 节点的所有后代 id 集合(不含自身)。 */
 internal fun collectDescendants(id: String, tree: List<CatalogNode>): Set<String> {
-    val children = tree.filter { it.parentId == id && it.id != id }.map { it.id }
-    if (children.isEmpty()) return emptySet()
-    return children.toSet() + children.flatMap { collectDescendants(it, tree) }
+    val visited = mutableSetOf(id)
+    fun visit(parent: String) {
+        tree.filter { displayParent(it, tree) == parent }.forEach {
+            if (visited.add(it.id)) visit(it.id)
+        }
+    }
+    visit(id)
+    return visited - id
 }
 
 /** 移动到另一个合法父节点(候选已用 [canMove] 过滤)。 */

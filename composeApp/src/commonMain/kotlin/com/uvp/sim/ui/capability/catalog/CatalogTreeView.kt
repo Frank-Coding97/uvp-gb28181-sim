@@ -2,6 +2,7 @@ package com.uvp.sim.ui.capability.catalog
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,6 +29,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.CatalogNode
@@ -72,7 +74,7 @@ private fun NodeRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(32.dp)
+            .height(46.dp)
             .clickable { onClick() },
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -94,25 +96,28 @@ private fun NodeRow(
         }
         Icon(node.type.icon(), null, tint = node.type.color(), modifier = Modifier.size(16.dp))
         Spacer(Modifier.width(6.dp))
-        androidx.compose.material3.Text(
-            node.name,
-            color = UvpColor.Text,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            modifier = Modifier.weight(1f, fill = false)
-        )
-        Spacer(Modifier.width(6.dp))
-        TypeChip(node.type)
-        Spacer(Modifier.width(6.dp))
-        androidx.compose.material3.Text(
-            text = node.id,
-            color = UvpColor.TextHint,
-            fontSize = 9.sp,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1
-        )
-        Spacer(Modifier.weight(1f))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Text(
+                    node.name,
+                    color = UvpColor.Text,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(6.dp))
+                TypeChip(node.type)
+            }
+            androidx.compose.material3.Text(
+                text = node.id,
+                color = UvpColor.TextHint,
+                fontSize = 9.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1
+            )
+        }
         IconButton(onClick = onMenu, modifier = Modifier.size(28.dp)) {
             Icon(Icons.Outlined.MoreVert, "操作",
                 tint = UvpColor.TextSecondary, modifier = Modifier.size(16.dp))
@@ -137,13 +142,13 @@ private fun TypeChip(type: CatalogNodeType) {
     }
 }
 
-private fun dfsOrder(tree: List<CatalogNode>): List<CatalogNode> {
+internal fun dfsOrder(tree: List<CatalogNode>): List<CatalogNode> {
     if (tree.isEmpty()) return emptyList()
     val ids = tree.mapTo(mutableSetOf()) { it.id }
-    val byParent = tree.groupBy { it.parentId }
+    val byParent = tree.groupBy { displayParent(it, tree) }
     val visited = mutableSetOf<String>()
     val out = mutableListOf<CatalogNode>()
-    val roots = tree.filter { it.parentId == it.id || it.parentId !in ids }
+    val roots = tree.filter { displayParent(it, tree) !in ids }
     fun dfs(n: CatalogNode) {
         if (n.id in visited) return
         visited += n.id
@@ -155,16 +160,17 @@ private fun dfsOrder(tree: List<CatalogNode>): List<CatalogNode> {
     return out
 }
 
-private fun buildDepthMap(tree: List<CatalogNode>): Map<String, Int> {
+internal fun buildDepthMap(tree: List<CatalogNode>): Map<String, Int> {
     val byId = tree.associateBy { it.id }
     val cache = mutableMapOf<String, Int>()
     fun depth(id: String, seen: Set<String> = emptySet()): Int {
         cache[id]?.let { return it }
         if (id in seen) return 0
         val n = byId[id] ?: return 0
-        if (n.parentId == n.id || n.parentId !in byId) return 0
-        return (depth(n.parentId, seen + id) + 1).also { cache[id] = it }
+        val parentId = displayParent(n, tree) ?: return 0
+        if (parentId !in byId) return 0
+        return (depth(parentId, seen + id) + 1).also { cache[id] = it }
     }
-    tree.forEach { depth(it.id) }
+    tree.forEach { cache[it.id] = depth(it.id) }
     return cache
 }

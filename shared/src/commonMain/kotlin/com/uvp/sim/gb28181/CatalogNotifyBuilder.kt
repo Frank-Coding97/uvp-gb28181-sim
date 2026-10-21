@@ -313,18 +313,40 @@ object CatalogNotifyBuilder {
     }
 
     /**
-     * 深度优先排序:根节点先,再按 children 出现顺序递归。
-     * 孤儿节点(parentId 找不到对应父)按原顺序追加在末尾,保证不丢节点。
+     * 深度优先排序:根节点先,再按 ParentID 的每个父 ID 出现顺序递归。
+     *
+     * GB/T 28181-2022 附录 J 的设备目录可以用 `/` 同时表达系统和虚拟组织
+     * 归属；首层 216 没有 ParentID，而是通过 BusinessGroupID 关联 215。
+     * 这两个关系都必须进入排序图，否则报文会把业务分组和虚拟组织拆成孤儿节点。
+     * 孤儿节点(或循环引用)按原顺序追加在末尾，保证不丢节点。
      */
     private fun orderDfs(tree: List<CatalogNode>): List<CatalogNode> {
         if (tree.isEmpty()) return emptyList()
-        val byParent = tree.groupBy { it.parentId }
+        val byParent = mutableMapOf<String, MutableList<CatalogNode>>()
+        tree.forEach { node ->
+            node.parentId.split('/')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && it != node.id }
+                .forEach { parentId -> byParent.getOrPut(parentId) { mutableListOf() } += node }
+            if (node.type == CatalogNodeType.VirtualOrg && node.parentId.isBlank()) {
+                node.fields["BusinessGroupID"]
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { groupId -> byParent.getOrPut(groupId) { mutableListOf() } += node }
+            }
+        }
         val nodeIds = tree.mapTo(mutableSetOf()) { it.id }
         val visited = mutableSetOf<String>()
         val result = mutableListOf<CatalogNode>()
 
-        // 根 = parentId 指向自身 OR parentId 不在节点集合里
-        val roots = tree.filter { it.parentId == it.id || it.parentId !in nodeIds }
+        // 根 = parentId 指向自身，或没有任何已知父关系的节点。
+        val hasKnownParent = tree.associateWith { node ->
+            node.parentId.split('/')
+                .map { it.trim() }
+                .any { it.isNotEmpty() && it != node.id && it in nodeIds } ||
+                (node.type == CatalogNodeType.VirtualOrg && node.parentId.isBlank() &&
+                    node.fields["BusinessGroupID"] in nodeIds)
+        }
+        val roots = tree.filter { it.parentId == it.id || hasKnownParent[it] != true }
         roots.forEach { dfs(it, byParent, visited, result) }
 
         // 兜底:还有没访问到的(循环引用 / 孤儿),按原顺序追加
@@ -357,7 +379,6 @@ object CatalogNotifyBuilder {
         channel: ChannelProfile?,
     ): String {
         val f = node.fields
-        val parentId = if (node.parentId == node.id) node.id else node.parentId
         // BusinessGroupID 取值优先级:节点级显式字段 → 虚拟组织向上找业务分组祖先 → 通道属性
         // (三者都是"显式指定",不存在互相覆盖的歧义;都没有则整条省略)
         val businessGroupId = f["BusinessGroupID"]
@@ -371,34 +392,72 @@ object CatalogNotifyBuilder {
         sb.append("<Item>\n")
         sb.append("<DeviceID>").append(escapeXmlText(node.id)).append("</DeviceID>\n")
         sb.append("<Name>").append(escapeXmlText(node.name)).append("</Name>\n")
-        sb.append("<Manufacturer>").append(escapeXmlText(f["Manufacturer"] ?: "UVP")).append("</Manufacturer>\n")
-        sb.append("<Model>").append(escapeXmlText(f["Model"] ?: "UVP-Sim")).append("</Model>\n")
-        sb.append("<Owner>").append(escapeXmlText(f["Owner"] ?: "UVP")).append("</Owner>\n")
-        sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
-        if (node.type == CatalogNodeType.BusinessGroup ||
-            node.type == CatalogNodeType.VirtualOrg ||
-            node.type == CatalogNodeType.Device
-        ) {
-            sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "")).append("</Address>\n")
-        } else {
-            sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "Mobile")).append("</Address>\n")
+        when (node.type) {
+            CatalogNodeType.System -> {
+                // 附录 J 系统目录项没有 ParentID/Parental；模型仍保留自指 parentId
+                // 供编辑器识别根节点，这里不能把内部字段泄漏到国标报文。
+                sb.append("<Manufacturer>").append(escapeXmlText(f["Manufacturer"] ?: "UVP")).append("</Manufacturer>\n")
+                sb.append("<Model>").append(escapeXmlText(f["Model"] ?: "UVP-Sim")).append("</Model>\n")
+                sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
+                sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "")).append("</Address>\n")
+                sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
+                sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
+                sb.append("<Status>").append(escapeXmlText(f["Status"] ?: "ON")).append("</Status>")
+            }
+            CatalogNodeType.BusinessGroup -> {
+                // 215 目录项只声明自身、名称、行政区划码和所属系统。
+                sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
+                appendParentId(sb, node)
+            }
+            CatalogNodeType.VirtualOrg -> {
+                // 216 的 ParentID 只在上级是虚拟组织时出现；首层 216 用
+                // BusinessGroupID 关联 215，不伪造一个普通树父节点。
+                val parentNode = allNodes.firstOrNull { it.id == node.parentId }
+                if (node.parentId.isNotBlank() && node.parentId != node.id &&
+                    (parentNode == null || parentNode.type != CatalogNodeType.BusinessGroup)
+                ) {
+                    appendParentId(sb, node)
+                }
+            }
+            else -> {
+                // Device/通道/报警通道沿用目录项的常规字段集合。
+                sb.append("<Manufacturer>").append(escapeXmlText(f["Manufacturer"] ?: "UVP")).append("</Manufacturer>\n")
+                sb.append("<Model>").append(escapeXmlText(f["Model"] ?: "UVP-Sim")).append("</Model>\n")
+                sb.append("<Owner>").append(escapeXmlText(f["Owner"] ?: "UVP")).append("</Owner>\n")
+                sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
+                if (node.type == CatalogNodeType.Device) {
+                    sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "")).append("</Address>\n")
+                } else {
+                    sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "Mobile")).append("</Address>\n")
+                }
+                sb.append("<Parental>").append(node.type.parental).append("</Parental>\n")
+                appendParentId(sb, node)
+                sb.append("<SafetyWay>").append(escapeXmlText(f["SafetyWay"] ?: "0")).append("</SafetyWay>\n")
+                sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
+                sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
+            }
         }
-        sb.append("<Parental>").append(node.type.parental).append("</Parental>\n")
-        sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
-        sb.append("<SafetyWay>").append(escapeXmlText(f["SafetyWay"] ?: "0")).append("</SafetyWay>\n")
-        sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
-        sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
         // 两版共有、同位置:2016 与 2022 的 IPAddress/Port 都在 Secrecy 之后(标准注释写"可选")。
         // "0.0.0.0" 是 ChannelProfile 的占位默认值,不是有效地址 → 跳过,等 Engine 注入真实 IP。
-        val ipAddress = f["IPAddress"] ?: channel?.ipAddress
-        if (!ipAddress.isNullOrEmpty() && ipAddress != "0.0.0.0") {
-            sb.append("<IPAddress>").append(escapeXmlText(ipAddress)).append("</IPAddress>\n")
+        if (node.type == CatalogNodeType.Device ||
+            node.type == CatalogNodeType.VideoChannel ||
+            node.type == CatalogNodeType.AlarmChannel
+        ) {
+            val ipAddress = f["IPAddress"] ?: channel?.ipAddress
+            if (!ipAddress.isNullOrEmpty() && ipAddress != "0.0.0.0") {
+                sb.append("<IPAddress>").append(escapeXmlText(ipAddress)).append("</IPAddress>\n")
+            }
+            val port = f["Port"] ?: channel?.port?.toString()
+            if (!port.isNullOrEmpty()) {
+                sb.append("<Port>").append(escapeXmlText(port)).append("</Port>\n")
+            }
         }
-        val port = f["Port"] ?: channel?.port?.toString()
-        if (!port.isNullOrEmpty()) {
-            sb.append("<Port>").append(escapeXmlText(port)).append("</Port>\n")
+        if (node.type == CatalogNodeType.Device ||
+            node.type == CatalogNodeType.VideoChannel ||
+            node.type == CatalogNodeType.AlarmChannel
+        ) {
+            sb.append("\n<Status>").append(escapeXmlText(f["Status"] ?: "ON")).append("</Status>")
         }
-        sb.append("<Status>").append(escapeXmlText(f["Status"] ?: "ON")).append("</Status>")
         // 安装位置:`<Status>` 之后、`BusinessGroupID`/`<Info>` 之前 —— 两版标准的位置相同
         // (2016 附录 A 目录项类型与 2022 A.2.1.9 都排在 Status 之后)。
         // ⛔ 只对设备类节点输出:标准里这个字段限"当为设备时",系统/业务分组/虚拟组织/
@@ -407,7 +466,10 @@ object CatalogNotifyBuilder {
         appendInstallPosition(sb, node, channel)
         // ⭐ 位置差异:2022 的 BusinessGroupID 在 Item 层(见类 KDoc);
         // 2016 的仍在 <Info> 内,由 buildInfoBlock 负责输出。
-        if (version == GbVersion.V2022 && businessGroupId != null) {
+        if (version == GbVersion.V2022 && businessGroupId != null &&
+            (node.type == CatalogNodeType.VirtualOrg || node.type == CatalogNodeType.VideoChannel ||
+                node.type == CatalogNodeType.Device)
+        ) {
             sb.append("\n<BusinessGroupID>").append(escapeXmlText(businessGroupId)).append("</BusinessGroupID>")
         }
         val info = buildInfoBlock(node, version, channel, businessGroupId)
@@ -416,6 +478,16 @@ object CatalogNotifyBuilder {
         }
         sb.append("\n</Item>")
         return sb.toString()
+    }
+
+    private fun appendParentId(sb: StringBuilder, node: CatalogNode) {
+        val parentId = node.parentId.trim()
+        if (node.type == CatalogNodeType.Device && parentId == node.id) {
+            // 普通 IPC 根节点沿用现有目录树约定：Device 的 ParentID 自指。
+            sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
+        } else if (parentId.isNotEmpty() && parentId != node.id) {
+            sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
+        }
     }
 
     /**

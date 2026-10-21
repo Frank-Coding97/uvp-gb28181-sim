@@ -19,7 +19,7 @@ internal fun CatalogNodeType.shortLabel(): String = when (this) {
     CatalogNodeType.System -> "系统"
     CatalogNodeType.Device -> "设备"
     CatalogNodeType.BusinessGroup -> "分组"
-    CatalogNodeType.VirtualOrg -> "区划"
+    CatalogNodeType.VirtualOrg -> "虚拟组织"
     CatalogNodeType.VideoChannel -> "视频"
     CatalogNodeType.AlarmChannel -> "报警"
 }

@@ -110,7 +110,19 @@ internal class CatalogSubRouter(
         if (targetId.isBlank()) return publishable
         val target = tree.firstOrNull { it.id == targetId }
         if (target != null) {
-            val byParent = tree.groupBy { it.parentId }
+            val byParent = mutableMapOf<String, MutableList<com.uvp.sim.config.CatalogNode>>()
+            tree.forEach { node ->
+                node.parentId.split('/')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() && it != node.id }
+                    .forEach { parentId -> byParent.getOrPut(parentId) { mutableListOf() } += node }
+                // 附录 J：首层 216 没有 ParentID，通过 BusinessGroupID 归属 215。
+                if (node.type == com.uvp.sim.config.CatalogNodeType.VirtualOrg && node.parentId.isBlank()) {
+                    node.fields["BusinessGroupID"]
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { groupId -> byParent.getOrPut(groupId) { mutableListOf() } += node }
+                }
+            }
             val result = mutableListOf<com.uvp.sim.config.CatalogNode>()
             val visited = mutableSetOf<String>()
             fun visit(id: String) {
