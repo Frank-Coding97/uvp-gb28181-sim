@@ -221,8 +221,8 @@ class AppEngine(
     /**
      * 平台视角的我方端点 + 是否经地址转换(null = 平台未回填 Via 的 received/rport)。
      *
-     * 现场价值:回答「我填的地址平台能连上吗」。判定为 NAT 时,设置页会提示改用 TCP ——
-     * 否则这类故障表现为「注册成功但点播/云台/查询全部超时」,和防火墙丢包长得一样。
+     * 现场价值:回答「我填的地址平台能连上吗」。判定为 NAT 时,注册协调器会尝试用完整
+     * 映射端点更新 Contact;UDP 继续可用,下行异常时再考虑 TCP 或端口映射。
      */
     val rportObservation: StateFlow<RportObservation?> = holders.rportObservation.asStateFlow()
 

@@ -25,6 +25,7 @@ import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.sip.SipOutbox
+import com.uvp.sim.sip.ObservedEndpoint
 import com.uvp.sim.sip.ViaObservedEndpoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CompletableDeferred
@@ -101,6 +102,12 @@ internal class RegistrationCoordinatorImpl(
     /** 同 platformVersion:结论未变时不重复打日志(401 + 200 会带着同样的回填来两次)。 */
     private var rportObservationAnnounced: Boolean = false
     private var announcedRportSignature: String? = null
+
+    /** 完整的 received+rport 可作为下一条 REGISTER 的 Contact 对外宣告端点。 */
+    private var advertisedContactEndpoint: ObservedEndpoint? = null
+    /** 当前 pending REGISTER 实际发出时使用的 Contact 端点,用于判断是否需要刷新注册。 */
+    private var pendingRegisterSentEndpoint: ObservedEndpoint? = null
+    private var contactRefreshJob: Job? = null
 
     private val mutex = Mutex()
     private val localIp: String get() = localIpProvider()
@@ -187,9 +194,10 @@ internal class RegistrationCoordinatorImpl(
             fromTagSet(SipBuilders.randomTag())
             val branch = SipBuilders.randomBranch()
             val req = SipBuilders.buildRegister(
-                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider(),
+                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider(), advertisedContactEndpoint,
             )
             pendingRegister = req
+            pendingRegisterSentEndpoint = advertisedContactEndpoint
             _state.value = RegistrationState.Registering
             SystemLogger.emit(
                 LogLevel.Info, LogTag.Lifecycle,
@@ -223,7 +231,15 @@ internal class RegistrationCoordinatorImpl(
     }
 
     override suspend fun unregister() {
+        unregisterInternal(cancelContactRefresh = true)
+    }
+
+    private suspend fun unregisterInternal(cancelContactRefresh: Boolean) {
         val completion = mutex.withLock {
+            if (cancelContactRefresh) {
+                contactRefreshJob?.cancel()
+                contactRefreshJob = null
+            }
             // ⛔ Failed 也要早退(2026-10-03):它是"重试配额用尽"的终态,平台侧从没有过一条
             // 活着的注册会话 —— 发 Expires=0 只会落到死链上,让调用方空等
             // UNREGISTER_TIMEOUT_MS(3s)才拿到 false。Disconnected 同理。
@@ -248,13 +264,14 @@ internal class RegistrationCoordinatorImpl(
             val callIdNow = callId ?: SipBuilders.randomCallId(localIp)
             val fromTagNow = fromTag ?: SipBuilders.randomTag()
             val req = SipBuilders.buildUnregister(
-                config, cseq, callIdNow, branch, fromTagNow, localIp, localPortProvider(),
+                config, cseq, callIdNow, branch, fromTagNow, localIp, localPortProvider(), advertisedContactEndpoint,
             )
             val waitForResponse = CompletableDeferred<Boolean>()
             unregisterCompletion?.cancel()
             unregisterCompletion = waitForResponse
             // 401/407 必须基于这条 Expires=0 请求做 Digest 重发,不能沿用普通 REGISTER。
             pendingRegister = req
+            pendingRegisterSentEndpoint = advertisedContactEndpoint
             try {
                 outbox.send(req).getOrThrow()
             } catch (e: Throwable) {
@@ -298,6 +315,7 @@ internal class RegistrationCoordinatorImpl(
             retryJob?.cancel(); retryJob = null
             registerRetryCount = 0
             renewalJob?.cancel(); renewalJob = null
+            contactRefreshJob?.cancel(); contactRefreshJob = null
             isRenewal = false
             heartbeat?.stop(); heartbeat = null
             // 挂在这条连接上的未决事务都不可能再有结果了。
@@ -307,6 +325,8 @@ internal class RegistrationCoordinatorImpl(
             // 版本协商结论与地址转换观察值随本次注册会话一起作废,下轮注册要重新"在注册过程中得知"。
             _platformVersion.value = null
             _rportObservation.value = null
+            advertisedContactEndpoint = null
+            pendingRegisterSentEndpoint = null
             _state.value = RegistrationState.Disconnected
         }
         SystemLogger.emit(
@@ -382,6 +402,7 @@ internal class RegistrationCoordinatorImpl(
             registerJob?.cancel(); registerJob = null
             retryJob?.cancel(); retryJob = null
             renewalJob?.cancel(); renewalJob = null
+            contactRefreshJob?.cancel(); contactRefreshJob = null
             ntpRefreshJob?.cancel(); ntpRefreshJob = null
             heartbeat?.stop(); heartbeat = null
         }
@@ -440,9 +461,10 @@ internal class RegistrationCoordinatorImpl(
             fromTagSet(SipBuilders.randomTag())
             val branch = SipBuilders.randomBranch()
             val req = SipBuilders.buildRegister(
-                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider(),
+                config, cseq, callId!!, branch, fromTag!!, localIp, localPortProvider(), advertisedContactEndpoint,
             )
             pendingRegister = req
+            pendingRegisterSentEndpoint = advertisedContactEndpoint
             _state.value = RegistrationState.Registering
             try {
                 outbox.send(req).getOrThrow()
@@ -453,27 +475,35 @@ internal class RegistrationCoordinatorImpl(
         }
     }
 
-    private suspend fun triggerReregisterIfActive() {
+    private suspend fun triggerReregisterIfActive(preserveAdvertisedEndpoint: Boolean = false) {
         val current = _state.value
         if (current != RegistrationState.Registered &&
             current != RegistrationState.Registering
         ) {
             return
         }
-        runCatching { unregister() }
-            .onFailure {
+        val endpoint = advertisedContactEndpoint
+        try {
+            unregisterInternal(cancelContactRefresh = !preserveAdvertisedEndpoint)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
                 SystemLogger.emit(
                     LogLevel.Warning, LogTag.Network,
-                    "重注册 unregister 抛错(可忽略,旧网卡可能已断): ${it::class.simpleName}: ${it.message}",
+                    "重注册 unregister 抛错(可忽略,旧网卡可能已断): ${error::class.simpleName}: ${error.message}",
                 )
-            }
-        runCatching { register() }
-            .onFailure {
+        }
+        if (preserveAdvertisedEndpoint) advertisedContactEndpoint = endpoint
+        try {
+            register()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
                 SystemLogger.emit(
                     LogLevel.Error, LogTag.Network,
-                    "重注册 register 抛错: ${it::class.simpleName}: ${it.message}",
+                    "重注册 register 抛错: ${error::class.simpleName}: ${error.message}",
                 )
-            }
+        }
     }
 
     /**
@@ -530,6 +560,19 @@ internal class RegistrationCoordinatorImpl(
         // 同 applyPlatformVersion:值更新无条件,去重只压日志(401 挑战与 200 会带同样的回填各来一次)。
         _rportObservation.value = observation
 
+        // 只有完整的公网地址和端口才写入 Contact。平台只回填一半时保留已有值,
+        // 避免把不可用的半成品地址传播到后续注册报文。
+        val completeEndpoint = observed?.takeIf { it.completeAddress() != null }
+        if (completeEndpoint != null && completeEndpoint != advertisedContactEndpoint) {
+            advertisedContactEndpoint = completeEndpoint
+            pendingRegister = pendingRegister?.let { replaceContact(it, completeEndpoint) }
+            SystemLogger.emit(
+                LogLevel.Info,
+                LogTag.Network,
+                "已记录平台观察到的对外端点 ${completeEndpoint.completeAddress()},后续 REGISTER 将尝试使用该 Contact",
+            )
+        }
+
         val signature = "${observation.observedIp}:${observation.observedPort}/${observation.situation.name}"
         if (rportObservationAnnounced && announcedRportSignature == signature) return
         rportObservationAnnounced = true
@@ -544,11 +587,10 @@ internal class RegistrationCoordinatorImpl(
 
             NatSituation.NAT -> {
                 val seen = "${observation.observedIp}:${observation.observedPort}"
-                val advice = if (config.transport.name.equals("TCP", ignoreCase = true)) {
-                    "当前以 TCP 注册,符合 §9.1.1 f) 对 NAT 内侧设备的要求"
+                val advice = if (observation.observedIp != null && observation.observedPort != null) {
+                    "已尝试将该端点用于后续 Contact;若下行仍超时,再考虑切换 TCP 或配置端口映射"
                 } else {
-                    "当前以 ${config.transport.name} 注册:NAT 场景下平台的下行报文会被转换设备丢弃" +
-                        "(表现为注册成功但点播/云台/查询全部超时),建议改用 TCP"
+                    "平台未提供完整映射端点,继续保持当前注册并观察下行命令"
                 }
                 SystemLogger.emit(
                     LogLevel.Warning,
@@ -563,6 +605,35 @@ internal class RegistrationCoordinatorImpl(
                 "平台未回填 Via 的 received/rport,无法判断本机是否经地址转换(这不影响协议合规)",
             )
         }
+    }
+
+    /** 在收到 200 后发现本次请求仍宣告旧端点时,异步做一次完整重注册。 */
+    private fun scheduleContactRefresh() {
+        if (contactRefreshJob?.isActive == true) return
+        contactRefreshJob = scope.launch {
+            try {
+                triggerReregisterIfActive(preserveAdvertisedEndpoint = true)
+            } finally {
+                contactRefreshJob = null
+            }
+        }
+    }
+
+    private fun replaceContact(
+        request: SipRequest,
+        endpoint: ObservedEndpoint,
+    ): SipRequest {
+        val address = endpoint.completeAddress() ?: return request
+        val contact = "<sip:${config.device.deviceId}@$address>"
+        return request.copy(
+            headers = request.headers.map { header ->
+                if (SipHeader.canonicalize(header.name) == SipHeader.CONTACT) {
+                    SipMessage.Header(SipHeader.CONTACT, contact)
+                } else {
+                    header
+                }
+            },
+        )
     }
 
     private suspend fun handleRegisterResponse(resp: SipResponse) {
@@ -596,6 +667,9 @@ internal class RegistrationCoordinatorImpl(
                     )
                     _events.emit(RegistrationEvent.Renewed)
                     isRenewal = false
+                }
+                if (pendingRegisterSentEndpoint != advertisedContactEndpoint) {
+                    scheduleContactRefresh()
                 }
                 scheduleExpiresRenewal()
             }
@@ -641,6 +715,7 @@ internal class RegistrationCoordinatorImpl(
                 val newBranch = SipBuilders.randomBranch()
                 val authedReq = SipBuilders.addAuthorization(pending, authHeader, cseq, newBranch)
                 pendingRegister = authedReq
+                pendingRegisterSentEndpoint = advertisedContactEndpoint
                 try {
                     outbox.send(authedReq).getOrThrow()
                     // 注销事务由 unregister() 自己等待响应;普通 REGISTER 仍需重置 8s 超时。
@@ -682,6 +757,8 @@ internal class RegistrationCoordinatorImpl(
         _platformVersion.value = null
         _rportObservation.value = null
         pendingRegister = null
+        pendingRegisterSentEndpoint = null
+        advertisedContactEndpoint = null
         unregisterCompletion = null
         isRenewal = false
         _state.value = RegistrationState.Disconnected
@@ -836,9 +913,10 @@ internal class RegistrationCoordinatorImpl(
                 val branch = SipBuilders.randomBranch()
                 val req = SipBuilders.buildRegister(
                     config, cseq, callId ?: SipBuilders.randomCallId(localIp),
-                    branch, fromTag ?: SipBuilders.randomTag(), localIp, localPortProvider(),
+                    branch, fromTag ?: SipBuilders.randomTag(), localIp, localPortProvider(), advertisedContactEndpoint,
                 )
                 pendingRegister = req
+                pendingRegisterSentEndpoint = advertisedContactEndpoint
                 SystemLogger.emit(
                     LogLevel.Info, LogTag.Lifecycle,
                     "Expires 续约: 发送 REGISTER(剩余 ${config.expiresSeconds * 200 / 1000}s)",

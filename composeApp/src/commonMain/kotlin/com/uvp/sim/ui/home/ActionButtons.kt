@@ -49,7 +49,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
 /**
- * 主屏 5 tile 主动业务区 — 录像 / 报警 / 位置订阅 / 目录订阅 / PTZ 精准位置订阅。
+ * 主屏 5 tile 主动业务区 — 录像 / 报警 / 位置订阅 / 目录订阅 / PTZ 订阅。
  * 复位报警时弹确认框。点订阅 tile 弹底片看详情。从 HomeScreen.kt 拆出。
  */
 @Composable
@@ -115,7 +115,7 @@ internal fun ActionButtons(state: AppUiState, actions: AppActions, onFeedback: (
             )
             SubscriptionTile(
                 icon = Icons.Outlined.Tune,
-                label = "PTZ 精准位置订阅",
+                label = "PTZ 订阅",
                 status = state.subscriptions[SubscriptionKind.PtzPrecisePosition] ?: SubscriptionStatusDto(),
                 modifier = Modifier.weight(1f),
                 onClick = { detailFor = SubscriptionKind.PtzPrecisePosition }
@@ -252,7 +252,7 @@ private val SubscriptionKind.title: String
         SubscriptionKind.MobilePosition -> "位置订阅"
         SubscriptionKind.Catalog -> "目录订阅"
         SubscriptionKind.Alarm -> "报警订阅"
-        SubscriptionKind.PtzPrecisePosition -> "PTZ 精准位置订阅"
+        SubscriptionKind.PtzPrecisePosition -> "PTZ 订阅"
     }
 
 @Composable

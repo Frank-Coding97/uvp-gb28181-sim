@@ -343,10 +343,9 @@ private fun SignalingCharsetRow(declared: GbVersion, platform: GbVersion?) {
  * 平台视角的本机端点 —— 现场回答「平台到底能不能连上我」。
  *
  * 判定依据是注册响应 Via 里回填的 `received` / `rport`(RFC 3581)。
- * ⛔ 这不是国标要求(GB/T 28181-2022 全文没有这两个参数,标准给 NAT 的答案是 TCP 长连接复用),
- * 所以**平台不回填是正常的**:那种情况只说"未回填",不当错误。真正要抓的是它确实回填、
- * 且与本机声明不一致时 —— 那说明中间存在地址转换,NAT 场景下必须用 TCP(§9.1.1 f)),
- * 否则故障表现为「注册成功,但点播/云台/查询全部超时」,与防火墙丢包长得一模一样。
+ * 这不是国标注册必选项,平台不回填是正常的:那种情况只说"未回填",不当错误。真正要抓的是它确实回填、
+ * 且与本机声明不一致时 —— 那说明中间存在地址转换。应用会先尝试把完整映射端点用于后续
+ * Contact;若下行仍异常,再考虑 TCP 或端口映射。UDP 不因检测到 NAT 就被强制切换。
  */
 @Composable
 private fun AddressTranslationRow(observation: RportObservation?, usesTcp: Boolean) {
@@ -365,10 +364,10 @@ private fun AddressTranslationRow(observation: RportObservation?, usesTcp: Boole
             val observed = "${observation.observedIp}:${observation.observedPort}"
             val local = "${observation.localIp}:${observation.localPort}"
             if (usesTcp) {
-                "地址转换:有 · 平台看到 $observed(本机 $local)—— 已用 TCP 注册,符合 §9.1.1 f)" to
+                "地址转换:有 · 平台看到 $observed(本机 $local)—— 当前使用 TCP 注册" to
                     UvpColor.TextHint
             } else {
-                "地址转换:有 · 平台看到 $observed(本机 $local)—— NAT 场景须改用 TCP 注册" to
+                "地址转换:有 · 平台看到 $observed(本机 $local)—— 已尝试用该端点更新 Contact;UDP 可继续使用" to
                     UvpColor.Warning
             }
         }

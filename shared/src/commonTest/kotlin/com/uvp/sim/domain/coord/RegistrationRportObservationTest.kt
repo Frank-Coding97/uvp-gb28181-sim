@@ -23,6 +23,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * §9.1.1 f) 的适用性判据:设备要从**注册响应**里发现自己是否处于地址转换之后。
@@ -129,6 +130,118 @@ class RegistrationRportObservationTest {
         // 本机端点原样带出,UI 要做"平台看到 X / 本机 Y"的对照展示
         assertEquals(localIp, observation.localIp)
         assertEquals(localPort, observation.localPort)
+        coord.shutdown()
+    }
+
+    @Test
+    fun `完整映射端点会用于401鉴权重发的Contact`() = runTest {
+        val transport = MockSipTransport().also { it.connect() }
+        val coord = newCoord(this, transport)
+        coord.register()
+        runCurrent()
+        val (callId, fromTag) = pendingIdentity(transport)
+
+        coord.onIncoming(
+            registerResponse(
+                callId,
+                fromTag,
+                statusCode = 401,
+                via = "SIP/2.0/UDP $localIp:$localPort;rport=51234;received=203.0.113.5;branch=z9hG4bK-reg",
+            ).asEnvelope(),
+        )
+        runCurrent()
+
+        val requests = transport.sent.filterIsInstance<SipRequest>()
+        assertEquals(2, requests.size, "401 后应发送带鉴权的第二条 REGISTER")
+        assertEquals(
+            "<sip:34020000001110000001@203.0.113.5:51234>",
+            requests[1].firstHeader(SipHeader.CONTACT),
+        )
+        coord.shutdown()
+    }
+
+    @Test
+    fun `平台只回填一半映射时继续使用本机Contact`() = runTest {
+        val transport = MockSipTransport().also { it.connect() }
+        val coord = newCoord(this, transport)
+        coord.register()
+        runCurrent()
+        val (callId, fromTag) = pendingIdentity(transport)
+
+        coord.onIncoming(
+            registerResponse(
+                callId,
+                fromTag,
+                statusCode = 401,
+                via = "SIP/2.0/UDP $localIp:$localPort;rport;received=203.0.113.5;branch=z9hG4bK-reg",
+            ).asEnvelope(),
+        )
+        runCurrent()
+
+        val requests = transport.sent.filterIsInstance<SipRequest>()
+        assertEquals(2, requests.size)
+        assertEquals(
+            "<sip:34020000001110000001@$localIp:$localPort>",
+            requests[1].firstHeader(SipHeader.CONTACT),
+        )
+        coord.shutdown()
+    }
+
+    @Test
+    fun `已注册后发现新映射会用保留端点重注册`() = runTest {
+        val transport = MockSipTransport().also { it.connect() }
+        val coord = newCoord(this, transport)
+        coord.register()
+        runCurrent()
+        val (callId, fromTag) = pendingIdentity(transport)
+        val observedVia =
+            "SIP/2.0/UDP $localIp:$localPort;rport=51234;received=203.0.113.5;branch=z9hG4bK-reg"
+
+        coord.onIncoming(registerResponse(callId, fromTag, via = observedVia).asEnvelope())
+        runCurrent()
+
+        val unregister = transport.sent.filterIsInstance<SipRequest>().last()
+        assertEquals("0", unregister.firstHeader(SipHeader.EXPIRES))
+        coord.onIncoming(registerResponse(callId, fromTag, via = observedVia).asEnvelope())
+        runCurrent()
+
+        val registeredRequests = transport.sent.filterIsInstance<SipRequest>().filter {
+            it.firstHeader(SipHeader.EXPIRES) != "0"
+        }
+        assertTrue(
+            registeredRequests.any {
+                it.firstHeader(SipHeader.CONTACT) == "<sip:34020000001110000001@203.0.113.5:51234>"
+            },
+            "重注册应使用平台观察到的完整映射端点",
+        )
+        coord.shutdown()
+    }
+
+    @Test
+    fun `收到映射后用户立即注销不会被后台刷新重新注册`() = runTest {
+        val transport = MockSipTransport().also { it.connect() }
+        val coord = newCoord(this, transport)
+        coord.register()
+        runCurrent()
+        val (callId, fromTag) = pendingIdentity(transport)
+        val observedVia =
+            "SIP/2.0/UDP $localIp:$localPort;rport=51234;received=203.0.113.5;branch=z9hG4bK-reg"
+
+        coord.onIncoming(registerResponse(callId, fromTag, via = observedVia).asEnvelope())
+        val unregisterJob = launch { coord.unregister() }
+        runCurrent()
+
+        assertTrue(transport.sent.filterIsInstance<SipRequest>().any {
+            it.firstHeader(SipHeader.EXPIRES) == "0"
+        }, "用户注销应发送 Expires=0")
+        coord.onIncoming(registerResponse(callId, fromTag, via = observedVia).asEnvelope())
+        runCurrent()
+        unregisterJob.join()
+
+        assertEquals(RegistrationState.Disconnected, coord.state.value)
+        assertEquals(1, transport.sent.filterIsInstance<SipRequest>().count {
+            it.firstHeader(SipHeader.EXPIRES) != "0"
+        }, "用户注销后不应再发送后台刷新 REGISTER")
         coord.shutdown()
     }
 

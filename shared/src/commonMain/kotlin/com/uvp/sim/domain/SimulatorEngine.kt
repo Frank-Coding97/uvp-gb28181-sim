@@ -61,7 +61,8 @@ class SimulatorEngine internal constructor(
     val platformVersion: StateFlow<GbVersion?> = holders.platformVersion.asStateFlow()
     /**
      * 平台视角的我方端点 + 是否经地址转换(null = 平台未回填,不代表不在 NAT 后)。
-     * UI 用它显示「平台看到的你是 X」,并在判定为 NAT 时提示改用 TCP(§9.1.1 f)。
+     * UI 用它显示「平台看到的你是 X」,并在有完整映射时优先尝试刷新 Contact;
+     * UDP 仍可继续使用,下行异常时再考虑 TCP 或端口映射。
      */
     val rportObservation: StateFlow<RportObservation?> = holders.rportObservation.asStateFlow()
     /**

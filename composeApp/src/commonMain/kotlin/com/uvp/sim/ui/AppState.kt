@@ -37,7 +37,7 @@ data class AppUiState(
     val sessionMarker: SessionMarkerDto? = null,
     /**
      * 上级订阅状态快照。M2 接通真实 SUBSCRIBE 应答后由 AppEngine 推。
-     * 主屏「位置订阅」「目录订阅」「PTZ 精准位置订阅」状态卡读这个 map。
+     * 主屏「位置订阅」「目录订阅」「PTZ 订阅」状态卡读这个 map。
      */
     val subscriptions: Map<SubscriptionKind, SubscriptionStatusDto> = emptyMap(),
     /**
@@ -102,7 +102,7 @@ data class AppUiState(
 
     /**
      * 平台视角的本机端点 + 是否经地址转换(§9.1.1 f 的适用性判据;null = 平台未回填 Via)。
-     * 设置页「国标版本」卡片下方展示:判定为 NAT 且当前用 UDP 时会提示改用 TCP。
+     * 设置页「国标版本」卡片下方展示:判定为 NAT 时提示 Contact 映射尝试结果,不强制切换 TCP。
      */
     val rportObservation: RportObservation? = null,
 

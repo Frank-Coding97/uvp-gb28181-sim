@@ -6,25 +6,31 @@ package com.uvp.sim.sip
  * 来源是 RFC 3581(NAT 场景下 SIP 的对称响应):客户端在 Via 里发一个**裸的** `;rport`,
  * 服务端回包时把它看到的源地址写回 `received=`、源端口写回 `rport=`。
  *
- * ## ⛔ 这不是国标要求,别当成合规项
- * GB/T 28181-2022 全文 166 页里 `rport` / `received` **一次都没出现**(可用
- * `.workbuddy/ocr/full2022.txt` 复现)。标准给 NAT 的答案自始至终是「一条 TCP 长连接
- * 复用」(§9.1.1 f))。这里消费这两个参数纯粹是**工程上的可见性**:标准只管连接通不通,
- * 而连接不通时,「平台到底把你当成谁」是现场唯一能定位问题的信息。
+ * ## 工程用途
+ * `rport` / `received` 属于 RFC 3581 的 SIP Via 参数,不是 GB/T 28181 的注册必选项。
+ * 这里用它们观察平台看到的端点,并在信息完整时尝试更新 Contact。UDP/NAT 环境仍可继续
+ * 使用 UDP;若平台未回填、映射不稳定或下行仍失败,再结合现场网络选择 TCP 或端口映射。
  *
  * [ip] / [port] 任一可能为 null:服务端可以只回填其中一个(甚至都不回填,那就整体为 null)。
  */
 data class ObservedEndpoint(
     val ip: String?,
     val port: Int?,
-)
+) {
+    /** 只有平台同时回填地址和端口时才允许用于 Contact。 */
+    fun completeAddress(): String? {
+        val host = ip?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val mappedPort = port?.takeIf { it in 1..65535 } ?: return null
+        val formattedHost = if (host.contains(':') && !host.startsWith('[')) "[$host]" else host
+        return "$formattedHost:$mappedPort"
+    }
+}
 
 /**
  * 本机端点与平台观察端点的关系。
  *
  * 用来回答现场最常问的那个问题:「我明明填了 192.168.x.x,为什么平台连不上我?」
- * 答案通常是「因为在 NAT 后面,平台看到的根本不是这个地址」——而这个判定必须由
- * 设备自己发现,平台不会主动告诉它。
+ * 平台若回填了 Via 映射参数,设备可以据此发现地址差异并尝试使用映射端点。
  */
 enum class NatSituation {
     /** 平台没有回填(没开 rport 支持,或响应里没带 Via)。**不代表不在 NAT 后**。 */
@@ -36,9 +42,8 @@ enum class NatSituation {
     /**
      * 平台看到的地址与本机声明的不一致 —— 中间存在地址转换。
      *
-     * 此时**必须用 TCP 注册**(§9.1.1 f)):UDP 下平台会把 SIP 消息发向它看到的那个
-     * 公网映射地址,而该映射为「出站发起」所建,入站报文大多被 NAT 丢弃 → 表现为
-     * 「注册成功,但所有下行命令(点播/云台/查询)都超时」,且两侧日志都看不出原因。
+     * UDP 下先尝试把完整映射端点写入后续 Contact,让支持固定映射的网络继续工作。
+     * 若映射不稳定或下行仍被 NAT 丢弃,再由现场选择 TCP 长连接或配置端口映射。
      */
     NAT,
 }

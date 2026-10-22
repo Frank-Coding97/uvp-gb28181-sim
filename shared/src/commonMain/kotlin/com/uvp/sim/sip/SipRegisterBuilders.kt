@@ -17,12 +17,14 @@ object SipRegisterBuilders {
         branch: String,
         fromTag: String,
         localIp: String,
-        localPort: Int
+        localPort: Int,
+        advertisedEndpoint: ObservedEndpoint? = null,
     ): SipRequest {
         val server = config.server
         val device = config.device
         val requestUri = "sip:${server.serverId}@${server.domain}"
-        val deviceContact = "<sip:${device.deviceId}@$localIp:$localPort>"
+        val contactHost = advertisedEndpoint?.completeAddress() ?: "$localIp:$localPort"
+        val deviceContact = "<sip:${device.deviceId}@$contactHost>"
         return SipRequest(
             method = SipMethod.REGISTER,
             requestUri = requestUri,
@@ -78,9 +80,10 @@ object SipRegisterBuilders {
         branch: String,
         fromTag: String,
         localIp: String,
-        localPort: Int
+        localPort: Int,
+        advertisedEndpoint: ObservedEndpoint? = null,
     ): SipRequest {
-        val base = buildRegister(config, cseq, callId, branch, fromTag, localIp, localPort)
+        val base = buildRegister(config, cseq, callId, branch, fromTag, localIp, localPort, advertisedEndpoint)
         val updatedHeaders = base.headers.map { h ->
             if (SipHeader.canonicalize(h.name) == SipHeader.EXPIRES) {
                 SipMessage.Header(SipHeader.EXPIRES, "0")

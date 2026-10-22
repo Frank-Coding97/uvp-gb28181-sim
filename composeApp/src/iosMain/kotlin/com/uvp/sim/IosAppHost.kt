@@ -350,7 +350,7 @@ fun IosApp() {
     val clockOffset by engine.clockOffset.collectAsState()
     // 附录 I:平台在注册响应里声明的协议版本(null = 未声明/不可识别)。
     val platformVersion by engine.platformVersion.collectAsState()
-    // §9.1.1 f:平台看到的本机端点 —— 判定「是否在 NAT 后」,据此提示该不该改用 TCP。
+    // 注册响应里的 received/rport 用于观察映射端点;UDP 继续可用,异常时再排查下行路径。
     val rportObservation by engine.rportObservation.collectAsState()
     val reconnect by engine.reconnect.collectAsState()
     val rawSubs by engine.subscriptions.collectAsState()

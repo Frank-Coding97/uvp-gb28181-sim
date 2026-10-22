@@ -25,15 +25,17 @@ object SipBuilders {
 
     // ---- REGISTER 域(委派 SipRegisterBuilders) ----
     fun buildRegister(
-        config: SimConfig, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int
-    ): SipRequest = SipRegisterBuilders.buildRegister(config, cseq, callId, branch, fromTag, localIp, localPort)
+        config: SimConfig, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int,
+        advertisedEndpoint: ObservedEndpoint? = null,
+    ): SipRequest = SipRegisterBuilders.buildRegister(config, cseq, callId, branch, fromTag, localIp, localPort, advertisedEndpoint)
 
     fun addAuthorization(register: SipRequest, authorizationHeader: String, newCseq: Int, newBranch: String): SipRequest =
         SipRegisterBuilders.addAuthorization(register, authorizationHeader, newCseq, newBranch)
 
     fun buildUnregister(
-        config: SimConfig, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int
-    ): SipRequest = SipRegisterBuilders.buildUnregister(config, cseq, callId, branch, fromTag, localIp, localPort)
+        config: SimConfig, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int,
+        advertisedEndpoint: ObservedEndpoint? = null,
+    ): SipRequest = SipRegisterBuilders.buildUnregister(config, cseq, callId, branch, fromTag, localIp, localPort, advertisedEndpoint)
 
     fun buildKeepalive(
         config: SimConfig, sn: Int, cseq: Int, callId: String, branch: String, fromTag: String, localIp: String, localPort: Int,
