@@ -9,6 +9,7 @@ import com.uvp.sim.sip.SipRequest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * R4 #5 + R4 #4:top-level [classifyInviteTarget] / [extractInviteTarget] 纯函数测试。
@@ -56,6 +57,45 @@ class InviteTargetClassifierTest {
 
     @Test fun blank_channel_returns_null_default() {
         assertNull(classifyInviteTarget("", listOf(videoNode)))
+    }
+
+    /**
+     * 海康类 IPC 的注册方式:设备编码本身就是 132 段(摄像机/视频通道),平台点播直接打这个编号。
+     * 目录树里它同时是根节点(Device),必须放行,否则这类平台永远点不通。
+     */
+    @Test fun device_root_with_132_type_code_is_accepted() {
+        val ipcRoot = CatalogNode(
+            id = "34020000001320000028",
+            type = CatalogNodeType.Device,
+            name = "ipc",
+            parentId = "34020000001320000028",
+        )
+        assertNull(classifyInviteTarget("34020000001320000028", listOf(ipcRoot)))
+    }
+
+    /** 真正的设备编码(111 段)仍按 §C.2.3 拒绝 —— 放宽不能波及正常设备根。 */
+    @Test fun device_root_with_111_type_code_still_rejected() {
+        val devRoot = CatalogNode(
+            id = "35020000001110000001",
+            type = CatalogNodeType.Device,
+            name = "dvr",
+            parentId = "35020000001110000001",
+        )
+        val (code, reason) = classifyInviteTarget(devRoot.id, listOf(devRoot))!!
+        assertEquals(488, code)
+        assertTrue(reason.contains("device root"))
+    }
+
+    /** 非 20 位的自定义编码无从判断语义,保持 fail-closed。 */
+    @Test fun device_root_with_non_gb_id_still_rejected() {
+        val custom = CatalogNode(
+            id = "dev-1",
+            type = CatalogNodeType.Device,
+            name = "custom",
+            parentId = "dev-1",
+        )
+        val (code, _) = classifyInviteTarget("dev-1", listOf(custom))!!
+        assertEquals(488, code)
     }
 
     @Test fun extract_channel_from_uri() {

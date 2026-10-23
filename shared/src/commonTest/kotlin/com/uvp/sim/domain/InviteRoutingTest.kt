@@ -150,6 +150,44 @@ class InviteRoutingTest {
         engine.shutdown()
     }
 
+    /**
+     * 第三方平台现场复现:设备编码本身是 132 段(海康类 IPC 的注册方式),平台点播直接打这个编号。
+     * 修复前必回 488 "cannot invite device root";修复后应放行,不再出现任何 488。
+     */
+    @Test
+    fun inviteSelfPlayableDeviceRootIsAccepted() = runTest {
+        val ipcId = "34020000001320000028"
+        val ipcCfg = SimConfig(
+            gbVersion = GbVersion.V2022,
+            server = ServerConfig(
+                ip = "192.168.10.222", port = 8160,
+                serverId = "34020000002000000001", domain = "3402000000"
+            ),
+            device = DeviceConfig(
+                deviceId = ipcId,
+                // 现场就是这样:设备编码与视频通道编码填成同一个
+                videoChannelId = ipcId,
+                alarmChannelId = "34020000001340000028",
+                username = ipcId,
+                password = "p"
+            ),
+            transport = TransportType.UDP,
+            keepaliveIntervalSeconds = 60,
+        )
+        val transport = MockSipTransport()
+        val engine = TestEngine.create(ipcCfg, transport, this, localIpProvider = { "192.168.10.112" })
+        bootRegistered(transport, engine)
+        runCurrent()
+        transport.sent.clear()
+
+        transport.deliver(inviteFor(ipcId))
+        runCurrent()
+
+        val rejections = transport.sent.filterIsInstance<SipResponse>().filter { it.statusCode == 488 }
+        assertEquals(0, rejections.size, "132 段设备编码点播应放行,不应 488")
+        engine.shutdown()
+    }
+
     @Test
     fun inviteBusinessGroupIsRejectedWith488() = runTest {
         val transport = MockSipTransport()

@@ -3,6 +3,7 @@ package com.uvp.sim.domain.coord
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.domain.transportErrorOf
+import com.uvp.sim.gb28181.IdEncoder
 import com.uvp.sim.network.RtpMode
 import com.uvp.sim.network.RtpSender
 import com.uvp.sim.network.SipEnvelope
@@ -27,11 +28,27 @@ internal fun classifyInviteTarget(channelId: String, catalogTree: List<CatalogNo
         CatalogNodeType.System -> 488 to "Not Acceptable Here (cannot invite system)"
         CatalogNodeType.VideoChannel -> null
         CatalogNodeType.AlarmChannel -> 488 to "Not Acceptable Here (alarm channel does not stream)"
-        CatalogNodeType.Device -> 488 to "Not Acceptable Here (cannot invite device root)"
+        CatalogNodeType.Device ->
+            if (isSelfPlayableDeviceId(node.id)) null
+            else 488 to "Not Acceptable Here (cannot invite device root)"
         CatalogNodeType.BusinessGroup -> 488 to "Not Acceptable Here (cannot invite business group)"
         CatalogNodeType.VirtualOrg -> 488 to "Not Acceptable Here (cannot invite virtual org)"
     }
 }
+
+/**
+ * 设备编码自身就是「摄像机/视频通道」编码(20 位中第 11-13 位 = 132)时,允许平台直接点播该编号。
+ *
+ * 为什么要放宽(与 [classifyInviteTarget] 里 Device 分支的死拒相反):
+ * - §C.2.3 只允许对视频通道发 INVITE,设备根必须拒 —— 这是默认路径,保持不变。
+ * - 但海康一类 IPC 出厂就用 132 段编码注册,平台侧「设备」与「通道」是同一个编号,
+ *   点播直接打到这个编号上。目录树里它同时是根节点(Device),死拒会让这类平台永远点不通,
+ *   表现为「注册正常、心跳正常、一点就 488 cannot invite device root」。
+ * - 判据只认**编码语义**:类型码段确为 132 才放行。111 / 118 这类真正的设备编码、
+ *   以及非 20 位的自定义编码,仍按规范拒绝。
+ */
+private fun isSelfPlayableDeviceId(id: String): Boolean =
+    IdEncoder.parseTypeCode(id) == CatalogNodeType.VideoChannel.typeCode
 
 /** 从 INVITE 请求 URI 提取 channel ID(GB28181 §20.4 / §C.2.3)。 */
 internal fun extractInviteTarget(invite: SipRequest): String {
