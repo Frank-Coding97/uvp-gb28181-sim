@@ -106,6 +106,8 @@ internal class SubscriptionNotifyHandler(private val ctx: ManscdpContext) {
             pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
             version = ctx.effectiveGbVersion,
             channel = ctx.config.device.channel,
+            // 与 Catalog 应答同一口径:UDP 上按字节拆包,别指望 IP 分片穿过 VPN/移动网络。
+            maxBytes = ManscdpInternals.maxDatagramBytesFor(ctx.config),
         )
         sendCatalogPackets(dialog, packets, catalogNotifySn, "Catalog NOTIFY")
     }

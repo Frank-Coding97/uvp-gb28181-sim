@@ -47,6 +47,12 @@ object CatalogNotifyBuilder {
     private const val ZERO_TEXT: String = "0"
 
     /**
+     * 按字节分包时的包头余量 —— 覆盖 `DeviceList Num="…"` 位数变化、CRLF 折叠等误差。
+     * 余量宁可给大一点:多切一包没有副作用,少切一包就可能又撞上"大报文发不出去"。
+     */
+    private const val PAGE_BYTES_MARGIN: Int = 64
+
+    /**
      * @param version **无默认值,必须显式传** —— 传有效国标版本(`min(本机声明, 平台声明)`),
      *   它决定 Item 的输出形态(见类 KDoc 的双分支说明)。刻意不给默认值,否则漏传会静默取
      *   一个固定版本,把「对面其实是 2016」这一路悄悄发错。
@@ -77,6 +83,7 @@ object CatalogNotifyBuilder {
         pageSize: Int,
         version: GbVersion,
         channel: ChannelProfile? = null,
+        maxBytes: Int? = null,
     ): List<String> = renderEnvelopes(
         wrapperTag = "Notify",
         deviceId = deviceId,
@@ -85,6 +92,7 @@ object CatalogNotifyBuilder {
         pageSize = pageSize,
         version = version,
         channel = channel,
+        maxBytes = maxBytes,
     )
 
     /**
@@ -242,6 +250,7 @@ object CatalogNotifyBuilder {
         pageSize: Int,
         version: GbVersion,
         channel: ChannelProfile? = null,
+        maxBytes: Int? = null,
     ): List<String> = renderEnvelopes(
         wrapperTag = "Response",
         deviceId = deviceId,
@@ -250,6 +259,7 @@ object CatalogNotifyBuilder {
         pageSize = pageSize,
         version = version,
         channel = channel,
+        maxBytes = maxBytes,
     )
 
     private fun renderEnvelopes(
@@ -260,13 +270,42 @@ object CatalogNotifyBuilder {
         pageSize: Int,
         version: GbVersion,
         channel: ChannelProfile?,
+        maxBytes: Int? = null,
     ): List<String> {
         val ordered = orderDfs(tree)
         if (ordered.isEmpty()) {
             return listOf(renderOrderedEnvelope(wrapperTag, deviceId, sn, emptyList(), 0, version, channel))
         }
         val effectivePageSize = pageSize.coerceIn(1, 10_000)
-        return ordered.chunked(effectivePageSize).map { page ->
+        if (maxBytes == null || maxBytes <= 0) {
+            return ordered.chunked(effectivePageSize).map { page ->
+                renderOrderedEnvelope(wrapperTag, deviceId, sn, page, ordered.size, version, channel)
+            }
+        }
+        // 字节优先分包(2026-10-24):平台侧 UDP 收大报文不稳定 —— 单包 2.5KB 的 Catalog 应答
+        // 在 VPN/移动网络下会整体发不出去(设备侧 send 抛错,平台侧 tcpdump 一个分片都看不到),
+        // 而同一时刻 371 字节的 200 OK 次次正常。这里按**编码后字节数**切包,不依赖 IP 分片。
+        // 只统计 UTF-8 字节:GB18030 的中文是 2 字节(比 UTF-8 的 3 字节小),用它量是安全上界。
+        val overheadBytes = renderOrderedEnvelope(wrapperTag, deviceId, sn, emptyList(), ordered.size, version, channel)
+            .encodeToByteArray().size + PAGE_BYTES_MARGIN
+        val itemBytes = ordered.map { renderItem(it, ordered, version, channel).encodeToByteArray().size + 1 }
+        val pages = mutableListOf<List<CatalogNode>>()
+        var current = mutableListOf<CatalogNode>()
+        var currentBytes = overheadBytes
+        ordered.forEachIndexed { idx, node ->
+            val need = itemBytes[idx]
+            val overflow = current.isNotEmpty() &&
+                (currentBytes + need > maxBytes || current.size >= effectivePageSize)
+            if (overflow) {
+                pages += current
+                current = mutableListOf()
+                currentBytes = overheadBytes
+            }
+            current += node
+            currentBytes += need
+        }
+        if (current.isNotEmpty()) pages += current
+        return pages.map { page ->
             renderOrderedEnvelope(wrapperTag, deviceId, sn, page, ordered.size, version, channel)
         }
     }

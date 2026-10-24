@@ -81,10 +81,22 @@ internal class CatalogSubRouter(
             sn = sn,
             tree = nodes,
             version = ctx.effectiveGbVersion,
+            // ⛔ 2026-10-24 现场:平台连续 6 次「catalog 超时未收到任何通道」,而设备侧日志
+            //    每次都打「已应答」——抓包才发现那 2.5KB 的应答**一个字节都没上过线**,
+            //    同一时刻 371 字节的 200 OK 次次正常。UDP 上的 MANSCDP 应答必须自己控
+            //    字节数,不能指望 IP 分片穿过 VPN/移动网络。TCP 信令有流式重组,不用切。
+            maxBytes = ManscdpInternals.maxDatagramBytesFor(ctx.config),
         )
         SystemLogger.emit(
             LogLevel.Info, LogTag.Network,
-            "平台查询 Catalog target=$targetId → ${nodes.size} 条 / 分 ${packets.size} 包 sn=$sn"
+            "平台查询 Catalog target=$targetId → ${nodes.size} 条 / 分 ${packets.size} 包 sn=$sn" +
+                // 报"正文"和"整包"(正文 + SIP 头)两个数:只看正文会把 SIP 头的 400+B 漏掉,
+                // 误以为 1200 的正文上限就等于 1200 的报文字节。
+                run {
+                    val body = packets.maxOfOrNull { it.encodeToByteArray().size } ?: 0
+                    val datagram = body + ManscdpInternals.SIP_HEADER_RESERVE_BYTES
+                    " 最大正文=${body}B(整包约${datagram}B)"
+                }
         )
         if (nodes.size > 10_000 && ctx.config.transport.name == "UDP") {
             SystemLogger.emit(
@@ -391,6 +403,7 @@ internal class CatalogSubRouter(
             gbVersion = ctx.effectiveGbVersion,
             timeZoneId = tz,
             pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
+            maxBytes = ManscdpInternals.maxDatagramBytesFor(ctx.config),
         )
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,

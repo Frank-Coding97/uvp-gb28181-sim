@@ -34,6 +34,9 @@ object RecordInfoNotify {
 
     const val DEFAULT_PAGE_SIZE = 50
 
+    /** 按字节分包时的包头余量(同 [CatalogNotifyBuilder] 口径)。 */
+    private const val PAGE_BYTES_MARGIN: Int = 64
+
     /** 单包构造。一般通过 [buildAll] 调用。 */
     fun buildPacket(
         sn: String,
@@ -65,6 +68,9 @@ $itemsXml
     /**
      * 全量分页构造。返回的多包共享同一 SumNum,每包 RecordList Num 是当前页条数。
      * 空清单返回单包(SumNum=0, RecordList Num=0)。
+     *
+     * [maxBytes] 非空时**同时**按字节切包:平台侧 UDP 收大报文不稳定(2026-10-24 EasyGBS 现场,
+     * 一条 2.5KB 的 Catalog 应答整体发不出去),录像清单比目录更容易超,所以同一口径处理。
      */
     fun buildAll(
         sn: String,
@@ -74,6 +80,7 @@ $itemsXml
         gbVersion: GbVersion,
         pageSize: Int = DEFAULT_PAGE_SIZE,
         timeZoneId: String = "Asia/Shanghai",
+        maxBytes: Int? = null,
     ): List<String> {
         if (items.isEmpty()) {
             return listOf(
@@ -89,7 +96,39 @@ $itemsXml
             )
         }
         val sumNum = items.size
-        return items.chunked(pageSize).map { chunk ->
+        val pages: List<List<RecordingFile>> = if (maxBytes == null || maxBytes <= 0) {
+            items.chunked(pageSize)
+        } else {
+            // ⛔ 余量只能加在**包头**上,不能混进单条估算里 —— 否则当前页有 n 条时
+            //    会被扣掉 (n-1) 份余量,条目越多包越敢往大里长(2026-10-25 自查修正)。
+            val baseBytes = buildPacket(
+                sn = sn, deviceId = deviceId, deviceName = deviceName, sumNum = sumNum,
+                items = emptyList(), gbVersion = gbVersion, timeZoneId = timeZoneId,
+            ).encodeToByteArray().size
+            val headerBytes = baseBytes + PAGE_BYTES_MARGIN
+            val itemBytes = items.map { item ->
+                buildPacket(
+                    sn = sn, deviceId = deviceId, deviceName = deviceName, sumNum = sumNum,
+                    items = listOf(item), gbVersion = gbVersion, timeZoneId = timeZoneId,
+                ).encodeToByteArray().size - baseBytes
+            }
+            val result = mutableListOf<List<RecordingFile>>()
+            var current = mutableListOf<RecordingFile>()
+            var currentBytes = headerBytes
+            items.forEachIndexed { idx, item ->
+                val need = itemBytes[idx]
+                if (current.isNotEmpty() && (currentBytes + need > maxBytes || current.size >= pageSize)) {
+                    result += current
+                    current = mutableListOf()
+                    currentBytes = headerBytes
+                }
+                current += item
+                currentBytes += need
+            }
+            if (current.isNotEmpty()) result += current
+            result
+        }
+        return pages.map { chunk ->
             buildPacket(
                 sn = sn,
                 deviceId = deviceId,

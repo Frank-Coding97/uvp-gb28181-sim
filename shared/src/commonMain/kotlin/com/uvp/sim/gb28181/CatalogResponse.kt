@@ -82,6 +82,7 @@ object CatalogResponse {
         sn: String,
         tree: List<CatalogNode>,
         version: GbVersion,
+        maxBytes: Int? = null,
     ): List<String> = CatalogNotifyBuilder.renderResponseAll(
         deviceId = config.device.deviceId,
         sn = sn,
@@ -89,5 +90,6 @@ object CatalogResponse {
         pageSize = config.multiResponsePageSize.coerceIn(1, 10_000),
         version = version,
         channel = config.device.channel,
+        maxBytes = maxBytes,
     )
 }
