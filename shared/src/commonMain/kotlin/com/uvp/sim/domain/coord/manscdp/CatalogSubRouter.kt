@@ -119,7 +119,20 @@ internal class CatalogSubRouter(
 
     private fun selectCatalogNodes(tree: List<com.uvp.sim.config.CatalogNode>, targetId: String): List<com.uvp.sim.config.CatalogNode> {
         val publishable = ManscdpInternals.publishableCatalogNodes(tree)
-        if (targetId.isBlank()) return publishable
+        // ⛔ 平台查"本设备"的目录时，`<DeviceID>` 传的就是设备编码 —— 这是最常见的一次
+        //    Query（设备注册后平台立刻发一次）。此时要回的是设备**下面**的通道列表，
+        //    不能把设备自身那条（Parental=1 的目录项）一起塞进去。
+        //    2026-10-25 现场：正是这一条让 EasyGBS 显示「通道数 4」、LiveGBS 也显示 4，
+        //    而同平台其它厂商设备都没有这条 —— 因为人家根本不发目录项自身。
+        val deviceRootId = tree.firstOrNull {
+            it.type == com.uvp.sim.config.CatalogNodeType.Device && it.parentId == it.id
+        }?.id
+        if (targetId.isBlank() ||
+            targetId == deviceRootId ||
+            targetId == ctx.config.device.deviceId
+        ) {
+            return publishable
+        }
         val target = tree.firstOrNull { it.id == targetId }
         if (target != null) {
             val byParent = mutableMapOf<String, MutableList<com.uvp.sim.config.CatalogNode>>()

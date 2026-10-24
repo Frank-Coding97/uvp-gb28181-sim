@@ -30,6 +30,32 @@ import kotlin.test.assertTrue
 class CatalogSubRouterTest {
 
     @Test
+    fun catalog_query_for_device_itself_omits_device_root_item() = runTest {
+        // 2026-10-25 现场回归：EasyGBS / LiveGBS 都显示「通道数 4」而实际只上报 3 个通道，
+        // 多出来的那条正是设备自身（Parental=1 的目录项）。平台注册后第一次 Query 的
+        // <DeviceID> 就是设备编码，此前被当成「查这个节点」，把根节点一起回下去了。
+        val deviceId = "34020000001110000001"
+        val f = SubRouterTestFixtures.newFixture(this)
+        val r = CatalogSubRouter(f.ctx, NoopRecordingService)
+        val xml = "<?xml version=\"1.0\"?><Query><CmdType>Catalog</CmdType><SN>31</SN>" +
+            "<DeviceID>$deviceId</DeviceID></Query>"
+
+        assertTrue(r.handle("Catalog", xml, fromUri = null))
+        runCurrent()
+
+        val bodies = f.transport.sent.map { it.body.decodeToString() }
+        assertTrue(bodies.isNotEmpty(), "应产生 Catalog Response")
+        val rootItem = Regex("<Item>\\s*<DeviceID>$deviceId</DeviceID>")
+        assertTrue(
+            bodies.none { rootItem.containsMatchIn(it) },
+            "查询本设备时不得回设备自身那条目录项，否则平台会当通道/目录建记录",
+        )
+        // 默认树 = 设备根 + 后置 + 报警，滤掉根后应正好 2 条通道
+        val itemCount = bodies.sumOf { Regex("<Item>").findAll(it).count() }
+        assertEquals(2, itemCount)
+    }
+
+    @Test
     fun accepts_returns_true_only_for_owned_cmdTypes() = runTest {
         val f = SubRouterTestFixtures.newFixture(this)
         val r = CatalogSubRouter(f.ctx, NoopRecordingService)
