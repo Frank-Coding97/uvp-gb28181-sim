@@ -304,4 +304,32 @@ class CatalogNotifyBuilderTest {
         val itemCount = "<Item>".toRegex().findAll(xml).count()
         assertEquals(1, itemCount)
     }
+
+    /**
+     * 2026-10-24 现场回归：UDP 上一条 2.5KB 的 Catalog 应答**整体发不出去**（设备 send 抛错，
+     * 平台侧一个分片都收不到），而 371B 的 200 OK 次次正常。所以按字节切包，别指望 IP 分片。
+     */
+    @Test
+    fun `buildAll honours maxBytes and keeps SumNum intact`() {
+        val tree = listOf(root()) + (1..6).map { i ->
+            CatalogNode("3402000000132000000$i", CatalogNodeType.VideoChannel, "通道$i", rootId)
+        }
+        val maxBytes = 900
+        val packets = CatalogNotifyBuilder.buildAll(
+            rootId, 21, tree, pageSize = 50, version = GbVersion.V2022, maxBytes = maxBytes,
+        )
+
+        assertTrue(packets.size > 1, "6 条通道 + 900B 上限必须切多包")
+        // 每包都不超上限（单条本身超限时允许独占一包，这里单条远小于上限）
+        packets.forEach { p ->
+            val bytes = p.encodeToByteArray().size
+            assertTrue(bytes <= maxBytes, "包长 $bytes 超过上限 $maxBytes")
+        }
+        // 所有包共享全量 SumNum，且各包条目数加起来等于树节点数
+        assertTrue(packets.all { it.contains("<SumNum>${tree.size}</SumNum>") })
+        val itemTotal = packets.sumOf { "<Item>".toRegex().findAll(it).count() }
+        assertEquals(tree.size, itemTotal)
+        // 同一 SN
+        assertTrue(packets.all { it.contains("<SN>21</SN>") })
+    }
 }

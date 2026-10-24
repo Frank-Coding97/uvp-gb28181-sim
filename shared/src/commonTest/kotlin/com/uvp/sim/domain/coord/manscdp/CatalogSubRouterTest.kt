@@ -104,7 +104,8 @@ class CatalogSubRouterTest {
         assertTrue(r.handle("Catalog", xml, fromUri = null))
         runCurrent()
 
-        val body = f.transport.sent.single().body.decodeToString()
+        // 按字节分包后可能出多包：拼起来才是"这次查询的完整应答"
+        val body = f.transport.sent.joinToString("") { it.body.decodeToString() }
         assertTrue(body.contains("<DeviceID>$groupId</DeviceID>"))
         assertTrue(body.contains("<DeviceID>$orgId</DeviceID>"))
         assertTrue(body.contains("<DeviceID>$channelId</DeviceID>"))
@@ -157,7 +158,8 @@ class CatalogSubRouterTest {
             ))
             runCurrent()
 
-            val body = f.transport.sent.single().body.decodeToString()
+            // 同上：多包要全部拼起来统计，否则只看到第一包的条目
+            val body = f.transport.sent.joinToString("") { it.body.decodeToString() }
             return """<Item>\s*<DeviceID>(.+?)</DeviceID>"""
                 .toRegex()
                 .findAll(body)
@@ -351,6 +353,10 @@ class CatalogSubRouterTest {
      * ⛔ `scope` 必须显式传：`runCurrent()` 是 `TestScope` 的扩展，而这里是 `Fixture` 的扩展，
      * 隐式接收者已经不是 TestScope 了 —— 直接写 `runCurrent()` 编译不过（会报
      * "None of the following candidates is applicable"，看不出真正原因）。
+     *
+     * ⛔ 2026-10-25：**不能只取 last()**。UDP 上按字节拆包后，一条逻辑应答 = 多包，
+     * 只取最后一包会把前面几条录像吃掉（曾经表现为 `itemCount` 从 2 变 1）。
+     * 这里把所有包拼起来返回，让"逻辑应答"的语义保持不变。
      */
     private suspend fun SubRouterTestFixtures.Fixture.runRecordQuery(
         scope: TestScope,
@@ -360,7 +366,7 @@ class CatalogSubRouterTest {
         val r = CatalogSubRouter(ctx, svc)
         assertTrue(r.handle("RecordInfo", xml, fromUri = null))
         scope.runCurrent()
-        return transport.sent.last().body.decodeToString()
+        return transport.sent.joinToString("") { it.body.decodeToString() }
     }
 
     private fun bodyOf(xml: String): String = xml.substringAfter("?>")

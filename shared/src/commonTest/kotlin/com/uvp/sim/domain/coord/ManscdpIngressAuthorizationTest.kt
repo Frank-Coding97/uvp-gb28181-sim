@@ -302,6 +302,41 @@ class ManscdpIngressAuthorizationTest {
         )
     }
 
+    /**
+     * 2026-10-25 EasyGBS 现场回归：**IP 完全正确、但平台 SIP ID 与配置的服务器 ID 不一致**。
+     *
+     * 故障现象：平台（EasyGBS）把 SIP ID 配成 `34020000002000000003`，设备里「服务器 ID」
+     * 还是默认的 `...001`。设备注册照样成功（很多平台注册时不校验目标 ID），但此后平台发来的
+     * 每条 MESSAGE / SUBSCRIBE 都被这里静默丢弃 → 平台永远查不出通道，设备侧只留一行
+     * 「丢弃未授权」。
+     *
+     * 契约：
+     *  - 仍然必须 drop（不是放宽授权）
+     *  - 但诊断必须能区分「IP 就不对」和「IP 对、SIP 层身份不对」，否则用户无从自查
+     */
+    @Test fun ip_ok_but_server_id_mismatch_is_dropped_and_diagnosable() = runTest {
+        val transport = MockSipTransport(config())
+        transport.connect()
+        val router = newRouter(this, transport)
+
+        val platformActualSipId = "34020000002000000003"
+        val result = router.onIncoming(
+            catalogQueryMessage(fromUser = platformActualSipId).asEnvelope(sourceIp = platformIp)
+        )
+        runCurrent()
+
+        assertEquals(RoutingResult.Handled, result)
+        assertTrue(
+            transport.sent.filterIsInstance<SipResponse>().isEmpty(),
+            "服务器 ID 不一致时必须 drop,不发任何响应",
+        )
+        // 关键：网络层判定应通过 —— 这正是"IP 一样却被拒"极易误判的地方，必须能被日志区分出来。
+        assertTrue(
+            com.uvp.sim.sip.PlatformAuthorizer.isSourceIpAllowedForLog(platformIp, config()),
+            "来源 IP 合法，网络层应为通过；若不是，日志会把服务器 ID 问题误报成 IP 问题",
+        )
+    }
+
     private companion object {
         const val SUBSCRIBE_CATALOG_BODY =
             "<?xml version=\"1.0\"?><Query><CmdType>Catalog</CmdType><SN>1</SN>" +
