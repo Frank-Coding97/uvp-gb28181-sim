@@ -106,6 +106,19 @@ internal object PlatformAuthorizer {
     }
 
     /**
+     * **仅供日志诊断**:单独跑一次网络层判定,用来区分「来源 IP 就不对」和「IP 对但 SIP 层
+     * 身份不对」这两种完全不同的故障。
+     *
+     * 不参与授权结论 —— 授权仍只看 [isManscdpFromAuthorizedPlatform],这里放宽/收紧都不影响
+     * 安全边界。
+     */
+    fun isSourceIpAllowedForLog(
+        sourceIp: String,
+        config: SimConfig,
+        hostForms: (String) -> Set<String> = ::hostComparableForms,
+    ): Boolean = isSourceIpAllowed(sourceIp, config.server.ip, config.server.allowList, hostForms)
+
+    /**
      * cross-review R1 #1(CRITICAL/security):SIP 响应来源校验。
      *
      * 引用 codex 原文:

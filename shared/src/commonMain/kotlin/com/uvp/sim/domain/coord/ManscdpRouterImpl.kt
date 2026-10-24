@@ -353,13 +353,34 @@ internal class ManscdpRouterImpl(
                     if (!com.uvp.sim.sip.PlatformAuthorizer.isManscdpFromAuthorizedPlatform(envelope, config)) {
                         // 带上 observedForms,便于区分"来源真的不对"与"地址形态没归一化好"
                         // (2026-09-11/12 Catalog 全超时事故:sourceIp 被 PTR 成了 "Mac")。
+                        //
+                        // ⛔ 2026-10-25 现场补:`fromUser` 和 `expectedIp` 都打了,**唯独没打期望的
+                        //    服务器 ID** —— 于是日志看起来像「IP 一模一样却被判未授权」,完全无法
+                        //    自查(实际是平台的 SIP ID 与配置里的服务器 ID 不同,比如 EasyGBS 用
+                        //    ...003 而设备配的是 ...001)。两个 ID 必须同时打出来并给出结论。
+                        val fromUser = msg.fromHeader()?.let {
+                            SipHeaderHelpers.parseUriUser(SipHeaderHelpers.parseUri(it), fallback = "")
+                        }
+                        val ipOk = com.uvp.sim.sip.PlatformAuthorizer.isSourceIpAllowedForLog(
+                            envelope.sourceIp, config,
+                        )
                         SystemLogger.emit(
                             LogLevel.Warning, LogTag.Lifecycle,
-                            "丢弃未授权 ${msg.method.name}:sourceIp=${envelope.sourceIp} fromUser=${
-                                msg.fromHeader()?.let { SipHeaderHelpers.parseUriUser(SipHeaderHelpers.parseUri(it), fallback = "") }
-                            } expectedIp=${config.server.ip} observedForms=${
-                                com.uvp.sim.network.hostComparableForms(envelope.sourceIp)
-                            }",
+                            "丢弃未授权 ${msg.method.name}:sourceIp=${envelope.sourceIp} " +
+                                "fromUser=$fromUser expectedServerId=${config.server.serverId} " +
+                                "expectedIp=${config.server.ip} observedForms=${
+                                    com.uvp.sim.network.hostComparableForms(envelope.sourceIp)
+                                }",
+                            detail = if (ipOk && fromUser != config.server.serverId) {
+                                "来源 IP 是对的,但平台发来的 From 用户段($fromUser)≠ 配置的服务器 ID" +
+                                    "(${config.server.serverId})。国标要求两者一致 —— 请把「服务器 ID」" +
+                                    "改成平台的 SIP ID(平台侧配置项通常叫 SIP Server ID / ID)。" +
+                                    "注意:注册成功不代表 ID 对,很多平台注册时不校验目标 ID。"
+                            } else if (!ipOk) {
+                                "来源 IP 不在允许范围(server.ip / allowList)内,可能被 NAT 或代理改写。"
+                            } else {
+                                null
+                            },
                         )
                         return RoutingResult.Handled
                     }
