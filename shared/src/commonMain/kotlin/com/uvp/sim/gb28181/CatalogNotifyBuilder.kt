@@ -446,7 +446,7 @@ object CatalogNotifyBuilder {
             CatalogNodeType.BusinessGroup -> {
                 // 215 目录项只声明自身、名称、行政区划码和所属系统。
                 sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
-                appendParentId(sb, node)
+                appendParentId(sb, node, allNodes)
             }
             CatalogNodeType.VirtualOrg -> {
                 // 216 的 ParentID 只在上级是虚拟组织时出现；首层 216 用
@@ -455,7 +455,7 @@ object CatalogNotifyBuilder {
                 if (node.parentId.isNotBlank() && node.parentId != node.id &&
                     (parentNode == null || parentNode.type != CatalogNodeType.BusinessGroup)
                 ) {
-                    appendParentId(sb, node)
+                    appendParentId(sb, node, allNodes)
                 }
             }
             else -> {
@@ -470,7 +470,7 @@ object CatalogNotifyBuilder {
                     sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "Mobile")).append("</Address>\n")
                 }
                 sb.append("<Parental>").append(node.type.parental).append("</Parental>\n")
-                appendParentId(sb, node)
+                appendParentId(sb, node, allNodes)
                 sb.append("<SafetyWay>").append(escapeXmlText(f["SafetyWay"] ?: "0")).append("</SafetyWay>\n")
                 sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
                 sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
@@ -519,13 +519,37 @@ object CatalogNotifyBuilder {
         return sb.toString()
     }
 
-    private fun appendParentId(sb: StringBuilder, node: CatalogNode) {
+    /**
+     * 输出目录项的 `<ParentID>`（可选字段，0..1）。
+     *
+     * ⛔ **直挂设备根的子节点省略 ParentID**（2026-10-25 实测结论）。
+     * 设备根节点是「自指」（Device.parentId == Device.id），而它本身在
+     * `catalogEntries()` 里会被滤掉 —— 于是报文里会出现「ParentID 指向一个
+     * 不存在的条目」。EasyGBS 遇到这种悬空 ParentID 会**自作主张补建一层目录
+     * 节点**（`channels.is_dir=1`，通道 pid 指向 `设备ID_设备ID`），界面上表现成
+     * 「通道数 4 但点进去只有一个目录、要再点一层」。海康等 IPC 的实际做法是
+     * 这类通道**根本不发 ParentID**，平台就直接把通道平铺在设备下。
+     *
+     * 因此这里对「父节点是设备根（或父节点不在本次列表里）」的子节点跳过该字段。
+     * 多级目录（业务分组 215 / 虚拟组织 216 / 下级设备）的 ParentID 照常输出，
+     * 层级不受影响。ParentID 在 GB/T 28181 中是可选元素，省略不违反标准。
+     */
+    private fun appendParentId(sb: StringBuilder, node: CatalogNode, allNodes: List<CatalogNode>) {
         val parentId = node.parentId.trim()
         if (node.type == CatalogNodeType.Device && parentId == node.id) {
             // 普通 IPC 根节点沿用现有目录树约定：Device 的 ParentID 自指。
             sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
         } else if (parentId.isNotEmpty() && parentId != node.id) {
-            sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
+            // ParentID 可能用 `/` 同时表达系统与虚拟组织双重归属，逐个判断。
+            val parentIds = parentId.split('/').map { it.trim() }.filter { it.isNotEmpty() }
+            val allHangOnDeviceRoot = parentIds.isNotEmpty() && parentIds.all { pid ->
+                val parent = allNodes.firstOrNull { it.id == pid }
+                parent == null ||
+                    (parent.type == CatalogNodeType.Device && parent.parentId == parent.id)
+            }
+            if (!allHangOnDeviceRoot) {
+                sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
+            }
         }
     }
 

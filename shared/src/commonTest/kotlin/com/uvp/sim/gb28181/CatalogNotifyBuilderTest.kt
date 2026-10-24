@@ -332,4 +332,46 @@ class CatalogNotifyBuilderTest {
         // 同一 SN
         assertTrue(packets.all { it.contains("<SN>21</SN>") })
     }
+
+    /**
+     * 2026-10-25 现场回归：直挂设备根的通道**不能**输出 `<ParentID>设备ID</ParentID>`。
+     *
+     * 设备根是自指节点，且 `catalogEntries()` 会把它滤掉 —— 报文里就成了「ParentID
+     * 指向一个不存在的条目」。EasyGBS 遇到悬空 ParentID 会补建一层目录节点
+     * （`channels.is_dir=1`，通道 pid 指向 `设备ID_设备ID`），界面上表现成
+     * 「设备卡片写通道数 4、点进去只有一个目录，要再点一层」。海康等 IPC 的做法是
+     * 这类通道干脆不发 ParentID，平台就平铺在设备下。
+     */
+    @Test
+    fun `channels hanging on device root omit ParentID`() {
+        // 生产路径：树里已滤掉自指根，只剩通道
+        val tree = listOf(
+            CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "后置", rootId),
+            CatalogNode("34020000001340000001", CatalogNodeType.AlarmChannel, "报警", rootId),
+        )
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
+        assertTrue(!xml.contains("<ParentID>"), "直挂设备根的通道不应带 ParentID：\n$xml")
+    }
+
+    @Test
+    fun `only device root keeps ParentID when channels hang directly on it`() {
+        val tree = listOf(
+            root(),
+            CatalogNode("34020000001320000001", CatalogNodeType.VideoChannel, "后置", rootId),
+        )
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
+        // 只有设备根自己那条自指 ParentID，通道不带
+        assertEquals(1, "<ParentID>".toRegex().findAll(xml).count())
+    }
+
+    @Test
+    fun `channels under business group still emit ParentID`() {
+        val tree = listOf(
+            CatalogNode("g1", CatalogNodeType.BusinessGroup, "重点场所", rootId),
+            CatalogNode("ch1", CatalogNodeType.VideoChannel, "门岗", "g1"),
+        )
+        val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
+        val chItem = xml.substringAfter("<DeviceID>ch1</DeviceID>").substringBefore("</Item>")
+        assertTrue(chItem.contains("<ParentID>g1</ParentID>"), "多级目录的 ParentID 必须保留：\n$chItem")
+    }
 }
