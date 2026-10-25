@@ -90,11 +90,30 @@ internal class DefaultPtzHandler(
         val stoppedCruise = ptz.isFullStop && state.value.activeCruiseTrack != null
         // 扫描与巡航共用同一条停止帧(标准里两者都没有专用停止码,见 `isFullStop`)。
         val stoppedScan = ptz.isFullStop && state.value.activeScanGroup != null
+        // ⭐ 「云台停止帧」同样要停镜头。
+        //
+        // 判据用的是**三轴方向全为 NONE**（不是 isFullStop 那种"连速度字节也全零"）：
+        // 这条帧里没有任何方向位，它就不可能是"继续动"的指令 —— 平台拿它停云台时，
+        // 很少顺手把速度字节清干净（EasyGBS/GoGBS 发的就是这条）。严格按全零判，
+        // 遇到"方向清空但速度残留"的停止帧就漏判。
+        val motionStop = ptz.panDirection == PanDirection.NONE &&
+            ptz.tiltDirection == TiltDirection.NONE &&
+            ptz.zoomDirection == ZoomDirection.NONE
+        // ⛔⛔ 2026-10-25 现场:EasyGBS 上点一下聚焦/光圈，手机端进度条一路跑到 0% 或 100%
+        //    才停 —— 松手没用。根因就在这里：FI 族自己的停止码是 0x40，而我们**只**认它；
+        //    平台实际发的是这条通用停止帧（与停云台同一帧），于是 focusSpeed / irisSpeed
+        //    永远留在最后一个非零值上，UI 的积分节拍就会一直推进到行程尽头。
+        //    镜头是"速率积分"出来的位置，速率不清 = 永不松手。
+        //    真实设备收到通用停止帧也是全停（海康 PTZ_STOP 语义），这里对齐。
+        val stoppedLens = motionStop && (state.value.focusSpeed != 0f || state.value.irisSpeed != 0f)
         state.update {
             it.copy(
                 panSpeed = mapPanSpeed(ptz),
                 tiltSpeed = mapTiltSpeed(ptz),
                 zoomSpeed = mapZoomSpeed(ptz),
+                // 停止帧顺带把镜头两轴速率归零（见上面 stoppedLens 的注释）。
+                focusSpeed = if (motionStop) 0f else it.focusSpeed,
+                irisSpeed = if (motionStop) 0f else it.irisSpeed,
                 activeCruiseTrack = if (stoppedCruise) null else it.activeCruiseTrack,
                 activeScanGroup = if (stoppedScan) null else it.activeScanGroup,
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), ptz)
@@ -107,6 +126,10 @@ internal class DefaultPtzHandler(
             // 这条同时是对账线索:扫描是个**设备自主行为**,平台侧只能看到自己发过停止帧,
             // 没有这条日志就无从判断设备到底停没停(与巡航停止同一取舍)。
             SystemLogger.emit(LogLevel.Info, LogTag.Media, "扫描停止：收到全零停止指令")
+        }
+        if (stoppedLens) {
+            // 同上：镜头也是设备侧自主积分出来的位置，平台只能看到"我发过停止帧"。
+            SystemLogger.emit(LogLevel.Info, LogTag.Media, "聚焦/光圈停止：收到通用停止指令 $hex")
         }
     }
 
@@ -139,6 +162,15 @@ internal class DefaultPtzHandler(
                 lastCommand = LastDeviceCommand("PTZCmd", hex, nowMs(), lens.toPtzCommand()),
             )
         }
+        // ⭐ 留痕：镜头是"速率积分"出来的位置，平台侧只有"指令已下发"。
+        //    现场判「点一下跑到头」到底是平台没发停止、还是设备没认停止时，这条日志是
+        //    唯一能直接对上的凭据（2026-10-25 EasyGBS 那次只能靠服务器抓包反推）。
+        SystemLogger.emit(
+            LogLevel.Info,
+            LogTag.Media,
+            "聚焦/光圈指令 $hex → 聚焦=${lens.focus}(速度 ${lens.focusSpeed}) " +
+                "光圈=${lens.iris}(速度 ${lens.irisSpeed})",
+        )
     }
 
     /** 巡航 CRUD (GB-2022 附录 A.3.5,字节4(bytes[3])=0x84-0x88). */

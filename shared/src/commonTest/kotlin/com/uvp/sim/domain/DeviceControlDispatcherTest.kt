@@ -1318,6 +1318,43 @@ class DeviceControlDispatcherTest {
         kotlin.test.assertEquals(lensRate(51), s.irisSpeed, absoluteTolerance = 1e-5f)
     }
 
+    @Test
+    fun `FI_5 — 通用停止帧也停镜头（平台不认 0x40 时松手不能继续跑）`() {
+        // 现场(2026-10-25 EasyGBS)：点一下聚焦/光圈，手机端进度条一路跑到 0%/100%。
+        // 平台发的是**通用停止帧**（方向三轴全清，与停云台同一帧），从来不发 FI 族的 0x40。
+        // 只认 0x40 ⇒ focusSpeed/irisSpeed 停在最后一个非零值上，UI 的积分节拍会一直推进。
+        val state = MutableStateFlow(DeviceControlModel(focusSpeed = 0.3f, irisSpeed = -0.2f))
+        val d = newDispatcher(state)
+        // A5 0F 01 00 00 00 00 B5 = 全零帧（字节4 指令码 0x00，第 5~7 字节全零）
+        d.dispatch("<C><PTZCmd>A50F0100000000B5</PTZCmd></C>")
+        kotlin.test.assertEquals(0f, state.value.focusSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0f, state.value.irisSpeed, absoluteTolerance = 1e-5f)
+    }
+
+    @Test
+    fun `FI_6 — 方向停止帧带残留速度字节时同样停镜头`() {
+        // 有些平台把"停止"编成"方向位清空但速度字节照抄上一条"——方向全无就不可能是在动，
+        // 按 isFullStop（连速度都要求为 0）判会漏，这里必须按"三轴方向全 NONE"判。
+        val state = MutableStateFlow(DeviceControlModel(focusSpeed = -0.45f))
+        val d = newDispatcher(state)
+        val sum = (0xA5 + 0x0F + 0x01 + 0x00 + 0xFF + 0xFF + 0x00) and 0xFF
+        val hex = listOf(0xA5, 0x0F, 0x01, 0x00, 0xFF, 0xFF, 0x00, sum)
+            .joinToString("") { it.toString(16).padStart(2, '0').uppercase() }
+        d.dispatch("<C><PTZCmd>$hex</PTZCmd></C>")
+        kotlin.test.assertEquals(0f, state.value.focusSpeed, absoluteTolerance = 1e-5f)
+    }
+
+    @Test
+    fun `FI_7 — 真在动的云台指令不得顺手清镜头速率`() {
+        // 防止把"任何 PTZ 族命令都清镜头"写过头：只有方向全无的停止帧才算停。
+        val state = MutableStateFlow(DeviceControlModel(focusSpeed = 0.3f, irisSpeed = 0.25f))
+        val d = newDispatcher(state)
+        // 0x08 = 向上，水平速度 0x40
+        d.dispatch("<C><PTZCmd>A50F0108400000FD</PTZCmd></C>")
+        kotlin.test.assertEquals(0.3f, state.value.focusSpeed, absoluteTolerance = 1e-5f)
+        kotlin.test.assertEquals(0.25f, state.value.irisSpeed, absoluteTolerance = 1e-5f)
+    }
+
     // ===== A.2.1.13 VideoParamAttribute(2022 新增的配置类型)=====
 
     private fun videoParamWrite(num: Int, items: String) =
