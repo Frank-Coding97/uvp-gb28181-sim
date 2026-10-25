@@ -178,10 +178,10 @@ object IosAppHost {
     /**
      * identifierForVendor 拿不到时的兜底设备编码(与 Android 侧 fallback 一致)。
      *
-     * ⛔ 早前这里写的是 `34020000001320000001` —— 那是**通道**编码格式(132 段)，
-     * 当设备 ID 用不符合国标结构。改成 105 段(设备)至少结构正确。
+     * 20 位分段：`34020000 00 132 7 000001` —— 类型段 `132`(网络摄像机)、
+     * 网络标识 `7`(Internet)，与 DeviceIdGenerator 派生结果同一套规则。
      */
-    private val deviceIdFallback = "34020000001050000001"
+    private val deviceIdFallback = "34020000001327000001"
 
     fun defaultConfig(): SimConfig {
         // deviceId 从 identifierForVendor 派生,三个通道 ID 跟着它走 —— 通道编码的

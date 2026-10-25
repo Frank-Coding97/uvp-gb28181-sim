@@ -127,8 +127,9 @@ internal fun AddChildDialog(
                 val baseName = name.ifBlank { selectedType.displayName() }
                 val nodes = mutableListOf<CatalogNode>()
                 val ids = existingIds.toMutableSet()
+                val rootIds = rootIdsOf(tree)
                 repeat(batchCount.coerceAtLeast(1)) { i ->
-                    val seq = nextSeq(ids, selectedType)
+                    val seq = nextSeq(ids, selectedType, rootIds)
                     val newId = IdEncoder.genChildId(domain, selectedType, seq)
                     ids += newId
                     val itemName = if (batchCount > 1) {
@@ -190,10 +191,19 @@ private fun TypeOptionButton(
     }
 }
 
-private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
+/**
+ * 设备/系统根节点的编码也可能带 `132` 段（单通道 IPC 布局：设备编码与通道编码同段），
+ * 但它不是通道，不能算进「同类型节点最大序号」的统计，否则新通道序号会被顶到七位数。
+ */
+private fun rootIdsOf(tree: List<CatalogNode>): Set<String> =
+    tree.filter {
+        (it.type == CatalogNodeType.Device || it.type == CatalogNodeType.System) && it.parentId == it.id
+    }.mapTo(mutableSetOf()) { it.id }
+
+private fun nextSeq(existing: Set<String>, type: CatalogNodeType, exclude: Set<String> = emptySet()): Int {
     val typeCode = type.typeCode
     val maxSeq = existing
-        .filter { it.length == 20 && it.substring(10, 13) == typeCode }
+        .filter { it.length == 20 && it.substring(10, 13) == typeCode && it !in exclude }
         .mapNotNull { it.takeLast(7).toIntOrNull() }
         .maxOrNull() ?: 0
     return maxSeq + 1
@@ -201,6 +211,6 @@ private fun nextSeq(existing: Set<String>, type: CatalogNodeType): Int {
 
 /** 给指定 type 算下一个可用 ID(自动避开树中已有同类型节点的最大序号)。 */
 internal fun nextSeqId(domain: String, tree: List<CatalogNode>, type: CatalogNodeType): String {
-    val seq = nextSeq(tree.map { it.id }.toSet(), type)
+    val seq = nextSeq(tree.map { it.id }.toSet(), type, rootIdsOf(tree))
     return IdEncoder.genChildId(domain, type, seq)
 }

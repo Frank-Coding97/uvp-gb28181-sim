@@ -3,39 +3,47 @@ package com.uvp.sim.device
 import kotlin.math.absoluteValue
 
 /**
- * 从硬件标识派生符合 GB/T 28181-2016 §5.2 规范的 20 位设备编码。
+ * 从硬件标识派生符合 GB/T 28181-2016 附录 D 的 20 位设备编码。
  *
- * 算法：
- * 1. 输入硬件标识（Android ANDROID_ID / iOS identifierForVendor）
- * 2. 计算哈希 → 取绝对值 → 模 10^9（生成 9 位随机后缀）
- * 3. 固定前缀 "34020000001" (11 位，模拟中心编码+行业+类型) + 后缀 9 位 = 20 位
+ * 分段：`34020000 | 00 | 132 | 7 | NNNNNN`
  *
- * 特性：
- * - 确定性：同输入必定产生同输出
- * - 唯一性：9 位随机后缀支持 10 亿设备，冲突概率 < 1/10^9
- * - 格式：20 位十进制，前缀 "34020000001"（安徽合肥 + 民用视频）
+ * | 段 | 位 | 值 | 说明 |
+ * |---|---|---|---|
+ * | 中心编码 | 1–8 | `34020000` | 安徽合肥，非基层单位，空余位按标准取 0 |
+ * | 行业编码 | 9–10 | `00` | 社会治安路面接入 |
+ * | 类型编码 | 11–13 | `132` | 网络摄像机(IPC) |
+ * | 网络标识 | 14 | `7` | Internet，模拟器走 IP 网络接入 |
+ * | 序号 | 15–20 | 硬件哈希 | 同机恒定、异机不同 |
  *
- * 注意：不严格遵守国标的"中心编码(8)+行业(2)+类型(3)+网络(1)+序号(6)"分段语义，
- * 因为 sim 是模拟器，不对应真实行政区划/行业。平台只要求 device_id 唯一。
+ * ⛔ 类型段曾经是「固定 `1` + 哈希前两位」，等于每台机器的类型码都是随机数
+ * （`105`/`112`/`137`…）。平台虽然不校验设备自身这三位，但一旦哈希撞出 `132`，
+ * 设备根节点就和视频通道同类型；更糟的是第 14 位的哈希值撞上通道号 `1`/`2` 时，
+ * 设备编码会和后置/前置通道编码**完全相等**（1/5 概率），目录树出现重复 ID、
+ * 点播串到错的通道。所以类型段与网络标识都钉死，只让序号随硬件变。
+ *
+ * 特性：同输入恒等输出；序号 6 位（100 万空间），对模拟器的实际部署规模够用。
  */
 object DeviceIdGenerator {
 
-    private const val PREFIX = "34020000001"  // 11 位固定前缀（安徽合肥340200 + 民用视频00001）
-    private const val MODULO = 1_000_000_000  // 10^9，生成 9 位后缀
+    /** 中心(8) + 行业(2) + 类型 `132` + 网络标识 `7` = 14 位固定前缀。 */
+    private const val PREFIX = "34020000001327"
+
+    /** 6 位序号空间。 */
+    private const val MODULO = 1_000_000
 
     /**
      * 从硬件标识派生 20 位 deviceId。
      *
      * @param hardwareId 硬件标识字符串（Android ANDROID_ID / iOS identifierForVendor）
-     * @return 20 位十进制 deviceId，前缀 "34020000001" + 9 位哈希后缀
+     * @return 20 位十进制 deviceId，`34020000001327` + 6 位哈希序号
      */
     fun deriveDeviceId(hardwareId: String): String {
         require(hardwareId.isNotEmpty()) { "hardwareId must not be empty" }
 
-        // 用 Kotlin 内置 hashCode()，取绝对值避免负数，模 10^9 生成 9 位后缀
-        val hash = hardwareId.hashCode().absoluteValue % MODULO
-        val suffix = hash.toString().padStart(9, '0')
+        // 先转 Long 再取绝对值：Int.MIN_VALUE.absoluteValue 仍是负数，会让序号带 '-'
+        val hash = hardwareId.hashCode().toLong().absoluteValue % MODULO
+        val suffix = hash.toString().padStart(6, '0')
 
-        return "$PREFIX$suffix"
+        return PREFIX + suffix
     }
 }

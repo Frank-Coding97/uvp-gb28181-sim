@@ -693,14 +693,14 @@ class SipViewModel @JvmOverloads constructor(
         private const val WVP_PASSWORD = ""
 
         /**
-         * ANDROID_ID 取不到时的兜底设备编码（20 位，类型段 105 = 设备）。
+         * ANDROID_ID 取不到时的兜底设备编码（20 位，`34020000 00 132 7 000001`）。
          *
-         * ⛔ 早前这里写的是 `34020000001320000001` —— 那是**通道**编码格式（132 段），
-         * 当设备 ID 用不符合国标结构。改成 105 段至少结构正确。
+         * 类型段 `132`（网络摄像机）、网络标识 `7`（Internet），与 DeviceIdGenerator
+         * 的派生结果同一套分段：设备根和三个通道的第 14 位分别是 7 / 1 / 2 / 1，永不撞号。
          * ⚠️ 已知限制：多台都取不到 ANDROID_ID 的设备会撞这个号（ANDROID_ID 实际
          * 极少失败，属最后兜底）。
          */
-        private const val DEVICE_ID_FALLBACK = "34020000001050000001"
+        private const val DEVICE_ID_FALLBACK = "34020000001327000001"
 
         /**
          * 派生或使用 fallback deviceId。
