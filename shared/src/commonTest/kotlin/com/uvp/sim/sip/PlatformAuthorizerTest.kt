@@ -140,6 +140,28 @@ class PlatformAuthorizerTest {
         )
     }
 
+    /**
+     * EasyGBS/GoGBS 系把 From 的域写成「平台 IP:端口」而不是 10 位服务器域:
+     * `From: <sip:34020000002000000003@192.168.10.220:16060>`。
+     * 2026-10-25 现场就是被这条严格等值判断挡成 403,表现为注册/目录/快照都正常、
+     * 一播就失败。
+     */
+    @Test fun invite_from_host_is_platform_ip_passes() {
+        val env = envelope(buildInvite(fromDomain = "$platformIp:5060"), sourceIp = platformIp)
+        assertTrue(
+            PlatformAuthorizer.isInviteFromAuthorizedPlatform(env, config(), noDns),
+            "From host = 平台 IP:端口(EasyGBS 写法)必须通过"
+        )
+    }
+
+    @Test fun invite_from_host_is_server_id_passes() {
+        val env = envelope(buildInvite(fromDomain = platformServerId), sourceIp = platformIp)
+        assertTrue(
+            PlatformAuthorizer.isInviteFromAuthorizedPlatform(env, config(), noDns),
+            "From host = 服务器 ID 也必须通过"
+        )
+    }
+
     @Test fun invite_forged_source_ip_rejected() {
         // SIP From host 合法,但 sourceIp 是攻击者 IP(没在 allowList 里)
         val env = envelope(buildInvite(), sourceIp = "10.99.99.99")

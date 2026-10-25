@@ -27,13 +27,17 @@ internal object PlatformAuthorizer {
     /**
      * H-1 + P0-2:INVITE 必须来自登记的平台,网络层 + SIP 层双重校验。
      *
-     * SIP 层(H-1,Wave 1 落地):From host = config.server.domain
-     * 网络层(P0-2,Wave 7B 新增):envelope.sourceIp ∈ {config.server.ip} ∪ allowList
+     * SIP 层:From host 必须落在**平台的合法身份集合**内 —— 服务器域 / 服务器 ID / 服务器 IP
+     * 任一命中即可(按 [hostForms] 展开后比较)。
+     * 网络层(P0-2):envelope.sourceIp ∈ {config.server.ip} ∪ allowList。
      *
-     * 关键 codex 引用:
-     *   "Playback INVITE 路径不复用 H-1 isInviteFromAuthorizedPlatform"
-     *
-     * 通过 = 同时满足两个条件;不通过 = 任一条件失败。
+     * ⛔ 曾经只认 `From host == 服务器域`。WVP / LiveGBS 写的是
+     * `From: <sip:服务器ID@3402000000>` 所以没事,但 EasyGBS(GoGBS 系)写的是
+     * `From: <sip:服务器ID@192.168.10.220:16060>` —— 用 IP:端口当域。严格等值判断
+     * 直接把这类平台判成"未授权来源",表现为**注册、目录、快照全正常,一播就 403**,
+     * 而设备侧日志只说"未授权",根本看不出是 From 头的写法差异。
+     * 放宽到"域 / ID / IP 三者任一"后语义仍然成立:这三者都是同一台平台的身份,
+     * 真正的安全边界是网络层 sourceIp(攻击者换 From 容易,换源 IP 难)。
      *
      * @param envelope transport 上抛的 SipEnvelope(携带真实来源 IP/port)
      * @param expectedDomain config.server.domain
@@ -50,13 +54,17 @@ internal object PlatformAuthorizer {
         expectedServerIp: String,
         allowList: List<String> = emptyList(),
         hostForms: (String) -> Set<String> = ::hostComparableForms,
+        expectedServerId: String = "",
     ): Boolean {
         val request = envelope.message as? SipRequest ?: return false
-        // ── SIP 层:From host ──
         val fromHeader = request.fromHeader() ?: return false
         val fromUri = SipHeaderHelpers.parseUri(fromHeader)
         val fromHost = parseUriHost(fromUri)
-        if (fromHost != expectedDomain) return false
+        if (fromHost.isEmpty()) return false
+        // ── SIP 层:From host ∈ {域, 服务器 ID, 服务器 IP} ──
+        if (!isFromHostAllowed(fromHost, expectedDomain, expectedServerId, expectedServerIp, hostForms)) {
+            return false
+        }
         // ── 网络层:envelope.sourceIp ──
         return isSourceIpAllowed(envelope.sourceIp, expectedServerIp, allowList, hostForms)
     }
@@ -73,7 +81,51 @@ internal object PlatformAuthorizer {
             expectedServerIp = config.server.ip,
             allowList = config.server.allowList,
             hostForms = hostForms,
+            expectedServerId = config.server.serverId,
         )
+
+    /**
+     * From 头身份是否属于该平台:域 / 服务器 ID / 服务器 IP 任一命中即通过。
+     *
+     * 三者都先经 [hostForms] 展开(原文 / 正向 IP / PTR 名),这样"配置里写主机名、
+     * 平台 From 里写 IP"这类组合也能命中。空串一律不参与比较,避免配置留空时
+     * 任何空 host 都放行。
+     */
+    private fun isFromHostAllowed(
+        fromHost: String,
+        expectedDomain: String,
+        expectedServerId: String,
+        expectedServerIp: String,
+        hostForms: (String) -> Set<String>,
+    ): Boolean {
+        // 快路径:与服务器域完全一致(最常见形态)→ 不触发任何展开
+        if (expectedDomain.isNotBlank() && fromHost == expectedDomain.trim()) return true
+        if (expectedServerId.isNotBlank() && fromHost == expectedServerId.trim()) return true
+        if (expectedServerIp.isNotBlank() && fromHost == expectedServerIp.trim()) return true
+
+        val observed = hostForms(fromHost)
+        if (observed.isEmpty()) return false
+        val candidates = buildSet {
+            for (candidate in listOf(expectedDomain, expectedServerId, expectedServerIp)) {
+                if (candidate.isNotBlank()) addAll(hostForms(candidate))
+            }
+        }
+        return observed.any { it in candidates }
+    }
+
+    /**
+     * **仅供日志诊断**:把 INVITE 的 From 身份和来源 IP 拼成一行。
+     *
+     * 403 的日志原来只有 `sourceIp` 和"期望的域",看不出**平台实际写了什么**,
+     * 排查只能去抓包或翻平台日志。这里把 From 的 user / host 一并打出来。
+     */
+    fun inviteSourceSummary(envelope: SipEnvelope): String {
+        val request = envelope.message as? SipRequest
+        val fromUri = request?.fromHeader()?.let { SipHeaderHelpers.parseUri(it) }
+        val user = fromUri?.let { SipHeaderHelpers.parseUriUser(it, fallback = "") } ?: ""
+        val host = fromUri?.let { parseUriHost(it) } ?: ""
+        return "sourceIp=${envelope.sourceIp}, From=<sip:$user@$host>"
+    }
 
     /**
      * P1-3:MANSCDP MESSAGE / SUBSCRIBE 入口业务级来源授权。

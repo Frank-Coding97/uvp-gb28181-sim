@@ -341,7 +341,9 @@ internal class InviteCoordinatorImpl(
         if (!com.uvp.sim.sip.PlatformAuthorizer.isInviteFromAuthorizedPlatform(envelope, config)) {
             SystemLogger.emit(
                 LogLevel.Warning, LogTag.Lifecycle,
-                "拒绝 INVITE: 未授权来源(sourceIp=${envelope.sourceIp}, expected domain=${config.server.domain}) → 403"
+                "拒绝 INVITE: 未授权来源(${com.uvp.sim.sip.PlatformAuthorizer.inviteSourceSummary(envelope)}; " +
+                    "期望 From host ∈ {域 ${config.server.domain}, 服务器ID ${config.server.serverId}, " +
+                    "IP ${config.server.ip}}) → 403"
             )
             sendSimpleResponse(req, statusCode = 403, reasonPhrase = "Forbidden")
             return RoutingResult.Handled
