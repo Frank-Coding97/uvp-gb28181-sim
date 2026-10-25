@@ -171,15 +171,21 @@ object IosAppHost {
         channelName = config.osd.channelName.copy(text = channelName),
     )
 
-    // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
-    // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
+    // 首次启动默认值:通道 ID 由 ChannelIdGenerator 按设备 ID 派生
+    // (domain 3402000000;类型段 132 视频 / 134 报警)
     // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
-    /** identifierForVendor 拿不到时的兜底设备编码(与 Android 侧 fallback 一致)。 */
-    private val deviceIdFallback = "34020000001320000001"
+
+    /**
+     * identifierForVendor 拿不到时的兜底设备编码(与 Android 侧 fallback 一致)。
+     *
+     * ⛔ 早前这里写的是 `34020000001320000001` —— 那是**通道**编码格式(132 段)，
+     * 当设备 ID 用不符合国标结构。改成 105 段(设备)至少结构正确。
+     */
+    private val deviceIdFallback = "34020000001050000001"
 
     fun defaultConfig(): SimConfig {
-        // deviceId 从 identifierForVendor 派生,三个通道 ID 跟着它走 —— 通道编码前 13 位
-        // 必须与设备编码一致,否则平台侧 Catalog 里通道挂不到设备下。
+        // deviceId 从 identifierForVendor 派生,三个通道 ID 跟着它走 —— 通道编码的
+        // 中心/行业段与类型段由 ChannelIdGenerator 统一拼装(类型段 132/134)。
         // 每台设备唯一,避免多台 sim 同时注册时互相顶号。
         val hw = com.uvp.sim.device.getHardwareId(null)
         val deviceId = if (hw != null) {

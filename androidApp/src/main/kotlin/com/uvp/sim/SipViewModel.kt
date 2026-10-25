@@ -242,8 +242,10 @@ class SipViewModel @JvmOverloads constructor(
             //    看不出任何异常 —— 点「开始巡航」照样下发成功、记录也是 sent,画面却不动,
             //    现场会误判成「巡航功能没做」。
             appEngine.restoreDeviceState()
-            val stored = deriveChannelIds(
-                migrateDualChannel(resources.configStore.loadOnce(defaultConfig(application)))
+            val stored = migrateLegacyChannelIds(
+                deriveChannelIds(
+                    migrateDualChannel(resources.configStore.loadOnce(defaultConfig(application)))
+                )
             )
             if (stored != appEngine.config.value) {
                 appEngine.setConfig(stored)
@@ -313,6 +315,61 @@ class SipViewModel @JvmOverloads constructor(
                     com.uvp.sim.device.ChannelIdGenerator.deriveFrontChannelId(dev.deviceId)
                 },
             )
+        )
+    }
+
+    /**
+     * 旧派生规则的通道编码迁移。
+     *
+     * 历史实现把设备的 105 类型段原样抄进通道编码（`deviceId.take(13) + 固定后缀`），
+     * 平台按类型段校验时认不出这些是通道 —— 表现为「设备在线、但通道只显示设备自身一条」。
+     * 升级后把**完全符合旧规则**的通道 ID 重算成 132/134 类型段；
+     * 用户手改过 / 扫码回填的一律不动（判据是逐字节等于旧规则产物）。
+     * 目录树里节点的 `id` / `parentId` 同步替换，避免树和 device 字段脱节。
+     */
+    private fun migrateLegacyChannelIds(cfg: SimConfig): SimConfig {
+        val dev = cfg.device
+        if (dev.deviceId.length != 20) return cfg
+        fun fixed(current: String, next: String): String =
+            if (com.uvp.sim.device.ChannelIdGenerator.isLegacyDerived(dev.deviceId, current)) next
+            else current
+
+        val newVideo = fixed(
+            dev.videoChannelId,
+            com.uvp.sim.device.ChannelIdGenerator.deriveVideoChannelId(dev.deviceId)
+        )
+        val newAlarm = fixed(
+            dev.alarmChannelId,
+            com.uvp.sim.device.ChannelIdGenerator.deriveAlarmChannelId(dev.deviceId)
+        )
+        val newFront = fixed(
+            dev.frontChannelId,
+            com.uvp.sim.device.ChannelIdGenerator.deriveFrontChannelId(dev.deviceId)
+        )
+        if (newVideo == dev.videoChannelId &&
+            newAlarm == dev.alarmChannelId &&
+            newFront == dev.frontChannelId
+        ) {
+            return cfg
+        }
+        val idMap = buildMap {
+            if (dev.videoChannelId.isNotBlank()) put(dev.videoChannelId, newVideo)
+            if (dev.alarmChannelId.isNotBlank()) put(dev.alarmChannelId, newAlarm)
+            if (dev.frontChannelId.isNotBlank()) put(dev.frontChannelId, newFront)
+        }
+        val newTree = cfg.catalogTree.map { node ->
+            val newId = idMap[node.id] ?: node.id
+            val newParent = idMap[node.parentId] ?: node.parentId
+            if (newId == node.id && newParent == node.parentId) node
+            else node.copy(id = newId, parentId = newParent)
+        }
+        return cfg.copy(
+            device = dev.copy(
+                videoChannelId = newVideo,
+                alarmChannelId = newAlarm,
+                frontChannelId = newFront,
+            ),
+            catalogTree = newTree,
         )
     }
 
@@ -626,15 +683,24 @@ class SipViewModel @JvmOverloads constructor(
     companion object {
         private const val MAX_EVENT_LOG = 200
 
-        // 首次启动默认值:通道 ID 硬编码给合法 GB28181 编码
-        // (domain 3402000000 = 浙江/社会管理;132 视频通道 / 134 报警通道)
+        // 首次启动默认值:通道 ID 由 ChannelIdGenerator 按设备 ID 派生
+        // (domain 3402000000;类型段 132 视频 / 134 报警)
         // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
         private const val WVP_IP = ""
         private const val WVP_PORT = 0
         private const val WVP_SERVER_ID = ""
         private const val WVP_DOMAIN = "3402000000"
         private const val WVP_PASSWORD = ""
-        private const val DEVICE_ID_FALLBACK = "34020000001320000001"
+
+        /**
+         * ANDROID_ID 取不到时的兜底设备编码（20 位，类型段 105 = 设备）。
+         *
+         * ⛔ 早前这里写的是 `34020000001320000001` —— 那是**通道**编码格式（132 段），
+         * 当设备 ID 用不符合国标结构。改成 105 段至少结构正确。
+         * ⚠️ 已知限制：多台都取不到 ANDROID_ID 的设备会撞这个号（ANDROID_ID 实际
+         * 极少失败，属最后兜底）。
+         */
+        private const val DEVICE_ID_FALLBACK = "34020000001050000001"
 
         /**
          * 派生或使用 fallback deviceId。
