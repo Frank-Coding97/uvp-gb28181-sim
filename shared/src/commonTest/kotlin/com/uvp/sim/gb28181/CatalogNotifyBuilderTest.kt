@@ -1,5 +1,6 @@
 package com.uvp.sim.gb28181
 
+import com.uvp.sim.config.CatalogChangeEvent
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.config.CatalogNodeType
 import com.uvp.sim.config.GbVersion
@@ -373,5 +374,44 @@ class CatalogNotifyBuilderTest {
         val xml = CatalogNotifyBuilder.build(rootId, 1, tree, version = GbVersion.V2022)
         val chItem = xml.substringAfter("<DeviceID>ch1</DeviceID>").substringBefore("</Item>")
         assertTrue(chItem.contains("<ParentID>g1</ParentID>"), "多级目录的 ParentID 必须保留：\n$chItem")
+    }
+
+    /**
+     * 增量 NOTIFY（订阅推送）只有单个节点、没有整棵树，必须靠顶层 deviceId 认出设备根，
+     * 否则会把挂在业务分组下的通道也当成「直挂设备根」而省掉 ParentID，平台会挂错层级。
+     */
+    @Test
+    fun `incremental notify keeps ParentID for channel under business group`() {
+        val groupId = "34020000002150000001"
+        val channelId = "34020000001320000001"
+        val xml = CatalogNotifyBuilder.buildIncremental(
+            deviceId = rootId,
+            sn = 1,
+            events = listOf(
+                CatalogChangeEvent.Update(
+                    CatalogNode(channelId, CatalogNodeType.VideoChannel, "门岗", groupId)
+                )
+            ),
+            version = GbVersion.V2022,
+        )
+        val chItem = xml.substringAfter("<DeviceID>$channelId</DeviceID>").substringBefore("</Item>")
+        assertTrue(chItem.contains("<ParentID>$groupId</ParentID>"), "增量推送必须保留多级目录的 ParentID：\n$chItem")
+        assertTrue(chItem.contains("<Event>UPDATE</Event>"))
+    }
+
+    @Test
+    fun `incremental notify omits ParentID for channel hanging on device root`() {
+        val channelId = "34020000001320000001"
+        val xml = CatalogNotifyBuilder.buildIncremental(
+            deviceId = rootId,
+            sn = 2,
+            events = listOf(
+                CatalogChangeEvent.Update(
+                    CatalogNode(channelId, CatalogNodeType.VideoChannel, "后置", rootId)
+                )
+            ),
+            version = GbVersion.V2022,
+        )
+        assertTrue(!xml.contains("<ParentID>"), "直挂设备根的通道，增量推送也不该带 ParentID：\n$xml")
     }
 }

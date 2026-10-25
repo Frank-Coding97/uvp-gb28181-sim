@@ -135,7 +135,7 @@ object CatalogNotifyBuilder {
         version: GbVersion,
         channel: ChannelProfile?,
     ): String {
-        val items = events.joinToString(separator = "\n") { renderEventItem(it, version, channel) }
+        val items = events.joinToString(separator = "\n") { renderEventItem(it, version, channel, deviceId) }
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -197,10 +197,11 @@ object CatalogNotifyBuilder {
         event: CatalogChangeEvent,
         version: GbVersion,
         channel: ChannelProfile?,
+        deviceId: String? = null,
     ): String {
         return when (event) {
-            is CatalogChangeEvent.Add -> renderItemWithEvent(event.node, "ADD", version, channel)
-            is CatalogChangeEvent.Update -> renderItemWithEvent(event.node, "UPDATE", version, channel)
+            is CatalogChangeEvent.Add -> renderItemWithEvent(event.node, "ADD", version, channel, deviceId)
+            is CatalogChangeEvent.Update -> renderItemWithEvent(event.node, "UPDATE", version, channel, deviceId)
             is CatalogChangeEvent.Del -> {
                 val sb = StringBuilder()
                 sb.append("<Item>\n")
@@ -217,8 +218,12 @@ object CatalogNotifyBuilder {
         eventTag: String,
         version: GbVersion,
         channel: ChannelProfile?,
+        deviceId: String? = null,
     ): String {
-        val full = renderItem(node, emptyList(), version, channel)
+        // ⛔ 增量 NOTIFY 只有单个节点、没有整棵树的上下文，必须把顶层 deviceId 传进去：
+        //    否则 appendParentId() 查不到父节点，会把「挂在业务分组/虚拟组织下」的通道
+        //    也误判成直挂设备根而省掉 ParentID，平台就会把子通道挂到错误的层级。
+        val full = renderItem(node, emptyList(), version, channel, deviceId)
         // 在 </Item> 之前插入 <Event>...</Event>
         val eventLine = "<Event>$eventTag</Event>\n"
         return full.replace("</Item>", "${eventLine}</Item>")
@@ -331,7 +336,7 @@ object CatalogNotifyBuilder {
         version: GbVersion,
         channel: ChannelProfile?,
     ): String {
-        val items = ordered.joinToString(separator = "\n") { renderItem(it, ordered, version, channel) }
+        val items = ordered.joinToString(separator = "\n") { renderItem(it, ordered, version, channel, deviceId) }
 
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
@@ -416,6 +421,7 @@ object CatalogNotifyBuilder {
         allNodes: List<CatalogNode>,
         version: GbVersion,
         channel: ChannelProfile?,
+        deviceId: String? = null,
     ): String {
         val f = node.fields
         // BusinessGroupID 取值优先级:节点级显式字段 → 虚拟组织向上找业务分组祖先 → 通道属性
@@ -446,7 +452,7 @@ object CatalogNotifyBuilder {
             CatalogNodeType.BusinessGroup -> {
                 // 215 目录项只声明自身、名称、行政区划码和所属系统。
                 sb.append("<CivilCode>").append(escapeXmlText(f["CivilCode"] ?: node.id.take(6))).append("</CivilCode>\n")
-                appendParentId(sb, node, allNodes)
+                appendParentId(sb, node, allNodes, deviceId)
             }
             CatalogNodeType.VirtualOrg -> {
                 // 216 的 ParentID 只在上级是虚拟组织时出现；首层 216 用
@@ -455,7 +461,7 @@ object CatalogNotifyBuilder {
                 if (node.parentId.isNotBlank() && node.parentId != node.id &&
                     (parentNode == null || parentNode.type != CatalogNodeType.BusinessGroup)
                 ) {
-                    appendParentId(sb, node, allNodes)
+                    appendParentId(sb, node, allNodes, deviceId)
                 }
             }
             else -> {
@@ -470,7 +476,7 @@ object CatalogNotifyBuilder {
                     sb.append("<Address>").append(escapeXmlText(f["Address"] ?: "Mobile")).append("</Address>\n")
                 }
                 sb.append("<Parental>").append(node.type.parental).append("</Parental>\n")
-                appendParentId(sb, node, allNodes)
+                appendParentId(sb, node, allNodes, deviceId)
                 sb.append("<SafetyWay>").append(escapeXmlText(f["SafetyWay"] ?: "0")).append("</SafetyWay>\n")
                 sb.append("<RegisterWay>").append(escapeXmlText(f["RegisterWay"] ?: "1")).append("</RegisterWay>\n")
                 sb.append("<Secrecy>").append(escapeXmlText(f["Secrecy"] ?: "0")).append("</Secrecy>\n")
@@ -534,7 +540,12 @@ object CatalogNotifyBuilder {
      * 多级目录（业务分组 215 / 虚拟组织 216 / 下级设备）的 ParentID 照常输出，
      * 层级不受影响。ParentID 在 GB/T 28181 中是可选元素，省略不违反标准。
      */
-    private fun appendParentId(sb: StringBuilder, node: CatalogNode, allNodes: List<CatalogNode>) {
+    private fun appendParentId(
+        sb: StringBuilder,
+        node: CatalogNode,
+        allNodes: List<CatalogNode>,
+        deviceId: String? = null,
+    ) {
         val parentId = node.parentId.trim()
         if (node.type == CatalogNodeType.Device && parentId == node.id) {
             // 普通 IPC 根节点沿用现有目录树约定：Device 的 ParentID 自指。
@@ -542,12 +553,19 @@ object CatalogNotifyBuilder {
         } else if (parentId.isNotEmpty() && parentId != node.id) {
             // ParentID 可能用 `/` 同时表达系统与虚拟组织双重归属，逐个判断。
             val parentIds = parentId.split('/').map { it.trim() }.filter { it.isNotEmpty() }
-            val allHangOnDeviceRoot = parentIds.isNotEmpty() && parentIds.all { pid ->
-                val parent = allNodes.firstOrNull { it.id == pid }
-                parent == null ||
-                    (parent.type == CatalogNodeType.Device && parent.parentId == parent.id)
+            // 「设备根」= 顶层 deviceId + 树里自指的 Device 节点。
+            // ⛔ 只在**通道**上才做"直挂设备根"的省略：业务分组/虚拟组织即使父 ID 恰好
+            //    等于顶层 deviceId（下级平台场景顶层是 System），也必须照常带 ParentID。
+            val deviceRootIds = buildSet {
+                deviceId?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+                allNodes.filter { it.type == CatalogNodeType.Device && it.parentId == it.id }
+                    .forEach { add(it.id) }
             }
-            if (!allHangOnDeviceRoot) {
+            val isChannel = node.type == CatalogNodeType.VideoChannel ||
+                node.type == CatalogNodeType.AlarmChannel
+            val hangsOnDeviceRoot = isChannel && parentIds.isNotEmpty() &&
+                parentIds.all { it in deviceRootIds }
+            if (!hangsOnDeviceRoot) {
                 sb.append("<ParentID>").append(escapeXmlText(parentId)).append("</ParentID>\n")
             }
         }
