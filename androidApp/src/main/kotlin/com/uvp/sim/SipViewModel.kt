@@ -685,11 +685,20 @@ class SipViewModel @JvmOverloads constructor(
 
         // 首次启动默认值:通道 ID 由 ChannelIdGenerator 按设备 ID 派生
         // (domain 3402000000;类型段 132 视频 / 134 报警)
-        // 平台侧信息(IP/port/serverId/password)仍留空,强制用户按实际平台填。
+        // 平台侧信息(IP/port/serverId/domain/password)一律留空,强制用户按实际平台填。
         private const val WVP_IP = ""
         private const val WVP_PORT = 0
         private const val WVP_SERVER_ID = ""
-        private const val WVP_DOMAIN = "3402000000"
+
+        /**
+         * 服务器域**不内置任何默认值**。
+         *
+         * 它必须等于平台服务器 ID 的前 10 位；写死一个 `3402000000` 会让首页看着像
+         * 「已配置」，实际和用户真实平台对不上，表现为注册被 401/超时，还很难查。
+         * 现在留空：UI 侧在用户输入服务器 ID 时自动取前 10 位回填（可手改），
+         * 空值时 [com.uvp.sim.config.SimConfig.isReadyToRegister] 为 false，注册按钮禁用。
+         */
+        private const val WVP_DOMAIN = ""
         private const val WVP_PASSWORD = ""
 
         /**

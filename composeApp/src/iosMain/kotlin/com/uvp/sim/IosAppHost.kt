@@ -199,7 +199,9 @@ object IosAppHost {
                 ip = "",
                 port = 0,
                 serverId = "",
-                domain = "3402000000"
+                // 服务器域不内置：必须等于平台服务器 ID 前 10 位，由用户填写（UI 侧会随
+                // 服务器 ID 自动回填），留空时 isReadyToRegister 为 false。
+                domain = ""
             ),
             device = DeviceConfig(
                 deviceId = deviceId,

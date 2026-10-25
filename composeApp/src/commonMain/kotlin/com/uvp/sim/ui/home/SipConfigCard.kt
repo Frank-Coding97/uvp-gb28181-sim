@@ -99,8 +99,8 @@ internal fun SipConfigCard(
     }
 
     fun save(): Boolean {
-        if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank()) {
-            toast.error("服务器、设备ID、服务器ID 不能为空")
+        if (ip.isBlank() || deviceId.isBlank() || serverId.isBlank() || domain.isBlank()) {
+            toast.error("服务器、设备ID、服务器ID、服务器域 不能为空")
             return false
         }
         actions.onConfigSave(
