@@ -276,9 +276,26 @@ y=0123456789
             transport.deliver(recordInfoMessage())
             testScheduler.runCurrent()
             val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.MESSAGE }
-            assertEquals(2, notifies.size)
-            assertTrue(notifies[0].body.decodeToString().contains("<SumNum>60</SumNum>"))
-            assertTrue(notifies[1].body.decodeToString().contains("<SumNum>60</SumNum>"))
+            // ⛔ 2026-10-25:UDP 下正文改按字节上限切包,包数与 pageSize 不再一一对应
+            //    (60 条清单实测切成 60 个物理包)。这里断言协议不变量,而不是"分了几页":
+            //    每包都带全量 SumNum、各包条数合计等于 SumNum、且没有文件被重复下发。
+            assertTrue(notifies.size >= 2, "60 条清单至少要分成多个物理包")
+            val bodies = notifies.map { it.body.decodeToString() }
+            assertTrue(
+                bodies.all { it.contains("<SumNum>60</SumNum>") },
+                "每个分包都要带全量 SumNum=60"
+            )
+            val nums = bodies.map {
+                Regex("<RecordList Num=\"(\\d+)\"").find(it)?.groupValues?.get(1)?.toInt() ?: -1
+            }
+            assertTrue(nums.all { it > 0 }, "每包都要带 RecordList Num,实际 $nums")
+            assertEquals(60, nums.sum(), "各包条数合计应等于 SumNum")
+
+            val paths = bodies.flatMap { body ->
+                Regex("<FilePath>([^<]+)</FilePath>").findAll(body).map { it.groupValues[1] }
+            }
+            assertEquals(60, paths.size, "所有文件都下发了")
+            assertEquals(60, paths.toSet().size, "同一文件不得跨包重复下发")
         } finally {
             engine.shutdown()
         }

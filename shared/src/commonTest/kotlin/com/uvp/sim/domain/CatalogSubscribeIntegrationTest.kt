@@ -26,6 +26,9 @@ import com.uvp.sim.testing.TestEngine
 @OptIn(ExperimentalCoroutinesApi::class)
 class CatalogSubscribeIntegrationTest {
 
+    /** 多响应分包共享 SN,用它把物理包归组成一次逻辑推送。 */
+    private val SN_REGEX = Regex("<SN>(\\d+)</SN>")
+
     private fun config(catalogTree: List<CatalogNode> = emptyList()) = SimConfig(
         gbVersion = GbVersion.V2022,
         server = ServerConfig(
@@ -75,6 +78,30 @@ class CatalogSubscribeIntegrationTest {
         )
     }
 
+    /**
+     * 把物理 NOTIFY 归组成「一次逻辑推送」。
+     *
+     * ⛔ 附录 M 多响应分包(2026-10-25):UDP 下正文按字节上限切包后,**一次**目录推送可能
+     * 变成多条 NOTIFY —— 它们共享同一个 `<SN>`、每包都带全量 `<SumNum>`,DeviceList Num 只是
+     * 本包条数。判断"推了几次"必须看逻辑次数,盯着物理包数会把正常分包误判成重复推送。
+     */
+    private fun List<SipRequest>.logicalNotifies(): List<List<SipRequest>> {
+        val batches = mutableListOf<MutableList<SipRequest>>()
+        forEach { req ->
+            if (req.method != SipMethod.NOTIFY) return@forEach
+            val sn = SN_REGEX.find(req.body.decodeToString())?.groupValues?.get(1)
+            val last = batches.lastOrNull()
+            val lastSn = last?.first()
+                ?.let { SN_REGEX.find(it.body.decodeToString())?.groupValues?.get(1) }
+            if (last != null && lastSn == sn) last += req else batches += mutableListOf(req)
+        }
+        return batches
+    }
+
+    /** `<DeviceList Num="n">` 的本包条数;取不到返回 -1(便于断言报出原文不匹配)。 */
+    private fun deviceListNum(body: String): Int =
+        Regex("<DeviceList Num=\"(\\d+)\"").find(body)?.groupValues?.get(1)?.toInt() ?: -1
+
     private suspend fun registerEngine(transport: MockSipTransport, engine: SimulatorEngine) {
         engine.register()
         val regReq = transport.sent.filterIsInstance<SipRequest>().first { it.method == SipMethod.REGISTER }
@@ -111,15 +138,18 @@ class CatalogSubscribeIntegrationTest {
         assertTrue(subscribeOk.body.decodeToString().contains("<CmdType>Catalog</CmdType>"))
         assertTrue(subscribeOk.body.decodeToString().contains("<DeviceList"))
 
-        val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
-        assertEquals(1, notifies.size, "Expected exactly 1 initial NOTIFY")
+        val batches = transport.sent.filterIsInstance<SipRequest>().logicalNotifies()
+        assertEquals(1, batches.size, "初次订阅只应推送一次(逻辑上),UDP 下可能拆成多个物理包")
 
-        val notify = notifies.first()
+        val batch = batches.single()
+        val bodies = batch.map { it.body.decodeToString() }
+        assertTrue(bodies.all { it.contains("<SumNum>2</SumNum>") }, "每个分包都要带全量 SumNum")
+        assertEquals(2, bodies.sumOf { deviceListNum(it) }, "分包合计应覆盖 2 个子节点(设备根不算)")
+
+        val notify = batch.first()
         assertEquals("Catalog;id=5432", notify.firstHeader(SipHeader.EVENT))
         assertEquals("sip:34020000002000000001@192.168.1.100:5060", notify.requestUri)
-        val body = notify.body.decodeToString()
-        assertTrue(body.contains("<CmdType>Catalog</CmdType>"))
-        assertTrue(body.contains("<DeviceList Num=\"2\">"), "default tree publishes 2 child nodes (root excluded)")
+        assertTrue(bodies.first().contains("<CmdType>Catalog</CmdType>"))
 
         val snap = engine.subscriptions.value["Catalog"]
         assertTrue(snap != null && snap.active)
@@ -164,12 +194,12 @@ class CatalogSubscribeIntegrationTest {
         transport.deliver(catalogSubscribeRequest())
         runCurrent()
 
-        val initialCount = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        val initialCount = transport.sent.filterIsInstance<SipRequest>().logicalNotifies().size
         assertEquals(1, initialCount)
 
         // Catalog 不周期推送:推进 2 分钟也只有 initial 那一次
         advanceTimeBy(120_000)
-        val laterCount = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        val laterCount = transport.sent.filterIsInstance<SipRequest>().logicalNotifies().size
         assertEquals(1, laterCount)
 
         engine.shutdown()
@@ -186,12 +216,12 @@ class CatalogSubscribeIntegrationTest {
 
         transport.deliver(catalogSubscribeRequest())
         runCurrent()
-        val countAfterSub = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        val countAfterSub = transport.sent.filterIsInstance<SipRequest>().logicalNotifies().size
         assertEquals(1, countAfterSub)
 
         engine.pushCatalogNotify()
         runCurrent()
-        val countAfterPush = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        val countAfterPush = transport.sent.filterIsInstance<SipRequest>().logicalNotifies().size
         assertEquals(2, countAfterPush)
 
         engine.shutdown()
@@ -236,11 +266,12 @@ class CatalogSubscribeIntegrationTest {
         engine.updateCatalogTree(newTree)
         runCurrent()
 
-        val notifies = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.NOTIFY }
-        assertEquals(1, notifies.size, "updateCatalogTree should push exactly one NOTIFY")
-        val body = notifies.first().body.decodeSignalingTestBody()
-        // 推送 DeviceList 不含设备根 → 3 节点树发出去是 Num=2(分组 + 通道)
-        assertTrue(body.contains("<DeviceList Num=\"2\">"))
+        val batches = transport.sent.filterIsInstance<SipRequest>().logicalNotifies()
+        assertEquals(1, batches.size, "updateCatalogTree should push exactly one logical NOTIFY")
+        val batch = batches.single()
+        val body = batch.joinToString("") { it.body.decodeSignalingTestBody() }
+        // 推送 DeviceList 不含设备根 → 3 节点树发出去合计 Num=2(分组 + 通道),UDP 下可能拆包
+        assertEquals(2, batch.sumOf { deviceListNum(it.body.decodeToString()) })
         assertTrue(body.contains("<Name>新分组</Name>"))
         assertTrue(body.contains("<Name>新通道</Name>"))
 
@@ -453,14 +484,14 @@ class CatalogSubscribeIntegrationTest {
 
         transport.deliver(catalogSubscribeRequest(callId = "refresh-cat"))
         runCurrent()
-        val countAfterInitial = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        val countAfterInitial = transport.sent.filterIsInstance<SipRequest>().logicalNotifies().size
         assertEquals(1, countAfterInitial)
 
         // 续订(同 callId,新 expires)
         transport.deliver(catalogSubscribeRequest(expires = 7200, callId = "refresh-cat"))
         runCurrent()
 
-        val countAfterRefresh = transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.NOTIFY }
+        val countAfterRefresh = transport.sent.filterIsInstance<SipRequest>().logicalNotifies().size
         assertEquals(1, countAfterRefresh, "refresh should NOT re-send initial NOTIFY")
 
         engine.shutdown()
