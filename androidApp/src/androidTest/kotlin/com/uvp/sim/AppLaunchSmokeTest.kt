@@ -1,7 +1,9 @@
 package com.uvp.sim
 
+import android.view.WindowManager
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -36,5 +38,24 @@ class AppLaunchSmokeTest {
             }
         }
         // ActivityScenario.use 会自动走 onPause / onStop / onDestroy,验证完整生命周期不挂
+    }
+
+    @Test
+    fun mainActivity_keepsScreenOn_whileVisible() {
+        ActivityScenario.launch(MainActivity::class.java).use { scenario ->
+            scenario.onActivity { activity ->
+                assertTrue(
+                    "MainActivity should keep the display awake while it is visible",
+                    activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0,
+                )
+            }
+            scenario.recreate()
+            scenario.onActivity { activity ->
+                assertTrue(
+                    "MainActivity should keep the display awake after recreation",
+                    activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON != 0,
+                )
+            }
+        }
     }
 }
