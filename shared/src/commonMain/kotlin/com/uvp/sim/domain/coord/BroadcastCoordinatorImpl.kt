@@ -19,7 +19,9 @@ import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.channels.BufferOverflow
@@ -33,6 +35,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
 /**
@@ -567,18 +570,19 @@ internal class BroadcastCoordinatorImpl(
      * cross-review R1 #7:sink.start() 失败时返回 false,让上层 handleBroadcastInviteResponse
      * 走 BYE + teardown 路径,不再把广播标记为已建立。
      */
-    private fun startBroadcastRx(): Boolean {
+    private suspend fun startBroadcastRx(): Boolean {
         val receiver = rtpReceiver ?: return false
         // R3 #6 (full preset MEDIUM/performance):原每包 scope.launch{ handleRxPacket } 在 RTP 热路径
         // 每包起一条 coroutine,sustained stream 下调度抖动 + 创建无界 work。
         // 改成 receiver callback 只 trySend 到 bounded channel(64),单 consumer 顺序消费。
         val sink = resolvedAudioSinkFactory(8000, 1)
-        if (!sink.start()) {
+        val started = withContext(Dispatchers.IO) { sink.start() }
+        if (!started) {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
                 "AUDIO_SINK_START_FAILED codec=8kHz/mono → 上层需 BYE + teardown"
             )
-            runCatching { sink.stop() }
+            withContext(Dispatchers.IO) { runCatching { sink.stop() } }
             return false
         }
         rxPacketChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -641,7 +645,7 @@ internal class BroadcastCoordinatorImpl(
             }
         }
         audioPlayback = sink
-        audioPlayJob = scope.launch {
+        audioPlayJob = scope.launch(Dispatchers.IO) {
             for (pcm in audioChannel) {
                 if (_speakerOn.value) audioPlayback?.write(pcm)
             }
@@ -689,11 +693,14 @@ internal class BroadcastCoordinatorImpl(
     private suspend fun teardownBroadcastMedia() {
         rxStatsJob?.cancel(); rxStatsJob = null
         rxJob?.cancel(); rxJob = null
-        rxConsumerJob?.cancel(); rxConsumerJob = null
+        rxConsumerJob?.cancelAndJoin(); rxConsumerJob = null
         rxPacketChannel?.close(); rxPacketChannel = null
-        audioPlayJob?.cancel(); audioPlayJob = null
-        runCatching { audioPlayback?.stop() }
+        audioPlayJob?.cancelAndJoin(); audioPlayJob = null
+        val sink = audioPlayback
         audioPlayback = null
+        sink?.let { audioSink ->
+            withContext(Dispatchers.IO) { runCatching { audioSink.stop() } }
+        }
         rtpReceiver?.let { runCatching { it.close() } }
         rtpReceiver = null
         broadcastLocalAudioPort = 0
