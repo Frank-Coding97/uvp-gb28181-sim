@@ -9,6 +9,7 @@ import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipHeader
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.testing.audioTestDispatcher
 import com.uvp.sim.testing.asEnvelope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -79,6 +80,7 @@ class BroadcastCoordinatorTest {
             localPortProvider = { 5060 },
             rtpReceiverFactory = rtpReceiverFactory,
             audioSinkFactory = { _, _ -> FakeAudioSink() },
+            audioDispatcher = scope.audioTestDispatcher(),
         )
 
     @Test

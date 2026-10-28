@@ -18,8 +18,9 @@ import com.uvp.sim.sip.SipMessage
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
+import com.uvp.sim.concurrency.IoDispatcher
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.sync.Mutex
@@ -70,6 +71,12 @@ internal class BroadcastCoordinatorImpl(
     fromTagProvider: (() -> String?)? = null,
     fromTagSetter: ((String) -> Unit)? = null,
     private val mediaLocalIpProvider: () -> String = localIpProvider,
+    /**
+     * 音频设备的 start/write/stop 跑在这条 dispatcher 上,不要占用 SIP 报文线程。
+     * 可注入是为了测试:runTest 的虚拟时间不认识真实 IO 线程池,
+     * 测试需换成与 TestScope 同源的 dispatcher 才能真正推进。
+     */
+    private val audioDispatcher: CoroutineDispatcher = IoDispatcher,
 ) : BroadcastCoordinator {
 
     private val _state = MutableStateFlow(BroadcastDialogState.Inviting)
@@ -576,13 +583,13 @@ internal class BroadcastCoordinatorImpl(
         // 每包起一条 coroutine,sustained stream 下调度抖动 + 创建无界 work。
         // 改成 receiver callback 只 trySend 到 bounded channel(64),单 consumer 顺序消费。
         val sink = resolvedAudioSinkFactory(8000, 1)
-        val started = withContext(Dispatchers.IO) { sink.start() }
+        val started = withContext(audioDispatcher) { sink.start() }
         if (!started) {
             SystemLogger.emit(
                 LogLevel.Error, LogTag.Media,
                 "AUDIO_SINK_START_FAILED codec=8kHz/mono → 上层需 BYE + teardown"
             )
-            withContext(Dispatchers.IO) { runCatching { sink.stop() } }
+            withContext(audioDispatcher) { runCatching { sink.stop() } }
             return false
         }
         rxPacketChannel = Channel(capacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -645,7 +652,7 @@ internal class BroadcastCoordinatorImpl(
             }
         }
         audioPlayback = sink
-        audioPlayJob = scope.launch(Dispatchers.IO) {
+        audioPlayJob = scope.launch(audioDispatcher) {
             for (pcm in audioChannel) {
                 if (_speakerOn.value) audioPlayback?.write(pcm)
             }
@@ -699,7 +706,7 @@ internal class BroadcastCoordinatorImpl(
         val sink = audioPlayback
         audioPlayback = null
         sink?.let { audioSink ->
-            withContext(Dispatchers.IO) { runCatching { audioSink.stop() } }
+            withContext(audioDispatcher) { runCatching { audioSink.stop() } }
         }
         rtpReceiver?.let { runCatching { it.close() } }
         rtpReceiver = null

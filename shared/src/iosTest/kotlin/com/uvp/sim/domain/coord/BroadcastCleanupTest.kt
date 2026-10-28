@@ -6,6 +6,7 @@ import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.BroadcastEndReason
 import com.uvp.sim.domain.MockSipTransport
+import com.uvp.sim.testing.audioTestDispatcher
 import com.uvp.sim.media.AudioSink
 import com.uvp.sim.network.BroadcastRxSource
 import com.uvp.sim.network.RtpMode
@@ -85,6 +86,7 @@ class BroadcastCleanupTest {
         localPortProvider = { 5060 },
         rtpReceiverFactory = { rx },
         audioSinkFactory = { _, _ -> sink },
+        audioDispatcher = scope.audioTestDispatcher(),
     )
 
     @Test

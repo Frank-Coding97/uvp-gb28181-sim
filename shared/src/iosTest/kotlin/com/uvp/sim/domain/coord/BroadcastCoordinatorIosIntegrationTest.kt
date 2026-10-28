@@ -5,6 +5,7 @@ import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.ServerConfig
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.MockSipTransport
+import com.uvp.sim.testing.audioTestDispatcher
 import com.uvp.sim.media.AudioPlayback
 import com.uvp.sim.media.AudioSink
 import com.uvp.sim.media.G711
@@ -90,6 +91,7 @@ class BroadcastCoordinatorIosIntegrationTest {
             localPortProvider = { 5060 },
             rtpReceiverFactory = { FakeRx() },
             audioSinkFactory = { _, _ -> sink },
+            audioDispatcher = this.audioTestDispatcher(),
         )
 
         bc.fireBroadcastInvite(

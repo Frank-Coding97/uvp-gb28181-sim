@@ -8,6 +8,7 @@ import com.uvp.sim.domain.MockSipTransport
 import com.uvp.sim.network.TransportType
 import com.uvp.sim.sip.SipMethod
 import com.uvp.sim.sip.SipRequest
+import com.uvp.sim.testing.audioTestDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -37,6 +38,7 @@ class BroadcastInviteSequenceTest {
             localIpProvider = { "192.168.124.4" }, localPortProvider = { 5060 },
             mediaLocalIpProvider = { "10.8.0.4" },
             rtpReceiverFactory = { FakeRx() }, audioSinkFactory = { _, _ -> FakeAudioSink() },
+            audioDispatcher = backgroundScope.audioTestDispatcher(),
         )
         try {
             bc.fireBroadcastInvite(platformId, "sip:$platformId@$platformDomain", deviceId)
@@ -103,6 +105,7 @@ class BroadcastInviteSequenceTest {
             localPortProvider = { 5060 },
             rtpReceiverFactory = { fakeRx },
             audioSinkFactory = { _, _ -> FakeAudioSink() },
+            audioDispatcher = this.audioTestDispatcher(),
         )
 
         bc.fireBroadcastInvite(

@@ -6,6 +6,7 @@ import com.uvp.sim.app.DeviceStateSnapshot
 import com.uvp.sim.app.DeviceStateStore
 import com.uvp.sim.camera.AudioCapture
 import com.uvp.sim.camera.CameraCapture
+import com.uvp.sim.concurrency.IoDispatcher
 import com.uvp.sim.config.GbVersion
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.AlarmHistoryStore
@@ -39,6 +40,8 @@ import com.uvp.sim.sip.SipState
 import com.uvp.sim.snapshot.JpegLocalCache
 import com.uvp.sim.snapshot.SnapshotCapture
 import io.ktor.client.engine.HttpClientEngine
+import kotlin.coroutines.ContinuationInterceptor
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,6 +68,7 @@ internal object TestEngine {
         audioSinkFactory: ((Int, Int) -> AudioSink)? = null,
         recordingService: RecordingService = NoopRecordingService,
         playbackBuilder: PlaybackBuilder? = null,
+        audioDispatcher: CoroutineDispatcher? = null,
     ): SimulatorEngine {
         val resources = TestResources(
             rtpSenderFactory = rtpSenderFactory?.let { f ->
@@ -118,6 +122,10 @@ internal object TestEngine {
             cseqProvider = cseqProvider, cseqIncrementer = cseqIncrementer,
             callIdProvider = callIdProvider, callIdSetter = callIdSetter,
             fromTagProvider = fromTagProvider, fromTagSetter = fromTagSetter,
+            // 默认跟随 TestScope 的调度器:真实 IO 线程池不在 runTest 的虚拟时间里,
+            // 用它会话能"跑"，但 runCurrent() 推不动音频链，断言会在状态更新前执行。
+            // 需要验证真实线程归属的用例显式传 Dispatchers.IO。
+            audioDispatcher = audioDispatcher ?: scope.audioTestDispatcher(),
         )
         val playback = PlaybackCoordinatorImpl(
             config = config, transport = transport, outbox = outbox, scope = scope,
@@ -188,3 +196,11 @@ internal object NoopDeviceStateStore : DeviceStateStore {
     override suspend fun loadOnce(): DeviceStateSnapshot? = null
     override suspend fun save(snapshot: DeviceStateSnapshot) = Unit
 }
+
+/**
+ * 测试里给音频链挑一条 dispatcher:优先用 scope 自带的调度器,
+ * 这样 runTest 的 runCurrent() 能真正推进音频 sink 的 start/write/stop。
+ * scope 没有调度器时退回平台 IO dispatcher。
+ */
+internal fun CoroutineScope.audioTestDispatcher(): CoroutineDispatcher =
+    coroutineContext[ContinuationInterceptor] as? CoroutineDispatcher ?: IoDispatcher

@@ -14,6 +14,7 @@ import com.uvp.sim.sip.SipRequest
 import com.uvp.sim.sip.SipResponse
 import com.uvp.sim.testing.TestEngine
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
@@ -101,7 +102,10 @@ a=sendonly
             cfg(), transport, this,
             localIpProvider = { "192.168.10.112" },
             rtpReceiverFactory = { FakeBroadcastRxSource() },
-            audioSinkFactory = { _, _ -> sink }
+            audioSinkFactory = { _, _ -> sink },
+            // 本用例要验证的正是「音频链不跑在 SIP 调用线程上」,
+            // 必须给真实的 IO 线程池,不能用 TestScope 的单线程调度器。
+            audioDispatcher = Dispatchers.IO,
         )
 
         bootRegistered(transport, engine)
