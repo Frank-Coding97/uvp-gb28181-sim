@@ -132,8 +132,8 @@ fun CapabilityScreen(
             ),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CapabilityTile(
+        val tiles = listOf(
+            CapabilityTileSpec(
                 icon = Icons.Outlined.AccountTree,
                 title = "目录管理",
                 metric = "${state.catalogTree.size} 节点",
@@ -148,9 +148,8 @@ fun CapabilityScreen(
                     TileStatus.Idle("未订阅")
                 },
                 onClick = { showCatalog = true },
-                modifier = Modifier.weight(1f)
-            )
-            CapabilityTile(
+            ),
+            CapabilityTileSpec(
                 icon = Icons.Outlined.Movie,
                 title = "录像列表",
                 metric = "${state.recording.files.size} 文件",
@@ -160,11 +159,8 @@ fun CapabilityScreen(
                     TileStatus.Idle("待机")
                 },
                 onClick = { showRecording = true },
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CapabilityTile(
+            ),
+            CapabilityTileSpec(
                 icon = Icons.Outlined.NotificationsActive,
                 title = "报警",
                 metric = "报警事件",
@@ -180,9 +176,8 @@ fun CapabilityScreen(
                     else -> TileStatus.Idle("未订阅 · ${state.alarmHistory.size} 次")
                 },
                 onClick = { showAlarm = true },
-                modifier = Modifier.weight(1f)
-            )
-            CapabilityTile(
+            ),
+            CapabilityTileSpec(
                 icon = Icons.Outlined.Schedule,
                 title = "设备校时",
                 metric = if (state.clockOffset.isSynced) {
@@ -194,11 +189,8 @@ fun CapabilityScreen(
                     TileStatus.Idle("等注册")
                 },
                 onClick = { showClockSync = true },
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            CapabilityTile(
+            ),
+            CapabilityTileSpec(
                 icon = Icons.Outlined.CalendarMonth,
                 title = "录像计划",
                 metric = if (recordPlan.configured) {
@@ -220,11 +212,44 @@ fun CapabilityScreen(
                     else -> TileStatus.Idle("出厂默认")
                 },
                 onClick = { showRecordPlan = true },
-                modifier = Modifier.weight(1f)
-            )
+            ),
+        )
+        tiles.chunked(TILE_COLUMNS).forEach { rowTiles ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                rowTiles.forEach { spec ->
+                    CapabilityTile(
+                        icon = spec.icon,
+                        title = spec.title,
+                        metric = spec.metric,
+                        status = spec.status,
+                        onClick = spec.onClick,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                // ⛔ 末行不满时补等宽空白，而不是让最后一张 `weight(1f)` 拉满整行：
+                // 一张卡横跨两列宽，视觉上会读成「重点项 / 横幅」，与它和其它卡平级的语
+                // 义不符，且卡片一多一少整页网格就变形。
+                repeat(TILE_COLUMNS - rowTiles.size) {
+                    Spacer(Modifier.weight(1f))
+                }
+            }
         }
     }
 }
+
+/** 能力页网格列数。奇数张卡片时末行留白，不允许拉伸。 */
+private const val TILE_COLUMNS = 2
+
+private data class CapabilityTileSpec(
+    val icon: ImageVector,
+    val title: String,
+    val metric: String,
+    val status: TileStatus,
+    val onClick: () -> Unit,
+)
 
 private sealed interface TileStatus {
     val text: String
