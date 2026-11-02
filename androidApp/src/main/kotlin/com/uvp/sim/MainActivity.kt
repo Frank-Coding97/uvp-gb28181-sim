@@ -280,6 +280,18 @@ class MainActivity : ComponentActivity() {
                             "窗口 ${state.length}×${state.width}"
                     }
                 ) { viewModel.updateFrontOsd(state) }
+
+                override fun onVideoRecordPlanSave(
+                    state: com.uvp.sim.gb28181.VideoRecordPlanState?
+                ) = logged(
+                    if (state == null) {
+                        "用户清除录像计划配置 → 回到出厂默认"
+                    } else {
+                        "用户保存录像计划：${if (state.recordEnable == 1) "启用" else "停用"} · " +
+                            "码流${state.streamNumber} · ${state.scheduleSumNum} 天 · " +
+                            "${state.schedules.sumOf { it.segments.size }} 段"
+                    }
+                ) { viewModel.updateVideoRecordPlan(state) }
             }
             val recordingActions = object : RecordingActions {
                 override fun onRecordingStart() = logged("用户点击开始录像") { viewModel.startRecording() }

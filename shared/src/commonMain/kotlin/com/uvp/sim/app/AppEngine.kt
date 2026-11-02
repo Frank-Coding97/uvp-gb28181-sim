@@ -32,6 +32,7 @@ import com.uvp.sim.domain.coord.RegistrationCoordinatorImpl
 import com.uvp.sim.domain.withDeviceConfig
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.FrontOsdState
+import com.uvp.sim.gb28181.VideoRecordPlanState
 import com.uvp.sim.network.NetworkState
 import com.uvp.sim.network.RemoteEndpoint
 import com.uvp.sim.network.RtpMode
@@ -734,6 +735,26 @@ class AppEngine(
     fun updateFrontOsd(state: FrontOsdState?) {
         holders.deviceControlState.update { model ->
             model.withDeviceConfig { it.copy(frontOsd = state) }
+        }
+    }
+
+    /**
+     * 用户在「能力 → 录像计划」本地保存计划（GB/T 28181-2022 A.2.1.15 `VideoRecordPlan`）。
+     *
+     * ⭐ 录像计划与前端 OSD 同属「一份配置两个入口」：本机改完之后，平台 `ConfigDownload`
+     * 回读到的必须是**本机这份** —— 否则平台面板显示的还是它上次下发的旧计划，而设备
+     * 按新计划走，两侧对不上却都"看起来正常"。
+     *
+     * [state] 为 `null` 的语义是**清除这份配置、回到出厂默认**（`RecordEnable=0`、
+     * 无计划、主码流），与 [updateFrontOsd] 的 `null` 同义。
+     *
+     * ⛔ 走本族唯一写入口 [withDeviceConfig]，但**不碰 `pendingEffect` / `lastCommand`** ——
+     * 那两个字段表达的是"平台改了配置"，本机自己改再弹一次会被误认成平台下发。
+     * 落盘交给挂在同一份状态上的 `DeviceStatePersister`（节流），这里不要手动存。
+     */
+    fun updateVideoRecordPlan(state: VideoRecordPlanState?) {
+        holders.deviceControlState.update { model ->
+            model.withDeviceConfig { it.copy(videoRecordPlan = state) }
         }
     }
     suspend fun pushCatalogNotify() { engine?.pushCatalogNotify() }

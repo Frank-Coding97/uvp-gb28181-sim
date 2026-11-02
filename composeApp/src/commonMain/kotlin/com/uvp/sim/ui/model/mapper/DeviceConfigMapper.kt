@@ -6,6 +6,7 @@ import com.uvp.sim.ui.model.DeviceConfigDto
 import com.uvp.sim.ui.model.MaskRectDto
 import com.uvp.sim.ui.model.OsdTextLineDto
 import com.uvp.sim.ui.model.PictureMaskViewDto
+import com.uvp.sim.ui.model.VideoRecordPlanViewDto
 
 /**
  * 「设备配置族」（GB/T 28181-2022 A.2.3.2）→ UI 视图态。
@@ -64,6 +65,9 @@ fun DeviceControlModel.toDeviceConfigDto(config: SimConfig): DeviceConfigDto {
             y = (item.y / osdHeight).coerceIn(0f, 1f),
         )
     }
+    // 录像计划的生效值：平台/本机配过就用配过的，否则退回出厂默认（回读也是这条口径，
+    // 见 `DeviceConfigState.effectiveVideoRecordPlan` —— 两处必须是同一个判断）。
+    val effectivePlan = deviceConfigs.effectiveVideoRecordPlan(config)
 
     return DeviceConfigDto(
         pictureMask = maskView,
@@ -73,5 +77,15 @@ fun DeviceControlModel.toDeviceConfigDto(config: SimConfig): DeviceConfigDto {
         frameMirror = deviceConfigs.frameMirror?.value,
         // 原样透出（不做归一化）：设置页要拿它回写成协议字段。
         frontOsd = osd,
+        // 录像计划：⛔ 这里**回退到生效值**（与上面两个字段的口径不同，理由见
+        // `DeviceConfigDto.videoRecordPlan`）：页面是配置编辑器，必须显示"现在生效的是什么"，
+        // 出厂默认（不启用 / 无计划 / 主码流）也要能显示出来，否则页面打开一片空白。
+        // "配过没有"由 `configured` 单独表达，别用空列表去猜。
+        videoRecordPlan = VideoRecordPlanViewDto(
+            configured = deviceConfigs.videoRecordPlan != null,
+            enabled = effectivePlan.recordEnable == 1,
+            streamNumber = effectivePlan.streamNumber,
+            schedules = effectivePlan.schedules,
+        ),
     )
 }

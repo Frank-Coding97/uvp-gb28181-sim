@@ -284,6 +284,14 @@ class SipViewModel @JvmOverloads constructor(
      */
     fun updateFrontOsd(state: com.uvp.sim.gb28181.FrontOsdState?) = appEngine.updateFrontOsd(state)
 
+    /**
+     * 录像计划（GB-2022 A.2.1.15）本地保存。见
+     * [com.uvp.sim.app.AppEngine.updateVideoRecordPlan]。
+     * `state = null` = 清除配置、回到出厂默认（不启用 / 无计划 / 主码流）。
+     */
+    fun updateVideoRecordPlan(state: com.uvp.sim.gb28181.VideoRecordPlanState?) =
+        appEngine.updateVideoRecordPlan(state)
+
     /** 双真实通道迁移:老配置 frontChannelId 为空时按 domain 补全前置通道 ID。 */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {
         if (cfg.device.frontChannelId.isNotBlank()) return cfg

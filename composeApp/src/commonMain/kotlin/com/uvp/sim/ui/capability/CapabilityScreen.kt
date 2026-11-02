@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Schedule
@@ -66,6 +67,7 @@ fun CapabilityScreen(
     var showRecording by remember { mutableStateOf(false) }
     var showAlarm by remember { mutableStateOf(false) }
     var showClockSync by remember { mutableStateOf(false) }
+    var showRecordPlan by remember { mutableStateOf(false) }
 
     // 主屏长按报警 tile 携带 target → 自动打开报警子页
     androidx.compose.runtime.LaunchedEffect(openAlarmTarget) {
@@ -104,11 +106,18 @@ fun CapabilityScreen(
         }
         return
     }
+    if (showRecordPlan) {
+        SubPageContainer(onBack = { showRecordPlan = false }) {
+            VideoRecordPlanScreen(state = state, actions = actions, onBack = { showRecordPlan = false })
+        }
+        return
+    }
 
     val catalogSub = state.subscriptions[SubscriptionKind.Catalog]
     val catalogActive = catalogSub?.active == true
     val alarmSub = state.subscriptions[SubscriptionKind.Alarm]
     val isAlarming = state.deviceControl.isAlarming
+    val recordPlan = state.deviceControl.deviceConfig.videoRecordPlan
 
     Column(
         modifier = Modifier
@@ -185,6 +194,27 @@ fun CapabilityScreen(
                     TileStatus.Idle("等注册")
                 },
                 onClick = { showClockSync = true },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            CapabilityTile(
+                icon = Icons.Outlined.CalendarMonth,
+                title = "录像计划",
+                metric = if (recordPlan.configured) {
+                    "${recordPlan.dayCount} 天 · ${recordPlan.segmentCount} 段"
+                } else "未配置",
+                status = when {
+                    recordPlan.configured && recordPlan.enabled -> TileStatus.Active(
+                        if (recordPlan.streamNumber == 0) "已启用 · 主码流"
+                        else "已启用 · 子码流${recordPlan.streamNumber}"
+                    )
+                    // ⛔「配过但关着」与「从没配过」必须分开说：两者的 enabled 都是 false，
+                    // 但一条是有人刚关掉、另一条是设备出厂就这样（同 `PictureMaskViewDto.configured`）。
+                    recordPlan.configured -> TileStatus.Idle("已配置 · 未启用")
+                    else -> TileStatus.Idle("出厂默认")
+                },
+                onClick = { showRecordPlan = true },
                 modifier = Modifier.weight(1f)
             )
         }

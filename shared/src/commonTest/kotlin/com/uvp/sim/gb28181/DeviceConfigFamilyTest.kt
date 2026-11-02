@@ -534,6 +534,36 @@ class DeviceConfigFamilyTest {
         assertEquals(0, d.streamNumber)
     }
 
+    /**
+     * 本地保存前规整：**没有时段的那天整条剔除**、按周几升序。
+     *
+     * ⛔ 留一条 0 段的 `RecordSchedule` 就是一条违反 XSD 的报文（`TimeSegment` 是
+     * `minOccurs="1"`）。界面里「把某天最后一段删掉」是最常见的中途状态，所以这一步
+     * 必须真的清掉，而不是等 `render` 输出 `TimeSegmentSumNum=0` 让平台去猜。
+     */
+    @Test fun videoRecordPlan_normalizedForSaveDropsEmptyDaysAndSorts() {
+        val dirty = VideoRecordPlanState(
+            recordEnable = 1,
+            schedules = listOf(
+                RecordSchedule(weekDayNum = 5, segments = emptyList()),
+                RecordSchedule(weekDayNum = 3, segments = listOf(RecordTimeSegment(8, 0, 0, 12, 0, 0))),
+                RecordSchedule(weekDayNum = 1, segments = listOf(RecordTimeSegment(1, 2, 3, 4, 5, 6))),
+            ),
+            streamNumber = 0,
+        )
+
+        val cleaned = VideoRecordPlanConfig.normalizedForSave(dirty)
+
+        assertEquals(listOf(1, 3), cleaned.schedules.map { it.weekDayNum }, "空天剔除 + 按周几升序")
+        assertEquals(2, cleaned.scheduleSumNum)
+        // 已有的段一个都不能动（只清空天、不动内容）
+        assertEquals(RecordTimeSegment(1, 2, 3, 4, 5, 6), cleaned.schedules.first().segments.single())
+        // 规整后的报文里不该再出现 0 段的天
+        assertFalse(
+            VideoRecordPlanConfig.render(cleaned).contains("<TimeSegmentSumNum>0</TimeSegmentSumNum>"),
+        )
+    }
+
     // ===================== E. A.2.1.23 画面翻转（simpleType） =====================
 
     private fun mirror(xml: String) = FrameMirrorConfig.parse(xml)

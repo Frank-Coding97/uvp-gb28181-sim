@@ -248,6 +248,20 @@ object VideoRecordPlanConfig {
     }
 
     /**
+     * 保存前规整：**剔除没有时段的那一天**，并按 `WeekDayNum` 升序。
+     *
+     * 标准原文「如当天无录像计划可缺少」⇒ 没有计划的那天整条不该发；而 `TimeSegment`
+     * 在 XSD 里是 `minOccurs="1"` ⇒ 发一条 `TimeSegmentSumNum=0` 的天是**结构非法**的报文。
+     * UI 上「把某天最后一段删掉」是很自然的中途状态，所以必须在保存这一刻清掉 ——
+     * 不能指望解析侧兜住：解析侧要如实记账平台发来的报文，不替它剔除。
+     */
+    fun normalizedForSave(state: VideoRecordPlanState): VideoRecordPlanState = state.copy(
+        schedules = state.schedules
+            .filter { it.segments.isNotEmpty() }
+            .sortedBy { it.weekDayNum },
+    )
+
+    /**
      * 回读应答块。
      *
      * ⛔ 元素顺序必须与 XSD 一致：`RecordEnable` → `RecordScheduleSumNum` →

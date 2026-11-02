@@ -3,6 +3,7 @@ package com.uvp.sim.ui.actions
 import com.uvp.sim.config.CatalogNode
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.FrontOsdState
+import com.uvp.sim.gb28181.VideoRecordPlanState
 import com.uvp.sim.ui.AlarmFireMode
 
 /**
@@ -112,4 +113,20 @@ interface CapabilityActions {
      * 用户在本地三层 OSD 那边改了配置时走这条（设备当前的 OSD 该由本地方案决定）。
      */
     fun onFrontOsdSave(state: FrontOsdState?)
+
+    // ---- 设备配置族:录像计划(A.2.1.15 / A.2.3.2.6)----
+
+    /**
+     * 用户在「能力 → 录像计划」保存计划。
+     *
+     * ⭐ 与 [onFrontOsdSave] 同一条口径：录像计划是**设备自己的一份配置、平台可远程查改**
+     * （真机上就是本地菜单与平台面板两个入口），所以允许本地编辑，编辑结果同时决定
+     * 「平台 ConfigDownload 回读到的值」与「本机界面回显」。
+     *
+     * [state] 为 `null` 的语义是**清除配置、回到出厂默认**（不启用 / 无计划 / 主码流）。
+     *
+     * ⚠️ 标准只规定这份配置的**结构与回读形态**，不规定设备要不要照它自动录像 ——
+     * 本仓这里只记账 + 回读，不会真的按计划起停录像（见 `VideoRecordPlanScreen` 的说明）。
+     */
+    fun onVideoRecordPlanSave(state: VideoRecordPlanState?)
 }

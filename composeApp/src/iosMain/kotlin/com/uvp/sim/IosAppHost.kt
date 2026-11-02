@@ -608,6 +608,9 @@ private fun buildActions(
         override fun onFrontOsdSave(state: com.uvp.sim.gb28181.FrontOsdState?) {
             engine.updateFrontOsd(state)
         }
+        override fun onVideoRecordPlanSave(state: com.uvp.sim.gb28181.VideoRecordPlanState?) {
+            engine.updateVideoRecordPlan(state)
+        }
     }
     val recording = object : RecordingActions {
         override fun onRecordingStart() {

@@ -1,6 +1,7 @@
 package com.uvp.sim.ui.model
 
 import com.uvp.sim.gb28181.FrontOsdState
+import com.uvp.sim.gb28181.RecordSchedule
 
 /**
  * 一块画面遮挡（GB/T 28181-2022 A.2.1.17 `PictureMask` 的 `RegionList/Item`）。
@@ -68,6 +69,15 @@ data class DeviceConfigDto(
      * 坐标已经除过、且只保留平台配过的那部分 —— 从它反推不出一份可回读的 `OSDConfig`。
      */
     val frontOsd: FrontOsdState? = null,
+    /**
+     * 录像计划（A.2.1.15 `VideoRecordPlan`）。
+     *
+     * ⛔ 与本 DTO 其它字段的口径**刻意不同**：这里回退到生效值（含出厂默认），
+     * 而不是"只映射配过的部分"。理由：这条数据的消费者是**配置编辑器**，页面必须
+     * 显示"现在生效的是什么"；若只在配过时才有值，页面打开就是一片空白，
+     * 用户没法在出厂默认的基础上改。是否有配置过由 [VideoRecordPlanViewDto.configured] 单独表达。
+     */
+    val videoRecordPlan: VideoRecordPlanViewDto = VideoRecordPlanViewDto(),
 ) {
     /**
      * 有没有"要画在画布上的画面内容"。渲染层用它决定整层是否挂载。
@@ -102,3 +112,32 @@ data class PictureMaskViewDto(
      */
     val configured: Boolean = false,
 )
+
+/**
+ * 录像计划（GB/T 28181-2022 A.2.1.15 `VideoRecordPlan`）的视图态。
+ *
+ * 字段与协议一一对应，**不做业务解释**：
+ *  - [schedules] 里没有的那天 = 那天没有计划（标准「如当天无录像计划可缺少」）；
+ *  - 每个 [RecordSchedule] 最多 8 段（标准 `TimeSegment maxOccurs="8"`）；
+ *  - `Stop < Start` 是否算跨零点**不由设备侧判定**（见 `RecordTimeSegment` 注释）。
+ *
+ * ⛔ 不带"来源"字段（平台下发 / 本机编辑）—— 与 `DeviceConfigState` 同一条口径：
+ * 设备只关心"我现在的配置是什么"，谁写的、什么时候写的它不关心，界面上也不该
+ * 假装分得清（本仓分不清这两件事是刻意的，见 `DeviceConfigState` 类注释）。
+ */
+data class VideoRecordPlanViewDto(
+    /** 平台或本机配过没有。`false` ⇒ 以下全是出厂默认（不启用 / 无计划 / 主码流）。 */
+    val configured: Boolean = false,
+    /** `RecordEnable` 0/1 → Boolean（界面是 Switch）。 */
+    val enabled: Boolean = false,
+    /** `StreamNumber`：0-主码流，1-子码流1… */
+    val streamNumber: Int = 0,
+    /** 按 `WeekDayNum` 升序的计划。 */
+    val schedules: List<RecordSchedule> = emptyList(),
+) {
+    /** 有计划的周几数量（= 回读报文里的 `RecordScheduleSumNum`）。 */
+    val dayCount: Int get() = schedules.size
+
+    /** 时段总数，界面角标用（协议里没有这个总计数，按天各有一个）。 */
+    val segmentCount: Int get() = schedules.sumOf { it.segments.size }
+}

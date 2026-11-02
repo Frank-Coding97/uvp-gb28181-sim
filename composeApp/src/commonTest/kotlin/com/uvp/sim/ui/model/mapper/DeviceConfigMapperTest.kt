@@ -12,6 +12,9 @@ import com.uvp.sim.gb28181.FrontOsdState
 import com.uvp.sim.gb28181.OsdTextItem
 import com.uvp.sim.gb28181.PictureMaskRegion
 import com.uvp.sim.gb28181.PictureMaskState
+import com.uvp.sim.gb28181.RecordSchedule
+import com.uvp.sim.gb28181.RecordTimeSegment
+import com.uvp.sim.gb28181.VideoRecordPlanState
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -198,5 +201,75 @@ class DeviceConfigMapperTest {
             dto(DeviceConfigState(frameMirror = FrameMirrorState(2))).hasCanvasContent,
             "镜像不走画布叠层：它是真流上的变换，画布一侧已明确不参与（2026-09-20）",
         )
+    }
+
+    // ===== ③ 录像计划：编辑器必须拿到"现在生效的那份" =====
+
+    /**
+     * ⛔ 这条与上面两条口径**相反且刻意如此**：录像计划是**配置编辑器**的数据源，
+     * 页面打开就必须能显示"现在生效的是什么"（出厂默认也要显示），否则用户没法
+     * 在默认基础上改。而 `pictureMask` / `frontOsd` 是画布叠加态的输入，只能映射
+     * 平台真下发过的部分（否则出厂默认会被重复画一遍）。
+     *
+     * 「配过没有」因此**必须**由 `configured` 单独表达，不能拿 `schedules` 空不空去猜 ——
+     * 平台配过一份"全周无计划"的计划，与从没配过，在设备屏幕上是两句话。
+     */
+    @Test fun videoRecordPlan_fallsBackToFactoryDefaultButStillReportsUnconfigured() {
+        val view = dto(DeviceConfigState()).videoRecordPlan
+        assertFalse(view.configured, "平台/本机一次都没配过")
+        assertFalse(view.enabled)
+        assertEquals(0, view.streamNumber, "出厂默认 = 主码流")
+        assertEquals(emptyList(), view.schedules)
+        assertEquals(0, view.dayCount)
+        assertEquals(0, view.segmentCount)
+    }
+
+    /** 平台下发的计划原样透出：周几、每段起止、码流编号，一个字段都不改。 */
+    @Test fun videoRecordPlan_exposesConfiguredPlanVerbatim() {
+        val view = dto(
+            DeviceConfigState(
+                videoRecordPlan = VideoRecordPlanState(
+                    recordEnable = 1,
+                    schedules = listOf(
+                        RecordSchedule(
+                            weekDayNum = 1,
+                            segments = listOf(RecordTimeSegment(8, 0, 0, 12, 0, 0)),
+                        ),
+                        RecordSchedule(
+                            weekDayNum = 3,
+                            segments = listOf(
+                                RecordTimeSegment(0, 30, 0, 6, 0, 0),
+                                RecordTimeSegment(18, 0, 0, 23, 59, 59),
+                            ),
+                        ),
+                    ),
+                    streamNumber = 1,
+                )
+            )
+        ).videoRecordPlan
+
+        assertTrue(view.configured)
+        assertTrue(view.enabled)
+        assertEquals(1, view.streamNumber)
+        assertEquals(2, view.dayCount)
+        assertEquals(3, view.segmentCount)
+        assertEquals(1, view.schedules.first().weekDayNum)
+        assertEquals("08:00:00-12:00:00", view.schedules.first().segments.single().displayLabel)
+        // ⛔ 多时段**不能**在映射层被截断（海康口径只留第一段，会让第 2 段之后静默丢失）
+        assertEquals("18:00:00-23:59:59", view.schedules[1].segments[1].displayLabel)
+    }
+
+    /**
+     * ⛔「配过、但把计划录像关了」与「从没配过」：`enabled` 都是 false，`configured` 必须分得开。
+     * 能力页卡片右上角的状态文案就靠这条判断（"已配置 · 未启用" vs "出厂默认"）。
+     */
+    @Test fun videoRecordPlan_configuredButDisabledIsDistinctFromNeverConfigured() {
+        val pushedOff = dto(
+            DeviceConfigState(
+                videoRecordPlan = VideoRecordPlanState(recordEnable = 0, schedules = emptyList())
+            )
+        ).videoRecordPlan
+        assertTrue(pushedOff.configured, "配过（配成关）与从没配过必须能分开")
+        assertFalse(pushedOff.enabled)
     }
 }
