@@ -128,7 +128,12 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
         ) {
             Spacer(Modifier.height(2.dp))
             SummaryCard(view = view, draft = draft)
-            RuntimeStatusCard(state = state, saved = saved)
+            RuntimeStatusCard(
+                state = state,
+                saved = saved,
+                dirty = dirty,
+                draftEnabled = draft.recordEnable == 1,
+            )
             SwitchCard(
                 enabled = draft.recordEnable == 1,
                 streamNumber = draft.streamNumber,
@@ -277,7 +282,10 @@ private fun SummaryCard(view: VideoRecordPlanViewDto, draft: VideoRecordPlanStat
  * 运行状态：**这一份计划现在到底有没有在录**。
  *
  * ⛔ 判定用 [saved]（已保存生效的那份），不是用户手里的草稿 —— 自动录像只认已保存的计划，
- * 拿草稿算会出现"页面说马上到点，实际设备按旧计划在走"的错觉。所以右上角明写"按已保存的计划"。
+ * 但只写「按已保存的计划」不够：把开关拨开那一刻，卡上标题还是「计划录像未启用」，
+ * 小字又缩在右上角，读起来像「拨了没反应」。所以草稿与已保存不一致（[dirty]）时，
+ * 右上角换成橙色的「未保存的修改」—— 标题描述的仍是设备真实状态，但读者立刻明白
+ * 手上这份改动还没生效，不是坏了。
  *
  * 判定逻辑调的是 shared 里**同一个** [RecordPlanEvaluator]，与调度器共用一套规则：
  * 页面说"正在录"而设备没录这种事，只会发生在两侧各算一遍的时候。
@@ -286,7 +294,12 @@ private fun SummaryCard(view: VideoRecordPlanViewDto, draft: VideoRecordPlanStat
  * 20 秒而不是 1 秒，是因为这一屏不承担秒表职责（录像 tab 有专门的计时器）。
  */
 @Composable
-private fun RuntimeStatusCard(state: AppUiState, saved: VideoRecordPlanState) {
+private fun RuntimeStatusCard(
+    state: AppUiState,
+    saved: VideoRecordPlanState,
+    dirty: Boolean,
+    draftEnabled: Boolean,
+) {
     var now: LocalClockReading by remember { mutableStateOf(LocalWallClock.now()) }
     LaunchedEffect(saved) {
         while (true) {
@@ -306,9 +319,15 @@ private fun RuntimeStatusCard(state: AppUiState, saved: VideoRecordPlanState) {
     val detail: String
     when {
         saved.recordEnable != 1 -> {
-            tone = UvpColor.TextHint
+            // 标题说的是设备真实状态（已保存那份未启用），所以不能因为草稿打开了开关就改口；
+            // 但 detail 要跟着草稿走，否则用户已经拨开开关，还被提示"去打开开关"。
+            tone = if (dirty) UvpColor.Warning else UvpColor.TextHint
             title = "计划录像未启用"
-            detail = "打开下面的开关并保存后，到点会自动起录、到点自动停。"
+            detail = when {
+                dirty && draftEnabled -> "开关已打开但还没保存 —— 保存后才会到点自动起录。"
+                dirty -> "下面的改动还没保存，设备仍按原计划运行。"
+                else -> "打开下面的开关并保存后，到点会自动起录、到点自动停。"
+            }
         }
         planRecording -> {
             tone = UvpColor.Danger
@@ -367,7 +386,12 @@ private fun RuntimeStatusCard(state: AppUiState, saved: VideoRecordPlanState) {
                 }
             }
             Spacer(Modifier.width(8.dp))
-            Text("按已保存的计划", color = UvpColor.TextHint, fontSize = 10.sp)
+            Text(
+                if (dirty) "未保存的修改" else "按已保存的计划",
+                color = if (dirty) UvpColor.Warning else UvpColor.TextHint,
+                fontSize = 10.sp,
+                fontWeight = if (dirty) FontWeight.Medium else FontWeight.Normal,
+            )
         }
     }
 }
