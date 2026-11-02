@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -34,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.UvpSwitch
 import com.uvp.sim.domain.TimeSyncSource
 import kotlinx.coroutines.delay
 import kotlin.time.Clock
@@ -145,7 +145,7 @@ private fun NtpConfigCard(
                     Text("NTP 优先", color = UvpColor.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                     Text("关闭或请求失败时自动使用 SIP Date", color = UvpColor.TextHint, fontSize = 11.sp)
                 }
-                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+                UvpSwitch(checked = enabled, onCheckedChange = onEnabledChange)
             }
             if (enabled) {
                 OutlinedTextField(

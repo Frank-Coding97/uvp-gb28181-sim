@@ -34,6 +34,14 @@ object UvpColor {
     val TextHint      = Color(0xFF9CA3AF)
     val Border        = Color(0xFFE5E7EB)
     val BorderLight   = Color(0xFFF3F4F6)
+    /**
+     * 比 [Border] 深一档的中性灰（Tailwind gray-300）。
+     *
+     * 用途是「关掉的开关轨道」这类**必须能被看见、但不该抢注意力**的控件底色：
+     * [Border] 在白卡片上几乎是白对白，配合白色滑块就糊成一团；
+     * 再深一档又会读成禁用态。见 [uvpSwitchColors]。
+     */
+    val BorderStrong  = Color(0xFFD1D5DB)
     val Bg            = Color(0xFFF3F4F6)
     val Surface       = Color(0xFFFFFFFF)
     val CodeBg        = Color(0xFFFAFAFA)

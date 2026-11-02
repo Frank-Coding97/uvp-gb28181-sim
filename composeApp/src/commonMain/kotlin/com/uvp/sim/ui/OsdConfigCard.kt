@@ -13,8 +13,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -122,16 +120,10 @@ private fun OsdLayerRow(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.fillMaxWidth(0.4f)
             )
-            Switch(
+            UvpSwitch(
                 checked = layer.enabled,
                 enabled = enabled,
                 onCheckedChange = { onChange(layer.copy(enabled = it)) },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = UvpColor.Primary,
-                    uncheckedThumbColor = Color.White,
-                    uncheckedTrackColor = UvpColor.Border
-                )
             )
             if (hint.isNotEmpty()) {
                 Spacer(Modifier.width(8.dp))

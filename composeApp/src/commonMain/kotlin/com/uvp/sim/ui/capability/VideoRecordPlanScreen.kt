@@ -27,7 +27,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -58,6 +57,7 @@ import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.LocalToastHost
 import com.uvp.sim.ui.PlatformBackHandler
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.UvpSwitch
 import com.uvp.sim.ui.model.RecordSourceDto
 import com.uvp.sim.ui.model.VideoRecordPlanViewDto
 
@@ -425,7 +425,7 @@ private fun SwitchCard(
                     Text("计划录像", color = UvpColor.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                     Text("RecordEnable 0/1", color = UvpColor.TextHint, fontSize = 11.sp)
                 }
-                Switch(checked = enabled, onCheckedChange = onEnabledChange)
+                UvpSwitch(checked = enabled, onCheckedChange = onEnabledChange)
             }
             Text("码流编号 StreamNumber", color = UvpColor.TextSecondary, fontSize = 11.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

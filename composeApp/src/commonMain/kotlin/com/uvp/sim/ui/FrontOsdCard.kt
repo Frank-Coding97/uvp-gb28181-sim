@@ -15,8 +15,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -88,11 +86,10 @@ fun FrontOsdCard(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.fillMaxWidth(0.4f)
             )
-            Switch(
+            UvpSwitch(
                 checked = state.timeEnable == 1,
                 enabled = enabled,
                 onCheckedChange = { onChange(state.copy(timeEnable = if (it) 1 else 0)) },
-                colors = uvpSwitchColors()
             )
         }
         if (state.timeEnable == 1) {
@@ -126,11 +123,10 @@ fun FrontOsdCard(
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.fillMaxWidth(0.4f)
             )
-            Switch(
+            UvpSwitch(
                 checked = state.textEnable == 1,
                 enabled = enabled,
                 onCheckedChange = { onChange(state.copy(textEnable = if (it) 1 else 0)) },
-                colors = uvpSwitchColors()
             )
         }
         if (state.textEnable == 1) {
@@ -219,15 +215,6 @@ private val TIME_TYPE_OPTIONS: List<Pair<Int?, String>> = listOf(
 
 /** 「删除」按钮的强调色。⛔ 别用主题里的语义色做破坏性操作的颜色。 */
 private val DeleteAccent = Color(0xFFE24B4A)
-
-/** 三张卡片共用的 Switch 配色（与 [OsdConfigCard] 保持一致）。 */
-@Composable
-private fun uvpSwitchColors() = SwitchDefaults.colors(
-    checkedThumbColor = Color.White,
-    checkedTrackColor = UvpColor.Primary,
-    uncheckedThumbColor = Color.White,
-    uncheckedTrackColor = UvpColor.Border
-)
 
 /** 原地替换第 [index] 项，返回新列表（[List] 不可变，不能直接赋值）。 */
 private inline fun <T> List<T>.replacing(index: Int, transform: (T) -> T): List<T> =
