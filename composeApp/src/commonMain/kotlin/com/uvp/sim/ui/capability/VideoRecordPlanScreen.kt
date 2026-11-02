@@ -120,7 +120,7 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
     }
 
     Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-        CapabilitySubPageHeader(title = "录像计划", onBack = onBack, meta = "A.2.1.15")
+        CapabilitySubPageHeader(title = "录像计划", onBack = onBack)
 
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
@@ -162,27 +162,16 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 )
             }
 
-            Column(Modifier.padding(horizontal = 4.dp)) {
+            // 常驻规则说明已去掉（页面不再解释标准条款与调度行为，出处见代码注释与 CHANGELOG）；
+            // 只留这条条件告警：真有无效时段时它必须出现，否则用户以为配上了却永远不录。
+            val inert = RecordPlanEvaluator.inertSegmentCount(saved)
+            if (inert > 0) {
                 Text(
-                    "按 GB/T 28181-2022 A.2.1.15 保存：周一~周日最多 7 条计划，每天最多 " +
-                        "${VideoRecordPlanConfig.MAX_SEGMENTS_PER_DAY} 个时段；没有安排的周几整条不发。",
-                    color = UvpColor.TextHint, fontSize = 11.sp, lineHeight = 16.sp,
+                    "⚠️ 有 $inert 个时段结束时间不晚于开始时间，不会生效（跨零点请拆成两段，如 " +
+                        "22:00:00-23:59:59 + 00:00:00-06:00:00）。",
+                    color = UvpColor.Warning, fontSize = 11.sp, lineHeight = 16.sp,
+                    modifier = Modifier.padding(horizontal = 4.dp),
                 )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "到点由设备自己起录/停录（来源记为「计划」），平台 ConfigDownload 回读的也是这一份。" +
-                        "时段内手动停止录像，本时段不再自动恢复，下个时段照常起录。",
-                    color = UvpColor.TextHint, fontSize = 11.sp, lineHeight = 16.sp,
-                )
-                val inert = RecordPlanEvaluator.inertSegmentCount(saved)
-                if (inert > 0) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "⚠️ 有 $inert 个时段结束时间不晚于开始时间，不会生效（跨零点请拆成两段，如 " +
-                            "22:00:00-23:59:59 + 00:00:00-06:00:00）。",
-                        color = UvpColor.Warning, fontSize = 11.sp, lineHeight = 16.sp,
-                    )
-                }
             }
 
             Row(
