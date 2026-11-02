@@ -32,6 +32,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,11 +51,15 @@ import com.uvp.sim.gb28181.RecordSchedule
 import com.uvp.sim.gb28181.RecordTimeSegment
 import com.uvp.sim.gb28181.VideoRecordPlanConfig
 import com.uvp.sim.gb28181.VideoRecordPlanState
+import com.uvp.sim.recording.LocalClockReading
+import com.uvp.sim.recording.LocalWallClock
+import com.uvp.sim.recording.RecordPlanEvaluator
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.LocalToastHost
 import com.uvp.sim.ui.PlatformBackHandler
 import com.uvp.sim.ui.UvpColor
+import com.uvp.sim.ui.model.RecordSourceDto
 import com.uvp.sim.ui.model.VideoRecordPlanViewDto
 
 /**
@@ -80,11 +85,16 @@ import com.uvp.sim.ui.model.VideoRecordPlanViewDto
  *
  * ⛔ 标准**没有**规定 `Stop < Start` 是跨零点还是非法，本页照实记、照实回读，不替平台解释。
  *
- * ## ⚠️ 这一页不会让设备自动录像
+ * ## ✅ 这一页的计划**会真的自动录像**
  *
- * 标准只规定这份配置的**结构与回读形态**，不规定设备要不要照它起停录像。本仓当前只做
- * 「记账 + 回读给平台」，不接录像调度。页面底部把这条说明写在明面上，避免运维以为
- * 配了计划就会自动录。
+ * 保存后由 `RecordPlanScheduler`（shared，每 10 秒判定一次）按计划起停录像，录像来源记为
+ * [RecordSourceDto.Schedule]（列表里显示「计划」）。三条行为边界写在这里，省得被当成 bug：
+ *  - 计划只停**自己起的**那段录像，用户手动录着的时候不抢占、结束时也不去停
+ *  - 时段内被手动停止，本时段不再自动恢复（否则界面像"停止按钮失灵"），下个时段照常
+ *  - `stop <= start` 的时段不参与调度（不猜"跨零点"，跨零点请拆两段），页面会提示
+ *
+ * ⚠️ 调度依赖 App 进程在跑（正在录时有前台 Service 拉活）。App 被杀掉后不会像真 IPC 那样
+ * 自己开机重录，重新打开 App 会在 10 秒内自愈。
  */
 @Composable
 fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) {
@@ -130,6 +140,7 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
         ) {
             Spacer(Modifier.height(2.dp))
             SummaryCard(view = view, draft = draft)
+            RuntimeStatusCard(state = state, saved = saved)
             SwitchCard(
                 enabled = draft.recordEnable == 1,
                 streamNumber = draft.streamNumber,
@@ -166,9 +177,19 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "⚠️ 这里只保存配置并供平台 ConfigDownload 回读，不会让设备按计划自动启停录像。",
-                    color = UvpColor.Warning, fontSize = 11.sp, lineHeight = 16.sp,
+                    "到点由设备自己起录/停录（来源记为「计划」），平台 ConfigDownload 回读的也是这一份。" +
+                        "时段内手动停止录像，本时段不再自动恢复，下个时段照常起录。",
+                    color = UvpColor.TextHint, fontSize = 11.sp, lineHeight = 16.sp,
                 )
+                val inert = RecordPlanEvaluator.inertSegmentCount(saved)
+                if (inert > 0) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "⚠️ 有 $inert 个时段结束时间不晚于开始时间，不会生效（跨零点请拆成两段，如 " +
+                            "22:00:00-23:59:59 + 00:00:00-06:00:00）。",
+                        color = UvpColor.Warning, fontSize = 11.sp, lineHeight = 16.sp,
+                    )
+                }
             }
 
             Row(
@@ -263,6 +284,139 @@ private fun SummaryCard(view: VideoRecordPlanViewDto, draft: VideoRecordPlanStat
         }
     }
 }
+
+/**
+ * 运行状态：**这一份计划现在到底有没有在录**。
+ *
+ * ⛔ 判定用 [saved]（已保存生效的那份），不是用户手里的草稿 —— 自动录像只认已保存的计划，
+ * 拿草稿算会出现"页面说马上到点，实际设备按旧计划在走"的错觉。所以右上角明写"按已保存的计划"。
+ *
+ * 判定逻辑调的是 shared 里**同一个** [RecordPlanEvaluator]，与调度器共用一套规则：
+ * 页面说"正在录"而设备没录这种事，只会发生在两侧各算一遍的时候。
+ *
+ * 每 20 秒刷新一次本机时间：页面开着时"距结束还有多久"要能走字，到点起录也能在 20 秒内反映出来。
+ * 20 秒而不是 1 秒，是因为这一屏不承担秒表职责（录像 tab 有专门的计时器）。
+ */
+@Composable
+private fun RuntimeStatusCard(state: AppUiState, saved: VideoRecordPlanState) {
+    var now: LocalClockReading by remember { mutableStateOf(LocalWallClock.now()) }
+    LaunchedEffect(saved) {
+        while (true) {
+            now = LocalWallClock.now()
+            kotlinx.coroutines.delay(20_000)
+        }
+    }
+
+    val slot = RecordPlanEvaluator.activeSlot(saved, now)
+    val recording = state.recording
+    // 「计划自己起的」与「别人起的」必须分开：前者会随计划停，后者计划不插手。
+    val planRecording = recording.isRecording && recording.source == RecordSourceDto.Schedule
+    val otherRecording = recording.isRecording && recording.source != RecordSourceDto.Schedule
+
+    val tone: Color
+    val title: String
+    val detail: String
+    when {
+        saved.recordEnable != 1 -> {
+            tone = UvpColor.TextHint
+            title = "计划录像未启用"
+            detail = "打开下面的开关并保存后，到点会自动起录、到点自动停。"
+        }
+        planRecording -> {
+            tone = UvpColor.Danger
+            title = "正在按计划录像"
+            detail = slot?.let {
+                "本段 ${it.segment.displayLabel} · 距结束 ${formatGap(it.stopSeconds - now.secondsOfDay)}"
+            } ?: "本段已结束，正在写文件尾"
+        }
+        otherRecording -> {
+            tone = UvpColor.Warning
+            title = "录像进行中（${otherSourceLabel(recording.source)}）"
+            detail = slot?.let {
+                "本时段 ${it.segment.displayLabel} 的计划先让给这段录像；它停了之后计划会接管。"
+            } ?: "本时段计划让给这段录像。"
+        }
+        slot != null -> {
+            tone = UvpColor.Warning
+            title = "本时段未在录像"
+            detail = "被手动停止过？本时段不会自动恢复，下个时段照常起录。"
+        }
+        else -> {
+            val next = RecordPlanEvaluator.nextStart(saved, now)
+            tone = UvpColor.TextHint
+            if (next == null) {
+                title = "本周没有可执行的时段"
+                detail = "检查计划，或确认每个时段的结束时间都晚于开始时间。"
+            } else {
+                title = "待机"
+                detail = "下次 ${dayOffsetLabel(next.dayOffset)} ${formatHms(next.secondsOfDay)} · " +
+                    "还差 ${formatGap(next.dayOffset * 86400 + next.secondsOfDay - now.secondsOfDay)}"
+            }
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        color = UvpColor.Surface,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                Modifier
+                    .padding(top = 5.dp)
+                    .size(8.dp)
+                    .background(tone, RoundedCornerShape(4.dp)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, color = UvpColor.Text, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                if (detail.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(detail, color = UvpColor.TextHint, fontSize = 11.sp, lineHeight = 16.sp)
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("按已保存的计划", color = UvpColor.TextHint, fontSize = 10.sp)
+        }
+    }
+}
+
+private fun otherSourceLabel(source: RecordSourceDto?): String = when (source) {
+    RecordSourceDto.PlatformCmd -> "平台指令"
+    RecordSourceDto.Schedule -> "计划"
+    RecordSourceDto.Manual, null -> "手动"
+}
+
+/** 当天第几秒 → `HH:mm:ss`。 */
+private fun formatHms(secondsOfDay: Int): String {
+    val s = secondsOfDay.coerceIn(0, 86_399)
+    return "${pad2(s / 3600)}:${pad2((s % 3600) / 60)}:${pad2(s % 60)}"
+}
+
+/** 剩余时长的人读串（不显示秒：这一屏不是秒表）。 */
+private fun formatGap(seconds: Int): String {
+    val s = seconds.coerceAtLeast(0)
+    if (s < 60) return "不到 1 分钟"
+    val days = s / 86_400
+    val hours = (s % 86_400) / 3600
+    val minutes = (s % 3600) / 60
+    return when {
+        days > 0 -> "$days 天 $hours 小时"
+        hours > 0 -> "$hours 小时 $minutes 分"
+        else -> "$minutes 分"
+    }
+}
+
+private fun dayOffsetLabel(dayOffset: Int): String = when (dayOffset) {
+    0 -> "今天"
+    1 -> "明天"
+    else -> "$dayOffset 天后"
+}
+
+private fun pad2(value: Int): String = value.toString().padStart(2, '0')
 
 /** 启用开关 + 码流编号（`RecordEnable` / `StreamNumber`）。 */
 @Composable

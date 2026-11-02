@@ -205,6 +205,11 @@ fun CapabilityScreen(
                     "${recordPlan.dayCount} 天 · ${recordPlan.segmentCount} 段"
                 } else "未配置",
                 status = when {
+                    // 计划正在驱动录像 —— 这条比"已启用"更值得先说：现场一眼要能确认
+                    // 「计划真的在录」，而不是「配置是启用的」。
+                    state.recording.isRecording &&
+                        state.recording.source == com.uvp.sim.ui.model.RecordSourceDto.Schedule ->
+                        TileStatus.Active("计划录像中")
                     recordPlan.configured && recordPlan.enabled -> TileStatus.Active(
                         if (recordPlan.streamNumber == 0) "已启用 · 主码流"
                         else "已启用 · 子码流${recordPlan.streamNumber}"

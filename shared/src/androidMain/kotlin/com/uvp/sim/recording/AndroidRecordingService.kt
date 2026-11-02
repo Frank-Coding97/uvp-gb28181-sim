@@ -412,7 +412,9 @@ class AndroidRecordingService(
             }
             if (isSplit) {
                 activeSegmentIndex += 1
-                val resumeResult = runCatching { start(source, channel) }
+                // ⛔ 接力必须带上 streamNumber：切片是同一段录像的延续，丢掉码流号会让
+                // 「计划/平台按子码流录」的后半段变成主码流，RecordInfo 回读时前后自相矛盾。
+                val resumeResult = runCatching { start(source, channel, streamNumber) }
                 if (resumeResult.isFailure) {
                     pendingSegmentSplit = false
                     SystemLogger.emit(

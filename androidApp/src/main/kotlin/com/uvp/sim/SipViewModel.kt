@@ -218,6 +218,9 @@ class SipViewModel @JvmOverloads constructor(
         // 之后,否则 wireRecordingService 触发 state collector emit → 写 _recordingState 时 NPE。
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
             appEngine.ensureMediaBuilt()
+            // 录像计划调度器必须在 recordingService 装配之后起（它要调 svc.start/stop）。
+            // 幂等，且故意不放进 ensureMediaBuilt 内部 —— 见 AppEngine.startRecordPlanScheduler 注释。
+            appEngine.startRecordPlanScheduler()
             val svc = appEngine.currentRecordingService()
             if (svc != null) {
                 // wireRecordingService 里有 viewModelScope.launch 会自己切回 main,

@@ -3,11 +3,22 @@ package com.uvp.sim.recording
 import kotlinx.serialization.Serializable
 
 /**
- * 录像来源:用户手动 / 平台 RecordCmd 下发。
- * 仅元数据用,UI 不区分显示。
+ * 录像来源:用户手动 / 平台 RecordCmd 下发 / 设备按本机录像计划自动起录。
+ *
+ * [Schedule] 是本仓新增的第三种来源(2026-11-02)—— GB/T 28181-2022 A.2.1.15 的
+ * `VideoRecordPlan` 到点由设备自己开录,既不是用户点的,也不是平台 `RecordCmd` 点名的。
+ *
+ * ⚠️ 三种来源在**行为**上还有一层差别,别混:
+ *   - [Manual] / [PlatformCmd]:外力起、外力停,设备侧不做任何自主判断
+ *   - [Schedule]:设备自己的策略在跑 —— 时段内被外力停掉会被调度器重新拉起(见
+ *     `RecordPlanScheduler`),因为"时段内一定在录"才是运维能验证的语义
+ *
+ * ⚠️ 序列化:`index.json` 里存的是枚举名。新增值对**旧文件**解码无影响(旧数据里
+ * 只有前两个值);反过来新文件被**旧版本 App** 读会整份索引退化空(`RecordingIndex.decode`
+ * 兜住不崩,但列表会空)。属已知降级,不为此保留兼容分支。
  */
 @Serializable
-enum class RecordSource { Manual, PlatformCmd }
+enum class RecordSource { Manual, PlatformCmd, Schedule }
 
 /**
  * GB/T 28181 RecordInfo 录像类型。

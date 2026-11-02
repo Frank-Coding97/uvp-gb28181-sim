@@ -108,6 +108,9 @@ class AppEngine(
     @Volatile private var cameraCapture: com.uvp.sim.camera.CameraCapture? = null
     @Volatile private var audioCapture: com.uvp.sim.camera.AudioCapture? = null
     @Volatile private var recordingService: com.uvp.sim.recording.RecordingService? = null
+
+    /** 录像计划调度器（[ensureMediaBuilt] 里起一次，跟 App 同生命）。 */
+    @Volatile private var recordPlanScheduler: com.uvp.sim.recording.RecordPlanScheduler? = null
     /** OSD config supplier — 默认从内部维护,SipViewModel 注入跟随 SimConfig.osd + currentChannelName 派生流。 */
     @Volatile private var osdConfigFlowProvider: () -> kotlinx.coroutines.flow.StateFlow<com.uvp.sim.config.OsdConfig> =
         { kotlinx.coroutines.flow.MutableStateFlow(initialConfig.osd).asStateFlow() }
@@ -571,6 +574,47 @@ class AppEngine(
     }
 
     /**
+     * 启动「按录像计划自动起停录像」的调度器（GB/T 28181-2022 A.2.1.15）。
+     *
+     * ⛔ 由平台壳（`SipViewModel` / `IosAppHost`）在 [ensureMediaBuilt] **之后**显式调一次，
+     * 不从 [ensureMediaBuilt] 里自动拉起：那个方法在单元测试里也会被调，而调度器是个
+     * 「永不结束的 while + delay」协程 —— 在 `runTest` 里挂上它，测试会因为"还有未完成的
+     * 子任务"卡到超时。启动时机写在调用方，测试路径就完全不受影响。
+     *
+     * 幂等：重复调用不会起第二个循环。
+     *
+     * 挂在 [engineScope]（跟 App 同生命），`planProvider` 每次 tick 现读 `deviceControlState`
+     * —— 平台下发与本地保存写的是同一份 `videoRecordPlan`，所以两个入口改计划都能立刻被
+     * 调度器看到，不需要额外通知。
+     *
+     * ⛔ 起录用 [com.uvp.sim.recording.RecordSource.Schedule]：录像列表要靠它把
+     * 「计划录的」与「人点的」分开，调度器也靠它判断"这段是不是我自己起的"，
+     * 从而绝不去停用户手动录的那一段。
+     */
+    fun startRecordPlanScheduler() {
+        if (recordPlanScheduler != null) return
+        recordPlanScheduler = com.uvp.sim.recording.RecordPlanScheduler(
+            scope = engineScope,
+            planProvider = {
+                holders.deviceControlState.value.deviceConfigs.effectiveVideoRecordPlan(_config.value)
+            },
+            recordingState = {
+                recordingService?.state?.value ?: com.uvp.sim.recording.RecordingState.Idle
+            },
+            onStart = { streamNumber ->
+                val svc = recordingService
+                    ?: return@RecordPlanScheduler Result.failure(IllegalStateException("录像服务未装配"))
+                svc.start(
+                    com.uvp.sim.recording.RecordSource.Schedule,
+                    _config.value.device.videoChannelId,
+                    streamNumber,
+                )
+            },
+            onStop = { recordingService?.stop() ?: Result.success(null) },
+        ).also { it.start() }
+    }
+
+    /**
      * SipViewModel 启动期注入 OSD 配置 supplier(跟 SimConfig.osd + currentChannelName 派生流)。
      * 必须在 connect / videoConfig 变更前调,否则录像 / 推流 OSD 文字会用 default。
      */
@@ -756,6 +800,9 @@ class AppEngine(
         holders.deviceControlState.update { model ->
             model.withDeviceConfig { it.copy(videoRecordPlan = state) }
         }
+        // 保存即生效：立刻重算一次，别让现场等最多一个 tick（10 秒）才看到录像起/停。
+        // kick 是幂等的（没有循环在跑就只是往无缓冲的流里丢一个信号），不必判空。
+        recordPlanScheduler?.kick()
     }
     suspend fun pushCatalogNotify() { engine?.pushCatalogNotify() }
     suspend fun pushCatalogIncremental(events: List<CatalogChangeEvent>) { engine?.pushCatalogIncremental(events) }

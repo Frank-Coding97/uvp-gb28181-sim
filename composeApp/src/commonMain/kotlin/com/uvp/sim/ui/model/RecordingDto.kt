@@ -1,7 +1,7 @@
 package com.uvp.sim.ui.model
 
 /** 录像来源 DTO. 1:1 映射 com.uvp.sim.recording.RecordSource. */
-enum class RecordSourceDto { Manual, PlatformCmd }
+enum class RecordSourceDto { Manual, PlatformCmd, Schedule }
 
 /**
  * UI 层 录像文件 DTO. 1:1 映射 com.uvp.sim.recording.RecordingFile.

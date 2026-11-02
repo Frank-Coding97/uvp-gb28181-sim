@@ -447,6 +447,8 @@ fun IosApp() {
     // (跟 androidApp/SipViewModel.wireRecordingService 对齐,那边 line 264 也是这么做)。
     LaunchedEffect(Unit) {
         engine.ensureMediaBuilt()
+        // 录像计划调度器（A.2.1.15）：装配完 recordingService 才能起，幂等。
+        engine.startRecordPlanScheduler()
         val svc = engine.currentRecordingService() ?: return@LaunchedEffect
         runCatching { svc.load() }
         launch { svc.state.collect { recordingState = it } }

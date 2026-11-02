@@ -115,6 +115,7 @@ internal fun buildRecordingListModel(
 internal fun RecordSourceDto.label(): String = when (this) {
     RecordSourceDto.Manual -> "手动"
     RecordSourceDto.PlatformCmd -> "平台"
+    RecordSourceDto.Schedule -> "计划"
 }
 
 internal fun RecordingFilter.applyToDto(files: List<RecordingFileDto>): List<RecordingFileDto> {
