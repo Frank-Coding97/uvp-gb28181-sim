@@ -10,16 +10,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -72,14 +65,7 @@ fun ClockSyncScreen(state: AppUiState, actions: AppActions, onBack: () -> Unit) 
     }
 
     Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, "返回", tint = UvpColor.Text) }
-            Spacer(Modifier.width(4.dp))
-            Text("设备校时", color = UvpColor.Text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-        }
+        CapabilitySubPageHeader(title = "设备校时", onBack = onBack)
 
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),

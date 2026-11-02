@@ -17,14 +17,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -109,23 +107,12 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
         modifier = Modifier.fillMaxSize().background(UvpColor.Bg)
     ) {
         // 工具栏
-        Surface(color = UvpColor.Surface) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                    Icon(Icons.Outlined.ArrowBack, "返回", tint = UvpColor.Text, modifier = Modifier.size(20.dp))
-                }
-                Text("报警", color = UvpColor.Text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(start = 4.dp))
-                Spacer(Modifier.weight(1f))
-                if (isAlarming) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(UvpColor.Warning))
-                        Spacer(Modifier.width(4.dp))
-                        Text("报警中", fontSize = 11.sp, color = UvpColor.Warning)
-                    }
+        CapabilitySubPageHeader(title = "报警", onBack = onBack) {
+            if (isAlarming) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(6.dp).clip(RoundedCornerShape(3.dp)).background(UvpColor.Warning))
+                    Spacer(Modifier.width(4.dp))
+                    Text("报警中", fontSize = 11.sp, color = UvpColor.Warning)
                 }
             }
         }

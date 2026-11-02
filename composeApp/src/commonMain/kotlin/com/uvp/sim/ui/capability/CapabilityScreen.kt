@@ -17,14 +17,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Movie
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.ViewInAr
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -344,30 +341,7 @@ private fun RecordingSubScreen(state: AppUiState, actions: AppActions, onBack: (
             .fillMaxSize()
             .background(UvpColor.Bg)
     ) {
-        Surface(color = UvpColor.Surface) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                    Icon(
-                        Icons.Outlined.ArrowBack,
-                        contentDescription = "返回",
-                        tint = UvpColor.Text,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-                Text(
-                    "录像列表",
-                    color = UvpColor.Text,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(start = 4.dp)
-                )
-            }
-        }
+        CapabilitySubPageHeader(title = "录像列表", onBack = onBack)
         com.uvp.sim.ui.RecordingScreen(state = state, actions = actions, modifier = Modifier.weight(1f))
     }
 }

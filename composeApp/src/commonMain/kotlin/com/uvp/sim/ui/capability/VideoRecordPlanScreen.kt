@@ -21,7 +21,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -121,18 +120,7 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
     }
 
     Column(modifier = Modifier.fillMaxSize().background(UvpColor.Bg)) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onBack) {
-                Icon(Icons.Outlined.ArrowBack, "返回", tint = UvpColor.Text)
-            }
-            Spacer(Modifier.width(4.dp))
-            Text("录像计划", color = UvpColor.Text, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
-            Text("A.2.1.15", color = UvpColor.TextHint, fontSize = 11.sp)
-        }
+        CapabilitySubPageHeader(title = "录像计划", onBack = onBack, meta = "A.2.1.15")
 
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()),
