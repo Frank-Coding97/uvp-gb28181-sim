@@ -22,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -52,6 +54,7 @@ import com.uvp.sim.gb28181.VideoRecordPlanState
 import com.uvp.sim.recording.LocalClockReading
 import com.uvp.sim.recording.LocalWallClock
 import com.uvp.sim.recording.RecordPlanEvaluator
+import com.uvp.sim.recording.RecordPlanGrid
 import com.uvp.sim.ui.AppActions
 import com.uvp.sim.ui.AppUiState
 import com.uvp.sim.ui.LocalToastHost
@@ -143,23 +146,43 @@ fun VideoRecordPlanScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 onStreamChange = { number -> draft = draft.copy(streamNumber = number) },
             )
 
-            Text(
-                "每周计划",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Medium,
-                color = UvpColor.TextHint,
-                modifier = Modifier.padding(start = 16.dp, top = 2.dp),
+            RecordPlanGridCard(
+                schedules = draft.schedules,
+                onDaySegmentsChange = { day, segments -> setDay(day, segments) },
+                onLimitReached = {
+                    toast.error("每天最多 ${VideoRecordPlanConfig.MAX_SEGMENTS_PER_DAY} 个时段")
+                },
             )
 
-            for (day in 1..7) {
-                DayCard(
-                    weekDayNum = day,
-                    segments = draft.schedules.firstOrNull { it.weekDayNum == day }?.segments.orEmpty(),
-                    onSegmentsChange = { segments -> setDay(day, segments) },
-                    onLimitReached = {
-                        toast.error("每天最多 ${VideoRecordPlanConfig.MAX_SEGMENTS_PER_DAY} 个时段")
-                    },
-                )
+            // 精确时段：网格是 30 分钟粒度，平台下发的秒级时段在网格上会被对齐显示。
+            // 这一块是"看得见原件"的入口，默认收起；存在无法被网格精确表达的段时自动展开，
+            // 否则用户看到网格和时间对不上会以为改了数据。
+            val offGrid = draft.schedules.sumOf { RecordPlanGrid.offGridCount(it.segments) }
+            var showPrecise by remember(view) { mutableStateOf(offGrid > 0) }
+
+            PrecisionToggle(
+                expanded = showPrecise,
+                offGridCount = offGrid,
+                onToggle = { showPrecise = !showPrecise },
+            )
+
+            if (showPrecise) {
+                // ⛔ 7 天全列，不能只列已有段的周几：网格是 30 分钟粒度，想直接给某个空白天
+                // 加一条 08:07:30 这类非整段时，它在这份草稿里根本还不存在。早前按
+                // `draft.schedules` 遍历，空白天在精确区里连入口都没有，等于把"改到秒"这条
+                // 能力锁在"先在网格上涂一格"之后。
+                for (day in 1..7) {
+                    val daySegments = draft.schedules
+                        .firstOrNull { it.weekDayNum == day }?.segments.orEmpty()
+                    DayCard(
+                        weekDayNum = day,
+                        segments = daySegments,
+                        onSegmentsChange = { segments -> setDay(day, segments) },
+                        onLimitReached = {
+                            toast.error("每天最多 ${VideoRecordPlanConfig.MAX_SEGMENTS_PER_DAY} 个时段")
+                        },
+                    )
+                }
             }
 
             // 常驻规则说明已去掉（页面不再解释标准条款与调度行为，出处见代码注释与 CHANGELOG）；
@@ -486,6 +509,45 @@ private fun StreamChip(
     }
 }
 
+/**
+ * 「精确时段」折叠入口。
+ *
+ * 网格只有 30 分钟粒度，平台下发的秒级时段（如 `08:07:30-12:33:15`）在网格上会被
+ * 向外吸附显示。这一块用来把**原件**露出来：用户看到网格和时间对不上时能查到原因，
+ * 也能在这里改到秒。存在这种段时标题右侧用橙色标出数量，并默认展开。
+ */
+@Composable
+private fun PrecisionToggle(expanded: Boolean, offGridCount: Int, onToggle: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        color = UvpColor.Surface,
+        shape = RoundedCornerShape(8.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggle)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("精确时段", color = UvpColor.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (offGridCount > 0) "$offGridCount 段不在 30 分钟边界" else "可改到秒",
+                color = if (offGridCount > 0) UvpColor.Warning else UvpColor.TextHint,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.weight(1f))
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = if (expanded) "收起" else "展开",
+                tint = UvpColor.TextHint,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
 /** 某一天的卡片：标题 + 已有时间段 + 添加按钮。 */
 @Composable
 private fun DayCard(
@@ -649,7 +711,7 @@ private fun NumberBox(value: Int, max: Int, onChange: (Int) -> Unit) {
 
 private val STREAM_LABELS = listOf("主码流", "子码流1", "子码流2", "子码流3")
 
-private fun weekdayLabel(weekDayNum: Int): String = when (weekDayNum) {
+internal fun weekdayLabel(weekDayNum: Int): String = when (weekDayNum) {
     1 -> "周一"
     2 -> "周二"
     3 -> "周三"
