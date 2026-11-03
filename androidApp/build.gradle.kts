@@ -30,8 +30,8 @@ val hasReleaseSigning = keystoreFile.exists() && missingKeystoreFields.isEmpty()
 
 // Release CI passes the version from the Git tag. Local builds keep the
 // checked-in values so contributors can continue to build without extra flags.
-val configuredVersionName = providers.gradleProperty("uvpVersionName").orNull ?: "1.0.10"
-val configuredVersionCode = providers.gradleProperty("uvpVersionCode").orNull?.toIntOrNull() ?: 10010
+val configuredVersionName = providers.gradleProperty("uvpVersionName").orNull ?: "1.0.11"
+val configuredVersionCode = providers.gradleProperty("uvpVersionCode").orNull?.toIntOrNull() ?: 10011
 require(Regex("\\d+\\.\\d+\\.\\d+").matches(configuredVersionName)) {
     "uvpVersionName must be MAJOR.MINOR.PATCH, got: $configuredVersionName"
 }
