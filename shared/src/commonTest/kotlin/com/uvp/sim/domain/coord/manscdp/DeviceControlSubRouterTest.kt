@@ -441,7 +441,10 @@ class DeviceControlSubRouterTest {
             val sumNum = Regex("<SumNum>(\\d+)</SumNum>").find(body)!!.groupValues[1].toInt()
             val itemCount = Regex("<Item>").findAll(body).count()
             assertEquals(sumNum, itemCount, "seed=$seed 时 SumNum 与 Item 数不符: $body")
-            assertEquals(sumNum == 0, !body.contains("<SDCardStatusInfo>"), "0 张卡时不能带 SDCardStatusInfo: $body")
+            assertEquals(sumNum == 0, !body.contains("<SDCardStatusInfo"), "0 张卡时不能带 SDCardStatusInfo: $body")
+            if (sumNum > 0) {
+                assertTrue(body.contains("<SDCardStatusInfo Num=\"$sumNum\">"), "A.2.6.16 必选 Num 必须与 Item 数一致: $body")
+            }
             // 每张卡的五项必选字段齐全,且 FreeSpace 不该超过 Capacity。
             Regex("<Item>(.*?)</Item>", RegexOption.DOT_MATCHES_ALL).findAll(body).forEach { match ->
                 val item = match.groupValues[1]
