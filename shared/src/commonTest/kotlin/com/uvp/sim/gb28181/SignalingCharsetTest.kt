@@ -49,6 +49,54 @@ class SignalingCharsetTest {
         assertEquals(SignalingCharset.GB18030, SignalingCharset.of(GbVersion.V2022))
     }
 
+    // ---------------------------------------------------------------- 手动覆盖(设备配置页单选)
+
+    @Test fun isAvailableFor_followsVersionConstraint() {
+        // 2016:GB2312 可选、GB18030 禁用;2022:GB18030 可选、GB2312 禁用;UTF-8 恒可选
+        assertTrue(SignalingCharset.GB2312.isAvailableFor(GbVersion.V2016))
+        assertFalse(SignalingCharset.GB18030.isAvailableFor(GbVersion.V2016))
+        assertTrue(SignalingCharset.GB18030.isAvailableFor(GbVersion.V2022))
+        assertFalse(SignalingCharset.GB2312.isAvailableFor(GbVersion.V2022))
+        assertTrue(SignalingCharset.UTF8.isAvailableFor(GbVersion.V2016))
+        assertTrue(SignalingCharset.UTF8.isAvailableFor(GbVersion.V2022))
+    }
+
+    @Test fun effective_nullFollowsVersionDefault() {
+        assertEquals(SignalingCharset.GB2312, SignalingCharset.effective(GbVersion.V2016, null))
+        assertEquals(SignalingCharset.GB18030, SignalingCharset.effective(GbVersion.V2022, null))
+    }
+
+    @Test fun effective_utf8OverrideAppliesUnderBothVersions() {
+        // 逃逸口:存量厂商实际发 UTF-8,两个版本下手动指定都恒生效
+        assertEquals(SignalingCharset.UTF8, SignalingCharset.effective(GbVersion.V2016, SignalingCharset.UTF8))
+        assertEquals(SignalingCharset.UTF8, SignalingCharset.effective(GbVersion.V2022, SignalingCharset.UTF8))
+    }
+
+    @Test fun effective_unavailableOverrideFallsBackToVersionDefault() {
+        // 版本切换后的存量脏值(2016 存了 GB18030 / 2022 存了 GB2312)按版本默认兜底,不出脏报文
+        assertEquals(SignalingCharset.GB2312, SignalingCharset.effective(GbVersion.V2016, SignalingCharset.GB18030))
+        assertEquals(SignalingCharset.GB18030, SignalingCharset.effective(GbVersion.V2022, SignalingCharset.GB2312))
+    }
+
+    @Test fun buildMessage_utf8OverrideChangesDeclarationAndBytes() {
+        // 防回归:配置页选 UTF-8 后,出站报文声明与字节必须真的换 —— 而不是只有 UI 状态变了
+        val xml = "<Response><Name>海康威视</Name></Response>"
+        val req = SipBuilders.buildMessage(
+            config = cfg(GbVersion.V2022).copy(
+                signalingCharsetOverride = SignalingCharset.UTF8,
+            ),
+            cseq = 1, callId = "c1", branch = "z9hG4bK1", fromTag = "ft",
+            localIp = "10.0.0.10", localPort = 5060,
+            xmlBody = xml,
+            charset = SignalingCharset.effective(GbVersion.V2022, SignalingCharset.UTF8),
+        )
+        assertEquals(SignalingCharset.UTF8, declaredSignalingCharset(req.body))
+        // 字节必须是真 UTF-8(按 GBK 解会乱码),且声明与字节一致
+        assertTrue(req.body.toString(Charsets.ISO_8859_1).contains("encoding=\"UTF-8\""))
+        assertTrue(req.body.decodeToString().contains("海康威视"))
+        assertFalse(decodeSignalingText(req.body, SignalingCharset.GB2312).contains("海康威视"))
+    }
+
     @Test fun parse_acceptsSameAliasesAsPlatform() {
         // 别名表必须与平台 manscdp.canonicalCharset 对齐,否则会出现"本端声明 GBK、平台不认"
         listOf("GB2312", "gb2312", "GBK", "CP936", "MS936", "WINDOWS-936", "GB_2312-80")

@@ -10,7 +10,6 @@ import com.uvp.sim.domain.withStorageCardQuery
 import com.uvp.sim.gb28181.ManscdpParser
 import com.uvp.sim.gb28181.PresetQueryResponse
 import com.uvp.sim.gb28181.PtzPreciseStatusResponse
-import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -217,7 +216,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "DeviceControl Response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
     }
@@ -273,7 +272,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "DeviceConfig Response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
     }
@@ -295,7 +294,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "PresetQuery response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         // ⛔ 这里原来写死 "(空清单)" —— 而且**不管实际发了什么都这么打**。
@@ -333,7 +332,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "PTZPosition response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(
@@ -383,7 +382,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "HomePositionQuery response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(
@@ -434,7 +433,7 @@ internal class DeviceControlSubRouter(
             append("<SumNum>${cards.size}</SumNum>\r\n")
             // 0 张卡是合法结果：SumNum=0 且**不带** SDCardStatusInfo 节点。
             if (cards.isNotEmpty()) {
-                append("<SDCardStatusInfo>\r\n")
+                append("<SDCardStatusInfo Num=\"${cards.size}\">\r\n")
                 cards.zip(readings).forEach { (card, reading) ->
                     append("<Item>\r\n")
                     append("<ID>${card.id}</ID>\r\n")
@@ -456,7 +455,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "SDCardStatus response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(
@@ -501,7 +500,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "CruiseTrackList response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(LogLevel.Info, LogTag.Network, "CruiseTrackList sn=$sn N=$sumNum → 已应答")
@@ -548,7 +547,7 @@ internal class DeviceControlSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "CruiseTrack response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) {

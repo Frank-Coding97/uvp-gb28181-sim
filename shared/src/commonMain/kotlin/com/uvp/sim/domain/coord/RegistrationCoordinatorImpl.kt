@@ -814,8 +814,11 @@ internal class RegistrationCoordinatorImpl(
                 localPort = localPortProvider(),
                 // 心跳报文体是纯 ASCII,取值只影响 XML 声明那个标签;但仍按**有效版本**出站,
                 // 免得"对面是 2016 却声明 GB18030"这种口径分裂(§6.10)。
-                charset = SignalingCharset.of(
+                // 覆盖(signalingCharsetOverride)同样要叠加 —— 用户选了 UTF-8 后所有出站
+                // 报文的声明必须一起换,心跳也不能漏。
+                charset = SignalingCharset.effective(
                     GbVersionNegotiation.effective(config.gbVersion, _platformVersion.value),
+                    config.signalingCharsetOverride,
                 ),
             )
             try {

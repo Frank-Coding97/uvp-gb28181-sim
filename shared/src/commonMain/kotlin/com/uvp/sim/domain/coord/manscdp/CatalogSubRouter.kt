@@ -13,7 +13,6 @@ import com.uvp.sim.gb28181.MobilePositionResponse
 import com.uvp.sim.gb28181.RecordInfoNotify
 import com.uvp.sim.gb28181.RecordInfoQuery
 import com.uvp.sim.gb28181.RecordInfoQueryRequest
-import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.gb28181.VideoParamAttribute
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
@@ -110,7 +109,7 @@ internal class CatalogSubRouter(
                 localIp = ctx.localIp, localPort = ctx.localPort,
                 xmlBody = xmlBody,
                 errorLabel = "Catalog response",
-                charset = SignalingCharset.of(ctx.effectiveGbVersion),
+                charset = ctx.outboundCharset,
                 simEventEmit = ctx.simEventEmit,
             )
             if (!sent) break
@@ -173,7 +172,7 @@ internal class CatalogSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "DeviceInfo response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(LogLevel.Info, LogTag.Network, "平台查询 DeviceInfo → 已应答 sn=$sn")
@@ -200,7 +199,7 @@ internal class CatalogSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "DeviceStatus response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(
@@ -231,7 +230,7 @@ internal class CatalogSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "ConfigDownload response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(
@@ -339,7 +338,7 @@ internal class CatalogSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "MobilePosition response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(
@@ -434,7 +433,7 @@ internal class CatalogSubRouter(
                 localIp = ctx.localIp, localPort = ctx.localPort,
                 xmlBody = xmlBody,
                 errorLabel = "RecordInfo",
-                charset = SignalingCharset.of(ctx.effectiveGbVersion),
+                charset = ctx.outboundCharset,
                 simEventEmit = ctx.simEventEmit,
             )
             if (!sent) break

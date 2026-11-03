@@ -55,6 +55,12 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
     val scroll = rememberScrollState()
 
     var gbVersion by remember(state.config) { mutableStateOf(state.config.gbVersion) }
+    // 字符集单选态:null 覆盖 → 版本默认(2016→GB2312 / 2022→GB18030),否则用存储的覆盖
+    var charsetSel by remember(state.config) {
+        mutableStateOf(
+            state.config.signalingCharsetOverride ?: SignalingCharset.of(state.config.gbVersion)
+        )
+    }
     var name by remember(state.config) { mutableStateOf(state.config.device.name) }
     var expires by remember(state.config) {
         mutableStateOf(state.config.expiresSeconds.toString())
@@ -82,16 +88,27 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
             GbVersionSelector(
                 selected = gbVersion,
                 enabled = !locked,
-                onSelect = { gbVersion = it }
+                onSelect = { v ->
+                    gbVersion = v
+                    // 切版本后原选中项可能被禁用(2016↔2022 各自只认自己的国标编码)→ 回落版本默认
+                    if (!charsetSel.isAvailableFor(v)) charsetSel = SignalingCharset.of(v)
+                }
             )
             NegotiatedVersionRow(
                 declared = gbVersion,
                 platform = state.platformGbVersion,
                 registered = locked,
             )
+            SignalingCharsetSelector(
+                selected = charsetSel,
+                version = gbVersion,
+                enabled = !locked,
+                onSelect = { charsetSel = it },
+            )
             SignalingCharsetRow(
                 declared = gbVersion,
                 platform = state.platformGbVersion,
+                override = charsetSel.takeIf { it != SignalingCharset.of(gbVersion) },
             )
             AddressTranslationRow(
                 observation = state.rportObservation,
@@ -179,6 +196,8 @@ fun DeviceConfigScreen(state: AppUiState, actions: AppActions) {
                 actions.onConfigSave(
                     state.config.copy(
                         gbVersion = gbVersion,
+                        // 与版本默认相同 → 存 null(跟版本走),否则存显式覆盖
+                        signalingCharsetOverride = charsetSel.takeIf { it != SignalingCharset.of(gbVersion) },
                         device = state.config.device.copy(
                             name = name,
                             manufacturer = manufacturer,
@@ -313,28 +332,84 @@ private fun NegotiatedVersionRow(declared: GbVersion, platform: GbVersion?, regi
 }
 
 /**
- * 信令字符集(GB/T 28181 §6.10)的**只读**展示。
+ * 信令字符集(GB/T 28181 §6.10)单选 —— 三个选项平铺,按当前国标版本禁用不可选项:
+ *   - 2016:GB2312(默认)· GB18030(禁用)· UTF-8
+ *   - 2022:GB2312(禁用)· GB18030(默认)· UTF-8
  *
- * 为什么不给下拉:字符集不是设备厂商可自由选的参数 —— 2016 §6.10 是「**宜**采用 GB 2312」、
- * 2022 §6.10 是「**应**采用 GB 18030」,跟着上面选的国标版本走就是唯一正确解。给个下拉只会
- * 制造「两个实现方各理解一次」,而选错的表现只是一片中文乱码,没人能看出是自己选错的。
- *
- * 为什么要露出来:出站到底用什么编码,原来在界面上**完全不可见**,联调时只能翻日志抓包 ——
- * 「声明 GB2312 却发 UTF-8 字节」这种故障就是靠这一行一眼看出来的(理由同上面的 X-GB-Ver 协商行)。
- *
- * 取值口径与 [NegotiatedVersionRow] 一致:有效版本 = min(本机声明, 平台声明);平台未声明则不降级。
+ * 为什么现在给选(2026-11-03,原来是只读展示):存量厂商大量实际发 UTF-8,
+ * "跟版本走"在真实联调里会逼用户改国标版本来换编码。选项按版本**禁用**而不是藏掉,
+ * 是为了让"2016 没有 GB18030、2022 没有 GB2312"这层约束在界面上可见,而不是让用户猜。
  */
 @Composable
-private fun SignalingCharsetRow(declared: GbVersion, platform: GbVersion?) {
+private fun SignalingCharsetSelector(
+    selected: SignalingCharset,
+    version: GbVersion,
+    enabled: Boolean,
+    onSelect: (SignalingCharset) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        SignalingCharset.entries.forEach { cs ->
+            val optionEnabled = enabled && cs.isAvailableFor(version)
+            val isSel = cs == selected
+            val bg = when {
+                !optionEnabled -> UvpColor.Border
+                isSel -> UvpColor.Primary
+                else -> UvpColor.Surface
+            }
+            val fg = when {
+                !optionEnabled -> UvpColor.TextHint
+                isSel -> Color.White
+                else -> UvpColor.Text
+            }
+            val border = if (isSel && optionEnabled) UvpColor.Primary else UvpColor.Border
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(36.dp)
+                    .background(bg, RoundedCornerShape(6.dp))
+                    .border(1.dp, border, RoundedCornerShape(6.dp))
+                    .clickable(enabled = optionEnabled) { onSelect(cs) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(cs.xmlLabel, fontSize = 12.sp, color = fg, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+/**
+ * 实际出站字符集的只读回显(配合上面的单选)。
+ *
+ * 出站口径 = 有效版本(min(本机, 平台))叠加手动覆盖 —— 平台协商降级时这里能一眼看出
+ * 「我选的编码被版本兜底换掉了」。入站恒按报文声明解码,不受本配置影响。
+ */
+@Composable
+private fun SignalingCharsetRow(
+    declared: GbVersion,
+    platform: GbVersion?,
+    override: SignalingCharset?,
+) {
     val effective = if (platform != null) minOf(declared, platform) else declared
-    val outbound = SignalingCharset.of(effective)
+    val outbound = SignalingCharset.effective(effective, override)
     val strength = if (outbound == SignalingCharset.GB18030) "应" else "宜"
+    val (text, color) = when {
+        // 覆盖存的是国标编码但有效版本把它兜底换掉了(如 2022+GB18030 对上 2016 平台)
+        override != null && outbound != override ->
+            "出站 ${outbound.xmlLabel}(平台协商降级,所选 ${override.xmlLabel} 不适用)" to UvpColor.Warning
+        override != null ->
+            "出站 ${outbound.xmlLabel}(手动指定)· 入站按报文声明解码" to UvpColor.TextHint
+        else ->
+            "出站 ${outbound.xmlLabel}(§6.10 $strength)· 入站按报文声明解码" to UvpColor.TextHint
+    }
     Text(
-        "信令字符集:出站 ${outbound.xmlLabel}(§6.10 $strength)· 入站按报文声明解码",
+        text,
         fontSize = 11.sp,
         // 与上行同款:只改 fontSize 会继承 bodyLarge 的 24sp 行高,收窄时裁字。
         lineHeight = 16.sp,
-        color = UvpColor.TextHint,
+        color = color,
         modifier = Modifier.padding(bottom = 8.dp),
     )
 }

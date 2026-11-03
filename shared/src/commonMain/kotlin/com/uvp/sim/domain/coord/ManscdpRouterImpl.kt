@@ -230,9 +230,14 @@ internal class ManscdpRouterImpl(
      *
      * 取 [ManscdpContext.effectiveGbVersion] 而不是 `config.gbVersion`:字符集属于"出站报文形态",
      * 跟 Catalog 字段裁剪 / DeviceInfo 字段集取同一个口径(对面是 2016 就别按 2022 出站)。
+     * 在有效版本之上再叠加 `signalingCharsetOverride`(设备配置页的手动覆盖,存量厂商
+     * 实际发 UTF-8 的联调逃逸口),与 SubRouter 的 [ManscdpContext.outboundCharset] 同源。
      */
     private val signalingCharset: SignalingCharset
-        get() = SignalingCharset.of(subRouterContext.effectiveGbVersion)
+        get() = SignalingCharset.effective(
+            subRouterContext.effectiveGbVersion,
+            config.signalingCharsetOverride,
+        )
 
     private val ptzPositionJob: Job = CoroutineScope(scope.coroutineContext + SupervisorJob()).launch {
         mutableDeviceControlState

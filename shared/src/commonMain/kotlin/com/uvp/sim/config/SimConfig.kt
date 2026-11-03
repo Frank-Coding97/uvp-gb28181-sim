@@ -37,6 +37,17 @@ data class TimeSyncConfig(
 @Serializable
 data class SimConfig(
     val gbVersion: GbVersion = GbVersion.V2022,
+    /**
+     * 出站信令字符集的手动覆盖(GB/T 28181 §6.10)。
+     *
+     * - null(默认)= 跟版本走:2016→GB2312、2022→GB18030;
+     * - UTF-8 = 联调逃逸口,存量厂商大量实际发 UTF-8,恒生效;
+     * - 与有效版本不匹配的存量值(如版本切回 2016 却存着 GB18030)由
+     *   [com.uvp.sim.gb28181.SignalingCharset.effective] 按版本默认兜底,不会出脏报文。
+     *
+     * 入站不受此字段影响 —— 恒按对方报文自己声明的编码解码。
+     */
+    val signalingCharsetOverride: com.uvp.sim.gb28181.SignalingCharset? = null,
     val server: ServerConfig,
     val device: DeviceConfig,
     val transport: com.uvp.sim.network.TransportType =

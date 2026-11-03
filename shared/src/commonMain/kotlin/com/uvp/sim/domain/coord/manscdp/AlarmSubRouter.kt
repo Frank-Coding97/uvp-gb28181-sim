@@ -3,7 +3,6 @@ package com.uvp.sim.domain.coord.manscdp
 import com.uvp.sim.gb28181.AlarmStatusResponse
 import com.uvp.sim.gb28181.AlarmStatusSnapshot
 import com.uvp.sim.gb28181.ManscdpParser
-import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -45,7 +44,7 @@ internal class AlarmSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "AlarmStatus response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
         if (ok) SystemLogger.emit(

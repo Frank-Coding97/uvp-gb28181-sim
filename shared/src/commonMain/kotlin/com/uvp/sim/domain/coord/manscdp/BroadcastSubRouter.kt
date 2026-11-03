@@ -4,7 +4,6 @@ import com.uvp.sim.domain.SimEvent
 import com.uvp.sim.domain.coord.BroadcastInvoker
 import com.uvp.sim.gb28181.BroadcastQuery
 import com.uvp.sim.gb28181.BroadcastResponse
-import com.uvp.sim.gb28181.SignalingCharset
 import com.uvp.sim.observability.LogLevel
 import com.uvp.sim.observability.LogTag
 import com.uvp.sim.observability.SystemLogger
@@ -112,7 +111,7 @@ internal class BroadcastSubRouter(
             localIp = ctx.localIp, localPort = ctx.localPort,
             xmlBody = xmlBody,
             errorLabel = "Broadcast Response",
-            charset = SignalingCharset.of(ctx.effectiveGbVersion),
+            charset = ctx.outboundCharset,
             simEventEmit = ctx.simEventEmit,
         )
     }

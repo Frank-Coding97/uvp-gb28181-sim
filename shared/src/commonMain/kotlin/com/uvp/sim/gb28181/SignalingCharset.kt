@@ -29,9 +29,25 @@ enum class SignalingCharset(val xmlLabel: String) {
      * 非国标口径,只为兼容存量与自测保留。
      *
      * ⛔ 不要再用它当"和实际字节一致"的挡箭牌:那句注释写于 2016 口径下,
-     * 2022 已把字符集定为**应 GB18030**,UTF-8 不再是可选项。
+     * 2022 已把字符集定为**应 GB18030**。
+     *
+     * 2026-11-03 起作为**联调逃逸口**对用户开放(存量厂商大量实际发 UTF-8,现实互通
+     * 优先于标准洁癖):设备配置页把它列为两种版本下都恒可选的第三项。
      */
     UTF8("UTF-8");
+
+    /**
+     * 该字符集在指定国标版本下是否是**可选项**(设备配置页的禁用态就按它来):
+     *   - GB2312 只挂在 2016 下(2016 §6.10「宜」);2022 下没有它的位置 —— GB18030 是它的
+     *     超集,正文字节对常用字完全一致,再提供只会制造等价选项。
+     *   - GB18030 只挂在 2022 下(2022 §6.10「应」);2016 平台不认这个声明名。
+     *   - UTF-8 两个版本都可选(非国标口径,联调逃逸口)。
+     */
+    fun isAvailableFor(version: GbVersion): Boolean = when (this) {
+        GB2312 -> version == GbVersion.V2016
+        GB18030 -> version == GbVersion.V2022
+        UTF8 -> true
+    }
 
     companion object {
         /**
@@ -44,6 +60,20 @@ enum class SignalingCharset(val xmlLabel: String) {
             GbVersion.V2016 -> GB2312
             GbVersion.V2022 -> GB18030
         }
+
+        /**
+         * 实际出站字符集 = 手动覆盖(可用时)或版本默认。
+         *
+         * [override] 来自 `SimConfig.signalingCharsetOverride`(设备配置页的单选,可为 null):
+         *   - null → 跟版本默认([of]);
+         *   - UTF-8 → 恒生效(这就是给存量厂商留的逃逸口);
+         *   - 与版本不匹配(如有效版本 2016 却存了 GB18030)→ **按版本默认兜底**,
+         *     不让"对面是 2016 却收到 GB18030 声明"这种口径分裂出站。
+         *
+         * 入参 version 请传**有效版本**(min(本机声明, 平台声明)),理由同 [of]。
+         */
+        fun effective(version: GbVersion, override: SignalingCharset?): SignalingCharset =
+            if (override != null && override.isAvailableFor(version)) override else of(version)
 
         /**
          * XML 声明里的编码名 → 字符集。取值表跟平台 `manscdp.canonicalCharset` 一一对应,

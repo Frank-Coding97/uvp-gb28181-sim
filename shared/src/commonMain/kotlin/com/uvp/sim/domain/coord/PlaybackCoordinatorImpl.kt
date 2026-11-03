@@ -447,7 +447,11 @@ internal class PlaybackCoordinatorImpl(
                 sn = notifySn,
                 // 本协程只知道本机声明版本(没有持有效版本上下文)。MediaStatus 报文体是纯 ASCII,
                 // 三种编码字节完全相同 —— 这里的取值只决定 XML 声明那个标签,不影响线上字节。
-                charset = com.uvp.sim.gb28181.SignalingCharset.of(config.gbVersion),
+                // 覆盖(signalingCharsetOverride)照样叠加,别让这颗漏网报文声明别的编码。
+                charset = com.uvp.sim.gb28181.SignalingCharset.effective(
+                    config.gbVersion,
+                    config.signalingCharsetOverride,
+                ),
             )
             outbox.send(req).getOrThrow()
         }.onFailure {

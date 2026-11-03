@@ -71,9 +71,10 @@ internal object ManscdpInternals {
      * 调用方只需提供:identity service + 出栈 outbox + 报文体 xmlBody。
      * 异常被 catch 并通过 [simEventEmit] 发 TransportError,不再向上抛。
      *
-     * [charset] **必传**,由调用方按 `ctx.effectiveGbVersion` 取(`SignalingCharset.of(...)`)——
-     * 这里刻意不设默认值:有效版本 = min(本机, 平台),只有 SubRouter 层的 ctx 才知道,
-     * 在本函数里兜底成 config.gbVersion 会把"对面是 2016"这一路悄悄漏掉。
+     * [charset] **必传**,由调用方取 `ctx.outboundCharset`——
+     * 这里刻意不设默认值:有效版本 = min(本机, 平台) 且要叠加设备配置页的手动覆盖
+     * (存量厂商实际发 UTF-8 的逃逸口),只有 SubRouter 层的 ctx 才知道,
+     * 在本函数里兜底成 config.gbVersion 会把这两路都悄悄漏掉。
      *
      * @return true=成功,false=发送失败(已 emit TransportError)
      */

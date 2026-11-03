@@ -84,4 +84,15 @@ internal class ManscdpContext(
     val declaredGbVersion: GbVersion get() = config.gbVersion
     /** 有效版本 = min(本机, 平台),附录 I 协商结果。造应答形态一律用它。 */
     val effectiveGbVersion: GbVersion get() = effectiveGbVersionProvider()
+
+    /**
+     * 出站信令字符集(§6.10)= 手动覆盖([SimConfig.signalingCharsetOverride],可用时)
+     * 或有效版本默认。SubRouter 造出站报文**一律取这一个**,别再自己
+     * `SignalingCharset.of(effectiveGbVersion)` —— 那条路看不到用户在设备配置页选的覆盖。
+     */
+    val outboundCharset: com.uvp.sim.gb28181.SignalingCharset
+        get() = com.uvp.sim.gb28181.SignalingCharset.effective(
+            effectiveGbVersion,
+            config.signalingCharsetOverride,
+        )
 }
