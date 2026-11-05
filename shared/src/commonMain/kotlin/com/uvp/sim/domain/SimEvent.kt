@@ -224,6 +224,13 @@ sealed class SimEvent {
         override val timestampMs: Long = nowMs()
     ) : SimEvent()
 
+    /** 报警被 A.2.1.18 上报开关拦下：**一条报文都没发**，不算一次报警。 */
+    data class AlarmSuppressed(
+        val kind: com.uvp.sim.gb28181.AlarmReportKind,
+        val description: String,
+        override val timestampMs: Long = nowMs()
+    ) : SimEvent()
+
     /** 报警复位(本地确认 或 平台 AlarmCmd)。 */
     data class AlarmReset(
         val by: ResetSource,

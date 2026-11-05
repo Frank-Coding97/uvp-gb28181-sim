@@ -150,6 +150,8 @@ object LogExport {
         is SimEventDto.InviteAckTimeout -> "⚠ ACK-TO   平台 ACK 未到达 · ${ev.callId}"
         is SimEventDto.DeviceControlReceived -> "← CTRL     ${ev.commandType} · ${ev.detail}"
         is SimEventDto.AlarmFired -> "→ ALARM    ${ev.type.label}/${ev.priority.label} · ${ev.description}"
+        // 被 A.2.1.18 开关拦下：明确写"未发送"，否则日志里看起来像发过了。
+        is SimEventDto.AlarmSuppressed -> "× ALARM    未发送（${ev.kind}上报已关闭）· ${ev.description}"
         is SimEventDto.AlarmReset -> "· RESET    报警复位 · " + when (val b = ev.by) {
             is ResetSourceDto.Local -> "本地"
             is ResetSourceDto.Remote -> "平台 ${b.subscriber}"

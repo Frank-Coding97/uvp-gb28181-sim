@@ -65,8 +65,10 @@ class ManscdpRouterTest {
         broadcastInvoker: BroadcastInvoker = NoopBroadcastInvoker,
         identityService: com.uvp.sim.sip.SipDialogIdentityService =
             com.uvp.sim.sip.DefaultSipDialogIdentityService(localIp = "192.168.1.50"),
+        /** 设备配置状态可注入 —— 报警上报门控要读 `deviceConfigs.alarmReport`。 */
+        deviceControlState: MutableStateFlow<DeviceControlModel> =
+            MutableStateFlow(DeviceControlModel()),
     ): ManscdpRouterImpl {
-        val deviceControlState = MutableStateFlow(DeviceControlModel())
         val cfg = config()
         val tree = MutableStateFlow(CatalogTreeStore.effectiveTree(cfg))
         return ManscdpRouterImpl(
@@ -272,6 +274,99 @@ class ManscdpRouterTest {
             "应有未识别 MANSCDP 的 Warning 日志,实际 snapshot=${logs.map { it.level to it.message }}",
         )
         com.uvp.sim.observability.SystemLogger.shutdownForTest()
+    }
+
+    // ---------- A.2.1.18 报警上报门控 ----------
+
+    private fun alarmPayload(kind: com.uvp.sim.gb28181.AlarmReportKind?) =
+        com.uvp.sim.gb28181.AlarmPayload(
+            deviceId = "34020000001340000001",
+            method = com.uvp.sim.gb28181.AlarmMethod.Video,
+            type = com.uvp.sim.gb28181.AlarmType.Other,
+            description = "门控测试",
+            reportKind = kind,
+        )
+
+    private fun controlWith(alarmReport: com.uvp.sim.gb28181.AlarmReportState?) =
+        MutableStateFlow(
+            DeviceControlModel(
+                deviceConfigs = com.uvp.sim.gb28181.DeviceConfigState(alarmReport = alarmReport)
+            )
+        )
+
+    /**
+     * ⭐ 核心契约：开关为 0 ⇒ **一条 MESSAGE 都不发**，历史不记、`isAlarming` 不置位。
+     *
+     * ⛔ 这条一旦退化成"只是不发 NOTIFY"，平台侧会看到一条重复报警 —— 比完全不发更难解释。
+     */
+    @Test
+    fun a2_1_18_motionOff_suppressesMotionAlarm() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val ctrl = controlWith(com.uvp.sim.gb28181.AlarmReportState(motionDetection = 0, fieldDetection = 1))
+        val router = newRouter(this, transport, deviceControlState = ctrl)
+        transport.sent.clear()
+
+        router.reportAlarm(alarmPayload(com.uvp.sim.gb28181.AlarmReportKind.MotionDetection))
+        runCurrent()
+
+        val messages = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.MESSAGE }
+        assertEquals(0, messages.size, "开关关闭时不该发任何 MESSAGE，实际 ${messages.map { it.body.decodeToString() }}")
+        assertEquals(false, ctrl.value.isAlarming, "被拦下的报警不该把设备置成报警中")
+    }
+
+    /** 同样的关闭状态，但这条是**通用报警** —— 那两个开关管不着，必须照发。 */
+    @Test
+    fun a2_1_18_motionOff_doesNotBlockGenericAlarm() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val ctrl = controlWith(com.uvp.sim.gb28181.AlarmReportState(motionDetection = 0, fieldDetection = 0))
+        val router = newRouter(this, transport, deviceControlState = ctrl)
+        transport.sent.clear()
+
+        router.reportAlarm(alarmPayload(null))
+        runCurrent()
+
+        val messages = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.MESSAGE }
+        assertEquals(1, messages.size, "通用报警不受 A.2.1.18 两个开关约束")
+        assertEquals(true, ctrl.value.isAlarming)
+    }
+
+    /** 出厂默认 `FieldDetection=0` ⇒ 区域入侵事件默认就是发不出去的（与设备真实能力一致）。 */
+    @Test
+    fun a2_1_18_fieldOffByDefault_suppressesFieldAlarm() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        // alarmReport = null ⇒ 走出厂默认（移动侦测开 / 区域入侵关）
+        val ctrl = controlWith(null)
+        val router = newRouter(this, transport, deviceControlState = ctrl)
+        transport.sent.clear()
+
+        router.reportAlarm(alarmPayload(com.uvp.sim.gb28181.AlarmReportKind.FieldDetection))
+        runCurrent()
+
+        assertEquals(
+            0,
+            transport.sent.filterIsInstance<SipRequest>().count { it.method == SipMethod.MESSAGE },
+            "出厂默认关掉了区域入侵上报"
+        )
+    }
+
+    /** 打开之后必须真的发出去 —— 否则"开关"只是个摆设。 */
+    @Test
+    fun a2_1_18_fieldOn_allowsFieldAlarm() = runTest {
+        val transport = MockSipTransport()
+        transport.connect()
+        val ctrl = controlWith(com.uvp.sim.gb28181.AlarmReportState(motionDetection = 0, fieldDetection = 1))
+        val router = newRouter(this, transport, deviceControlState = ctrl)
+        transport.sent.clear()
+
+        router.reportAlarm(alarmPayload(com.uvp.sim.gb28181.AlarmReportKind.FieldDetection))
+        runCurrent()
+
+        val messages = transport.sent.filterIsInstance<SipRequest>().filter { it.method == SipMethod.MESSAGE }
+        assertEquals(1, messages.size)
+        assertTrue(messages.single().body.decodeToString().contains("<CmdType>Alarm</CmdType>"))
     }
 }
 

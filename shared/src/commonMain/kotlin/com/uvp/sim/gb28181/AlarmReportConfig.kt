@@ -12,6 +12,21 @@ import kotlinx.serialization.Serializable
  * ⚠️ 本仓前端 `deviceConfigGroups.ts` 把这个组写成「视频报警 / 设备报警」—— 那是**语义全错**
  * 的字段名（既不是标准字段名，也不是标准语义）。以本标准原文为准。
  */
+/**
+ * 报警事件的**设备侧类别** —— 决定一条报警是否受 A.2.1.18 两个开关约束。
+ *
+ * ⛔ 这是**设备内部的门控标签，不进 XML**：国标 `AlarmType` 只定义到 5（其他），
+ * 没有"移动侦测 / 区域入侵"的专用编码。平台侧要靠 `AlarmTypeParam` 这类扩展字段
+ * 才能区分（见 [AlarmTemplate.typeParam]），**不要**拿那个文本反查门控 ——
+ * 它既能被清空也能被平台改写，用它做判断等于把策略交给对端。
+ */
+enum class AlarmReportKind(val label: String) {
+    /** `MotionDetection` 移动侦测事件。 */
+    MotionDetection("移动侦测"),
+    /** `FieldDetection` 区域入侵事件。 */
+    FieldDetection("区域入侵"),
+}
+
 @Serializable
 data class AlarmReportState(
     /** `MotionDetection`，0/1。 */
@@ -41,6 +56,20 @@ object AlarmReportConfig {
     const val ON = 1
 
     fun isValidSwitch(value: Int): Boolean = value == OFF || value == ON
+
+    /**
+     * 这条报警**该不该发** —— 唯一的门控真源，上报路径与 UI 共用，别各写一份。
+     *
+     * - [kind] 为 `null`：不是移动侦测/区域入侵事件（人工触发、视频丢失、抓拍借壳…），
+     *   这两个开关**管不着**，一律放行。⛔ 别顺手把 `null` 也当成"要检查"：
+     *   那会让平台关掉移动侦测上报之后，连手动报警都发不出去。
+     * - 否则：对应开关为 [ON] 才放行。
+     */
+    fun allows(state: AlarmReportState, kind: AlarmReportKind?): Boolean = when (kind) {
+        null -> true
+        AlarmReportKind.MotionDetection -> state.motionDetection == ON
+        AlarmReportKind.FieldDetection -> state.fieldDetection == ON
+    }
 
     /** 出厂默认：见类注释 —— 照设备真实上报行为填（移动侦测开、区域入侵关）。 */
     val DEFAULT = AlarmReportState(motionDetection = ON, fieldDetection = OFF)

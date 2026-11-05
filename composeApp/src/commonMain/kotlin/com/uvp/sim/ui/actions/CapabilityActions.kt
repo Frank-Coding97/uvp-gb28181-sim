@@ -144,4 +144,14 @@ interface CapabilityActions {
      * 但 `PreRecordTime` 只回读不预录（手机端没有环形缓存）。
      */
     fun onVideoAlarmRecordSave(state: com.uvp.sim.gb28181.VideoAlarmRecordState?)
+
+    /**
+     * 保存 A.2.1.18 报警上报开关（移动侦测 / 区域入侵）。
+     *
+     * ⭐ 这份配置**真的驱动行为**：对应开关为 0 时，该类别报警在设备侧就被拦下，
+     * 一条报文都不会发往平台。所以设置之后"平台收不到"是**设备没发**，不是平台没显示。
+     *
+     * [state] 为 `null` 的语义是**回到出厂默认**（移动侦测开 / 区域入侵关）。
+     */
+    fun onAlarmReportSave(state: com.uvp.sim.gb28181.AlarmReportState?)
 }

@@ -304,6 +304,17 @@ class MainActivity : ComponentActivity() {
                             "预录${state.preRecordTime ?: "未设置"}s · 码流${state.streamNumber}"
                     }
                 ) { viewModel.updateVideoAlarmRecord(state) }
+
+                override fun onAlarmReportSave(
+                    state: com.uvp.sim.gb28181.AlarmReportState?
+                ) = logged(
+                    if (state == null) {
+                        "用户恢复报警上报出厂默认（移动侦测开 / 区域入侵关）"
+                    } else {
+                        "用户切换报警上报开关：移动侦测${if (state.motionDetection == 1) "开" else "关"} · " +
+                            "区域入侵${if (state.fieldDetection == 1) "开" else "关"}"
+                    }
+                ) { viewModel.updateAlarmReport(state) }
             }
             val recordingActions = object : RecordingActions {
                 override fun onRecordingStart() = logged("用户点击开始录像") { viewModel.startRecording() }

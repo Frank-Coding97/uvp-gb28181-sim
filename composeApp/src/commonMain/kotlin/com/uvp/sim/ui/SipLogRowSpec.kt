@@ -147,6 +147,11 @@ internal fun logRowSpec(ev: SimEventDto): LogRowSpec? = when (ev) {
         "报警 · ${ev.type.label}/${ev.priority.label} · ${ev.description.take(30)}",
         highlight = true, category = "ALARM"
     )
+    // 被上报开关拦下 —— 用中性色 + "未发送"字样，避免和真发出去的报警混为一谈。
+    is SimEventDto.AlarmSuppressed -> LogRowSpec(
+        "", "×", false, "ALM", UvpColor.TextHint,
+        "未发送 · ${ev.kind}上报已关闭 · ${ev.description.take(24)}", category = "ALARM"
+    )
     is SimEventDto.AlarmReset -> LogRowSpec(
         "", "·", true, "RST", UvpColor.Info,
         "报警复位 · ${alarmResetBy(ev.by)}", category = "ALARM"

@@ -86,6 +86,13 @@ data class DeviceConfigDto(
      * "配过没有"由 [VideoAlarmRecordViewDto.configured] 单独表达。
      */
     val videoAlarmRecord: VideoAlarmRecordViewDto = VideoAlarmRecordViewDto(),
+    /**
+     * 报警上报开关（A.2.1.18 `AlarmReport`）。
+     *
+     * 与上面两条同一口径：**回退到生效值**，页面必须回答"现在到底发不发"。
+     * 出厂默认是移动侦测开 / 区域入侵关 —— 与设备真实能力一致，不是随手填的。
+     */
+    val alarmReport: AlarmReportViewDto = AlarmReportViewDto(),
 ) {
     /**
      * 有没有"要画在画布上的画面内容"。渲染层用它决定整层是否挂载。
@@ -172,4 +179,22 @@ data class VideoAlarmRecordViewDto(
     val preRecordTimeSeconds: Int? = null,
     /** `StreamNumber`：0-主码流，1-子码流1… */
     val streamNumber: Int = 0,
+)
+
+/**
+ * 报警上报开关（GB-2022 A.2.1.18 `AlarmReport`）的视图态。
+ *
+ * ⭐ 与录像计划/报警录像同一口径：**给的是生效值**（含出厂默认），因为页面要显示
+ * "现在到底发不发"；"配过没有"由 [configured] 单独表达。
+ *
+ * ⛔ 这两个值不只是展示 —— 它们是上报门控的真源：为 `false` 时对应类别的报警
+ * **一条报文都不会发出去**（拦在 `ManscdpRouterImpl.reportAlarm`）。
+ */
+data class AlarmReportViewDto(
+    /** 平台或本机配过没有。`false` ⇒ 以下为出厂默认（移动侦测开、区域入侵关）。 */
+    val configured: Boolean = false,
+    /** `MotionDetection`：移动侦测事件是否上报。 */
+    val motionDetection: Boolean = true,
+    /** `FieldDetection`：区域入侵事件是否上报。 */
+    val fieldDetection: Boolean = false,
 )

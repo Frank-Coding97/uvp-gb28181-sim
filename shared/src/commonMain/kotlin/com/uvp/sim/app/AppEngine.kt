@@ -923,6 +923,18 @@ class AppEngine(
         }
     }
 
+    /**
+     * 本机切换 A.2.1.18 报警上报开关（移动侦测 / 区域入侵）。
+     *
+     * 与平台下发共用同一份状态 —— 平台之后再下发就会覆盖，这是对的（平台优先）。
+     * 传 `null` = 撤销本机设置，退回出厂默认。
+     */
+    fun updateAlarmReport(state: com.uvp.sim.gb28181.AlarmReportState?) {
+        holders.deviceControlState.update { model ->
+            model.withDeviceConfig { it.copy(alarmReport = state) }
+        }
+    }
+
     suspend fun pushCatalogNotify() { engine?.pushCatalogNotify() }
 
     suspend fun pushCatalogIncremental(events: List<CatalogChangeEvent>) { engine?.pushCatalogIncremental(events) }

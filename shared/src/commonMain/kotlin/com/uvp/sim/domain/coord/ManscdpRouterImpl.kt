@@ -32,6 +32,7 @@ import com.uvp.sim.domain.coord.manscdp.ManscdpInternals
 import com.uvp.sim.domain.coord.manscdp.SubscriptionNotifyHandler
 import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
+import com.uvp.sim.gb28181.AlarmReportConfig
 import com.uvp.sim.gb28181.CatalogNotifyBuilder
 import com.uvp.sim.gb28181.MobilePositionNotify
 import com.uvp.sim.gb28181.ManscdpParser
@@ -460,6 +461,19 @@ internal class ManscdpRouterImpl(
     override suspend fun reportAlarm(payload: AlarmPayload) {
         if (!stateRegisteredOrInCall()) {
             simEventEmit(SimEvent.TransportError("alarm: not registered"))
+            return
+        }
+        // A.2.1.18 上报开关门控 —— 放在最底层，任何调用路径（主页一键 / 报警页模板 /
+        // 固定报警）都绕不过去。⛔ 别把这层判断上提到 UI：那样"关掉还报"只会晚一点发生。
+        val reportCfg = mutableDeviceControlState.value.deviceConfigs.effectiveAlarmReport()
+        val kind = payload.reportKind
+        if (!AlarmReportConfig.allows(reportCfg, kind)) {
+            SystemLogger.emit(
+                LogLevel.Info, LogTag.Network,
+                "报警被上报开关拦下 → ${kind?.label} 已关闭，未发送任何报文：${payload.description}"
+            )
+            // allows 返回 false 只可能是 kind != null（null 一律放行），这里判空只为类型收敛。
+            if (kind != null) simEventEmit(SimEvent.AlarmSuppressed(kind, payload.description))
             return
         }
         val id = identityService.nextMessageNotify()

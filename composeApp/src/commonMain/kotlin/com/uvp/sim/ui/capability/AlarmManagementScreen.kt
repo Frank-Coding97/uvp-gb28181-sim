@@ -45,6 +45,7 @@ import com.uvp.sim.gb28181.AlarmMethod
 import com.uvp.sim.gb28181.AlarmNotify
 import com.uvp.sim.gb28181.AlarmPayload
 import com.uvp.sim.gb28181.AlarmPriority
+import com.uvp.sim.gb28181.AlarmReportKind
 import com.uvp.sim.gb28181.AlarmTemplates
 import com.uvp.sim.gb28181.AlarmType
 import com.uvp.sim.ui.AlarmFireMode
@@ -89,6 +90,10 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
     var subscribersExpanded by remember { mutableStateOf(false) }
     var advancedExpanded by remember { mutableStateOf(false) }
     var alarmRecordExpanded by remember { mutableStateOf(false) }
+    var alarmReportExpanded by remember { mutableStateOf(false) }
+    // 固定报警的「上报类别」：决定这条报警受不受 A.2.1.18 开关约束。
+    // null = 通用报警（人工触发/器件故障…），开关管不着。
+    var reportKind by remember { mutableStateOf<AlarmReportKind?>(null) }
 
     fun buildDraft(): AlarmPayload = AlarmPayload(
         deviceId = deviceId,
@@ -96,6 +101,8 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
         method = method,
         type = type,
         typeParam = typeParam.ifBlank { null },
+        // 门控标签只给设备侧看，不进 XML —— 报文里区分靠 typeParam。
+        reportKind = reportKind,
         timeMs = if (minutesAgo > 0)
             kotlin.time.Clock.System.now().toEpochMilliseconds() - minutesAgo * 60_000L
         else 0L,
@@ -136,17 +143,34 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                     "随机模式:每次从下列 ${AlarmTemplates.builtin.size} 条预置模板中抽一条发送。主页一点即发。",
                     fontSize = 11.sp, color = UvpColor.TextSecondary
                 )
+                // ⚠️ 被上报开关关掉的类别要**明确标出来**：随机池已经把它们排除了
+                // （见 SipViewModel.fireAlarmDefault），不标的话用户会以为"模板少了"。
+                val reportCfgView = state.deviceControl.deviceConfig.alarmReport
                 AlarmTemplates.builtin.forEach { tpl ->
+                    val suppressed = when (tpl.reportKind) {
+                        AlarmReportKind.MotionDetection -> !reportCfgView.motionDetection
+                        AlarmReportKind.FieldDetection -> !reportCfgView.fieldDetection
+                        null -> false
+                    }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(Modifier.size(5.dp).clip(RoundedCornerShape(3.dp)).background(UvpColor.Warning))
+                        Box(
+                            Modifier.size(5.dp).clip(RoundedCornerShape(3.dp))
+                                .background(if (suppressed) UvpColor.TextHint else UvpColor.Warning)
+                        )
                         Spacer(Modifier.width(8.dp))
                         Text("${tpl.type.label} · ${tpl.priority.label}", fontSize = 11.sp,
-                            color = UvpColor.Text, fontWeight = FontWeight.Medium,
+                            color = if (suppressed) UvpColor.TextHint else UvpColor.Text,
+                            fontWeight = FontWeight.Medium,
                             modifier = Modifier.width(120.dp))
-                        Text(tpl.description, fontSize = 11.sp, color = UvpColor.TextSecondary, maxLines = 1)
+                        Text(
+                            if (suppressed) "${tpl.description}（已关闭上报）" else tpl.description,
+                            fontSize = 11.sp,
+                            color = if (suppressed) UvpColor.TextHint else UvpColor.TextSecondary,
+                            maxLines = 1
+                        )
                     }
                 }
                 Button(
@@ -165,6 +189,14 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                     expanded = alarmRecordExpanded,
                     onToggle = { alarmRecordExpanded = !alarmRecordExpanded },
                     onSave = { actions.onVideoAlarmRecordSave(it) },
+                )
+
+                // A.2.1.18 上报开关同样两种模式共用：它决定"哪类报警根本发不出去"。
+                AlarmReportSection(
+                    view = state.deviceControl.deviceConfig.alarmReport,
+                    expanded = alarmReportExpanded,
+                    onToggle = { alarmReportExpanded = !alarmReportExpanded },
+                    onSave = { actions.onAlarmReportSave(it) },
                 )
                 return@Column
             }
@@ -211,6 +243,38 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 singleLine = true,
                 placeholder = { Text("如:磁吸触发", fontSize = 12.sp) }
             )
+
+            // 上报类别 —— 决定这条报警算不算"移动侦测 / 区域入侵"事件。
+            // 选中的类别若在 A.2.1.18 里被关掉，设备会直接拦下（一条报文都不发），
+            // 所以这里必须**提前**说清楚，不能等点了发送才发现没反应。
+            FieldLabel("上报类别 (A.2.1.18 门控)")
+            SegmentedPicker(
+                options = listOf<AlarmReportKind?>(null, AlarmReportKind.MotionDetection, AlarmReportKind.FieldDetection),
+                selected = reportKind,
+                labelOf = { it?.label ?: "通用" },
+                onSelect = { reportKind = it }
+            )
+            val reportView = state.deviceControl.deviceConfig.alarmReport
+            val blocked = when (reportKind) {
+                AlarmReportKind.MotionDetection -> !reportView.motionDetection
+                AlarmReportKind.FieldDetection -> !reportView.fieldDetection
+                null -> false
+            }
+            if (blocked) {
+                Text(
+                    "⚠️ ${reportKind?.label}上报已关闭 —— 这条报警会被设备拦下，平台收不到任何报文。" +
+                        "先到下方「上报开关」里打开。",
+                    fontSize = 10.sp,
+                    color = UvpColor.Warning,
+                    lineHeight = 14.sp,
+                )
+            } else {
+                Text(
+                    if (reportKind == null) "通用报警，不受移动侦测/区域入侵开关约束。"
+                    else "受对应开关约束：关闭时设备不发。",
+                    fontSize = 10.sp, color = UvpColor.TextHint, lineHeight = 14.sp,
+                )
+            }
 
             FieldLabel("报警时间")
             SegmentedPicker(
@@ -333,6 +397,13 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                 expanded = alarmRecordExpanded,
                 onToggle = { alarmRecordExpanded = !alarmRecordExpanded },
                 onSave = { actions.onVideoAlarmRecordSave(it) },
+            )
+
+            AlarmReportSection(
+                view = state.deviceControl.deviceConfig.alarmReport,
+                expanded = alarmReportExpanded,
+                onToggle = { alarmReportExpanded = !alarmReportExpanded },
+                onSave = { actions.onAlarmReportSave(it) },
             )
 
             // 高级模拟折叠区 — MediaStatus 122/123 演示

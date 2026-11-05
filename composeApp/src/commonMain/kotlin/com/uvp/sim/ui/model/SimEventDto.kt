@@ -97,6 +97,12 @@ sealed class SimEventDto {
         override val timestampMs: Long,
     ) : SimEventDto()
     data class AlarmReset(val by: ResetSourceDto, override val timestampMs: Long) : SimEventDto()
+    /** 报警被 A.2.1.18 上报开关拦下（设备没发任何报文）。 */
+    data class AlarmSuppressed(
+        val kind: String,
+        val description: String,
+        override val timestampMs: Long,
+    ) : SimEventDto()
     data class AlarmSubscribed(val subscriber: String, val expires: Int, override val timestampMs: Long) : SimEventDto()
     data class AlarmNotifySent(val sn: String, val subscriber: String, override val timestampMs: Long) : SimEventDto()
     data class AlarmSubscriptionExpired(val subscriber: String, override val timestampMs: Long) : SimEventDto()

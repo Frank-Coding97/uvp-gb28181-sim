@@ -303,6 +303,10 @@ class SipViewModel @JvmOverloads constructor(
     fun updateVideoAlarmRecord(state: com.uvp.sim.gb28181.VideoAlarmRecordState?) =
         appEngine.updateVideoAlarmRecord(state)
 
+    /** A.2.1.18 报警上报开关（移动侦测 / 区域入侵）。切换即落地，下一次报警立刻按新值门控。 */
+    fun updateAlarmReport(state: com.uvp.sim.gb28181.AlarmReportState?) =
+        appEngine.updateAlarmReport(state)
+
     /** 双真实通道迁移:老配置 frontChannelId 为空时按 domain 补全前置通道 ID。 */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {
         if (cfg.device.frontChannelId.isNotBlank()) return cfg
@@ -586,11 +590,17 @@ class SipViewModel @JvmOverloads constructor(
 
     fun fireAlarmDefault() {
         val cfg = appEngine.config.value
+        // 随机池要排除"上报开关已关"的类别 —— 否则「随机发一条」会抽到一条根本发不出去的
+        // 模板，界面上表现为点了没反应。门控本身仍在 ManscdpRouterImpl 里硬拦（双保险）。
+        val reportCfg = appEngine.deviceControlState.value.deviceConfigs.effectiveAlarmReport()
+        val randomTemplate = {
+            com.uvp.sim.gb28181.AlarmTemplates.random(
+                allowed = { kind -> com.uvp.sim.gb28181.AlarmReportConfig.allows(reportCfg, kind) }
+            )
+        }
         val payload = when (_alarmFireMode.value) {
-            com.uvp.sim.ui.AlarmFireMode.Fixed ->
-                _fixedAlarm.value ?: com.uvp.sim.gb28181.AlarmTemplates.random().toPayload(cfg)
-            com.uvp.sim.ui.AlarmFireMode.Random ->
-                com.uvp.sim.gb28181.AlarmTemplates.random().toPayload(cfg)
+            com.uvp.sim.ui.AlarmFireMode.Fixed -> _fixedAlarm.value ?: randomTemplate().toPayload(cfg)
+            com.uvp.sim.ui.AlarmFireMode.Random -> randomTemplate().toPayload(cfg)
         }
         fireAlarm(payload)
     }

@@ -61,6 +61,7 @@ fun SimEvent.toDto(): SimEventDto = when (this) {
     // Alarm
     is SimEvent.AlarmFired -> SimEventDto.AlarmFired(type.toDto(), priority.toDto(), description, timestampMs)
     is SimEvent.AlarmReset -> SimEventDto.AlarmReset(by.toDto(), timestampMs)
+    is SimEvent.AlarmSuppressed -> SimEventDto.AlarmSuppressed(kind.label, description, timestampMs)
     is SimEvent.AlarmSubscribed -> SimEventDto.AlarmSubscribed(subscriber, expires, timestampMs)
     is SimEvent.AlarmNotifySent -> SimEventDto.AlarmNotifySent(sn, subscriber, timestampMs)
     is SimEvent.AlarmSubscriptionExpired -> SimEventDto.AlarmSubscriptionExpired(subscriber, timestampMs)

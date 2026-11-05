@@ -16,6 +16,18 @@ data class AlarmPayload(
     val method: AlarmMethod = AlarmMethod.Device,
     val type: AlarmType = AlarmType.Other,
     val typeParam: String? = null,
+    /**
+     * 设备侧门控标签（A.2.1.18）：这条报警算不算"移动侦测 / 区域入侵"事件。
+     *
+     * ⛔ **不进 XML，也不进任何持久化格式**（`@Transient`）—— 它是本机运行时策略，
+     * 只在设备内部决定要不要被两个上报开关拦下（见 [AlarmReportConfig.allows]）。
+     * `null` = 与那两个开关无关（人工触发、器件故障…）。
+     *
+     * ⚠️ 为什么不复用 [typeParam]：那是**发给平台**的展示文本，可被清空/改写；
+     * 拿它反查门控等于让对端决定本机发不发报警。
+     */
+    @kotlinx.serialization.Transient
+    val reportKind: AlarmReportKind? = null,
     val timeMs: Long = 0L,
     val description: String = "",
     val longitude: Double? = null,

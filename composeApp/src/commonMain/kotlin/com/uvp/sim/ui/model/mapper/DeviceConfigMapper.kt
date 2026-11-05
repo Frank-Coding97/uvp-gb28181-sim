@@ -2,6 +2,8 @@ package com.uvp.sim.ui.model.mapper
 
 import com.uvp.sim.config.SimConfig
 import com.uvp.sim.domain.DeviceControlModel
+import com.uvp.sim.gb28181.AlarmReportConfig
+import com.uvp.sim.ui.model.AlarmReportViewDto
 import com.uvp.sim.ui.model.DeviceConfigDto
 import com.uvp.sim.ui.model.MaskRectDto
 import com.uvp.sim.ui.model.OsdTextLineDto
@@ -71,6 +73,8 @@ fun DeviceControlModel.toDeviceConfigDto(config: SimConfig): DeviceConfigDto {
     val effectivePlan = deviceConfigs.effectiveVideoRecordPlan(config)
     // 报警录像同理：编辑器要显示生效值（出厂默认也要能显示出来）。
     val effectiveAlarmRecord = deviceConfigs.effectiveVideoAlarmRecord(config)
+    // 报警上报开关：页面要显示"现在到底发不发"，同样回退到生效值。
+    val effectiveAlarmReport = deviceConfigs.effectiveAlarmReport()
 
     return DeviceConfigDto(
         pictureMask = maskView,
@@ -96,6 +100,13 @@ fun DeviceControlModel.toDeviceConfigDto(config: SimConfig): DeviceConfigDto {
             recordTimeSeconds = effectiveAlarmRecord.recordTime,
             preRecordTimeSeconds = effectiveAlarmRecord.preRecordTime,
             streamNumber = effectiveAlarmRecord.streamNumber,
+        ),
+        // 报警上报开关同理回退到生效值：关掉之后对应类别的报警是真的不会发出去，
+        // 页面不能只在"平台配过"时才显示 —— 出厂默认（移动侦测开/区域入侵关）也要能看见。
+        alarmReport = AlarmReportViewDto(
+            configured = deviceConfigs.alarmReport != null,
+            motionDetection = effectiveAlarmReport.motionDetection == AlarmReportConfig.ON,
+            fieldDetection = effectiveAlarmReport.fieldDetection == AlarmReportConfig.ON,
         ),
     )
 }
