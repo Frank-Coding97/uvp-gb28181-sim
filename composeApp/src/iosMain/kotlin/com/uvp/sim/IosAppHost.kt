@@ -613,6 +613,9 @@ private fun buildActions(
         override fun onVideoRecordPlanSave(state: com.uvp.sim.gb28181.VideoRecordPlanState?) {
             engine.updateVideoRecordPlan(state)
         }
+        override fun onVideoAlarmRecordSave(state: com.uvp.sim.gb28181.VideoAlarmRecordState?) {
+            engine.updateVideoAlarmRecord(state)
+        }
     }
     val recording = object : RecordingActions {
         override fun onRecordingStart() {

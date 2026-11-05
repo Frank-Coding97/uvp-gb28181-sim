@@ -129,4 +129,19 @@ interface CapabilityActions {
      * 本仓这里只记账 + 回读，不会真的按计划起停录像（见 `VideoRecordPlanScreen` 的说明）。
      */
     fun onVideoRecordPlanSave(state: VideoRecordPlanState?)
+
+    // ---- 设备配置族:报警录像(A.2.1.16 / A.2.3.2.7)----
+
+    /**
+     * 用户在「能力 → 报警 → 报警录像」保存配置。
+     *
+     * ⭐ 与 [onVideoRecordPlanSave] 同一口径：设备自己的一份配置、平台可远程查改，
+     * 编辑结果决定「平台 ConfigDownload 回读到的值」与「本机是否在报警时自动录像」。
+     *
+     * [state] 为 `null` 的语义是**清除配置、回到出厂默认**（不启用 / 主码流 / 时间字段缺席）。
+     *
+     * ⚠️ 与录像计划不同：这份配置**真的驱动行为** —— 保存后下一次报警就会按它起录/打标记；
+     * 但 `PreRecordTime` 只回读不预录（手机端没有环形缓存）。
+     */
+    fun onVideoAlarmRecordSave(state: com.uvp.sim.gb28181.VideoAlarmRecordState?)
 }

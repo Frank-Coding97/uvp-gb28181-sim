@@ -88,6 +88,7 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
     var historyExpanded by remember { mutableStateOf(false) }
     var subscribersExpanded by remember { mutableStateOf(false) }
     var advancedExpanded by remember { mutableStateOf(false) }
+    var alarmRecordExpanded by remember { mutableStateOf(false) }
 
     fun buildDraft(): AlarmPayload = AlarmPayload(
         deviceId = deviceId,
@@ -156,6 +157,15 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
 
                 // 随机模式下历史折叠区也展示
                 AlarmHistorySection(state, historyExpanded) { historyExpanded = !historyExpanded }
+
+                // 报警录像配置两种发送模式共用 —— 它描述的是"报警发生时设备怎么录"，
+                // 与这次发哪一条报警单无关。
+                AlarmVideoRecordSection(
+                    view = state.deviceControl.deviceConfig.videoAlarmRecord,
+                    expanded = alarmRecordExpanded,
+                    onToggle = { alarmRecordExpanded = !alarmRecordExpanded },
+                    onSave = { actions.onVideoAlarmRecordSave(it) },
+                )
                 return@Column
             }
 
@@ -315,6 +325,15 @@ fun AlarmManagementScreen(state: AppUiState, actions: AppActions, onBack: () -> 
                         modifier = Modifier.padding(start = 8.dp))
                 }
             }
+
+            // 报警录像配置区（A.2.1.16）—— 放在订阅人之后，与"发一条报警"的主流程分开，
+            // 避免用户把配置项误当成发送表单的一部分。
+            AlarmVideoRecordSection(
+                view = state.deviceControl.deviceConfig.videoAlarmRecord,
+                expanded = alarmRecordExpanded,
+                onToggle = { alarmRecordExpanded = !alarmRecordExpanded },
+                onSave = { actions.onVideoAlarmRecordSave(it) },
+            )
 
             // 高级模拟折叠区 — MediaStatus 122/123 演示
             AlarmAdvancedSimulationSection(

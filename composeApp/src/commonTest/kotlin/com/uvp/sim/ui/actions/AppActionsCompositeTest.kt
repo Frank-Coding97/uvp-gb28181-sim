@@ -200,6 +200,8 @@ private class CapabilitySliceFake(private val sink: RoutingSink) : CapabilityAct
         sink.record("cap.onFrontOsdSave:${state?.sumNum ?: -1}")
     override fun onVideoRecordPlanSave(state: com.uvp.sim.gb28181.VideoRecordPlanState?) =
         sink.record("cap.onVideoRecordPlanSave:${state?.scheduleSumNum ?: -1}")
+    override fun onVideoAlarmRecordSave(state: com.uvp.sim.gb28181.VideoAlarmRecordState?) =
+        sink.record("cap.onVideoAlarmRecordSave:${state?.recordEnable ?: -1}")
 }
 
 private class RecordingSliceFake(private val sink: RoutingSink) : RecordingActions {

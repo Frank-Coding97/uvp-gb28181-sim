@@ -81,6 +81,23 @@ internal fun RecordingCard(
                     fontSize = 10.sp,
                     color = UvpColor.TextHint
                 )
+                // 「含告警」标签：只给**非报警触发**的段加 —— 报警自己起的那段，来源
+                // 那一栏已经写着「报警」，再挂一个标签就是同一件事说两遍。
+                if (file.alarm != null && file.source != com.uvp.sim.ui.model.RecordSourceDto.Alarm) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(UvpColor.Warning.copy(alpha = 0.14f))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            if ((file.alarm.count) > 1) "含告警×${file.alarm.count}" else "含告警",
+                            fontSize = 9.sp,
+                            color = UvpColor.Warning,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+                }
             }
         }
         IconButton(onClick = onDelete) {

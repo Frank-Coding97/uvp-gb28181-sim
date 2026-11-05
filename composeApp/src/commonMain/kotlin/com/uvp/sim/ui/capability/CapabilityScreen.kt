@@ -115,6 +115,11 @@ fun CapabilityScreen(
     val alarmSub = state.subscriptions[SubscriptionKind.Alarm]
     val isAlarming = state.deviceControl.isAlarming
     val recordPlan = state.deviceControl.deviceConfig.videoRecordPlan
+    // 报警录像段数（含"录像期间报警、事后打标记"的段）—— 现场最常问的是"报了警到底录没录"，
+    // 这个数比"报警了几次"更能回答它。
+    val alarmRecordingCount = state.recording.files.count {
+        it.alarm != null || it.source == com.uvp.sim.ui.model.RecordSourceDto.Alarm
+    }
 
     Column(
         modifier = Modifier
@@ -160,7 +165,11 @@ fun CapabilityScreen(
             CapabilityTileSpec(
                 icon = Icons.Outlined.NotificationsActive,
                 title = "报警",
-                metric = "报警事件",
+                metric = if (alarmRecordingCount > 0) {
+                    "${state.alarmHistory.size} 次 · $alarmRecordingCount 段录像"
+                } else {
+                    "${state.alarmHistory.size} 次"
+                },
                 status = when {
                     isAlarming -> TileStatus.Warning("报警中")
                     alarmSub?.active == true -> TileStatus.Active(

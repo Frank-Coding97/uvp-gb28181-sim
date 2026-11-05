@@ -58,8 +58,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
+
+/**
+ * 报警录像的默认时长（秒）—— `RecordTime` 缺席时用。
+ *
+ * 为什么需要默认：`RecordEnable=1` 但没配 `RecordTime` 是**合法**报文（该字段可选），
+ * 而"一直录到用户自己停"显然不是报警录像该有的行为（半夜报一次警录满存储卡）。
+ * 30 秒是运维验收时最常用的段长，也足够看清报警现场。
+ */
+private const val DEFAULT_ALARM_RECORD_SECONDS = 30
 
 /**
  * AppEngine — 装配根(P1.5 真下沉)。
@@ -111,6 +122,14 @@ class AppEngine(
 
     /** 录像计划调度器（[ensureMediaBuilt] 里起一次，跟 App 同生命）。 */
     @Volatile private var recordPlanScheduler: com.uvp.sim.recording.RecordPlanScheduler? = null
+
+    /**
+     * 报警录像的自动停录 Job（A.2.1.16 `RecordTime`）。
+     *
+     * 每次由报警新起一段录像时重置；到期只停 **`source == Alarm` 的那一段** ——
+     * 期间若已被手动/计划接管，这个 Job 到点不能把别人正在录的段掐掉。
+     */
+    @Volatile private var alarmRecordStopJob: Job? = null
     /** OSD config supplier — 默认从内部维护,SipViewModel 注入跟随 SimConfig.osd + currentChannelName 派生流。 */
     @Volatile private var osdConfigFlowProvider: () -> kotlinx.coroutines.flow.StateFlow<com.uvp.sim.config.OsdConfig> =
         { kotlinx.coroutines.flow.MutableStateFlow(initialConfig.osd).asStateFlow() }
@@ -745,7 +764,88 @@ class AppEngine(
     // ---- Public API 委派(全部转给 engine,无 engine 时 no-op) ----
 
     suspend fun reportSnapshot() { engine?.reportSnapshot() }
-    suspend fun reportAlarm(payload: AlarmPayload) { engine?.reportAlarm(payload) }
+
+    /**
+     * 发送报警（MESSAGE 给注册中心 + NOTIFY 给 Alarm 订阅人），随后处理报警录像。
+     *
+     * ⛔ 录像放在**发送之后**且不因发送失败而跳过：报警是不是真的到了平台由 SIP 层负责，
+     * 而"设备侧此刻确实发生了报警"是本地事实 —— 录像该记的还是要记。反过来说，
+     * 若把录像绑在发送成功上，平台断连期间发生的报警在录像列表里会凭空消失。
+     */
+    suspend fun reportAlarm(payload: AlarmPayload) {
+        engine?.reportAlarm(payload)
+        handleAlarmForRecording(payload)
+    }
+
+    /**
+     * A.2.1.16 报警录像的设备侧行为。
+     *
+     * 两条路径（2026-11-05 定的策略）：
+     *  - **已经在录**（手动/平台/计划）→ 不打断，只给当前段打报警标记（`AlarmMark`）。
+     *    理由见 `RecordingFile.alarm`：为口径好看把计划录像切碎，平台侧会看到人为缺口。
+     *  - **没在录** → 起一段 `RecordSource.Alarm` 录像，按 `RecordTime` 秒自动停。
+     *
+     * `RecordEnable != 1` 时什么都不做（出厂默认就是不启用，真机不会自己开始录报警）。
+     *
+     * ⚠️ 口径边界：`PreRecordTime`（预录）**只记账不实现** —— 手机端没有环形缓存，
+     * 报警前的画面确实没录到。与 `RecordingFile.streamNumber` 的记账口径一致。
+     */
+    private suspend fun handleAlarmForRecording(payload: AlarmPayload) {
+        val svc = recordingService ?: return
+        val alarmCfg = holders.deviceControlState.value.deviceConfigs
+            .effectiveVideoAlarmRecord(_config.value)
+        if (alarmCfg.recordEnable != 1) return
+
+        val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val method = payload.method.code.toString()
+        val type = payload.type.code.toString()
+
+        // 在录 → 事后标记，绝不打断。
+        if (svc.markAlarm(nowMs, method, type)) return
+
+        // 没在录 → 自己起一段。channelId 用视频通道（报警通道不承载码流，Invite 会被 488）。
+        val started = svc.start(
+            com.uvp.sim.recording.RecordSource.Alarm,
+            _config.value.device.videoChannelId,
+            alarmCfg.streamNumber,
+        )
+        if (started.isFailure) return
+        // 起录的这段也要带标记：否则平台按 `AlarmMethod`/`AlarmType` 精确筛报警录像时，
+        // 这条**最典型的**报警录像反而漏掉（它自身的报警信息只在标记里）。
+        svc.markAlarm(nowMs, method, type)
+
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "报警触发录像 → source=Alarm stream=${alarmCfg.streamNumber} " +
+                "recordTime=${alarmCfg.recordTime ?: DEFAULT_ALARM_RECORD_SECONDS}s"
+        )
+        scheduleAlarmRecordStop(alarmCfg.recordTime ?: DEFAULT_ALARM_RECORD_SECONDS)
+    }
+
+    /**
+     * 到点停掉自己起的那段报警录像。
+     *
+     * ⛔ 只停 `source == Alarm`：期间用户手动点了录像、或录像计划到点接管，
+     * 这段录像的归属已经变了，到点再停就是无故掐断别人的录制。
+     */
+    private fun scheduleAlarmRecordStop(seconds: Int) {
+        alarmRecordStopJob?.cancel()
+        alarmRecordStopJob = engineScope.launch {
+            delay(seconds.coerceAtLeast(0).toLong() * 1000L)
+            val svc = recordingService ?: return@launch
+            val current = svc.state.value
+            if (current is com.uvp.sim.recording.RecordingState.Recording &&
+                current.source == com.uvp.sim.recording.RecordSource.Alarm
+            ) {
+                svc.stop()
+                SystemLogger.emit(
+                    LogLevel.Info, LogTag.Media,
+                    "报警录像到点停录（RecordTime=${seconds}s）"
+                )
+            }
+        }
+    }
+
     suspend fun localResetAlarm() { engine?.localResetAlarm() }
     suspend fun triggerMediaStatusAbnormal(notifyType: Int) { engine?.triggerMediaStatusAbnormal(notifyType) }
 
@@ -804,7 +904,27 @@ class AppEngine(
         // kick 是幂等的（没有循环在跑就只是往无缓冲的流里丢一个信号），不必判空。
         recordPlanScheduler?.kick()
     }
+    /**
+     * 用户在「能力 → 报警」本地保存报警录像配置（GB/T 28181-2022 A.2.1.16 `VideoAlarmRecord`）。
+     *
+     * ⭐ 与 [updateVideoRecordPlan] 同一条口径：设备自己的一份配置、平台可远程查改，
+     * 本地改完平台 `ConfigDownload` 回读到的必须是**本机这份**，否则平台面板显示旧值、
+     * 设备按新值录，两边对不上却都"看起来正常"。
+     *
+     * [state] 为 `null` 的语义是**清除配置、回到出厂默认**（不启用 / 主码流 / 两个时间字段缺席）。
+     *
+     * ⛔ 只写配置，**不在这里起录**：录像由 `handleAlarmForRecording` 在报警发生时按这份配置执行。
+     * 配置改动只影响**下一次**报警；正在录的那段不受影响（半路改时长会让"这段到底录多久"
+     * 没有确定答案）。
+     */
+    fun updateVideoAlarmRecord(state: com.uvp.sim.gb28181.VideoAlarmRecordState?) {
+        holders.deviceControlState.update { model ->
+            model.withDeviceConfig { it.copy(videoAlarmRecord = state) }
+        }
+    }
+
     suspend fun pushCatalogNotify() { engine?.pushCatalogNotify() }
+
     suspend fun pushCatalogIncremental(events: List<CatalogChangeEvent>) { engine?.pushCatalogIncremental(events) }
     suspend fun toggleChannelStatus(channelId: String, online: Boolean) {
         engine?.toggleChannelStatus(channelId, online)

@@ -34,6 +34,23 @@ interface RecordingService {
     /** 停止录像。返回最新 finalize 的那一段;若不在录像中返回 success(null)。 */
     suspend fun stop(): Result<RecordingFile?>
 
+    /**
+     * 把一次报警挂到**当前正在录**的这段录像上（A.2.1.16 报警录像的「事后标记」路径）。
+     *
+     * ⭐ 返回 `false` 的语义是**当前没在录**（Idle / Stopping / Failed）——调用方据此决定
+     * 要不要另起一段 [RecordSource.Alarm] 录像。⛔ 不要把它当"失败"处理：没在录不是错误，
+     * 而是"这段录像不存在，标记无处可挂"。
+     *
+     * 【为什么是标记不是重开一段】2026-11-05 定的策略：手动/计划录像进行中来了报警，
+     * 不能为了口径好看把它切碎（平台侧会看到人为缺口）。标记落在 [RecordingFile.alarm]，
+     * finalize 时才写进索引 —— 因此这一段录像最终一定带着报警信息，不会丢。
+     *
+     * @param atMs 报警时刻（设备本地时钟，ms）
+     * @param alarmMethod 报文里的 `AlarmMethod` 原值；没有则 null
+     * @param alarmType 报文里的 `AlarmType` 原值；没有则 null
+     */
+    suspend fun markAlarm(atMs: Long, alarmMethod: String?, alarmType: String?): Boolean
+
     /** 启动时调用,从磁盘载入 index.json 到内存。 */
     suspend fun load()
 
@@ -55,6 +72,9 @@ object NoopRecordingService : RecordingService {
         Result.success(Unit)
 
     override suspend fun stop(): Result<RecordingFile?> = Result.success(null)
+
+    /** 空实现恒 `false`：没录就没地方挂标记，调用方会走「另起一段」分支。 */
+    override suspend fun markAlarm(atMs: Long, alarmMethod: String?, alarmType: String?): Boolean = false
     override suspend fun load() = Unit
     override suspend fun delete(id: String): Result<Unit> = Result.success(Unit)
 }

@@ -3,22 +3,54 @@ package com.uvp.sim.recording
 import kotlinx.serialization.Serializable
 
 /**
- * 录像来源:用户手动 / 平台 RecordCmd 下发 / 设备按本机录像计划自动起录。
+ * 录像来源:用户手动 / 平台 RecordCmd 下发 / 设备按本机录像计划自动起录 / 报警触发。
  *
  * [Schedule] 是本仓新增的第三种来源(2026-11-02)—— GB/T 28181-2022 A.2.1.15 的
  * `VideoRecordPlan` 到点由设备自己开录,既不是用户点的,也不是平台 `RecordCmd` 点名的。
  *
- * ⚠️ 三种来源在**行为**上还有一层差别,别混:
+ * [Alarm] 是第四种(2026-11-05)—— A.2.1.16 `VideoAlarmRecord` 启用时,报警上报成功后
+ * 由设备自己起一段,录到 `RecordTime` 秒自动停。
+ *
+ * ⚠️ 四种来源在**行为**上还有一层差别,别混:
  *   - [Manual] / [PlatformCmd]:外力起、外力停,设备侧不做任何自主判断
  *   - [Schedule]:设备自己的策略在跑 —— 时段内被外力停掉会被调度器重新拉起(见
  *     `RecordPlanScheduler`),因为"时段内一定在录"才是运维能验证的语义
+ *   - [Alarm]:设备自己起、自己停;若起录时**已经在录**(手动/计划/平台),不打断那一段,
+ *     改为给它打 [AlarmMark](见 `RecordingService.markAlarm`)
  *
  * ⚠️ 序列化:`index.json` 里存的是枚举名。新增值对**旧文件**解码无影响(旧数据里
- * 只有前两个值);反过来新文件被**旧版本 App** 读会整份索引退化空(`RecordingIndex.decode`
+ * 只有前几个值);反过来新文件被**旧版本 App** 读会整份索引退化空(`RecordingIndex.decode`
  * 兜住不崩,但列表会空)。属已知降级,不为此保留兼容分支。
  */
 @Serializable
-enum class RecordSource { Manual, PlatformCmd, Schedule }
+enum class RecordSource { Manual, PlatformCmd, Schedule, Alarm }
+
+/**
+ * 一段录像里「发生过报警」的标记(A.2.4.5 `Type=alarm` 的设备侧依据)。
+ *
+ * ⭐ 为什么是标记而不是把 `type` 改成 [RecordType.Alarm]:2026-11-05 定的策略是
+ * **录像不停、事后标记** —— 手动/计划录像正在进行时来了报警,不能为了口径好看去把
+ * 计划录像切碎(EasyGBS/LiveGBS 上会看到人为的录像缺口)。于是那段录像的主导类型仍是
+ * 它原来的类型,而"这段里有报警"由本字段单独表达。
+ *
+ * ⛔ [alarmMethod] / [alarmType] 存的是**报文原值**(字符串透传,见 `RecordInfoQueryRequest`):
+ * 两者的取值域互相依赖(报警方式=2 与 =5 是两套 AlarmType),归一成 Int 会丢信息。
+ * 多次报警只保留**第一次**的取值 —— 一段录像里混了两种报警时,平台按第二种筛不到它,
+ * 这是刻意保守:宁可漏一条,也不能把 A 类报警的录像当成 B 类回给平台。
+ *
+ * 默认值齐全:旧 `index.json` 里没有这个键,反序列化必须能兜住。
+ */
+@Serializable
+data class AlarmMark(
+    /** 本段录像里**第一次**报警的时刻(ms)。 */
+    val firstAlarmAtMs: Long,
+    /** 本段录像里累计发生的报警条数。 */
+    val count: Int = 1,
+    /** 第一次报警的 `AlarmMethod` 原值;报文没带则 null。 */
+    val alarmMethod: String? = null,
+    /** 第一次报警的 `AlarmType` 原值;报文没带则 null。 */
+    val alarmType: String? = null,
+)
 
 /**
  * GB/T 28181 RecordInfo 录像类型。
@@ -61,7 +93,15 @@ data class RecordingFile(
      * 带默认值 `0`：旧 `index.json` 里没有这个键，反序列化必须能兜住（本仓曾因
      * 新增字段没给默认值而整份配置丢失）。
      */
-    val streamNumber: Int = 0
+    val streamNumber: Int = 0,
+    /**
+     * 本段录像期间发生过的报警(A.2.1.16 报警录像)。`null` = 这段没有报警。
+     *
+     * ⛔ 与 [type] 是两个独立维度:[type] 说"这段是**因为什么**录的",本字段说
+     * "这段**里面**有没有报警"。把两者合并会让「报警时正在录计划录像」这件事无解 ——
+     * 要么谎称它是报警录像(计划录像的语义被吃掉),要么丢掉报警信息。
+     */
+    val alarm: AlarmMark? = null
 )
 
 /**

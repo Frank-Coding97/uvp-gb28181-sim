@@ -295,6 +295,14 @@ class SipViewModel @JvmOverloads constructor(
     fun updateVideoRecordPlan(state: com.uvp.sim.gb28181.VideoRecordPlanState?) =
         appEngine.updateVideoRecordPlan(state)
 
+    /**
+     * 报警录像（GB-2022 A.2.1.16）本地保存。见
+     * [com.uvp.sim.app.AppEngine.updateVideoAlarmRecord]。
+     * `state = null` = 清除配置、回到出厂默认（不启用 / 主码流 / 时间字段缺席）。
+     */
+    fun updateVideoAlarmRecord(state: com.uvp.sim.gb28181.VideoAlarmRecordState?) =
+        appEngine.updateVideoAlarmRecord(state)
+
     /** 双真实通道迁移:老配置 frontChannelId 为空时按 domain 补全前置通道 ID。 */
     private fun migrateDualChannel(cfg: SimConfig): SimConfig {
         if (cfg.device.frontChannelId.isNotBlank()) return cfg

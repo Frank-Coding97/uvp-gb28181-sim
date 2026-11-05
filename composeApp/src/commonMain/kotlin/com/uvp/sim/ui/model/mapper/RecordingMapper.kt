@@ -4,6 +4,7 @@ import com.uvp.sim.recording.RecordingFile
 import com.uvp.sim.recording.RecordingFilter
 import com.uvp.sim.recording.RecordingState
 import com.uvp.sim.recording.RecordSource
+import com.uvp.sim.ui.model.AlarmMarkDto
 import com.uvp.sim.ui.model.RecordingFileDto
 import com.uvp.sim.ui.model.RecordingFilterDto
 import com.uvp.sim.ui.model.RecordingStateDto
@@ -25,6 +26,14 @@ fun RecordingFile.toDto(): RecordingFileDto = RecordingFileDto(
     source = source.toDto(),
     type = type,
     secrecy = secrecy,
+    alarm = alarm?.let {
+        AlarmMarkDto(
+            firstAlarmAtMs = it.firstAlarmAtMs,
+            count = it.count,
+            alarmMethod = it.alarmMethod,
+            alarmType = it.alarmType,
+        )
+    },
 )
 
 fun RecordingFilter.toDto(): RecordingFilterDto =

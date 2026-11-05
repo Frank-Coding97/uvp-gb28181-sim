@@ -99,6 +99,16 @@ class AndroidRecordingService(
      * 记它的意义在**回读一致** —— 平台按码流筛录像时设备给得出确定的答案。
      */
     private var activeStreamNumber: Int = 0
+
+    /**
+     * 当前这段录像里的报警标记（A.2.1.16 报警录像的「事后标记」路径）。
+     *
+     * 由 [markAlarm] 写入、`handlePipelineFinalize` 读出并随快照清空。
+     * `@Volatile`：写在前台协程（mutex 内），读在编码器 finalize 回调线程，
+     * 必须跨线程可见；引用赋值本身原子，不需要额外加锁。
+     */
+    @Volatile private var activeAlarm: AlarmMark? = null
+
     private var thumbJob: Job? = null
     private var guardJob: Job? = null
     @Volatile private var pendingSegmentSplit: Boolean = false
@@ -233,6 +243,8 @@ class AndroidRecordingService(
             activeStartMs = now.toEpochMilliseconds()
             activeSource = source
             activeStreamNumber = streamNumber
+            // 新的一段从零开始：报警标记不跨段继承（上一段已经 finalize 走了它的那份）。
+            activeAlarm = null
             if (!pendingSegmentSplit) activeSegmentIndex = 0
             pendingSegmentSplit = false
             _state.value = RecordingState.Recording(
@@ -273,6 +285,33 @@ class AndroidRecordingService(
             pipe.stop()
             null  // finalize 异步走 handlePipelineFinalize
         }
+    }
+
+    /**
+     * 报警标记挂到当前段。判定用 `pipeline != null && state is Recording`：
+     * 只看 state 不够 —— `Stopping` 期间管道已在收尾，再挂上去也会随 finalize 丢掉，
+     * 提前返回 false 让调用方另起一段，行为才是确定的。
+     */
+    override suspend fun markAlarm(
+        atMs: Long,
+        alarmMethod: String?,
+        alarmType: String?,
+    ): Boolean = mutex.withLock {
+        if (_state.value !is RecordingState.Recording || pipeline == null) {
+            return@withLock false
+        }
+        activeAlarm = activeAlarm?.let { it.copy(count = it.count + 1) }
+            ?: AlarmMark(
+                firstAlarmAtMs = atMs,
+                count = 1,
+                alarmMethod = alarmMethod,
+                alarmType = alarmType,
+            )
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "报警挂到当前录像段 count=${activeAlarm?.count} method=$alarmMethod type=$alarmType"
+        )
+        true
     }
 
     private suspend fun runGuard(channelId: String, source: RecordSource) {
@@ -350,6 +389,10 @@ class AndroidRecordingService(
         val source = activeSource
         // 快照码流号（与 source/channel 同批）—— 平台点名录的那一路，写进索引供 RecordInfo 回读。
         val streamNumber = activeStreamNumber
+        // 报警标记与 source/channel/streamNumber 同批快照，并立刻清空 —— 切片后的下一段
+        // 是一次新的录制，不能继承上一段的报警（否则同一晚的报警会在每 30 分钟一段里重复出现）。
+        val alarmMark = activeAlarm
+        activeAlarm = null
         pipeline = null
         activeOutputFile = null
 
@@ -378,9 +421,12 @@ class AndroidRecordingService(
             sizeBytes = sizeBytes,
             thumbnailPath = null,
             source = source,
-            type = RecordType.Time,
+            // 报警触发的那一段才是 A.2.4.5 意义上的「报警录像」；其余（手动/平台/计划）
+            // 仍记 time —— `type` 回答"这段因为什么录的"，不回答"里面有没有报警"（见 AlarmMark）。
+            type = if (source == RecordSource.Alarm) RecordType.Alarm else RecordType.Time,
             secrecy = 0,
             streamNumber = streamNumber,
+            alarm = alarmMark,
         )
         scope.launch {
             mutex.withLock {

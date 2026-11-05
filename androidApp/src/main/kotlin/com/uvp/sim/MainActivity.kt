@@ -292,6 +292,18 @@ class MainActivity : ComponentActivity() {
                             "${state.schedules.sumOf { it.segments.size }} 段"
                     }
                 ) { viewModel.updateVideoRecordPlan(state) }
+
+                override fun onVideoAlarmRecordSave(
+                    state: com.uvp.sim.gb28181.VideoAlarmRecordState?
+                ) = logged(
+                    if (state == null) {
+                        "用户清除报警录像配置 → 回到出厂默认（不录像）"
+                    } else {
+                        "用户保存报警录像：${if (state.recordEnable == 1) "启用" else "停用"} · " +
+                            "后录${state.recordTime ?: "默认30"}s · " +
+                            "预录${state.preRecordTime ?: "未设置"}s · 码流${state.streamNumber}"
+                    }
+                ) { viewModel.updateVideoAlarmRecord(state) }
             }
             val recordingActions = object : RecordingActions {
                 override fun onRecordingStart() = logged("用户点击开始录像") { viewModel.startRecording() }

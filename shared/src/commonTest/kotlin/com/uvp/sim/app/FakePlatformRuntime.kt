@@ -28,6 +28,14 @@ internal class FakePlatformRuntime : PlatformRuntime {
     val builtAudios = mutableListOf<AudioCaptureConfig>()
     val builtRecordings = mutableListOf<Unit>()
     val appliedVideoConfigs = mutableListOf<Pair<CaptureConfig, AudioCaptureConfig>>()
+
+    /**
+     * 可替换的录像服务 — 默认仍是 [NoopRecordingService]。
+     *
+     * 报警录像的行为测试需要一个能**记录 start/markAlarm** 的替身（Noop 恒 false，
+     * 分不出"没触发"和"触发了但没挂上"）。
+     */
+    var recordingServiceOverride: RecordingService = NoopRecordingService
     var releaseCalls: Int = 0
         private set
 
@@ -49,7 +57,7 @@ internal class FakePlatformRuntime : PlatformRuntime {
         profileSupplier: () -> RecordingProfile,
     ): RecordingService {
         builtRecordings += Unit
-        return NoopRecordingService
+        return recordingServiceOverride
     }
 
     override fun applyVideoConfig(captureConfig: CaptureConfig, audioConfig: AudioCaptureConfig) {

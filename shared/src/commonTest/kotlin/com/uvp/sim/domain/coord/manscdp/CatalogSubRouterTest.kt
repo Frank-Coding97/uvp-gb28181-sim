@@ -332,6 +332,9 @@ class CatalogSubRouterTest {
         override suspend fun stop(): Result<RecordingFile?> = Result.success(null)
         override suspend fun load() = Unit
         override suspend fun delete(id: String): Result<Unit> = Result.success(Unit)
+
+        /** 测试替身没有真实录制段，恒 false（调用方据此走"另起一段"分支）。 */
+        override suspend fun markAlarm(atMs: Long, alarmMethod: String?, alarmType: String?): Boolean = false
     }
 
     /**
@@ -343,6 +346,7 @@ class CatalogSubRouterTest {
         id: String,
         streamNumber: Int = 0,
         type: RecordType = RecordType.Time,
+        alarm: com.uvp.sim.recording.AlarmMark? = null,
     ) = RecordingFile(
         id = id,
         startTimeMs = 1_781_452_800_000L,
@@ -355,12 +359,28 @@ class CatalogSubRouterTest {
         type = type,
         secrecy = 0,
         streamNumber = streamNumber,
+        alarm = alarm,
     )
 
-    /** 主码流定时录像 + 子码流报警录像，覆盖两个过滤维度。 */
+    /**
+     * 主码流定时录像 + 子码流报警录像，覆盖两个过滤维度。
+     *
+     * `sub_alarm` 必须带 [com.uvp.sim.recording.AlarmMark]：2026-11-05 起
+     * `AlarmMethod`/`AlarmType` 是**精确匹配**，没有标记的段一律不命中 —— 只给 `type=Alarm`
+     * 已经不足以代表"这条报警录像的报警方式是什么"。
+     */
     private fun twoRecordings() = listOf(
         rec("main_time", streamNumber = 0, type = RecordType.Time),
-        rec("sub_alarm", streamNumber = 1, type = RecordType.Alarm),
+        rec(
+            "sub_alarm",
+            streamNumber = 1,
+            type = RecordType.Alarm,
+            alarm = com.uvp.sim.recording.AlarmMark(
+                firstAlarmAtMs = 1_781_452_800_000L,
+                alarmMethod = "5",
+                alarmType = "2",
+            ),
+        ),
     )
 
     /** 查询窗口与 [rec] 的录像时段必须重叠（2026-06 整月）。 */
@@ -447,11 +467,10 @@ class CatalogSubRouterTest {
     }
 
     /**
-     * ⭐ 报警维度筛选（`AlarmMethod` / `AlarmType`）**只回报警录像**。
+     * ⭐ 报警维度筛选（`AlarmMethod` / `AlarmType`）现在是**精确匹配**。
      *
-     * ⚠️ 口径刻意保守：本仓 `RecordingFile` 只有 `type` 一列，没有"报警方式/报警类型"
-     * 两列，所以做不到精确相等；但**"绝不忽略条件"** 这条底线必须守住 ——
-     * 返回超集比返回空更糟（平台无法分辨哪条是超发的）。
+     * 2026-11-05 起 `RecordingFile.alarm` 补上了设备侧真值，不再需要"是报警录像就命中"
+     * 那种粗筛。不匹配的维度必须回空 —— 返回超集比返回空更糟（平台无法分辨哪条是超发的）。
      */
     @Test
     fun recordInfo_alarmFilter_returnsOnlyAlarmRecordings() = runTest {
@@ -476,6 +495,50 @@ class CatalogSubRouterTest {
         )
         assertTrue(xml.contains("<SumNum>1</SumNum>"), "actual: ${bodyOf(xml)}")
         assertTrue(xml.contains("sub_alarm.mp4"))
+    }
+
+    /**
+     * ⛔ 报警方式对不上 ⇒ **空结果**，不能因为"它就是报警录像"而超发。
+     *
+     * 这是 2026-11-05 收紧精确匹配的核心防回归点：旧的粗筛实现会在这里回 1 条。
+     */
+    @Test
+    fun recordInfo_alarmMethodMismatch_returnsEmpty() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val xml = f.runRecordQuery(
+            this,
+            FakeRecordingService(twoRecordings()),
+            recordQuery("<AlarmMethod>2</AlarmMethod>")
+        )
+        assertTrue(xml.contains("<SumNum>0</SumNum>"), "actual: ${bodyOf(xml)}")
+        assertEquals(0, itemCount(xml))
+    }
+
+    /**
+     * ⭐ 报警时**正在录计划录像**、事后打标记的那一段，`Type=alarm` 必须查得到。
+     *
+     * ⛔ 只认 `type == Alarm` 会让这种段永远查不到，而它恰恰是现场最常见的一种
+     * （白天有录像计划时报警）。
+     */
+    @Test
+    fun recordInfo_typeAlarm_includesMarkedTimeRecording() = runTest {
+        val files = listOf(
+            rec("plan_marked", type = RecordType.Time, alarm = com.uvp.sim.recording.AlarmMark(
+                firstAlarmAtMs = 1_781_452_800_000L,
+                alarmMethod = "5",
+                alarmType = "2",
+            )),
+            rec("plain_time", type = RecordType.Time),
+        )
+        val f = SubRouterTestFixtures.newFixture(this)
+        val xml = f.runRecordQuery(
+            this,
+            FakeRecordingService(files),
+            recordQuery("<Type>alarm</Type>"),
+        )
+        assertTrue(xml.contains("<SumNum>1</SumNum>"), "actual: ${bodyOf(xml)}")
+        assertTrue(xml.contains("plan_marked.mp4"))
+        assertFalse(xml.contains("plain_time.mp4"), "没报警的定时录像不该命中: ${bodyOf(xml)}")
     }
 
     /**

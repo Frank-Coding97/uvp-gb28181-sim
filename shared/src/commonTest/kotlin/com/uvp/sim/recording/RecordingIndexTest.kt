@@ -57,8 +57,37 @@ class RecordingIndexTest {
         assertEquals("/tmp/a.jpg", decoded.files[0].thumbnailPath)
     }
 
-    @Test fun append_keepsExisting_addsNew() {
-        val idx = RecordingIndexFile(files = listOf(sample("a", 1_000, 2_000)))
+    /**
+     * ⛔ 旧 index.json 里没有 `alarm` 键 —— 反序列化必须兜住（默认 null），不能整份索引丢弃。
+     * 本仓在"新增字段没给默认值"上栽过：旧文件整份解不出来、录像列表直接空。
+     */
+    @Test fun decode_legacyJsonWithoutAlarm_stillLoads() {
+        // 直接用普通字符串写死一条 2026-11-05 之前的 index.json 记录（没有 `alarm` 键）。
+        val legacy = "{\"version\":1,\"files\":[{\"id\":\"x\",\"startTimeMs\":1,\"endTimeMs\":2," +
+            "\"durationMs\":1,\"channelId\":\"c\",\"filePath\":\"/x.mp4\",\"sizeBytes\":1," +
+            "\"source\":\"Manual\",\"type\":\"Time\",\"secrecy\":0}]}"
+        val idx = RecordingIndex.decode(legacy)
+        assertEquals(1, idx.files.size)
+        assertNull(idx.files[0].alarm)
+    }
+
+    /** 报警标记要能完整往返 —— 否则重启后平台按 `AlarmMethod` 筛就再也筛不到它。 */
+    @Test fun roundtrip_alarmMark_preservesFields() {
+        val original = RecordingIndexFile(
+            files = listOf(
+                sample("a", 1_000, 2_000).copy(
+                    alarm = AlarmMark(firstAlarmAtMs = 1_500, count = 2, alarmMethod = "5", alarmType = "2")
+                )
+            )
+        )
+        val decoded = RecordingIndex.decode(RecordingIndex.encode(original))
+        assertEquals(original, decoded)
+        assertEquals(1_500L, decoded.files[0].alarm?.firstAlarmAtMs)
+        assertEquals(2, decoded.files[0].alarm?.count)
+        assertEquals("5", decoded.files[0].alarm?.alarmMethod)
+    }
+
+    @Test fun append_keepsExisting_addsNew() {        val idx = RecordingIndexFile(files = listOf(sample("a", 1_000, 2_000)))
         val updated = RecordingIndex.append(idx, sample("b", 3_000, 4_000))
         assertEquals(2, updated.files.size)
         assertEquals("a", updated.files[0].id)

@@ -411,6 +411,7 @@ private fun RuntimeStatusCard(
 private fun otherSourceLabel(source: RecordSourceDto?): String = when (source) {
     RecordSourceDto.PlatformCmd -> "平台指令"
     RecordSourceDto.Schedule -> "计划"
+    RecordSourceDto.Alarm -> "报警"
     RecordSourceDto.Manual, null -> "手动"
 }
 

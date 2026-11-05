@@ -168,6 +168,16 @@ class IosRecordingService(
      * 记它的意义在**回读一致** —— 平台按码流筛录像时设备给得出确定的答案。
      */
     private var activeStreamNumber: Int = 0
+
+    /**
+     * 当前这段录像里的报警标记（A.2.1.16 报警录像的「事后标记」路径）。
+     *
+     * 与 [activeStreamNumber] 同一批快照、同一时点清空：切片后的下一段是新录制，
+     * 不继承上一段的报警。`@Volatile` 因为 finalize 可能在另一个线程读它。
+     */
+    @kotlin.concurrent.Volatile
+    private var activeAlarm: AlarmMark? = null
+
     private var guardJob: Job? = null
 
     @kotlin.concurrent.Volatile
@@ -251,6 +261,8 @@ class IosRecordingService(
                 activeStartMs = now.toEpochMilliseconds()
                 activeSource = source
                 activeStreamNumber = streamNumber
+                // 新的一段从零开始：报警标记不跨段继承。
+                activeAlarm = null
                 if (!pendingSegmentSplit) activeSegmentIndex = 0
                 pendingSegmentSplit = false
 
@@ -301,6 +313,29 @@ class IosRecordingService(
         encodingHandle?.close()
         encodingHandle = null
         finalizeWriterLocked()
+    }
+
+    override suspend fun markAlarm(
+        atMs: Long,
+        alarmMethod: String?,
+        alarmType: String?,
+    ): Boolean = mutex.withLock {
+        // 与 Android 同判据：state 是 Recording 且 writer 真的开着，才挂得上。
+        if (_state.value !is RecordingState.Recording || writer.assetWriter == null) {
+            return@withLock false
+        }
+        activeAlarm = activeAlarm?.let { it.copy(count = it.count + 1) }
+            ?: AlarmMark(
+                firstAlarmAtMs = atMs,
+                count = 1,
+                alarmMethod = alarmMethod,
+                alarmType = alarmType,
+            )
+        SystemLogger.emit(
+            LogLevel.Info, LogTag.Media,
+            "IOS_RECORDING_ALARM_MARK count=${activeAlarm?.count} method=$alarmMethod type=$alarmType",
+        )
+        true
     }
 
     override suspend fun delete(id: String): Result<Unit> = mutex.withLock {
@@ -666,6 +701,8 @@ class IosRecordingService(
         val started = activeStartMs
         val source = activeSource
         val isSplit = pendingSegmentSplit
+        val alarmMark = activeAlarm
+        activeAlarm = null
 
         val outcome = writer.finalizeWriter()
         SystemLogger.emit(
@@ -704,6 +741,7 @@ class IosRecordingService(
                 started = started,
                 source = source,
                 streamNumber = activeStreamNumber,
+                alarm = alarmMark,
                 isSplit = isSplit,
             )
         )
@@ -729,9 +767,10 @@ class IosRecordingService(
             sizeBytes = fileSize,
             thumbnailPath = thumbnailPath,
             source = ctx.source,
-            type = RecordType.Time,
+            type = if (ctx.source == RecordSource.Alarm) RecordType.Alarm else RecordType.Time,
             secrecy = 0,
             streamNumber = ctx.streamNumber,
+            alarm = ctx.alarm,
         )
     }
 
@@ -818,6 +857,8 @@ class IosRecordingService(
         val source: RecordSource,
         /** A.2.3.1.4 平台点名的码流号，随录像写进索引（只记账，不切编码档位）。 */
         val streamNumber: Int,
+        /** 本段期间的报警标记；`null` = 这段没报警（见 [AlarmMark]）。 */
+        val alarm: AlarmMark?,
         val isSplit: Boolean,
     )
 

@@ -116,6 +116,7 @@ internal fun RecordSourceDto.label(): String = when (this) {
     RecordSourceDto.Manual -> "手动"
     RecordSourceDto.PlatformCmd -> "平台"
     RecordSourceDto.Schedule -> "计划"
+    RecordSourceDto.Alarm -> "报警"
 }
 
 internal fun RecordingFilter.applyToDto(files: List<RecordingFileDto>): List<RecordingFileDto> {

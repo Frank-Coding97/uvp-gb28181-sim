@@ -177,6 +177,9 @@ private class FakeRecordingService : RecordingService {
 
     override suspend fun load() = Unit
 
+    /** 测试替身没有真实录制段，恒 false（调用方据此走"另起一段"分支）。 */
+    override suspend fun markAlarm(atMs: Long, alarmMethod: String?, alarmType: String?): Boolean = false
+
     override suspend fun delete(id: String): Result<Unit> {
         deleteIds += id
         return Result.success(Unit)

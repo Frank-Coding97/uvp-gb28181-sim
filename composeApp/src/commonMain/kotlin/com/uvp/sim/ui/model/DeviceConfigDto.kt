@@ -78,6 +78,14 @@ data class DeviceConfigDto(
      * 用户没法在出厂默认的基础上改。是否有配置过由 [VideoRecordPlanViewDto.configured] 单独表达。
      */
     val videoRecordPlan: VideoRecordPlanViewDto = VideoRecordPlanViewDto(),
+    /**
+     * 报警录像（A.2.1.16 `VideoAlarmRecord`）。
+     *
+     * 与 [videoRecordPlan] 同一口径：**回退到生效值**（含出厂默认），因为它同样是
+     * 配置编辑器的数据源，页面打开时必须能看到"现在生效的是什么"。
+     * "配过没有"由 [VideoAlarmRecordViewDto.configured] 单独表达。
+     */
+    val videoAlarmRecord: VideoAlarmRecordViewDto = VideoAlarmRecordViewDto(),
 ) {
     /**
      * 有没有"要画在画布上的画面内容"。渲染层用它决定整层是否挂载。
@@ -141,3 +149,27 @@ data class VideoRecordPlanViewDto(
     /** 时段总数，界面角标用（协议里没有这个总计数，按天各有一个）。 */
     val segmentCount: Int get() = schedules.sumOf { it.segments.size }
 }
+
+/**
+ * 报警录像（GB/T 28181-2022 A.2.1.16 `VideoAlarmRecord`）的视图态。
+ *
+ * 字段与协议一一对应，**不做业务解释**：
+ *  - [recordTimeSeconds] / [preRecordTimeSeconds] 的 `null` 表示**报文里没有这个元素**
+ *    （与"配了 0 秒"是两件事，见 `VideoAlarmRecordState`）；
+ *  - [streamNumber] 0-主码流 / 1-子码流1 …
+ *
+ * ⚠️ 与录像计划一样，本仓的这份配置**真的会驱动行为**（报警触发录像），不是纯记账 ——
+ * 但 `PreRecordTime` 是例外：手机端没有环形缓存，只回读、不预录。
+ */
+data class VideoAlarmRecordViewDto(
+    /** 平台或本机配过没有。`false` ⇒ 以下全是出厂默认（不启用 / 主码流 / 两个时间字段缺席）。 */
+    val configured: Boolean = false,
+    /** `RecordEnable` 0/1 → Boolean。 */
+    val enabled: Boolean = false,
+    /** `RecordTime`（秒）：报警后录多久。`null` = 没配过。 */
+    val recordTimeSeconds: Int? = null,
+    /** `PreRecordTime`（秒）：报警前预录多久。`null` = 没配过。 */
+    val preRecordTimeSeconds: Int? = null,
+    /** `StreamNumber`：0-主码流，1-子码流1… */
+    val streamNumber: Int = 0,
+)

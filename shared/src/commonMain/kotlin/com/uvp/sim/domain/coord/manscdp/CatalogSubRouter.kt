@@ -361,16 +361,35 @@ internal class CatalogSubRouter(
     /**
      * A.2.4.5 `AlarmMethod` / `AlarmType` 过滤。
      *
-     * ⚠️ 口径边界（刻意保守）：这两个维度是**报警录像**（`Type=alarm`）的细分，而本仓的
-     * `RecordingFile` 只有 `type` 一列，没有"报警方式/报警类型"两列。所以规则是：
-     * **平台只要按报警维度筛，就只回报警录像**；一个都没筛就不过滤。
-     * ⛔ 绝不"忽略条件返回全部" —— 那正是本次要修的「静默返回超集」。
-     * 等 `RecordingFile` 补上这两列后，把条件收紧成精确相等即可（届时删掉本条说明）。
+     * 2026-11-05 收紧为**精确匹配**：`RecordingFile.alarm` 补上之后，这两个维度有了设备侧
+     * 真值（[AlarmMark.alarmMethod] / [AlarmMark.alarmType]），不再需要"是报警录像就命中"
+     * 这种粗筛。规则：
+     *  - 平台一个都没筛 → 不过滤；
+     *  - 筛了 → 必须带报警标记，且报文里点名的维度要**逐字相等**。
+     *
+     * ⛔ 没有标记的段一律不命中。宁可少回，也不能把「设备报警」的录像当「视频报警」超发 ——
+     * 平台无法分辨超发，会把 A 类报警的录像展示成 B 类。
      */
     private fun matchesAlarmFilter(q: RecordInfoQueryRequest, f: RecordingFile): Boolean {
         if (q.alarmMethod == null && q.alarmType == null) return true
-        return f.type == RecordType.Alarm
+        val mark = f.alarm ?: return false
+        if (q.alarmMethod != null && mark.alarmMethod != q.alarmMethod) return false
+        if (q.alarmType != null && mark.alarmType != q.alarmType) return false
+        return true
     }
+
+    /**
+     * 录像类型匹配。
+     *
+     * ⭐ `Type=alarm` 比 `type` 宽一层：报警录像在设备侧有两种形态 ——
+     *  - 报警触发、独占录的那段（`type == Alarm`）
+     *  - 报警时正在录计划/手动录像，事后打标记的那段（`type` 仍是 Time/Manual，但带 `AlarmMark`）
+     *
+     * 两种都算「报警录像」。⛔ 只认 `type == Alarm` 会让第二种永远查不到，而它恰恰是
+     * 现场最常见的一种（白天有录像计划时报警）。
+     */
+    private fun matchesType(q: RecordType, f: RecordingFile): Boolean =
+        f.type == q || (q == RecordType.Alarm && f.alarm != null)
 
     private suspend fun handleRecordInfoQuery(xml: String) {
         val tz = "Asia/Shanghai"
@@ -401,7 +420,7 @@ internal class CatalogSubRouter(
         val files = recordingService.files.value
         val hits = files.filter { f ->
             query.startMs <= f.endTimeMs && query.endMs >= f.startTimeMs &&
-                (query.type == null || f.type == query.type) &&
+                (query.type == null || matchesType(query.type, f)) &&
                 matchesStreamNumber(query, f) &&
                 matchesAlarmFilter(query, f)
         }

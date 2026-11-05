@@ -6,6 +6,7 @@ import com.uvp.sim.ui.model.DeviceConfigDto
 import com.uvp.sim.ui.model.MaskRectDto
 import com.uvp.sim.ui.model.OsdTextLineDto
 import com.uvp.sim.ui.model.PictureMaskViewDto
+import com.uvp.sim.ui.model.VideoAlarmRecordViewDto
 import com.uvp.sim.ui.model.VideoRecordPlanViewDto
 
 /**
@@ -68,6 +69,8 @@ fun DeviceControlModel.toDeviceConfigDto(config: SimConfig): DeviceConfigDto {
     // 录像计划的生效值：平台/本机配过就用配过的，否则退回出厂默认（回读也是这条口径，
     // 见 `DeviceConfigState.effectiveVideoRecordPlan` —— 两处必须是同一个判断）。
     val effectivePlan = deviceConfigs.effectiveVideoRecordPlan(config)
+    // 报警录像同理：编辑器要显示生效值（出厂默认也要能显示出来）。
+    val effectiveAlarmRecord = deviceConfigs.effectiveVideoAlarmRecord(config)
 
     return DeviceConfigDto(
         pictureMask = maskView,
@@ -86,6 +89,13 @@ fun DeviceControlModel.toDeviceConfigDto(config: SimConfig): DeviceConfigDto {
             enabled = effectivePlan.recordEnable == 1,
             streamNumber = effectivePlan.streamNumber,
             schedules = effectivePlan.schedules,
+        ),
+        videoAlarmRecord = VideoAlarmRecordViewDto(
+            configured = deviceConfigs.videoAlarmRecord != null,
+            enabled = effectiveAlarmRecord.recordEnable == 1,
+            recordTimeSeconds = effectiveAlarmRecord.recordTime,
+            preRecordTimeSeconds = effectiveAlarmRecord.preRecordTime,
+            streamNumber = effectiveAlarmRecord.streamNumber,
         ),
     )
 }

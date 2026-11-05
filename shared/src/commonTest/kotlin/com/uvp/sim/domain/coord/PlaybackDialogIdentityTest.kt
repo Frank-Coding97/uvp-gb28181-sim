@@ -79,6 +79,9 @@ class PlaybackDialogIdentityTest {
         override suspend fun stop(): Result<RecordingFile?> = Result.success(null)
         override suspend fun load() = Unit
         override suspend fun delete(id: String): Result<Unit> = Result.success(Unit)
+
+        /** 测试替身没有真实录制段，恒 false（调用方据此走"另起一段"分支）。 */
+        override suspend fun markAlarm(atMs: Long, alarmMethod: String?, alarmType: String?): Boolean = false
     }
 
     private fun newPb(
