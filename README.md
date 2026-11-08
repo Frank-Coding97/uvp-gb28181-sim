@@ -278,23 +278,37 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 
 提 PR 到 main 前，本地 4 个主 job 命令全绿 = CI 八成绿（iOS 门禁需要 mac）。CI 失败会上传 test-reports 到 Actions Artifacts（retention 7 天）。
 
-### 5 分钟联调（配 WVP-Pro 上级平台）
+### 5 分钟联调（配 UVP-GB28181 上级平台）
 
-最快的国标平台落地方式是用 [WVP-Pro 官方 docker 镜像](https://github.com/648540858/wvp-GB28181-pro):
+最快的落地方式是用同生态的 [UVP-GB28181](https://github.com/Frank-Coding97/uvp-gb28181)：绿色安装包解压即用，数据库、缓存、流媒体都随包自带。
 
 ```bash
-docker run -d --name wvp \
-  -p 18080:18080 -p 5060:5060/udp -p 30000-30500:30000-30500 \
-  648540858/wvp_pro:latest
-# 控制台: http://localhost:18080  (admin / admin)
+tar -xzf uvp-gb28181-*.tar.gz
+cd uvp-gb28181-*
+./uvp-gb28181-ctl.sh start     # 首次启动自动建库，约 1 分钟
+# 控制台: http://<本机IP>:51000  (admin / 123456，首次登录需改密码)
 ```
 
-然后在 App 中填：
+> 安装包在 [UVP-GB28181 Releases](https://github.com/Frank-Coding97/uvp-gb28181/releases) 或[官网下载中心](https://www.uvplatform.com/downloads/uvp-gb28181)获取；详细部署步骤见 [Linux 部署手册](https://www.uvplatform.com/manuals/uvp-gb28181-linux)。
 
-- 设备 ID：`34020000001320000001`（WVP 默认接入域）
-- 平台 ID：`34020000002000000001`
-- 服务地址：你的 WVP 主机 IP `:5060`
-- 端口 / 认证名 / 密码：跟 WVP 控制台「国标设备」配置一致
+**① 平台侧**：首次登录按引导页设定 SIP 身份（端口 / 服务器 ID / SIP 域 / 口令），之后到「SIP 接入信息」页，设备侧要填的参数和接入二维码都在这里。
+
+**② 手机侧**：App 首页左上角「扫一扫」→ 对准平台「SIP 接入信息」页的二维码 → 确认接入，服务器 ID、域、地址、端口、传输、密码一次性自动回填，不用手抄。
+
+> 扫码要求当前处于「未连接」状态；已注册或正在注册时先断开，否则会提示「请先断开连接再扫码配置」。
+
+**③ 手填也行**（对接其它国标平台时）：
+
+| 项 | 填什么 |
+| --- | --- |
+| 服务地址 / 端口 | 平台主机 IP / 「SIP 接入信息」页显示的 SIP 端口 |
+| 服务器 ID / 服务器域 / 密码 | 与平台「SIP 接入信息」页一致（服务器域随服务器 ID 前 10 位自动回填） |
+| 设备 ID | 应用自动生成，形如 `34020000001327000001`，前 10 位需与平台域一致 |
+| 传输 / 国标版本 | UDP / GB/T 28181-2022 |
+
+> ⚠️ 最容易踩的坑：平台 SIP 端口由引导页设定（Linux 绿色包默认 51064），**不是**国标设备习惯的 5060；设备侧没跟着改，表现就是「已注册但平台看不到 / 不出画」。防火墙记得放行 UDP。
+
+保存后发起注册：平台侧应看到设备上线与通道目录，再点播任一通道验证 INVITE → 推流 → 出画；不通就看 App 的「协议日志」，和平台侧同一时刻的报文对照。
 
 ### snapshot-receiver（本仓自带）
 
