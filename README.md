@@ -5,13 +5,22 @@
 **把手机变成一台 GB/T 28181 国标摄像机（-2022 / -2016 双版本）**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Platform](https://img.shields.io/badge/Platform-Android%20%C2%B7%20iOS-brightgreen.svg)]()
+[![Platform](https://img.shields.io/badge/Platform-Android-brightgreen.svg)](https://github.com/Frank-Coding97/uvp-gb28181-sim/releases/latest)
+[![iOS](https://img.shields.io/badge/iOS-source%20build-lightgrey.svg)](#ios)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.2+-7F52FF.svg)](https://kotlinlang.org/)
 [![Compose Multiplatform](https://img.shields.io/badge/Compose%20Multiplatform-1.7+-4285F4.svg)](https://www.jetbrains.com/compose-multiplatform/)
 
 </div>
 
 ---
+
+<p align="center">
+  <a href="https://github.com/Frank-Coding97/uvp-gb28181-sim/releases/latest"><b>⬇ 下载 Android APK</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://uvplatform.com/downloads/uvp-28181-sim">官网下载页（含安装说明）</a>
+  &nbsp;·&nbsp;
+  <a href="https://gitee.com/Frank-Coding/uvp-gb28181-sim/releases">Gitee 备用下载</a>
+</p>
 
 ## 什么是 UVP
 
@@ -198,9 +207,11 @@
 
 ### Android
 
-从 [Releases](../../releases) 下载最新 APK 安装即可，无需 Root。
+从 [GitHub Releases](https://github.com/Frank-Coding97/uvp-gb28181-sim/releases/latest) 或 [官网下载页](https://uvplatform.com/downloads/uvp-28181-sim) 下载最新 APK 安装即可，无需 Root。
 
 ### iOS
+
+> ⚠️ iOS 端目前**只提供源码编译**，没有 App Store / TestFlight / ipa 安装包，Release 页只有 Android APK。
 
 Xcode 项目未提交（每台机器本地生成），首次跑：
 
@@ -289,7 +300,7 @@ cd uvp-gb28181-*
 # 控制台: http://<本机IP>:51000  (admin / 123456，首次登录需改密码)
 ```
 
-> 安装包在 [UVP-GB28181 Releases](https://github.com/Frank-Coding97/uvp-gb28181/releases) 或[官网下载中心](https://www.uvplatform.com/downloads/uvp-gb28181)获取；详细部署步骤见 [Linux 部署手册](https://www.uvplatform.com/manuals/uvp-gb28181-linux)。
+> 安装包在 [UVP-GB28181 Releases](https://github.com/Frank-Coding97/uvp-gb28181/releases) 或[官网下载中心](https://uvplatform.com/downloads/uvp-gb28181)获取；详细部署步骤见 [Linux 部署手册](https://uvplatform.com/manuals/uvp-gb28181-linux)。
 
 **① 平台侧**：首次登录按引导页设定 SIP 身份（端口 / 服务器 ID / SIP 域 / 口令），之后到「SIP 接入信息」页，设备侧要填的参数和接入二维码都在这里。
 
