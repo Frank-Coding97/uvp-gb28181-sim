@@ -7,12 +7,13 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.uvp.sim.update.UpdateManifest
+import com.uvp.sim.update.applyUpdateTimeouts
 import com.uvp.sim.ui.ShareContextHolder
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.get
 import io.ktor.client.request.prepareGet
@@ -49,24 +50,28 @@ private class AndroidUpdateInstaller : UpdateInstaller {
     private val http: HttpClient by lazy {
         HttpClient(CIO) {
             expectSuccess = false
-            install(HttpTimeout) {
-                connectTimeoutMillis = 15_000
-                socketTimeoutMillis = 30_000
-                // 下载 36MB 的包不能设整体超时，否则弱网一定被打断；
-                // 清单请求另行用 request 级 timeout 卡 20 秒。
-                requestTimeoutMillis = 0
-            }
+            // 超时策略放在 shared 里，和单测共用同一份实现 —— 见 UpdateHttpClient.kt
+            // 里关于 requestTimeoutMillis 不能写 0 的那段说明。
+            applyUpdateTimeouts()
         }
     }
 
     override suspend fun fetchManifestText(url: String): String {
-        val response = http.get(url) {
-            timeout { requestTimeoutMillis = CHECK_TIMEOUT_MS }
+        return try {
+            val response = http.get(url) {
+                timeout { requestTimeoutMillis = CHECK_TIMEOUT_MS }
+            }
+            Log.i(TAG, "清单响应 HTTP ${response.status.value} — $url")
+            if (!response.status.isSuccess()) {
+                throw UpdateFailure("更新服务器返回异常（HTTP ${response.status.value}），请稍后重试。")
+            }
+            response.bodyAsText()
+        } catch (error: Throwable) {
+            // 这里必须留痕：release 包开了 R8，异常被上层转成人话文案后就没有任何现场了，
+            // 线上出问题只能靠这一行定位（设备上 `adb logcat -s UvpUpdate`）。
+            Log.w(TAG, "清单请求失败 — $url", error)
+            throw error
         }
-        if (!response.status.isSuccess()) {
-            throw UpdateFailure("更新服务器返回异常（HTTP ${response.status.value}），请稍后重试。")
-        }
-        return response.bodyAsText()
     }
 
     override suspend fun download(
@@ -119,6 +124,7 @@ private class AndroidUpdateInstaller : UpdateInstaller {
             throw error
         } catch (error: Throwable) {
             partFile.delete()
+            Log.w(TAG, "安装包下载失败 — ${manifest.apk.url}", error)
             throw UpdateFailure("下载中断，请检查网络后重试。")
         }
 
@@ -257,6 +263,7 @@ private class AndroidUpdateInstaller : UpdateInstaller {
     }
 
     private companion object {
+        const val TAG = "UvpUpdate"
         const val CHECK_TIMEOUT_MS = 20_000L
         const val BUFFER_SIZE = 64 * 1024
         const val PROGRESS_STEP = 256L * 1024
