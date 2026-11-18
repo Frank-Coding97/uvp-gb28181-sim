@@ -4,4 +4,8 @@
          FileProvider 走这里把绝对路径转 content:// URI,
          保证跨 app 文件访问不需要 WRITE_EXTERNAL_STORAGE。 -->
     <files-path name="recordings" path="recordings/" />
+    <!-- 在线升级下载的 APK 落在 cacheDir/updates/,交给系统安装器前必须通过
+         FileProvider 转成 content:// —— Android 7+ 直接把 file:// 塞进 Intent
+         会抛 FileUriExposedException。 -->
+    <cache-path name="updates" path="updates/" />
 </paths>

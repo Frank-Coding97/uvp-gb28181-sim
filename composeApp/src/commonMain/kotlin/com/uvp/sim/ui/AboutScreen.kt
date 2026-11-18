@@ -23,11 +23,14 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.Verified
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,6 +46,8 @@ import com.uvp.sim.compose.generated.resources.app_icon
 import com.uvp.sim.compose.generated.resources.logo_gitee
 import com.uvp.sim.compose.generated.resources.logo_github
 import com.uvp.sim.compose.generated.resources.logo_wechat
+import com.uvp.sim.ui.update.UpdateCenter
+import com.uvp.sim.ui.update.UpdateState
 import org.jetbrains.compose.resources.painterResource
 
 /**
@@ -52,11 +57,18 @@ import org.jetbrains.compose.resources.painterResource
  * 仓库外链走 [openUrl] 交给系统浏览器,微信号复制到剪贴板 + toast 提示。
  * "开源许可"行点击回调 [onOpenLicenses] 由外层 SettingsScreen 挂载,跳
  * OpenSourceLicensesScreen 展示 20+ 第三方依赖归属。
+ *
+ * "检查更新"行只在平台支持应用内更新时出现(Android);值会跟随
+ * [UpdateCenter] 的状态显示「发现 vX」/「已是最新」,让用户不必点进去才知道。
  */
 @Composable
-fun AboutScreen(onOpenLicenses: () -> Unit = {}) {
+fun AboutScreen(
+    onOpenLicenses: () -> Unit = {},
+    onOpenUpdate: () -> Unit = {},
+) {
     val toast = LocalToastHost.current
     val clipboard = LocalClipboardManager.current
+    val updateState by UpdateCenter.state.collectAsState()
 
     Column(
         modifier = Modifier
@@ -73,6 +85,15 @@ fun AboutScreen(onOpenLicenses: () -> Unit = {}) {
                 title = "版本",
                 value = "v${PlatformBuildInfo.versionName}  (build ${PlatformBuildInfo.versionCode})",
             )
+            if (UpdateCenter.supported) {
+                AboutLineDivider()
+                AboutNavRow(
+                    icon = Icons.Outlined.SystemUpdateAlt,
+                    title = "检查更新",
+                    value = updateEntryValue(updateState),
+                    onClick = onOpenUpdate,
+                )
+            }
             AboutLineDivider()
             AboutLineRow(
                 icon = Icons.Outlined.Videocam,
@@ -349,4 +370,19 @@ private fun AboutLineDivider() {
             .height(1.dp)
             .background(UvpColor.BorderLight)
     )
+}
+
+/**
+ * 「检查更新」行右侧的提示语。
+ *
+ * 这里只说**用户需要知道的那一句**：有没有新版、要不要去点。检查失败也退回
+ * 中性文案「查看更新」，不在列表行里塞错误详情 —— 详情留到更新页展示。
+ */
+private fun updateEntryValue(state: UpdateState): String = when (state) {
+    is UpdateState.Available -> "发现 v${state.manifest.trimmedVersion()}"
+    is UpdateState.Downloading -> "正在下载 v${state.manifest.trimmedVersion()}"
+    is UpdateState.ReadyToInstall -> "待安装 v${state.manifest.trimmedVersion()}"
+    is UpdateState.NeedPermission -> "待授权安装"
+    UpdateState.Latest -> "已是最新版本"
+    else -> "查看是否有新版本"
 }

@@ -75,6 +75,12 @@ kotlin {
             implementation(libs.filament.android)
             implementation(libs.filament.utils)
             implementation(libs.gltfio.android)
+            // 在线升级:拉清单 + 流式下载 APK。CIO 是纯 Kotlin 引擎,不引入 OkHttp
+            // 的额外体积;FileProvider 需要 androidx.core 显式在场(androidApp 的
+            // provider 声明和这里的类必须同版本)。
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.androidx.core.ktx)
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)

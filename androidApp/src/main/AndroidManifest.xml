@@ -20,6 +20,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 扫码成功时提供一次轻触感反馈(普通权限,无需运行时请求) -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- 在线升级:下载官方 APK 后拉起系统安装器需要此权限。属于「特殊权限」——
+         用户必须在系统设置里为本应用打开「安装未知应用」,代码无法自行授予
+         (canRequestPackageInstalls() 用于检测,未开时引导用户去授权页)。
+         应用不上架应用商店,因此不受 Google Play 对该权限的分发政策约束。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="UVP Sim"

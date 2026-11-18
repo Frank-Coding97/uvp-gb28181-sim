@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.sp
 import com.uvp.sim.ui.notification.NotificationBell
 import com.uvp.sim.ui.notification.NotificationScreen
 import com.uvp.sim.ui.notification.rememberNotificationState
+import com.uvp.sim.ui.update.UpdateCenter
 
 /**
  * 跨 Tab 导航跳转能力。主屏报警 tile 长按时,通过它切到「能力」Tab 并
@@ -163,6 +164,14 @@ fun App(state: AppUiState, actions: AppActions) {
                         }
                 ) {
                     val toast = LocalToastHost.current
+                    // 在线更新：启动后静默查一次，只提示「发现新版本」，不自动安装。
+                    // 延迟 1.5s 是为了不跟主树首帧渲染抢主线程和网络；失败不出声
+                    // （冷启动断网是常态），同一版本一个安装周期内只提示一次。
+                    LaunchedEffect(Unit) {
+                        kotlinx.coroutines.delay(1_500)
+                        val notice = UpdateCenter.check(silent = true)
+                        if (notice != null) toast.info(notice)
+                    }
                     if (notificationOpen) {
                         NotificationScreen(
                             state = notificationState,

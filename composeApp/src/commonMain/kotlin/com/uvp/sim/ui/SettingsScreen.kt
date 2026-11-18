@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uvp.sim.config.OsdConfig
 import com.uvp.sim.gb28181.FrontOsdConfig
+import com.uvp.sim.ui.update.UpdateScreen
 
 /**
  * 设置 — 二级导航,展示"通道""音视频"两张大卡片,点击进入对应配置子页。
@@ -80,7 +81,16 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
         SettingsPage.About -> SettingsSubPage(
             title = "关于",
             onBack = { page = SettingsPage.Index }
-        ) { AboutScreen(onOpenLicenses = { page = SettingsPage.Licenses }) }
+        ) {
+            AboutScreen(
+                onOpenLicenses = { page = SettingsPage.Licenses },
+                onOpenUpdate = { page = SettingsPage.Update },
+            )
+        }
+        SettingsPage.Update -> SettingsSubPage(
+            title = "检查更新",
+            onBack = { page = SettingsPage.About }
+        ) { UpdateScreen() }
         SettingsPage.Licenses -> SettingsSubPage(
             title = "开源许可",
             onBack = { page = SettingsPage.About }
@@ -88,7 +98,7 @@ fun SettingsScreen(state: AppUiState, actions: AppActions) {
     }
 }
 
-private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, About, Licenses }
+private enum class SettingsPage { Index, Channel, Device, Media, Osd, Network, About, Update, Licenses }
 
 @Composable
 private fun SettingsIndex(onPick: (SettingsPage) -> Unit) {
