@@ -347,12 +347,13 @@ class CatalogSubRouterTest {
         streamNumber: Int = 0,
         type: RecordType = RecordType.Time,
         alarm: com.uvp.sim.recording.AlarmMark? = null,
+        channelId: String = "34020000001320000001",
     ) = RecordingFile(
         id = id,
         startTimeMs = 1_781_452_800_000L,
         endTimeMs = 1_781_452_800_000L + 600_000L,
         durationMs = 600_000L,
-        channelId = "34020000001320000001",
+        channelId = channelId,
         filePath = "/data/recordings/$id.mp4",
         sizeBytes = 2048L,
         source = RecordSource.Manual,
@@ -426,6 +427,71 @@ class CatalogSubRouterTest {
         val xml = f.runRecordQuery(this, FakeRecordingService(twoRecordings()), recordQuery())
         assertTrue(xml.contains("<SumNum>2</SumNum>"), "actual: ${bodyOf(xml)}")
         assertEquals(2, itemCount(xml))
+    }
+
+    /** 取应答里 `<Response>` 级别的 DeviceID（紧跟 SN 的那个），避开 Item 内部的 DeviceID。 */
+    private fun outerDeviceId(body: String): String? =
+        Regex("<SN>9</SN>\\s*<DeviceID>([^<]+)</DeviceID>").find(body)?.groupValues?.get(1)
+
+    /**
+     * ⛔ 2026-11-18 线上事故回归（平台「设备录像」15 秒 504）：
+     * 应答外层 `<DeviceID>` 必须**原样回请求里的 DeviceID**（通道查询时 = 通道编码）。
+     *
+     * 平台侧 `recordquery.Registry.Accept` 的两条判据：
+     *  1. `response.DeviceID == 被查通道编码`，否则整条丢弃；
+     *  2. 每条 `item.DeviceID == response.DeviceID`，否则该条判非法。
+     *
+     * 旧实现外层发设备编码、item 发通道编码 ⇒ 两条同时不成立 ⇒ 平台丢弃应答、
+     * 前端 504；而设备侧日志照样写「命中 N 条 / 分 1 包」，看上去完全没有问题。
+     */
+    @Test
+    fun recordInfo_responseDeviceIdEchoesRequestedDevice() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val body = bodyOf(f.runRecordQuery(this, FakeRecordingService(listOf(rec("a"))), recordQuery()))
+
+        assertEquals(
+            "34020000001320000001", outerDeviceId(body),
+            "应答外层 DeviceID 必须是请求里的通道编码，actual: $body",
+        )
+        assertFalse(
+            body.contains("<DeviceID>34020000001110000001</DeviceID>"),
+            "外层不能回设备编码（平台会判为无关应答整条丢弃），actual: $body",
+        )
+    }
+
+    /**
+     * 通道查询只回该通道的录像。
+     *
+     * 只改外层 DeviceID 还不够：item 的 `<DeviceID>` 是各录像自身的通道编码，混进别的通道
+     * 就会被平台逐条判非法（`RecordInfoItemDeviceMismatch`），前端显示条数少于实际命中数。
+     */
+    @Test
+    fun recordInfo_channelScopedQuery_excludesOtherChannelRecordings() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val files = listOf(
+            rec("ch_main", channelId = "34020000001320000001"),
+            rec("ch_front", channelId = "34020000001320000002"),
+        )
+        val body = bodyOf(f.runRecordQuery(this, FakeRecordingService(files), recordQuery()))
+
+        assertEquals(1, itemCount(body), "只回查询通道的录像，actual: $body")
+        assertTrue(body.contains("<SumNum>1</SumNum>"), "actual: $body")
+        assertFalse(body.contains("34020000001320000002"), "别把其它通道的录像混进来，actual: $body")
+    }
+
+    /** 设备级查询（DeviceID = 设备编码）不做通道收窄，且外层回设备编码。 */
+    @Test
+    fun recordInfo_deviceLevelQuery_keepsAllChannels() = runTest {
+        val f = SubRouterTestFixtures.newFixture(this)
+        val files = listOf(
+            rec("ch_a", channelId = "34020000001320000001"),
+            rec("ch_b", channelId = "34020000001320000002"),
+        )
+        val deviceXml = recordQuery().replace("34020000001320000001", "34020000001110000001")
+        val body = bodyOf(f.runRecordQuery(this, FakeRecordingService(files), deviceXml))
+
+        assertEquals("34020000001110000001", outerDeviceId(body), "actual: $body")
+        assertEquals(2, itemCount(body), "设备级查询应收全通道，actual: $body")
     }
 
     /**

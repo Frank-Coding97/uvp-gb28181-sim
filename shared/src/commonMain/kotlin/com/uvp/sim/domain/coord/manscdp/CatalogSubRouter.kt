@@ -418,15 +418,28 @@ internal class CatalogSubRouter(
             )
         }
         val files = recordingService.files.value
+        // ⛔ 2026-11-18 线上事故（平台 504「录像查询超时」）：应答外层 `<DeviceID>` 必须回
+        //    **请求里的 DeviceID**（通道查询时就是通道编码），不能回设备编码。平台侧
+        //    `recordquery.Registry.Accept` 的判据是
+        //      `entry = entries[(senderDeviceCode, SN)]; if response.DeviceID != entry.channelCode: drop`
+        //    并且它还会逐条校验 `item.DeviceID == 外层 DeviceID`。旧实现外层发设备编码、
+        //    item 发通道编码 ⇒ 平台判定"无关应答"整条丢弃 ⇒ 设备侧日志写着
+        //    「平台查询录像 → 命中 N 条 / 分 1 包」（看上去已经应答），平台 15 秒后 504。
+        //    ⇒ 外层取 query.channelId；item 的 DeviceID 仍是各录像自身的通道编码，
+        //      因此还要按通道过滤，别把别的通道的录像混进来（否则那些条目照样被平台判非法）。
+        val targetId = query.channelId
+        val deviceLevelQuery = targetId == ctx.config.device.deviceId
         val hits = files.filter { f ->
             query.startMs <= f.endTimeMs && query.endMs >= f.startTimeMs &&
+                (deviceLevelQuery || f.channelId == targetId) &&
                 (query.type == null || matchesType(query.type, f)) &&
                 matchesStreamNumber(query, f) &&
                 matchesAlarmFilter(query, f)
         }
         val packets = RecordInfoNotify.buildAll(
             sn = query.sn,
-            deviceId = ctx.config.device.deviceId,
+            // 应答外层 DeviceID = 本次查询对象（通道），见上面的平台判据。
+            deviceId = targetId,
             deviceName = ctx.config.device.name,
             items = hits,
             // ⛔ 用**有效**版本（附录 I 协商结果），不是 config.gbVersion（本机声明）——
@@ -435,10 +448,12 @@ internal class CatalogSubRouter(
             timeZoneId = tz,
             pageSize = ctx.config.multiResponsePageSize.coerceIn(1, 10_000),
             maxBytes = ManscdpInternals.maxDatagramBytesFor(ctx.config),
+            // RecorderID / RecordLocation 是"录像存在哪台设备上"，仍然是设备自己。
+            recorderId = ctx.config.device.deviceId,
         )
         SystemLogger.emit(
             LogLevel.Info, LogTag.Media,
-            "平台查询录像 → 命中 ${hits.size} 条 / 分 ${packets.size} 包"
+            "平台查询录像 target=$targetId → 命中 ${hits.size} 条 / 分 ${packets.size} 包"
         )
         if (hits.size > 10_000 && ctx.config.transport.name == "UDP") {
             SystemLogger.emit(

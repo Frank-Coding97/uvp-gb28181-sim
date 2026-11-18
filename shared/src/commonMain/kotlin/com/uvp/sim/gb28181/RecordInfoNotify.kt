@@ -37,7 +37,17 @@ object RecordInfoNotify {
     /** 按字节分包时的包头余量(同 [CatalogNotifyBuilder] 口径)。 */
     private const val PAGE_BYTES_MARGIN: Int = 64
 
-    /** 单包构造。一般通过 [buildAll] 调用。 */
+    /**
+     * 单包构造。一般通过 [buildAll] 调用。
+     *
+     * ⛔ [deviceId] 是应答**外层** `<DeviceID>`，语义是"本次查询的对象"，必须等于请求里的
+     * `<DeviceID>`（通道查询时 = 通道编码）。⛔ 2026-11-18 线上事故：这里曾传设备编码，
+     * 平台 `recordquery.Registry.Accept` 要求 `response.DeviceID == 被查通道编码`，
+     * 不相等直接判为无关应答丢弃 ⇒ 设备日志显示"命中 N 条/已应答"，平台却 15 秒超时 504。
+     *
+     * [recorderId] 是每条 `<Item>` 里的 `<RecorderID>`（录像器/存储设备编码），默认跟随
+     * [deviceId]；通道查询时应显式传**设备编码**，而不是把通道编码当成录像器。
+     */
     fun buildPacket(
         sn: String,
         deviceId: String,
@@ -46,10 +56,11 @@ object RecordInfoNotify {
         items: List<RecordingFile>,
         gbVersion: GbVersion,
         timeZoneId: String = "Asia/Shanghai",
+        recorderId: String = deviceId,
     ): String {
         val tz = runCatching { TimeZone.of(timeZoneId) }.getOrDefault(TimeZone.UTC)
         val itemsXml = items.joinToString("\n") { f ->
-            buildItem(f, deviceId = deviceId, tz = tz, gbVersion = gbVersion)
+            buildItem(f, recorderId = recorderId, tz = tz, gbVersion = gbVersion)
         }
         return """<?xml version="1.0" encoding="GB2312"?>
 <Response>
@@ -81,6 +92,7 @@ $itemsXml
         pageSize: Int = DEFAULT_PAGE_SIZE,
         timeZoneId: String = "Asia/Shanghai",
         maxBytes: Int? = null,
+        recorderId: String = deviceId,
     ): List<String> {
         if (items.isEmpty()) {
             return listOf(
@@ -91,7 +103,8 @@ $itemsXml
                     sumNum = 0,
                     items = emptyList(),
                     gbVersion = gbVersion,
-                    timeZoneId = timeZoneId
+                    timeZoneId = timeZoneId,
+                    recorderId = recorderId,
                 )
             )
         }
@@ -104,12 +117,14 @@ $itemsXml
             val baseBytes = buildPacket(
                 sn = sn, deviceId = deviceId, deviceName = deviceName, sumNum = sumNum,
                 items = emptyList(), gbVersion = gbVersion, timeZoneId = timeZoneId,
+                recorderId = recorderId,
             ).encodeToByteArray().size
             val headerBytes = baseBytes + PAGE_BYTES_MARGIN
             val itemBytes = items.map { item ->
                 buildPacket(
                     sn = sn, deviceId = deviceId, deviceName = deviceName, sumNum = sumNum,
                     items = listOf(item), gbVersion = gbVersion, timeZoneId = timeZoneId,
+                    recorderId = recorderId,
                 ).encodeToByteArray().size - baseBytes
             }
             val result = mutableListOf<List<RecordingFile>>()
@@ -136,14 +151,15 @@ $itemsXml
                 sumNum = sumNum,
                 items = chunk,
                 gbVersion = gbVersion,
-                timeZoneId = timeZoneId
+                timeZoneId = timeZoneId,
+                recorderId = recorderId,
             )
         }
     }
 
     private fun buildItem(
         f: RecordingFile,
-        deviceId: String,
+        recorderId: String,
         tz: TimeZone,
         gbVersion: GbVersion,
     ): String {
@@ -159,12 +175,13 @@ $itemsXml
             append("<EndTime>").append(endStr).append("</EndTime>\n")
             append("<Secrecy>").append(f.secrecy).append("</Secrecy>\n")
             append("<Type>").append(f.type.gb28181Token).append("</Type>\n")
-            append("<RecorderID>").append(deviceId).append("</RecorderID>\n")
+            append("<RecorderID>").append(recorderId).append("</RecorderID>\n")
             // FileSize 两版都在 itemFileType 里（2016 也有），单位 Byte —— 直接取索引里的真实字节数。
             append("<FileSize>").append(f.sizeBytes).append("</FileSize>\n")
             if (gbVersion >= GbVersion.V2022) {
-                // RecordLocation = 存储这份录像的设备/系统编码。本机录在本机，就是设备自己。
-                append("<RecordLocation>").append(deviceId).append("</RecordLocation>\n")
+                // RecordLocation = 存储这份录像的设备/系统编码。本机录在本机，就是设备自己
+                // （不是被查通道 —— 通道编码在这里会被平台当成"另一台存储设备"）。
+                append("<RecordLocation>").append(recorderId).append("</RecordLocation>\n")
                 append("<StreamNumber>").append(f.streamNumber).append("</StreamNumber>\n")
             }
             append("</Item>")
